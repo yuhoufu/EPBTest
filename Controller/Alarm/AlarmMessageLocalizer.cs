@@ -25,6 +25,7 @@ namespace Controller.Alarm
                 ["ForwardFastOverCurrentCutoff"] = "峰值快速保护已断开正向供电，本圈继续释放",
                 ["FastRiseCandidate"] = "快速夹紧候选已断开正向供电，正在等待完整数据确认",
                 ["ClampReachedNearTargetPlateau"] = "接近目标的高负载平台，已停止正向供电并继续释放",
+                ["RapidLoadRiseWithoutObservedEmpty"] = "检测到负载快速上升，但本圈尚未取得空载电流基线",
                 ["DaqSampleStale"] = "采集数据过期",
                 ["BackgroundQueueFull"] = "采集后台队列已满",
                 ["ControlQueueFull"] = "控制数据队列已满",
@@ -107,6 +108,29 @@ namespace Controller.Alarm
             return "系统检测到异常，已执行安全保护；详细诊断信息已写入日志。";
         }
 
+        /// <summary>
+        /// 观察/诊断事件专用提示。ChannelWarningRaised 不代表永久报警或整批安全接管，
+        /// 不能复用硬故障的“已执行安全保护”兜底文案误导现场判断。
+        /// </summary>
+        public static string ToUserWarningMessage(string raw)
+        {
+            var localized = ToUserMessage(raw);
+            if (localized.StartsWith(
+                    "系统检测到异常，已执行安全保护",
+                    StringComparison.Ordinal))
+                localized = "检测到控制参数偏离正常范围，原始诊断信息已写入日志。";
+
+            if (!string.IsNullOrWhiteSpace(raw) &&
+                raw.IndexOf("RapidLoadRiseWithoutObservedEmpty", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return localized.TrimEnd('。') +
+                       "；这是诊断事件，状态机未改变，不计入故障连续次数，也不会单独触发卡钳永久停机。";
+            }
+
+            return localized.TrimEnd('。') +
+                   "；这是观察事件，不会单独触发卡钳永久停机。";
+        }
+
         public static string GetCodeName(string code)
         {
             if (!string.IsNullOrWhiteSpace(code) && CodeNames.TryGetValue(code, out var name))
@@ -128,6 +152,8 @@ namespace Controller.Alarm
                     return "峰值完整数据处理滞后预警";
                 case AdaptiveWarningCode.PeakEvidenceTimestampMissing:
                     return "峰值证据时间戳缺失诊断";
+                case AdaptiveWarningCode.RapidLoadRiseDiagnostic:
+                    return "本圈空载基线缺失诊断";
                 default:
                     return "控制预警";
             }

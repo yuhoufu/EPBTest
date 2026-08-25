@@ -30,6 +30,13 @@ namespace Controller
         internal string ReasonCode { get; set; } = string.Empty;
     }
 
+    internal enum RecoveryInvariantEscalationAction
+    {
+        ReturnToBatchOwner = 0,
+        FormalGroupReset = 1,
+        FailSafeTerminal = 2
+    }
+
     public sealed partial class EpbManager
     {
         private readonly System.Threading.Timer _timerRuntimeWatchdog;
@@ -47,8 +54,8 @@ namespace Controller
             new ConcurrentDictionary<int, long>();
         private readonly ConcurrentDictionary<int, long> _recoveringSinceMonotonicTicks =
             new ConcurrentDictionary<int, long>();
-        private readonly ConcurrentDictionary<long, byte> _orphanRecoveryEscalations =
-            new ConcurrentDictionary<long, byte>();
+        private readonly ConcurrentDictionary<string, byte> _orphanRecoveryEscalations =
+            new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<int, long> _timerRuntimeGenerations =
             new ConcurrentDictionary<int, long>();
         private readonly ConcurrentDictionary<int, TimerRuntimeObserverRegistration>
@@ -232,6 +239,11 @@ namespace Controller
 
             if (update.State == HighPrecisionTimerRuntimeState.PausePending)
             {
+                _adaptiveLifecyclePort.PublishTimerPause(
+                    channel,
+                    update.Reason ?? "TimerPausePending",
+                    current.RunId,
+                    current.RunEpoch);
                 PublishChannelRuntimeState(
                     channel,
                     ChannelRuntimeState.PausePending,
@@ -241,6 +253,11 @@ namespace Controller
             }
             else if (update.State == HighPrecisionTimerRuntimeState.Paused)
             {
+                _adaptiveLifecyclePort.PublishTimerPause(
+                    channel,
+                    update.Reason ?? "TimerPaused",
+                    current.RunId,
+                    current.RunEpoch);
                 PublishChannelRuntimeState(
                     channel,
                     ChannelRuntimeState.Paused,
@@ -395,42 +412,93 @@ namespace Controller
             ChannelRuntimeStateChangedEvent runtime,
             long runEpoch)
         {
-            if (runtime == null) return false;
+            if (!RecoveryOwnershipPolicy.IsOwnerCurrent(runtime) ||
+                runtime.RecoveryOwnerGeneration != runEpoch)
+                return false;
             var channel = runtime.Channel;
             var device = _acq.GetDeviceForEpbChannel(channel);
-            if (!string.IsNullOrWhiteSpace(device) &&
+            if (runtime.RecoveryOwnerKind == RecoveryOwnerKind.DaqRecovery &&
+                !string.IsNullOrWhiteSpace(device) &&
                 _daqAutoRecovery.TryGetValue(device, out var daq) &&
                 daq != null && daq.RunEpoch == runEpoch &&
                 daq.Terminal.Current == DaqRecoveryTerminal.None &&
-                daq.AffectedChannels.Contains(channel))
+                daq.AffectedChannels.Contains(channel) &&
+                daq.CorrelationId == runtime.RecoveryOwnerId)
                 return true;
 
-            // 启动定位由批次启动调用栈拥有；它不登记为后台恢复任务，但仍受同一个
-            // 连续 Recovering 60 秒硬期限约束。
             if (_batchLifecycleGate.IsBusy &&
-                (runtime.ReasonCode ?? string.Empty).IndexOf(
-                    "Startup",
-                    StringComparison.OrdinalIgnoreCase) >= 0)
+                (runtime.RecoveryOwnerKind == RecoveryOwnerKind.BatchStartup ||
+                 runtime.RecoveryOwnerKind == RecoveryOwnerKind.BatchLearning ||
+                 runtime.RecoveryOwnerKind == RecoveryOwnerKind.BatchQualification) &&
+                runtime.RecoveryTargetPhase != RecoveryTargetPhase.Formal)
                 return true;
 
             var taskOwned = _recoveryTaskRegistry.HasActiveTaskForChannel(channel, runEpoch);
-            if (!taskOwned) return false;
             var hydraulicGroup = GetHydraulicGroupForChannel(channel);
             var owner = hydraulicGroup > 0
                 ? _recoveryOwnership.GetOwner(hydraulicGroup)
                 : string.Empty;
-            if (!string.IsNullOrWhiteSpace(owner)) return true;
-
             var electricalGroup = GetElectricalGroupId(channel);
-            return _timerRuntimeRecoveries.ContainsKey(channel) ||
-                   _recoverableChannelRestartJobs.ContainsKey(channel) ||
-                   (hydraulicGroup > 0 &&
-                    _hydraulicSoftwareRecoveryGroups.ContainsKey(hydraulicGroup)) ||
-                   (electricalGroup > 0 &&
-                    _powerSoftwareRecoveryGroups.ContainsKey(electricalGroup)) ||
-                   (hydraulicGroup > 0 &&
-                    _affectedGroupResetInProgress.ContainsKey(
-                        GetAffectedGroupResetKey(runEpoch, hydraulicGroup)));
+            switch (runtime.RecoveryOwnerKind)
+            {
+                case RecoveryOwnerKind.FormalTimer:
+                    return taskOwned || _timerRuntimeRecoveries.ContainsKey(channel) ||
+                           _recoverableChannelRestartJobs.ContainsKey(channel);
+                case RecoveryOwnerKind.HydraulicGroupRecovery:
+                    return taskOwned || !string.IsNullOrWhiteSpace(owner) ||
+                           (hydraulicGroup > 0 &&
+                            _hydraulicSoftwareRecoveryGroups.ContainsKey(hydraulicGroup));
+                case RecoveryOwnerKind.PowerRecovery:
+                    return taskOwned ||
+                           (electricalGroup > 0 &&
+                            _powerSoftwareRecoveryGroups.ContainsKey(electricalGroup));
+                case RecoveryOwnerKind.AffectedGroupRecovery:
+                    return taskOwned || (hydraulicGroup > 0 &&
+                           _affectedGroupResetInProgress.ContainsKey(
+                               GetAffectedGroupResetKey(runEpoch, hydraulicGroup)));
+                case RecoveryOwnerKind.Watchdog:
+                    return taskOwned;
+                default:
+                    return false;
+            }
+        }
+
+        internal static bool IsBatchLifecycleOwnedRecoveryReason(string reasonCode)
+        {
+            var reason = reasonCode ?? string.Empty;
+            return reason.StartsWith("Startup", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(reason, "DaqStartSelfHealing", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(reason, "PowerStartSelfHealing", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(reason, "LearningPersistenceSelfHealing", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(reason, "HydraulicGenerationSelfHealing", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(reason, "PowerSupplyRecoveredForStartup", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static RecoveryInvariantEscalationAction SelectRecoveryInvariantEscalationAction(
+            RecoveryTargetPhase targetPhase,
+            bool formalPhaseCommitted,
+            bool batchLifecycleOwned,
+            bool hardDeadlineReached)
+        {
+            if (targetPhase == RecoveryTargetPhase.Formal && formalPhaseCommitted)
+                return RecoveryInvariantEscalationAction.FormalGroupReset;
+            if (!hardDeadlineReached && batchLifecycleOwned &&
+                (targetPhase == RecoveryTargetPhase.Startup ||
+                 targetPhase == RecoveryTargetPhase.Learning ||
+                 targetPhase == RecoveryTargetPhase.Qualification))
+                return RecoveryInvariantEscalationAction.ReturnToBatchOwner;
+            return RecoveryInvariantEscalationAction.FailSafeTerminal;
+        }
+
+        internal static string GetRecoveryInvariantIncidentKey(
+            Guid runId,
+            long runEpoch,
+            int hydraulicGroup,
+            long sourceStateRevision,
+            RecoveryTargetPhase targetPhase)
+        {
+            return $"{runId:N}:{runEpoch}:{hydraulicGroup}:" +
+                   $"{sourceStateRevision}:{targetPhase}";
         }
 
         private void ScheduleRecoveryInvariantEscalation(
@@ -442,7 +510,36 @@ namespace Controller
         {
             var hydraulicGroup = GetHydraulicGroupForChannel(runtime.Channel);
             if (hydraulicGroup <= 0) return;
-            var key = GetInfrastructureRecoveryAttemptKey(runEpoch, hydraulicGroup);
+            var hardDeadlineReached = string.Equals(
+                code,
+                "RecoveryHardDeadlineExceeded",
+                StringComparison.OrdinalIgnoreCase);
+            var action = SelectRecoveryInvariantEscalationAction(
+                runtime.RecoveryTargetPhase,
+                runtime.FormalPhaseCommitted,
+                _batchLifecycleGate.IsBusy &&
+                (runtime.RecoveryOwnerKind == RecoveryOwnerKind.BatchStartup ||
+                 runtime.RecoveryOwnerKind == RecoveryOwnerKind.BatchLearning ||
+                 runtime.RecoveryOwnerKind == RecoveryOwnerKind.BatchQualification),
+                hardDeadlineReached);
+            if (action == RecoveryInvariantEscalationAction.ReturnToBatchOwner)
+            {
+                _log?.Warn(
+                    $"RecoveryInvariantReturnedToBatchOwner EPB={runtime.Channel} " +
+                    $"Owner={runtime.RecoveryOwnerKind} Target={runtime.RecoveryTargetPhase} " +
+                    $"Revision={runtime.Revision} Code={code}",
+                    "Timer");
+                return;
+            }
+            var sourceStateRevision = runtime.SourceStateRevision > 0
+                ? runtime.SourceStateRevision
+                : runtime.Revision;
+            var key = GetRecoveryInvariantIncidentKey(
+                runId,
+                runEpoch,
+                hydraulicGroup,
+                sourceStateRevision,
+                runtime.RecoveryTargetPhase);
             if (!_orphanRecoveryEscalations.TryAdd(key, 0)) return;
             var channel = runtime.Channel;
             var correlationId = runtime.CorrelationId == Guid.Empty
@@ -455,11 +552,13 @@ namespace Controller
                 $"Owner={_recoveryOwnership.GetOwner(hydraulicGroup)}; " +
                 $"TaskCovered={_recoveryTaskRegistry.HasActiveTaskForChannel(channel, runEpoch)}";
             _log?.Error(
-                $"RecoveryInvariantViolation {reason}; " +
-                "立即执行受影响组Stop→Start等价清场。",
+                $"RecoveryInvariantViolation {reason}; Action={action}; " +
+                (action == RecoveryInvariantEscalationAction.FormalGroupReset
+                    ? "仅在已提交正式阶段执行受影响组Stop→Start等价清场。"
+                    : "预正式阶段禁止重入正式节拍，转入终态安全清场。"),
                 "Timer");
 
-            ObserveBackgroundTask(Task.Run(async () =>
+            ObserveNonRecoveryLifecycleTask(Task.Run(async () =>
             {
                 try
                 {
@@ -468,13 +567,34 @@ namespace Controller
                     if (current == null || current.State != ChannelRuntimeState.Recovering ||
                         current.RunId != runId || current.RunEpoch != runEpoch)
                         return;
-                    await ExecuteAffectedGroupResetAsync(
-                            new[] { channel },
+                    if (action == RecoveryInvariantEscalationAction.FormalGroupReset)
+                    {
+                        await ExecuteAffectedGroupResetIncidentAsync(
+                                new[] { channel },
+                                code,
+                                correlationId,
+                                runId,
+                                runEpoch,
+                                RecoveryTargetPhase.Formal)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        PublishStartBlockedAfterCleanup(
+                            channel,
                             code,
+                            "恢复所有权/硬期限异常；已阻止预正式阶段进入组级正式重入。",
                             correlationId,
+                            new[] { channel });
+                        TryEscalateSoftwareRecoveryCircuitOpen(
+                            code,
+                            reason,
+                            new[] { channel },
                             runId,
-                            runEpoch)
-                        .ConfigureAwait(false);
+                            runEpoch,
+                            SoftwareRecoveryEscalationAttempts,
+                            "ExternalRecoveryRequired");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -491,10 +611,8 @@ namespace Controller
                         SoftwareRecoveryEscalationAttempts,
                         "ExternalRecoveryRequired");
                 }
-                finally
-                {
-                    _orphanRecoveryEscalations.TryRemove(key, out _);
-                }
+                // 同一 RunEpoch/组/生命周期 Revision 的事故永久锁存；只有新 run 或
+                // 新状态 Revision 才可再次调度，避免现场每秒重复复位风暴。
             }), "RecoveryInvariantAffectedGroupReset", new[] { channel });
         }
 
@@ -548,7 +666,7 @@ namespace Controller
 
             try
             {
-                ObserveBackgroundTask(
+                ObserveNonRecoveryLifecycleTask(
                     BeginDaqAutoRecoveryAsync(
                         device,
                         "DaqOrphanPause",
@@ -751,12 +869,6 @@ namespace Controller
             var runId = _activeBatchId;
             var runEpoch = Interlocked.Read(ref _runEpoch);
             var sessionToken = _batchSessionCts?.Token ?? CancellationToken.None;
-            PublishChannelRuntimeState(
-                channel,
-                ChannelRuntimeState.Recovering,
-                "TimerRuntimeSelfHealing",
-                $"{reasonText}；已安全断电，正在自动重建Timer并继续测试。",
-                correlationId: runId);
             _log?.Error(
                 $"EPB[{channel}] Timer运行异常，进入无人值守自恢复。" +
                 $"Code={reasonCode} Detail={reasonText}",
@@ -772,28 +884,34 @@ namespace Controller
                 cutoffUtc,
                 $"TimerRuntimeSelfHealing:{reasonCode}");
 
-            ObserveBackgroundTask(Task.Run(async () =>
+            // TryBeginRecoveryIncident creates and binds a non-running wrapper.
+            // The caller explicitly starts that wrapper only after the owner and
+            // Recovering state have been published.
+            RecoveryIncidentHandle recoveryIncident = null;
+            Func<Task> BuildRecoveryWorker()
             {
-                var attempt = 0;
-                try
+                return async () =>
                 {
-                    while (CanContinueTimerRuntimeSelfHealing(channel, runId))
+                    var attempt = 0;
+                    try
                     {
-                        attempt++;
-                        HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
-                        try
+                        while (CanContinueTimerRuntimeSelfHealing(channel, runId))
                         {
-                            ownership = await _recoveryOwnership.AcquireAsync(
-                                    GetHydraulicGroupForChannel(channel),
-                                    $"TIMER:{channel}:{runId:N}",
-                                    RecoveryOwnerPriority.Hydraulic,
-                                    RecoveryOwnershipTakeoverTimeoutMs,
-                                    CancellationToken.None)
-                                .ConfigureAwait(false);
-                            var recoveryToken = ownership.Token;
-                            RequireSoftwareRecoveryOutputOff(channel, "TimerRuntimeSelfHealing");
-                            await HydraulicMarkReleaseAsync(channel).ConfigureAwait(false);
-                            if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
+                            attempt++;
+                            HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
+                            try
+                            {
+                                ownership = await _recoveryOwnership.AcquireAsync(
+                                        GetHydraulicGroupForChannel(channel),
+                                        $"TIMER:{channel}:{runId:N}",
+                                        RecoveryOwnerPriority.Hydraulic,
+                                        RecoveryOwnershipTakeoverTimeoutMs,
+                                        CancellationToken.None)
+                                    .ConfigureAwait(false);
+                                var recoveryToken = ownership.Token;
+                                RequireSoftwareRecoveryOutputOff(channel, "TimerRuntimeSelfHealing");
+                                await HydraulicMarkReleaseAsync(channel).ConfigureAwait(false);
+                                if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
 
                             if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
                                     cutoffCycles,
@@ -841,45 +959,137 @@ namespace Controller
                                 $"EPB[{channel}] Timer已自动重建并继续测试。Attempt={attempt}",
                                 "Timer");
                             return;
-                        }
-                        catch (Exception ex)
-                        {
-                            if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
-                            if (TryEscalateSoftwareRecoveryCircuitOpen(
+                            }
+                            catch (Exception ex)
+                            {
+                                if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
+                                if (TryEscalateSoftwareRecoveryCircuitOpen(
                                     "TimerRuntimeSelfHealing",
                                     $"Code={reasonCode}; Error={ex.Message}",
                                     new[] { channel },
                                     runId,
                                     runEpoch,
                                     attempt))
-                                return;
-                            PublishChannelRuntimeState(
+                                    return;
+                                PublishRecoveryIncidentState(
                                 channel,
                                 ChannelRuntimeState.Recovering,
                                 "TimerRuntimeSelfHealingRetry",
                                 $"Timer自动重建第{attempt}次未完成；三次失败将整批重建：{ex.Message}",
-                                correlationId: runId);
-                            _log?.Warn(
+                                correlationId: runId,
+                                recoveryOwnerKind: RecoveryOwnerKind.FormalTimer,
+                                recoveryTargetPhase: RecoveryTargetPhase.Formal,
+                                recoveryOwnerId: runId,
+                                recoveryOwnerGeneration: runEpoch);
+                                _log?.Warn(
                                 $"EPB[{channel}] Timer自动重建第{attempt}次失败；三次失败将整批重建：{ex.Message}",
                                 "Timer");
-                            ownership?.Dispose();
-                            ownership = null;
-                            await Task.Delay(
+                                ownership?.Dispose();
+                                ownership = null;
+                                await Task.Delay(
                                     SelectTimerRecoveryRetryDelayMs(attempt),
                                     sessionToken)
                                 .ConfigureAwait(false);
-                        }
-                        finally
-                        {
-                            ownership?.Dispose();
+                            }
+                            finally
+                            {
+                                ownership?.Dispose();
+                            }
                         }
                     }
-                }
-                finally
+                    finally
+                    {
+                        // The state transition is the terminal commit point.  If
+                        // no earlier path published Running/StartBlocked, publish
+                        // a safe terminal while the incident lease is still held,
+                        // then remove the owner/task contract.
+                        recoveryIncident?.CompleteAfterTerminal(contract =>
+                        {
+                            var current = _channelRuntimeStateStore.Get(channel);
+                            if (current?.State == ChannelRuntimeState.Recovering)
+                                PublishChannelRuntimeState(
+                                    channel,
+                                    ChannelRuntimeState.StartBlocked,
+                                    "TimerRecoveryTerminalWithoutRejoin",
+                                    "Timer自恢复未完成重入，已保持安全终态。",
+                                    correlationId: contract.IncidentId,
+                                    allowTerminalReset: true,
+                                    allowSystemFaultReset: true);
+                        });
+                        _timerRuntimeRecoveries.TryRemove(channel, out _);
+                    }
+                };
+            }
+
+            var started = TryBeginRecoveryIncident(
+                "TimerRuntimeSelfHealing",
+                runId,
+                runEpoch,
+                RecoveryOwnerKind.FormalTimer,
+                RecoveryTargetPhase.Formal,
+                runId,
+                new[] { channel },
+                _ => BuildRecoveryWorker(),
+                contract =>
                 {
-                    _timerRuntimeRecoveries.TryRemove(channel, out _);
-                }
-            }), "TimerRuntimeSelfHealing", channel);
+                    PublishRecoveryIncidentState(
+                        channel,
+                        ChannelRuntimeState.Recovering,
+                        "TimerRuntimeSelfHealing",
+                        $"{reasonText}；已安全断电，正在自动重建Timer并继续测试。",
+                        correlationId: contract.IncidentId,
+                        recoveryOwnerKind: contract.OwnerKind,
+                        recoveryTargetPhase: contract.TargetPhase,
+                        recoveryOwnerId: contract.OwnerId,
+                        recoveryOwnerGeneration: contract.RunEpoch);
+                },
+                out recoveryIncident);
+            if (!started)
+            {
+                _timerRuntimeRecoveries.TryRemove(channel, out _);
+                return;
+            }
+            try
+            {
+                _taskSupervisor.Observe(
+                    recoveryIncident.WorkerTask,
+                    "TimerRuntimeSelfHealing",
+                    _activeBatchId,
+                    channel);
+            }
+            catch (Exception observeError)
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(channel, "TimerRecoveryObserveFailed"); }
+                    catch { }
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.StartBlocked,
+                        "TimerRecoveryObserveFailed",
+                        $"Timer自恢复任务登记失败，已保持安全终态：{observeError.Message}",
+                        correlationId: contract.IncidentId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true);
+                });
+                return;
+            }
+            if (!recoveryIncident.Start())
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(channel, "TimerRecoveryStartRejected"); }
+                    catch { }
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.StartBlocked,
+                        "TimerRecoveryStartRejected",
+                        "Timer自恢复启动许可被拒绝，已保持安全终态。",
+                        correlationId: contract.IncidentId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true);
+                });
+            }
         }
 
         internal static int SelectTimerRecoveryRetryDelayMs(int attempt)

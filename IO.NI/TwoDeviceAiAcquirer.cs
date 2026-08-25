@@ -602,19 +602,142 @@ namespace IO.NI
     {
         public Guid CaptureId { get; set; }
         public Guid TestRunId { get; set; }
+        /// <summary>运行身份别名；新证据消费者统一使用 RunId。</summary>
+        public Guid RunId
+        {
+            get => TestRunId;
+            set => TestRunId = value;
+        }
         public int Channel { get; set; }
         public int CycleNumber { get; set; }
+        public long RunEpoch { get; set; }
         public DateTime StartUtc { get; set; }
         public string Device { get; set; }
         public long Generation { get; set; }
+        /// <summary>DAQ generation 的显式别名，避免把运行代次误当作时间/圈号。</summary>
+        public long DaqGeneration
+        {
+            get => Generation;
+            set => Generation = value;
+        }
         public long StartAcceptedSequence { get; set; }
+        /// <summary>
+        /// 后台控制处理线程真正处理到的起点。它与回调 accepted 水印独立；
+        /// accepted 领先而 processed 尚未追上时，不能把在途旧数据冒充本圈新鲜证据。
+        /// </summary>
+        public long StartProcessedSequence { get; set; }
         public long StartMonotonicTicks { get; set; }
+        /// <summary>令牌必须由新鲜 DAQ 样本完成封口，不能复用旧缓存。</summary>
+        public bool FreshnessRequired { get; set; } = true;
+        /// <summary>本次运行采用的正向最小上升斜率门槛（A/ms）。</summary>
+        public double ForwardMinimumRiseSlopeAperMs { get; set; } = 0.001;
+        /// <summary>证据窗允许的最大封口尾差（ms）。超过后只能保留为诊断，不能放行控制。</summary>
+        public double MaximumEvidenceAgeMs { get; set; } = 250.0;
+    }
+
+    /// <summary>全速率负载上升证据的生命周期状态。</summary>
+    public enum EpbLoadRiseEvidenceState
+    {
+        Invalid = 0,
+        Provisional = 1,
+        Sealed = 2
+    }
+
+    /// <summary>
+    /// 全速率电流“谷值后再次上升”证据的固定容量快照。
+    ///
+    /// 该类型只包含值类型和身份字段，采集热路径不会创建数组、集合或字符串。
+    /// Qualified 只有在同一 Capture/Run/Cycle、同一 DAQ generation、存在新鲜样本，
+    /// 且谷值窗口和二次上升两个门槛全部满足时才为 true。
+    /// </summary>
+    public struct EpbLoadRiseEvidenceSnapshot
+    {
+        public Guid CaptureId;
+        public Guid RunId;
+        public Guid TestRunId;
+        public long RunEpoch;
+        public int Channel;
+        public int CycleNumber;
+
+        public long DaqGeneration;
+        public long Generation;
+        public long StartAcceptedSequence;
+        public long StartProcessedSequence;
+        public long ProcessedSequence;
+        public long CutoffSequence;
+        public long CutoffAcceptedSequence;
+        public long ProcessedMonotonicTicks;
+        public long CutoffMonotonicTicks;
+        public bool IsGenerationMatched;
+        public bool GenerationMatched;
+        public bool IsCutoffCovered;
+        public bool CutoffCovered;
+        public bool IsFresh;
+        public bool Fresh;
+        public bool TokenValid;
+        public bool FreshnessValid;
+        /// <summary>Arm 时冻结的身份是否仍与请求令牌逐项一致。</summary>
+        public bool IdentityValid;
+        /// <summary>证据窗开始时的真实 UTC 时刻。</summary>
+        public DateTime CaptureStartUtc;
+        /// <summary>最后一个实际纳入形状统计的样本 UTC 时刻。</summary>
+        public DateTime EvidenceThroughUtc;
+        /// <summary>逻辑 cutoff 的 UTC 时刻；未封口时为 MinValue。</summary>
+        public DateTime CutoffUtc;
+        /// <summary>cutoff 与证据尾的单调等价墙钟差（ms）。</summary>
+        public double EvidenceAgeMs;
+        public double MaximumEvidenceAgeMs;
+        public bool EvidenceAgeValid;
+        public bool IsProvisional;
+        public bool IsSealed;
+        public EpbLoadRiseEvidenceState EvidenceState;
+
+        public double InrushPeakA;
+        public DateTime InrushPeakAt;
+        public double StableValleyA;
+        public double StableValleyMadA;
+        public DateTime StableValleyStartUtc;
+        public DateTime StableValleyEndUtc;
+        public int ValleySampleCount;
+        public int ValleyEquivalentSampleCount;
+        public double ValleyWindowMs;
+        public bool ValleyWindowQualified;
+
+        public double PostValleyPeakA;
+        public double PostValleyRiseA;
+        public double PostValleyRiseThresholdA;
+        public double PostValleySlopeAperMs;
+        /// <summary>候选点的普通线性回归斜率（A/ms）。</summary>
+        public double LinearRiseSlopeAperMs;
+        /// <summary>候选相邻斜率的中位数，作为抗尖峰斜率（A/ms）。</summary>
+        public double RobustRiseSlopeAperMs;
+        /// <summary>连续满足上升候选门槛的全速率样本数。</summary>
+        public int RiseContinuousSampleCount;
+        /// <summary>连续候选持续时长（ms）。</summary>
+        public double RiseContinuousDurationMs;
+        public bool RiseContinuityQualified;
+        public double MinimumRequiredSlopeAperMs;
+        public double PostValleyDurationMs;
+        public bool FullRateValleyThenRise;
+        public bool LoadRiseEvidenceQualified;
+        public bool IsQualified;
+
+        public bool Qualified => IsQualified && LoadRiseEvidenceQualified;
     }
 
     public sealed class PeakCaptureResult
     {
         public PeakCaptureToken Token { get; set; }
         public TwoDeviceAiAcquirer.EpbCurrentPeak Peak { get; set; }
+        public EpbLoadRiseEvidenceSnapshot LoadRiseEvidence { get; set; }
+        public bool LoadRiseEvidenceQualified => LoadRiseEvidence.Qualified;
+        public bool IsProvisional => LoadRiseEvidence.IsProvisional;
+        public bool IsSealed => LoadRiseEvidence.IsSealed;
+        public bool IsEvidenceSealed => LoadRiseEvidence.IsSealed;
+        public bool IdentityValid => LoadRiseEvidence.IdentityValid;
+        public DateTime EvidenceThroughUtc => LoadRiseEvidence.EvidenceThroughUtc;
+        public double EvidenceAgeMs => LoadRiseEvidence.EvidenceAgeMs;
+        public double MaximumEvidenceAgeMs => LoadRiseEvidence.MaximumEvidenceAgeMs;
         public bool IsMatched { get; set; }
         /// <summary>本次证据窗被冻结的逻辑截止时刻（UTC）。</summary>
         public DateTime LogicalCutoffUtc { get; set; }
@@ -2238,6 +2361,18 @@ namespace IO.NI
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
                 ? _sequenceDev1.LastAccepted
                 : _sequenceDev2.LastAccepted;
+
+        /// <summary>
+        /// 返回后台控制处理线程已经实际处理到的样本序号。该水印独立于
+        /// accepted 入队序号；峰值证据的 StartProcessedSequence 必须使用此值。
+        /// </summary>
+        public long GetLastProcessedSequence(string device)
+        {
+            if (string.IsNullOrWhiteSpace(device) ||
+                !_callbackTimingDiag.TryGetValue(device, out var diag))
+                return 0;
+            return Interlocked.Read(ref diag.LastProcessedSequence);
+        }
 
         /// <summary>
         ///     返回进程回收时可证明连续的最后 accepted 序号。若工程消费者发生不可重放
@@ -5521,6 +5656,624 @@ namespace IO.NI
 
             /// <summary>是否仍在捕获中。</summary>
             public bool IsActive;
+
+            /// <summary>全速率谷值后上升证据（固定容量跟踪器生成）。</summary>
+            public EpbLoadRiseEvidenceSnapshot LoadRiseEvidence;
+        }
+
+        /// <summary>
+        /// 固定容量的全速率谷值/二次上升证据跟踪器。
+        ///
+        /// 该对象在 Arm 时一次性分配固定大小的数组；Update/Snapshot 不创建任何
+        /// 临时数组、集合或字符串。谷值 MAD 每个“10ms 等价样本桶”最多重算一次，
+        /// 这样 2kHz 采集回调不会因每点排序而产生不可控 CPU 抖动。
+        /// </summary>
+        private sealed class LoadRiseEvidenceTracker
+        {
+            private const int Capacity = 512;
+            private const double MinimumInrushA = 0.20;
+            private const double MinimumRiseAmplitudeA = 0.50;
+            private const double EquivalentSampleMs = 10.0;
+            private const double MinimumValleyWindowMs = 100.0;
+            private const int MinimumEquivalentSamples = 8;
+            private const double MinimumForwardRiseSlopeAperMs = 0.001;
+            // At the nominal 2 kHz rate eight consecutive points are 4 ms.  The
+            // point count and elapsed-time gates are deliberately independent so
+            // a burst/replay with a bad clock cannot satisfy one by itself.
+            private const int MinimumRiseContinuousSamples = 8;
+            private const double MinimumRiseContinuousDurationMs = 4.0;
+            private const double RiseFallbackToleranceA = 0.05;
+
+            private readonly double[] _values = new double[Capacity];
+            private readonly double[] _sortValues = new double[Capacity];
+            private readonly double[] _sortDeviations = new double[Capacity];
+            private readonly double[] _riseTimesMs = new double[Capacity];
+            private readonly double[] _riseValues = new double[Capacity];
+            private readonly double[] _riseSlopes = new double[Capacity];
+
+            private Guid _captureId;
+            private Guid _runId;
+            private long _runEpoch;
+            private int _channel;
+            private int _cycleNumber;
+            private string _device;
+            private long _expectedGeneration;
+            private long _startAcceptedSequence;
+            private long _startProcessedSequence;
+            private long _lastProcessedSequence;
+            private long _lastProcessedMonotonicTicks;
+            private long _cutoffSequence;
+            private long _cutoffMonotonicTicks;
+            private bool _generationMatched;
+            private bool _cutoffCovered;
+            private bool _tokenValid;
+            private bool _identityMatched;
+            private bool _freshnessRequired;
+            private double _maximumEvidenceAgeMs;
+            private DateTime _captureStartUtc;
+            private DateTime _cutoffUtc;
+
+            private int _ringNext;
+            private int _ringCount;
+            private double _lastAmp;
+            private bool _hasLastAmp;
+            private double _inrushPeakA;
+            private DateTime _inrushPeakAt;
+            private bool _valleyActive;
+            private bool _riseActive;
+            private DateTime _valleyStartUtc;
+            private DateTime _valleyEndUtc;
+            private long _lastEquivalentBucketTicks;
+            private int _valleyEquivalentSampleCount;
+            private double _valleyMedianA;
+            private double _valleyMadA;
+            private double _valleyRangeA;
+            private bool _valleyWindowQualified;
+            private DateTime _riseStartUtc;
+            private DateTime _lastObservedUtc;
+            private double _lastRiseAmp;
+            private int _riseContinuousSampleCount;
+            private int _risePointCount;
+            private double _riseSumT;
+            private double _riseSumY;
+            private double _riseSumTT;
+            private double _riseSumTY;
+            private double _linearRiseSlopeAperMs;
+            private double _robustRiseSlopeAperMs;
+            private double _postValleyPeakA;
+            private DateTime _postValleyPeakAt;
+            private double _postValleyRiseA;
+            private double _postValleySlopeAperMs;
+            private double _minimumForwardRiseSlopeAperMs;
+
+            internal void Arm(
+                PeakCaptureToken token,
+                long generation,
+                long acceptedSequence,
+                long processedSequence)
+            {
+                _captureId = token?.CaptureId ?? Guid.Empty;
+                _runId = token?.TestRunId ?? Guid.Empty;
+                _runEpoch = token?.RunEpoch ?? 0;
+                _channel = token?.Channel ?? 0;
+                _cycleNumber = token?.CycleNumber ?? 0;
+                _device = token?.Device ?? string.Empty;
+                _expectedGeneration = generation;
+                _startAcceptedSequence = Math.Max(
+                    0,
+                    token != null && token.StartAcceptedSequence > 0
+                        ? token.StartAcceptedSequence
+                        : acceptedSequence);
+                _startProcessedSequence = Math.Max(
+                    0,
+                    token != null && token.StartProcessedSequence > 0
+                        ? token.StartProcessedSequence
+                        : processedSequence);
+                _captureStartUtc = token != null && token.StartUtc != DateTime.MinValue
+                    ? (token.StartUtc.Kind == DateTimeKind.Utc
+                        ? token.StartUtc
+                        : token.StartUtc.ToUniversalTime())
+                    : DateTime.UtcNow;
+                _cutoffUtc = DateTime.MinValue;
+                _lastProcessedSequence = 0;
+                _lastProcessedMonotonicTicks = 0;
+                _cutoffSequence = 0;
+                _cutoffMonotonicTicks = 0;
+                _generationMatched = true;
+                _cutoffCovered = false;
+                _tokenValid = token != null && token.CaptureId != Guid.Empty;
+                _identityMatched = token != null &&
+                                    token.CaptureId != Guid.Empty &&
+                                    token.TestRunId != Guid.Empty &&
+                                    token.Channel > 0;
+                _freshnessRequired = token == null || token.FreshnessRequired;
+                _maximumEvidenceAgeMs = token != null &&
+                                         token.MaximumEvidenceAgeMs > 0 &&
+                                         !double.IsNaN(token.MaximumEvidenceAgeMs) &&
+                                         !double.IsInfinity(token.MaximumEvidenceAgeMs)
+                    ? token.MaximumEvidenceAgeMs
+                    : 250.0;
+                _minimumForwardRiseSlopeAperMs = token != null &&
+                                                 token.ForwardMinimumRiseSlopeAperMs > 0 &&
+                                                 !double.IsNaN(token.ForwardMinimumRiseSlopeAperMs) &&
+                                                 !double.IsInfinity(token.ForwardMinimumRiseSlopeAperMs)
+                    ? token.ForwardMinimumRiseSlopeAperMs
+                    : MinimumForwardRiseSlopeAperMs;
+
+                _ringNext = 0;
+                _ringCount = 0;
+                _lastAmp = 0;
+                _hasLastAmp = false;
+                _inrushPeakA = 0;
+                _inrushPeakAt = DateTime.MinValue;
+                _valleyActive = false;
+                _riseActive = false;
+                _valleyStartUtc = DateTime.MinValue;
+                _valleyEndUtc = DateTime.MinValue;
+                _lastEquivalentBucketTicks = 0;
+                _valleyEquivalentSampleCount = 0;
+                _valleyMedianA = 0;
+                _valleyMadA = 0;
+                _valleyRangeA = 0;
+                _valleyWindowQualified = false;
+                _riseStartUtc = DateTime.MinValue;
+                _lastObservedUtc = DateTime.MinValue;
+                _lastRiseAmp = 0;
+                _riseContinuousSampleCount = 0;
+                _risePointCount = 0;
+                _riseSumT = 0;
+                _riseSumY = 0;
+                _riseSumTT = 0;
+                _riseSumTY = 0;
+                _linearRiseSlopeAperMs = 0;
+                _robustRiseSlopeAperMs = 0;
+                _postValleyPeakA = 0;
+                _postValleyPeakAt = DateTime.MinValue;
+                _postValleyRiseA = 0;
+                _postValleySlopeAperMs = 0;
+            }
+
+            internal void Update(
+                double amp,
+                DateTime tsLocal,
+                long generation,
+                long sequence,
+                long sampleMonotonicTicks,
+                bool included,
+                PeakCaptureWatermark watermark)
+            {
+                if (!included)
+                {
+                    if (generation != _expectedGeneration)
+                        _generationMatched = false;
+                    return;
+                }
+                if (generation != _expectedGeneration)
+                {
+                    _generationMatched = false;
+                    return;
+                }
+
+                if (sequence > _lastProcessedSequence)
+                    _lastProcessedSequence = sequence;
+                if (sampleMonotonicTicks > _lastProcessedMonotonicTicks)
+                    _lastProcessedMonotonicTicks = sampleMonotonicTicks;
+                if (double.IsNaN(amp) || double.IsInfinity(amp)) return;
+                amp = Math.Abs(amp);
+
+                if (!_valleyActive)
+                {
+                    if (amp > _inrushPeakA)
+                    {
+                        _inrushPeakA = amp;
+                        _inrushPeakAt = tsLocal;
+                    }
+
+                    // 只有先出现明显涌流峰值、随后发生下降，才开始寻找谷值；
+                    // 初始的近零电流不能冒充“涌流后的空载谷”。
+                    if (_inrushPeakA >= MinimumInrushA &&
+                        _hasLastAmp &&
+                        amp <= _inrushPeakA - MinimumRiseAmplitudeA * 0.40 &&
+                        amp <= _lastAmp)
+                        BeginValley(tsLocal, amp);
+                }
+
+                if (_valleyActive && !_riseActive)
+                {
+                    // 涨落峰后的下降段不是稳定空载谷。只要仍在明显下降，
+                    // 就把候选窗口重新锚定到当前低位，避免把整个下降沿的
+                    // 大范围噪声算进 MAD/平台范围。
+                    if (_hasLastAmp && amp < _lastAmp - 0.02)
+                        BeginValley(tsLocal, amp);
+                    else
+                        AddValleySample(tsLocal, amp);
+                    if (_valleyEquivalentSampleCount > 0 &&
+                        _lastEquivalentBucketTicks == tsLocal.Ticks)
+                        RefreshValleyStatistics();
+
+                    var valleyWindowMs = (_valleyEndUtc - _valleyStartUtc).TotalMilliseconds;
+                    var riseThreshold = _valleyMedianA +
+                                        Math.Max(MinimumRiseAmplitudeA, 4.0 * _valleyMadA);
+                    if (_valleyWindowQualified &&
+                        amp >= riseThreshold &&
+                        _hasLastAmp &&
+                        amp > _lastAmp &&
+                        valleyWindowMs > 0)
+                    {
+                        BeginRiseCandidate(tsLocal, amp);
+                    }
+                }
+                else if (_riseActive)
+                {
+                    var riseThreshold = _valleyMedianA +
+                                        Math.Max(MinimumRiseAmplitudeA, 4.0 * _valleyMadA);
+                    // A rise candidate is a continuous shape, not a peak latch.
+                    // Falling below the robust threshold or dropping materially
+                    // from the preceding point revokes the candidate and starts a
+                    // fresh valley window.  This rejects one/two-point spikes and
+                    // prevents a later state-machine callback from using a stale
+                    // qualified rise after the waveform has fallen back.
+                    if (amp < riseThreshold || amp < _lastRiseAmp - RiseFallbackToleranceA)
+                    {
+                        BeginValley(tsLocal, amp);
+                    }
+                    else
+                    {
+                        AddRiseCandidatePoint(tsLocal, amp);
+                    }
+                }
+
+                _lastAmp = amp;
+                _hasLastAmp = true;
+                _lastObservedUtc = tsLocal.ToUniversalTime();
+
+                if (watermark != null)
+                {
+                    _cutoffSequence = watermark.CutoffAcceptedSequence;
+                    _cutoffMonotonicTicks = watermark.CutoffMonotonicTicks;
+                    _cutoffCovered = watermark.IsCutoffCovered;
+                    _generationMatched = _generationMatched && watermark.IsGenerationMatched;
+                }
+            }
+
+            private void BeginRiseCandidate(DateTime tsLocal, double amp)
+            {
+                _riseActive = true;
+                _riseStartUtc = tsLocal.ToUniversalTime();
+                _lastRiseAmp = amp;
+                _riseContinuousSampleCount = 1;
+                _risePointCount = 1;
+                _riseSumT = 0;
+                _riseSumY = amp;
+                _riseSumTT = 0;
+                _riseSumTY = 0;
+                _riseTimesMs[0] = 0;
+                _riseValues[0] = amp;
+                _linearRiseSlopeAperMs = 0;
+                _robustRiseSlopeAperMs = 0;
+                _postValleyPeakA = amp;
+                _postValleyPeakAt = _riseStartUtc;
+                _postValleyRiseA = Math.Max(0, amp - _valleyMedianA);
+                _postValleySlopeAperMs = 0;
+            }
+
+            private void AddRiseCandidatePoint(DateTime tsLocal, double amp)
+            {
+                if (!_riseActive || _riseStartUtc == DateTime.MinValue) return;
+                var utc = tsLocal.ToUniversalTime();
+                var relativeMs = Math.Max(
+                    0,
+                    (utc - _riseStartUtc).TotalMilliseconds);
+                if (_risePointCount < Capacity)
+                {
+                    var index = _risePointCount++;
+                    _riseTimesMs[index] = relativeMs;
+                    _riseValues[index] = amp;
+                    _riseSumT += relativeMs;
+                    _riseSumY += amp;
+                    _riseSumTT += relativeMs * relativeMs;
+                    _riseSumTY += relativeMs * amp;
+                }
+                _riseContinuousSampleCount++;
+                _lastRiseAmp = amp;
+                if (amp > _postValleyPeakA)
+                {
+                    _postValleyPeakA = amp;
+                    _postValleyPeakAt = utc;
+                }
+                _postValleyRiseA = Math.Max(0, _postValleyPeakA - _valleyMedianA);
+                ComputeRiseSlopes();
+            }
+
+            private void ComputeRiseSlopes()
+            {
+                var count = _risePointCount;
+                if (count < 2) return;
+
+                var denominator = count * _riseSumTT - _riseSumT * _riseSumT;
+                _linearRiseSlopeAperMs = denominator > 0.000001
+                    ? (count * _riseSumTY - _riseSumT * _riseSumY) / denominator
+                    : 0;
+
+                var slopeCount = 0;
+                for (var i = 1; i < count; i++)
+                {
+                    var dt = _riseTimesMs[i] - _riseTimesMs[i - 1];
+                    if (dt <= 0) continue;
+                    _riseSlopes[slopeCount++] =
+                        (_riseValues[i] - _riseValues[i - 1]) / dt;
+                }
+                if (slopeCount > 0)
+                {
+                    Array.Sort(_riseSlopes, 0, slopeCount);
+                    var middle = slopeCount / 2;
+                    _robustRiseSlopeAperMs = (slopeCount & 1) != 0
+                        ? _riseSlopes[middle]
+                        : (_riseSlopes[middle - 1] + _riseSlopes[middle]) * 0.5;
+                }
+                _postValleySlopeAperMs = Math.Min(
+                    _linearRiseSlopeAperMs,
+                    _robustRiseSlopeAperMs);
+            }
+
+            internal void ApplyWatermark(PeakCaptureWatermark watermark)
+            {
+                if (watermark == null) return;
+                _cutoffSequence = watermark.CutoffAcceptedSequence;
+                _cutoffMonotonicTicks = watermark.CutoffMonotonicTicks;
+                _cutoffCovered = watermark.IsCutoffCovered;
+                _generationMatched = _generationMatched && watermark.IsGenerationMatched;
+                if (watermark.ProcessedSequence > _lastProcessedSequence)
+                    _lastProcessedSequence = watermark.ProcessedSequence;
+                if (watermark.ProcessedThroughMonotonicTicks > _lastProcessedMonotonicTicks)
+                    _lastProcessedMonotonicTicks = watermark.ProcessedThroughMonotonicTicks;
+            }
+
+            internal void SetCutoffUtc(DateTime cutoffUtc)
+            {
+                _cutoffUtc = cutoffUtc.Kind == DateTimeKind.Utc
+                    ? cutoffUtc
+                    : cutoffUtc.ToUniversalTime();
+            }
+
+            internal void InvalidateGeneration()
+            {
+                _generationMatched = false;
+            }
+
+            internal long ExpectedGeneration => _expectedGeneration;
+            internal string ExpectedDevice => _device;
+            internal bool GenerationMatched => _generationMatched && _expectedGeneration > 0;
+
+            internal bool IdentityMatches(PeakCaptureToken requested)
+            {
+                if (requested == null)
+                {
+                    _identityMatched = false;
+                    return false;
+                }
+                var match = requested.CaptureId == _captureId &&
+                            requested.TestRunId == _runId &&
+                            requested.RunEpoch == _runEpoch &&
+                            requested.Channel == _channel &&
+                            requested.CycleNumber == _cycleNumber &&
+                            string.Equals(requested.Device ?? string.Empty, _device,
+                                StringComparison.OrdinalIgnoreCase) &&
+                            requested.Generation == _expectedGeneration &&
+                            requested.StartAcceptedSequence == _startAcceptedSequence &&
+                            requested.StartProcessedSequence == _startProcessedSequence;
+                if (!match) _identityMatched = false;
+                return _identityMatched && match;
+            }
+
+            private void BeginValley(DateTime tsLocal, double amp)
+            {
+                _valleyActive = true;
+                ResetRiseCandidate();
+                _ringNext = 0;
+                _ringCount = 0;
+                _valleyStartUtc = tsLocal.ToUniversalTime();
+                _valleyEndUtc = _valleyStartUtc;
+                _lastEquivalentBucketTicks = 0;
+                _valleyEquivalentSampleCount = 0;
+                _valleyMedianA = amp;
+                _valleyMadA = 0;
+                _valleyRangeA = 0;
+                _valleyWindowQualified = false;
+                AddValleySample(tsLocal, amp);
+            }
+
+            private void ResetRiseCandidate()
+            {
+                _riseActive = false;
+                _riseStartUtc = DateTime.MinValue;
+                _lastRiseAmp = 0;
+                _riseContinuousSampleCount = 0;
+                _risePointCount = 0;
+                _riseSumT = 0;
+                _riseSumY = 0;
+                _riseSumTT = 0;
+                _riseSumTY = 0;
+                _linearRiseSlopeAperMs = 0;
+                _robustRiseSlopeAperMs = 0;
+                _postValleyPeakA = 0;
+                _postValleyPeakAt = DateTime.MinValue;
+                _postValleyRiseA = 0;
+                _postValleySlopeAperMs = 0;
+            }
+
+            private void AddValleySample(DateTime tsLocal, double amp)
+            {
+                var utc = tsLocal.ToUniversalTime();
+                _values[_ringNext] = amp;
+                _ringNext++;
+                if (_ringNext >= Capacity) _ringNext = 0;
+                if (_ringCount < Capacity) _ringCount++;
+                _valleyEndUtc = utc;
+
+                var bucketTicks = TimeSpan.TicksPerMillisecond * (long)EquivalentSampleMs;
+                if (_lastEquivalentBucketTicks == 0 || utc.Ticks - _lastEquivalentBucketTicks >= bucketTicks)
+                {
+                    _lastEquivalentBucketTicks = utc.Ticks;
+                    _valleyEquivalentSampleCount++;
+                    RefreshValleyStatistics();
+                }
+            }
+
+            private void RefreshValleyStatistics()
+            {
+                if (_ringCount <= 0) return;
+                // 一旦取得合格的100ms稳定谷值，后续上升沿不得把上升样本
+                // 混入 MAD/范围并反过来撤销已经成立的谷值证据。
+                if (_valleyWindowQualified) return;
+                var start = _ringCount == Capacity ? _ringNext : 0;
+                for (var i = 0; i < _ringCount; i++)
+                {
+                    var index = start + i;
+                    if (index >= Capacity) index -= Capacity;
+                    _sortValues[i] = _values[index];
+                }
+                Array.Sort(_sortValues, 0, _ringCount);
+                _valleyMedianA = Median(_sortValues, _ringCount);
+                for (var i = 0; i < _ringCount; i++)
+                    _sortDeviations[i] = Math.Abs(_sortValues[i] - _valleyMedianA);
+                Array.Sort(_sortDeviations, 0, _ringCount);
+                _valleyMadA = Median(_sortDeviations, _ringCount);
+                _valleyRangeA = _sortValues[_ringCount - 1] - _sortValues[0];
+                var spanMs = (_valleyEndUtc - _valleyStartUtc).TotalMilliseconds;
+                var qualified =
+                    spanMs >= MinimumValleyWindowMs &&
+                    _valleyEquivalentSampleCount >= MinimumEquivalentSamples &&
+                    _valleyRangeA <= Math.Max(0.20, 8.0 * _valleyMadA);
+                if (qualified) _valleyWindowQualified = true;
+            }
+
+            private static double Median(double[] values, int count)
+            {
+                if (count <= 0) return 0;
+                var middle = count / 2;
+                return (count & 1) != 0
+                    ? values[middle]
+                    : (values[middle - 1] + values[middle]) * 0.5;
+            }
+
+            internal EpbLoadRiseEvidenceSnapshot Snapshot(PeakCaptureToken token)
+            {
+                if (token != null)
+                    IdentityMatches(token);
+                var runId = _runId;
+                var captureId = _captureId;
+                var startSequence = _startAcceptedSequence;
+                var startProcessedSequence = _startProcessedSequence;
+                var tokenValid = _tokenValid && _identityMatched && captureId != Guid.Empty;
+                var isFresh = _lastProcessedSequence > startProcessedSequence &&
+                              _lastProcessedMonotonicTicks > 0;
+                var riseThreshold = _valleyMedianA +
+                                    Math.Max(MinimumRiseAmplitudeA, 4.0 * _valleyMadA);
+                var riseMs = _riseActive && _riseStartUtc != DateTime.MinValue &&
+                             _lastObservedUtc != DateTime.MinValue
+                    ? Math.Max(0, (_lastObservedUtc - _riseStartUtc).TotalMilliseconds)
+                    : 0;
+                var shapeQualified = _valleyWindowQualified &&
+                                     _riseActive &&
+                                     _riseContinuousSampleCount >= MinimumRiseContinuousSamples &&
+                                     riseMs >= MinimumRiseContinuousDurationMs &&
+                                     _postValleyRiseA >= Math.Max(MinimumRiseAmplitudeA, 4.0 * _valleyMadA) &&
+                                     _linearRiseSlopeAperMs >= _minimumForwardRiseSlopeAperMs &&
+                                     _robustRiseSlopeAperMs >= _minimumForwardRiseSlopeAperMs;
+                var generationMatched = _generationMatched &&
+                                         _expectedGeneration > 0;
+                var nowMonotonicTicks = Stopwatch.GetTimestamp();
+                var provisionalAgeMs = _lastProcessedMonotonicTicks > 0
+                    ? Math.Max(
+                        0,
+                        (nowMonotonicTicks - _lastProcessedMonotonicTicks) *
+                        1000.0 / Stopwatch.Frequency)
+                    : double.PositiveInfinity;
+                var evidenceAgeMs = _cutoffCovered &&
+                                    _cutoffUtc != DateTime.MinValue &&
+                                    _lastObservedUtc != DateTime.MinValue
+                    ? Math.Max(0, (_cutoffUtc - _lastObservedUtc).TotalMilliseconds)
+                    : provisionalAgeMs;
+                var evidenceAgeValid = evidenceAgeMs <= _maximumEvidenceAgeMs;
+                var sealedEvidence = _cutoffCovered && generationMatched;
+                var provisionalEvidence = shapeQualified && !sealedEvidence;
+                if (provisionalEvidence)
+                    evidenceAgeValid = isFresh && evidenceAgeValid;
+                var identityQualified = tokenValid && generationMatched &&
+                                         (!_freshnessRequired || (isFresh && evidenceAgeValid)) &&
+                                         evidenceAgeValid;
+                var qualified = shapeQualified && identityQualified;
+                var evidenceState = shapeQualified
+                    ? (sealedEvidence
+                        ? EpbLoadRiseEvidenceState.Sealed
+                        : EpbLoadRiseEvidenceState.Provisional)
+                    : EpbLoadRiseEvidenceState.Invalid;
+                return new EpbLoadRiseEvidenceSnapshot
+                {
+                    CaptureId = captureId,
+                    RunId = runId,
+                    TestRunId = runId,
+                    RunEpoch = _runEpoch,
+                    Channel = _channel,
+                    CycleNumber = _cycleNumber,
+                    DaqGeneration = _expectedGeneration,
+                    Generation = _expectedGeneration,
+                    StartAcceptedSequence = startSequence,
+                    StartProcessedSequence = startProcessedSequence,
+                    ProcessedSequence = _lastProcessedSequence,
+                    CutoffSequence = _cutoffSequence,
+                    CutoffAcceptedSequence = _cutoffSequence,
+                    ProcessedMonotonicTicks = _lastProcessedMonotonicTicks,
+                    CutoffMonotonicTicks = _cutoffMonotonicTicks,
+                    IsGenerationMatched = generationMatched,
+                    GenerationMatched = generationMatched,
+                    IsCutoffCovered = _cutoffCovered,
+                    CutoffCovered = _cutoffCovered,
+                    IsFresh = isFresh,
+                    Fresh = isFresh,
+                    TokenValid = tokenValid,
+                    FreshnessValid = identityQualified,
+                    IdentityValid = _identityMatched,
+                    CaptureStartUtc = _captureStartUtc,
+                    EvidenceThroughUtc = _lastObservedUtc,
+                    CutoffUtc = _cutoffUtc,
+                    EvidenceAgeMs = evidenceAgeMs,
+                    MaximumEvidenceAgeMs = _maximumEvidenceAgeMs,
+                    EvidenceAgeValid = evidenceAgeValid,
+                    IsProvisional = evidenceState == EpbLoadRiseEvidenceState.Provisional,
+                    IsSealed = evidenceState == EpbLoadRiseEvidenceState.Sealed,
+                    EvidenceState = evidenceState,
+                    InrushPeakA = _inrushPeakA,
+                    InrushPeakAt = _inrushPeakAt,
+                    StableValleyA = _valleyMedianA,
+                    StableValleyMadA = _valleyMadA,
+                    StableValleyStartUtc = _valleyStartUtc,
+                    StableValleyEndUtc = _valleyEndUtc,
+                    ValleySampleCount = _ringCount,
+                    ValleyEquivalentSampleCount = _valleyEquivalentSampleCount,
+                    ValleyWindowMs = _valleyStartUtc == DateTime.MinValue
+                        ? 0
+                        : Math.Max(0, (_valleyEndUtc - _valleyStartUtc).TotalMilliseconds),
+                    ValleyWindowQualified = _valleyWindowQualified,
+                    PostValleyPeakA = _postValleyPeakA,
+                    PostValleyRiseA = _postValleyRiseA,
+                    PostValleyRiseThresholdA = riseThreshold,
+                    PostValleySlopeAperMs = _postValleySlopeAperMs,
+                    LinearRiseSlopeAperMs = _linearRiseSlopeAperMs,
+                    RobustRiseSlopeAperMs = _robustRiseSlopeAperMs,
+                    RiseContinuousSampleCount = _riseContinuousSampleCount,
+                    RiseContinuousDurationMs = riseMs,
+                    RiseContinuityQualified =
+                        _riseContinuousSampleCount >= MinimumRiseContinuousSamples &&
+                        riseMs >= MinimumRiseContinuousDurationMs,
+                    MinimumRequiredSlopeAperMs = _minimumForwardRiseSlopeAperMs,
+                    PostValleyDurationMs = riseMs,
+                    FullRateValleyThenRise = shapeQualified,
+                    LoadRiseEvidenceQualified = qualified,
+                    IsQualified = qualified
+                };
+            }
         }
 
         /// <summary> 单通道峰值跟踪器（线程安全，基于“全数据批处理”逐样本更新）。 </summary>
@@ -5538,6 +6291,8 @@ namespace IO.NI
             public DateTime ProcessedThroughAt;
             public TaskCompletionSource<bool> CutoffCoveredSignal;
             public readonly PeakCaptureWatermark Watermark = new PeakCaptureWatermark();
+            public readonly LoadRiseEvidenceTracker LoadRiseEvidence =
+                new LoadRiseEvidenceTracker();
 
             // 逻辑截止时间用于“等待封口但不扩大统计窗口”。
             public DateTime? CutoffLocal; // 仅纳入 tsLocal <= CutoffLocal 的样本
@@ -5548,6 +6303,7 @@ namespace IO.NI
                 DateTime t0,
                 long generation,
                 long acceptedSequence,
+                long processedSequence,
                 long monotonicTicks,
                 PeakCaptureToken token = null)
             {
@@ -5562,7 +6318,16 @@ namespace IO.NI
                 CutoffLocal = null;
                 CutoffCoveredSignal = NewCutoffCoveredSignal();
                 Token = token;
-                Watermark.Arm(generation, acceptedSequence, monotonicTicks);
+                Watermark.Arm(
+                    generation,
+                    acceptedSequence,
+                    processedSequence,
+                    monotonicTicks);
+                LoadRiseEvidence.Arm(
+                    token,
+                    generation,
+                    acceptedSequence,
+                    processedSequence);
             }
 
             public Task FreezeCutoff(
@@ -5575,6 +6340,7 @@ namespace IO.NI
                 {
                     CutoffLocal = cutoffLocal;
                     Watermark.Freeze(generation, acceptedSequence, monotonicTicks);
+                    LoadRiseEvidence.SetCutoffUtc(cutoffLocal.ToUniversalTime());
                 }
                 if (Watermark.IsCutoffCovered)
                     CutoffCoveredSignal.TrySetResult(true);
@@ -5597,6 +6363,14 @@ namespace IO.NI
                     sampleMonotonicTicks);
                 if (Watermark.IsCutoffCovered)
                     CutoffCoveredSignal.TrySetResult(true);
+                LoadRiseEvidence.Update(
+                    amp,
+                    tsLocal,
+                    generation,
+                    sequence,
+                    sampleMonotonicTicks,
+                    include,
+                    Watermark);
                 if (!include) return;
 
                 SampleCount++;
@@ -5631,6 +6405,7 @@ namespace IO.NI
             /// <summary>生成快照。</summary>
             public EpbCurrentPeak Snapshot(int ch)
             {
+                LoadRiseEvidence.ApplyWatermark(Watermark);
                 return new EpbCurrentPeak
                 {
                     Channel = ch,
@@ -5640,8 +6415,14 @@ namespace IO.NI
                     EndAt = EndAt,
                     LastSampleAt = LastSampleAt,
                     SampleCount = SampleCount,
-                    IsActive = Active
+                    IsActive = Active,
+                    LoadRiseEvidence = LoadRiseEvidence.Snapshot(Token)
                 };
+            }
+
+            public bool IdentityMatches(PeakCaptureToken requested)
+            {
+                return LoadRiseEvidence.IdentityMatches(requested);
             }
 
             private static TaskCompletionSource<bool> NewCutoffCoveredSignal()
@@ -5703,6 +6484,209 @@ namespace IO.NI
         #endregion
 
 
+        /// <summary>
+        /// 确定性回放入口：复用生产 PeakTracker/Watermark/LoadRiseEvidenceTracker
+        /// 的同一条证据链，不启动 NI 设备，也不改变现场采集状态。仅供离线回放和
+        /// AdaptiveControlTests 使用；生产热路径不会调用该方法。
+        /// </summary>
+        internal static EpbLoadRiseEvidenceSnapshot ReplayEpbLoadRiseEvidence(
+            PeakCaptureToken token,
+            IReadOnlyList<double> currents,
+            IReadOnlyList<DateTime> timestampsUtc,
+            long generation,
+            long startAcceptedSequence,
+            long startProcessedSequence = 0,
+            int idleAfterReplayMs = 0)
+        {
+            return ReplayEpbLoadRiseEvidenceWithGenerations(
+                token,
+                currents,
+                timestampsUtc,
+                generation,
+                null,
+                startAcceptedSequence,
+                startProcessedSequence,
+                idleAfterReplayMs);
+        }
+
+        /// <summary>
+        /// Deterministic test/replay seam that can inject one DAQ generation
+        /// mismatch.  A mismatch is intentionally sticky even if subsequent
+        /// samples return to the original generation.
+        /// </summary>
+        internal static EpbLoadRiseEvidenceSnapshot ReplayEpbLoadRiseEvidenceWithGenerations(
+            PeakCaptureToken token,
+            IReadOnlyList<double> currents,
+            IReadOnlyList<DateTime> timestampsUtc,
+            long generation,
+            IReadOnlyList<long> generations,
+            long startAcceptedSequence,
+            long startProcessedSequence = 0,
+            int idleAfterReplayMs = 0)
+        {
+            if (token == null) throw new ArgumentNullException(nameof(token));
+            if (currents == null) throw new ArgumentNullException(nameof(currents));
+            if (timestampsUtc == null) throw new ArgumentNullException(nameof(timestampsUtc));
+            var count = Math.Min(currents.Count, timestampsUtc.Count);
+            var tracker = new PeakTracker();
+            token.Generation = generation;
+            token.StartAcceptedSequence = Math.Max(0, startAcceptedSequence);
+            // A replay must model both watermarks explicitly.  Legacy callers
+            // which omit the processed start get a conservative zero, never an
+            // accepted-sequence alias.
+            token.StartProcessedSequence = Math.Max(0, startProcessedSequence);
+            tracker.Arm(
+                timestampsUtc.Count > 0 ? timestampsUtc[0].ToLocalTime() : DateTime.Now,
+                generation,
+                token.StartAcceptedSequence,
+                token.StartProcessedSequence,
+                Stopwatch.GetTimestamp(),
+                token);
+            for (var i = 0; i < count; i++)
+            {
+                var sampleGeneration = generations != null && i < generations.Count
+                    ? generations[i]
+                    : generation;
+                tracker.Update(
+                    currents[i],
+                    timestampsUtc[i].ToLocalTime(),
+                    sampleGeneration,
+                    token.StartProcessedSequence + i + 1,
+                    Stopwatch.GetTimestamp() + i + 1);
+            }
+            if (idleAfterReplayMs > 0)
+                Thread.Sleep(Math.Min(5000, idleAfterReplayMs));
+            return tracker.Snapshot(token.Channel).LoadRiseEvidence;
+        }
+
+        /// <summary>
+        /// Deterministic fixture seam that exercises the instance capture path,
+        /// including the live generation check performed by TryPeek.  This is
+        /// intentionally kept next to the production capture APIs: tests must
+        /// not construct an evidence snapshot and then claim that it came from
+        /// the DAQ watermark/capture gate.
+        /// </summary>
+        internal void ConfigureReplayWatermarks(
+            string device,
+            long generation,
+            long processedSequence)
+        {
+            if (string.IsNullOrWhiteSpace(device))
+                throw new ArgumentException("Replay device is required.", nameof(device));
+            if (!_callbackTimingDiag.TryGetValue(device, out var diag))
+                throw new InvalidOperationException($"Unknown replay device: {device}");
+
+            if (string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Exchange(ref _generationDev1, generation);
+            else if (string.Equals(device, "Dev2", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Exchange(ref _generationDev2, generation);
+            else
+                throw new ArgumentException($"Unknown replay device: {device}", nameof(device));
+
+            // The processed watermark is deliberately written independently
+            // from accepted sequence.  BeginEpbCurrentPeak reads this value
+            // when freezing the capture identity.
+            Interlocked.Exchange(ref diag.LastGeneration, generation);
+            Interlocked.Exchange(ref diag.LastProcessedSequence, Math.Max(0, processedSequence));
+            Interlocked.Exchange(ref diag.LastSampleCommitSwTick, Stopwatch.GetTimestamp());
+        }
+
+        /// <summary>
+        /// Feed a fixture through the same PeakTracker/PeakCaptureWatermark
+        /// used by ProcessLoop, then obtain the result through TryPeek.  The
+        /// method is internal because it is a deterministic no-NI replay seam;
+        /// production acquisition continues to call PeakTracker.Update from
+        /// ProcessLoop above.
+        /// </summary>
+        internal bool ReplayEpbCurrentPeakSamples(
+            PeakCaptureToken token,
+            IReadOnlyList<double> currents,
+            IReadOnlyList<DateTime> timestampsUtc,
+            long generation,
+            out EpbLoadRiseEvidenceSnapshot evidence)
+        {
+            return ReplayEpbCurrentPeakSamples(
+                token,
+                currents,
+                timestampsUtc,
+                generation,
+                (Action<long, double, EpbLoadRiseEvidenceSnapshot>)null,
+                out evidence);
+        }
+
+        /// <summary>带逐样本控制回调的确定性捕获回放重载。</summary>
+        internal bool ReplayEpbCurrentPeakSamples(
+            PeakCaptureToken token,
+            IReadOnlyList<double> currents,
+            IReadOnlyList<DateTime> timestampsUtc,
+            long generation,
+            Action<long, double, EpbLoadRiseEvidenceSnapshot> onSample,
+            out EpbLoadRiseEvidenceSnapshot evidence)
+        {
+            return ReplayEpbCurrentPeakSamples(
+                token,
+                currents,
+                timestampsUtc,
+                generation,
+                onSample == null
+                    ? (Func<long, double, EpbLoadRiseEvidenceSnapshot, bool>)null
+                    : (ignoredTick, current, sampleEvidence) =>
+                    {
+                        onSample(ignoredTick, current, sampleEvidence);
+                        return true;
+                    },
+                out evidence);
+        }
+
+        /// <summary>
+        /// 带逐样本控制回调的确定性捕获回放重载。回调返回 false 时，
+        /// 在当前生产样本处停止回放并保留该时刻的 tracker/TryPeek 证据；
+        /// 这用于验证真实控制决策达到 Clamp/LoadRise 后的中间证据，
+        /// 不允许测试自行构造最终 snapshot。
+        /// </summary>
+        internal bool ReplayEpbCurrentPeakSamples(
+            PeakCaptureToken token,
+            IReadOnlyList<double> currents,
+            IReadOnlyList<DateTime> timestampsUtc,
+            long generation,
+            Func<long, double, EpbLoadRiseEvidenceSnapshot, bool> onSample,
+            out EpbLoadRiseEvidenceSnapshot evidence)
+        {
+            evidence = default;
+            if (token == null || currents == null || timestampsUtc == null)
+                return false;
+            if (!_peakTrackers.TryGetValue(token.Channel, out var tracker))
+                return false;
+
+            var count = Math.Min(currents.Count, timestampsUtc.Count);
+            var sequence = Math.Max(token.StartAcceptedSequence, token.StartProcessedSequence);
+            var monotonic = Stopwatch.GetTimestamp();
+            for (var i = 0; i < count; i++)
+            {
+                lock (tracker.Sync)
+                {
+                    if (!tracker.Active) return false;
+                    tracker.Update(
+                        Math.Abs(currents[i]),
+                        timestampsUtc[i].ToLocalTime(),
+                        generation,
+                        sequence + i + 1,
+                        monotonic + i + 1);
+                }
+
+                if (onSample != null &&
+                    TryPeekEpbLoadRiseEvidence(token, out var sampleEvidence) &&
+                    !onSample(
+                        Stopwatch.GetTimestamp(),
+                        currents[i],
+                        sampleEvidence))
+                    break;
+            }
+
+            return TryPeekEpbLoadRiseEvidence(token, out evidence);
+        }
+
+
         #region 获取最大值的相关的公共方法
 
         /// <summary>
@@ -5717,10 +6701,11 @@ namespace IO.NI
             var startTicks = Stopwatch.GetTimestamp();
             var generation = string.IsNullOrWhiteSpace(device) ? 0 : GetCurrentGeneration(device);
             var acceptedSequence = string.IsNullOrWhiteSpace(device) ? 0 : GetLastAcceptedSequence(device);
+            var processedSequence = string.IsNullOrWhiteSpace(device) ? 0 : GetLastProcessedSequence(device);
             var t = _peakTrackers.GetOrAdd(epbChannel, _ => new PeakTracker());
             lock (t.Sync)
             {
-                t.Arm(DateTime.Now, generation, acceptedSequence, startTicks);
+                t.Arm(DateTime.Now, generation, acceptedSequence, processedSequence, startTicks);
             }
             _log?.Info($"EPB[{epbChannel}]（全数据）峰值捕获开始。", "AI");
         }
@@ -5728,25 +6713,99 @@ namespace IO.NI
         /// <summary>以运行/圈身份开始峰值捕获；同通道新捕获会明确覆盖并复位旧状态。</summary>
         public PeakCaptureToken BeginEpbCurrentPeak(int epbChannel, Guid testRunId, int cycleNumber)
         {
+            return BeginEpbCurrentPeak(
+                epbChannel,
+                testRunId,
+                cycleNumber,
+                0,
+                long.MinValue,
+                long.MinValue,
+                0.001);
+        }
+
+        /// <summary>
+        /// 以完整运行身份开始峰值捕获。generation/sequence 可由调用方在已经
+        /// 取得一致快照时显式绑定；传入 long.MinValue 时才回读当前 DAQ 水印。
+        /// </summary>
+        public PeakCaptureToken BeginEpbCurrentPeak(
+            int epbChannel,
+            Guid testRunId,
+            int cycleNumber,
+            long runEpoch)
+        {
+            return BeginEpbCurrentPeak(
+                epbChannel,
+                testRunId,
+                cycleNumber,
+                runEpoch,
+                long.MinValue,
+                long.MinValue,
+                0.001);
+        }
+
+        /// <summary>建立绑定 DAQ generation/accepted sequence 的峰值证据窗。</summary>
+        public PeakCaptureToken BeginEpbCurrentPeak(
+            int epbChannel,
+            Guid testRunId,
+            int cycleNumber,
+            long runEpoch,
+            long daqGeneration,
+            long startAcceptedSequence)
+        {
+            return BeginEpbCurrentPeak(
+                epbChannel,
+                testRunId,
+                cycleNumber,
+                runEpoch,
+                daqGeneration,
+                startAcceptedSequence,
+                0.001);
+        }
+
+        /// <summary>建立带运行策略斜率门槛的完整峰值证据窗。</summary>
+        public PeakCaptureToken BeginEpbCurrentPeak(
+            int epbChannel,
+            Guid testRunId,
+            int cycleNumber,
+            long runEpoch,
+            long daqGeneration,
+            long startAcceptedSequence,
+            double forwardMinimumRiseSlopeAperMs)
+        {
             if (epbChannel < 1 || epbChannel > 12)
                 throw new ArgumentOutOfRangeException(nameof(epbChannel));
             var device = GetDeviceForEpbChannel(epbChannel);
             if (string.IsNullOrWhiteSpace(device))
                 throw new InvalidOperationException($"EPB[{epbChannel}]未映射DAQ设备，不能建立峰值证据窗。");
             var startTicks = Stopwatch.GetTimestamp();
-            var generation = GetCurrentGeneration(device);
-            var acceptedSequence = GetLastAcceptedSequence(device);
+            var generation = daqGeneration == long.MinValue
+                ? GetCurrentGeneration(device)
+                : daqGeneration;
+            var acceptedSequence = startAcceptedSequence == long.MinValue
+                ? GetLastAcceptedSequence(device)
+                : Math.Max(0, startAcceptedSequence);
+            var processedSequence = GetLastProcessedSequence(device);
             var token = new PeakCaptureToken
             {
                 CaptureId = Guid.NewGuid(),
                 TestRunId = testRunId,
                 Channel = epbChannel,
                 CycleNumber = cycleNumber,
+                RunEpoch = runEpoch,
                 StartUtc = DateTime.UtcNow,
                 Device = device,
                 Generation = generation,
                 StartAcceptedSequence = acceptedSequence,
-                StartMonotonicTicks = startTicks
+                StartProcessedSequence = processedSequence,
+                StartMonotonicTicks = startTicks,
+                FreshnessRequired = true,
+                MaximumEvidenceAgeMs = 250.0,
+                ForwardMinimumRiseSlopeAperMs =
+                    forwardMinimumRiseSlopeAperMs > 0 &&
+                    !double.IsNaN(forwardMinimumRiseSlopeAperMs) &&
+                    !double.IsInfinity(forwardMinimumRiseSlopeAperMs)
+                        ? forwardMinimumRiseSlopeAperMs
+                        : 0.001
             };
             var tracker = _peakTrackers.GetOrAdd(epbChannel, _ => new PeakTracker());
             lock (tracker.Sync)
@@ -5754,6 +6813,7 @@ namespace IO.NI
                     DateTime.Now,
                     generation,
                     acceptedSequence,
+                    processedSequence,
                     startTicks,
                     token);
             _log?.Info(
@@ -5795,7 +6855,7 @@ namespace IO.NI
                 return new PeakCaptureResult { Token = token, IsMatched = false, QualityReason = "TrackerMissing" };
             lock (tracker.Sync)
             {
-                if (!IsPeakCaptureIdentityMatch(tracker.Token, token))
+                if (!tracker.IdentityMatches(token))
                     return new PeakCaptureResult
                     {
                         Token = token,
@@ -5816,10 +6876,11 @@ namespace IO.NI
             var peak = finalized.Peak;
             if (!finalized.IdentityMatched)
                 return new PeakCaptureResult
-                {
-                    Token = token,
-                    Peak = peak,
-                    IsMatched = false,
+                    {
+                        Token = token,
+                        Peak = peak,
+                        LoadRiseEvidence = peak.LoadRiseEvidence,
+                        IsMatched = false,
                     LogicalCutoffUtc = finalized.LogicalCutoffUtc,
                     ProcessedThroughUtc = finalized.ProcessedThroughUtc,
                     DrainCompletedUtc = finalized.DrainCompletedUtc,
@@ -5839,6 +6900,7 @@ namespace IO.NI
             {
                 Token = token,
                 Peak = peak,
+                LoadRiseEvidence = peak.LoadRiseEvidence,
                 IsMatched = matched,
                 LogicalCutoffUtc = finalized.LogicalCutoffUtc,
                 ProcessedThroughUtc = finalized.ProcessedThroughUtc,
@@ -5874,11 +6936,13 @@ namespace IO.NI
                 };
             lock (tracker.Sync)
             {
-                var matched = IsPeakCaptureIdentityMatch(tracker.Token, token);
+                var matched = tracker.IdentityMatches(token);
+                var snapshot = tracker.Snapshot(token.Channel);
                 return new PeakCaptureResult
                 {
                     Token = token,
-                    Peak = tracker.Snapshot(token.Channel),
+                    Peak = snapshot,
+                    LoadRiseEvidence = snapshot.LoadRiseEvidence,
                     IsMatched = matched,
                     QualityReason = matched ? "Qualified" : "CaptureIdentityMismatch"
                 };
@@ -5893,9 +6957,80 @@ namespace IO.NI
             if (!_peakTrackers.TryGetValue(token.Channel, out var tracker)) return false;
             lock (tracker.Sync)
             {
-                if (!IsPeakCaptureIdentityMatch(tracker.Token, token)) return false;
+                if (!tracker.IdentityMatches(token) || !IsCaptureGenerationCurrent(tracker)) return false;
                 peak = tracker.Snapshot(token.Channel);
+                if (peak.LoadRiseEvidence.IsProvisional &&
+                    !peak.LoadRiseEvidence.IsFresh)
+                {
+                    peak = default;
+                    return false;
+                }
                 return peak.SampleCount > 0;
+            }
+        }
+
+        private bool IsCaptureGenerationCurrent(PeakTracker tracker)
+        {
+            if (tracker == null) return false;
+            var expectedGeneration = tracker.LoadRiseEvidence.ExpectedGeneration;
+            var device = tracker.LoadRiseEvidence.ExpectedDevice;
+            var currentGeneration = string.IsNullOrWhiteSpace(device)
+                ? 0
+                : GetCurrentGeneration(device);
+            if (!tracker.LoadRiseEvidence.GenerationMatched ||
+                expectedGeneration <= 0 || currentGeneration != expectedGeneration)
+            {
+                tracker.LoadRiseEvidence.InvalidateGeneration();
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 无分配读取当前峰值和完整谷值后上升证据。身份不匹配、DAQ generation
+        /// 已失效或没有新鲜序列时，仍返回峰值但明确把 evidence.Qualified 置为 false。
+        /// </summary>
+        public bool TryPeekEpbCurrentPeak(
+            PeakCaptureToken token,
+            out EpbCurrentPeak peak,
+            out EpbLoadRiseEvidenceSnapshot evidence)
+        {
+            peak = default;
+            evidence = default;
+            if (token == null || !_peakTrackers.TryGetValue(token.Channel, out var tracker))
+                return false;
+            lock (tracker.Sync)
+            {
+                if (!tracker.IdentityMatches(token)) return false;
+                // A caller may retain a valid-looking token across DAQ recovery.
+                // The live device generation is authoritative at every peek.
+                if (!IsCaptureGenerationCurrent(tracker)) return false;
+                peak = tracker.Snapshot(token.Channel);
+                evidence = peak.LoadRiseEvidence;
+                if (evidence.IsProvisional && !evidence.IsFresh)
+                {
+                    peak = default;
+                    evidence = default;
+                    return false;
+                }
+                return peak.SampleCount > 0;
+            }
+        }
+
+        /// <summary>无分配读取完整负载上升证据。</summary>
+        public bool TryPeekEpbLoadRiseEvidence(
+            PeakCaptureToken token,
+            out EpbLoadRiseEvidenceSnapshot evidence)
+        {
+            evidence = default;
+            if (token == null || !_peakTrackers.TryGetValue(token.Channel, out var tracker))
+                return false;
+            lock (tracker.Sync)
+            {
+                if (!tracker.IdentityMatches(token)) return false;
+                if (!IsCaptureGenerationCurrent(tracker)) return false;
+                evidence = tracker.Snapshot(token.Channel).LoadRiseEvidence;
+                return evidence.IsFresh;
             }
         }
 
@@ -5905,7 +7040,7 @@ namespace IO.NI
             if (!_peakTrackers.TryGetValue(token.Channel, out var tracker)) return false;
             lock (tracker.Sync)
             {
-                if (!IsPeakCaptureIdentityMatch(tracker.Token, token)) return false;
+                if (!tracker.IdentityMatches(token)) return false;
                 tracker.Active = false;
                 tracker.SampleCount = 0;
                 tracker.MaxAmp = 0.0;
@@ -5924,7 +7059,13 @@ namespace IO.NI
                    active.CaptureId == requested.CaptureId &&
                    active.TestRunId == requested.TestRunId &&
                    active.Channel == requested.Channel &&
-                   active.CycleNumber == requested.CycleNumber;
+                   active.CycleNumber == requested.CycleNumber &&
+                   active.RunEpoch == requested.RunEpoch &&
+                   string.Equals(active.Device ?? string.Empty, requested.Device ?? string.Empty,
+                       StringComparison.OrdinalIgnoreCase) &&
+                   active.Generation == requested.Generation &&
+                   active.StartAcceptedSequence == requested.StartAcceptedSequence &&
+                   active.StartProcessedSequence == requested.StartProcessedSequence;
         }
 
         /// <summary>
@@ -6034,7 +7175,7 @@ namespace IO.NI
             lock (tracker.Sync)
             {
                 if (expectedToken != null &&
-                    !IsPeakCaptureIdentityMatch(tracker.Token, expectedToken))
+                    !tracker.IdentityMatches(expectedToken))
                     return BuildPeakFinalizationResult(
                         epbChannel,
                         tracker,
@@ -6069,7 +7210,7 @@ namespace IO.NI
             lock (tracker.Sync)
             {
                 if (expectedToken != null &&
-                    !IsPeakCaptureIdentityMatch(tracker.Token, expectedToken))
+                    !tracker.IdentityMatches(expectedToken))
                     return BuildPeakFinalizationResult(
                         epbChannel,
                         tracker,

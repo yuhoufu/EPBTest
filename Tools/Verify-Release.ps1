@@ -171,7 +171,8 @@ $checksumPath = Join-Path $release 'SHA256SUMS.txt'
 $exePath = Join-Path $release 'MTTFTest.exe'
 $watchdogExePath = Join-Path $release 'MTTFTest.Watchdog.exe'
 $watchdogProtocolPath = Join-Path $release 'MTTFTest.Watchdog.Protocol.dll'
-foreach ($required in @($identityPath, $checksumPath, $exePath, $watchdogExePath, $watchdogProtocolPath)) {
+$watchdogClientPath = Join-Path $release 'MTTFTest.Watchdog.Client.dll'
+foreach ($required in @($identityPath, $checksumPath, $exePath, $watchdogExePath, $watchdogProtocolPath, $watchdogClientPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Release 缺少必要文件：$required"
     }

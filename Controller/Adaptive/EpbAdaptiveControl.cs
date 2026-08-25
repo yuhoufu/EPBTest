@@ -123,10 +123,36 @@ namespace Controller.Adaptive
         }
     }
 
+    /// <summary>
+    /// DiagnosticOnly event emitted by the adaptive state machine.  It is an
+    /// evidence overlay, not a control decision: consumers must not copy its
+    /// message into Decision.Reason or use it to advance/rewind the stage.
+    /// </summary>
+    public sealed class EpbAdaptiveDiagnosticEvent
+    {
+        public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public int Channel { get; set; }
+        public int CycleNumber { get; set; }
+        public string Code { get; set; }
+        public DateTime OccurredUtc { get; set; }
+        public EpbCurrentStage Stage { get; set; }
+        public double CurrentA { get; set; }
+        public string Message { get; set; }
+    }
+
     public sealed class EpbAdaptiveDecision
     {
         public bool ClampReached { get; set; }
         public bool ReleaseCompleted { get; set; }
+        /// <summary>
+        /// 仅诊断：本圈尚未形成空载基线，但样本已经进入历史负载范围。
+        /// 该标志绝不能改变状态机阶段、故障连续数或断电动作。
+        /// </summary>
+        public bool DiagnosticWarning { get; set; }
+        public string DiagnosticCode { get; set; }
+        public EpbAdaptiveDiagnosticEvent DiagnosticEvent { get; set; }
+        public bool LoadRiseEvidenceQualified { get; set; }
         public bool SoftWarning { get; set; }
         public bool HardFault { get; set; }
         public bool StateChanged { get; set; }
@@ -155,12 +181,16 @@ namespace Controller.Adaptive
         public long BatchSequence { get; set; }
 
         public bool HasAction =>
-            ClampReached || ReleaseCompleted || SoftWarning || HardFault || StateChanged;
+            ClampReached || ReleaseCompleted || DiagnosticWarning || SoftWarning || HardFault || StateChanged;
 
         internal void Reset(EpbCurrentStage stage, double currentA)
         {
             ClampReached = false;
             ReleaseCompleted = false;
+            DiagnosticWarning = false;
+            DiagnosticCode = null;
+            DiagnosticEvent = null;
+            LoadRiseEvidenceQualified = false;
             SoftWarning = false;
             HardFault = false;
             StateChanged = false;
@@ -290,6 +320,8 @@ namespace Controller.Adaptive
         private double _observedReverseEmptyA;
         private double _loadRisePeakA;
         private double _observedFullRatePeakA;
+        private bool _loadRiseEvidenceQualified;
+        private bool _rapidLoadRiseDiagnosticRaised;
         private long _loadRiseDropStartTick;
         private long _loadRiseStartTick;
         private long _forwardProgressStallStartTick;
@@ -420,6 +452,7 @@ namespace Controller.Adaptive
                 tick,
                 currentAmp,
                 observedFullRatePeakA,
+                default,
                 new EpbAdaptiveDecision());
         }
 
@@ -457,6 +490,26 @@ namespace Controller.Adaptive
             double observedFullRatePeakA,
             EpbAdaptiveDecision reusableDecision)
         {
+            return OnSampleReusable(
+                tick,
+                currentAmp,
+                observedFullRatePeakA,
+                default,
+                reusableDecision);
+        }
+
+        /// <summary>
+        /// 处理快速样本以及同一捕获窗的全速率谷值后上升证据。
+        /// 只有本圈 10ms 空载窗口，或身份/代次/新鲜度均有效的完整谷值后上升
+        /// 证据，才能把 EmptyTravel 推进到 LoadRise。
+        /// </summary>
+        internal EpbAdaptiveDecision OnSampleReusable(
+            long tick,
+            double currentAmp,
+            double observedFullRatePeakA,
+            EpbLoadRiseEvidenceSnapshot loadRiseEvidence,
+            EpbAdaptiveDecision reusableDecision)
+        {
             lock (_gate)
             {
                 var decision = reusableDecision ?? throw new ArgumentNullException(nameof(reusableDecision));
@@ -475,6 +528,23 @@ namespace Controller.Adaptive
                 decision.ObservedFullRatePeakA = _observedFullRatePeakA > 0
                     ? _observedFullRatePeakA
                     : double.NaN;
+                decision.LoadRiseEvidenceQualified = _loadRiseEvidenceQualified;
+
+                // 全速率证据可能先于 10ms 控制回调形成；它只能在证据自身完整且
+                // 新鲜时放行 LoadRise，任何旧 token、代次变化、零序列缓存都拒绝。
+                if (_forwardDirection &&
+                    HasQualifiedLoadRiseEvidence(loadRiseEvidence))
+                {
+                    _loadRiseEvidenceQualified = true;
+                    if (_stage == EpbCurrentStage.EmptyTravel)
+                    {
+                        SetStage(EpbCurrentStage.LoadRise);
+                        _loadRiseStartTick = tick;
+                        decision.StateChanged = true;
+                        decision.Reason = "LoadRiseFullRateValleyThenRise";
+                    }
+                }
+                decision.LoadRiseEvidenceQualified = _loadRiseEvidenceQualified;
                 _lastSampleTick = tick;
                 _lastCurrentA = current;
                 if (current > _peakCurrentA) _peakCurrentA = current;
@@ -553,8 +623,88 @@ namespace Controller.Adaptive
                     EvaluateAbnormalHighPlateau(tick, elapsedMs, decision);
 
                 decision.Stage = _stage;
+                decision.LoadRiseEvidenceQualified = _loadRiseEvidenceQualified;
                 return decision;
             }
+        }
+
+        /// <summary>
+        /// 全速率负载上升证据的统一身份/新鲜度门禁。截断封口前可用于实时
+        /// 进入 LoadRise；最终持久化另行要求 IsCutoffCovered。
+        /// </summary>
+        public static bool HasQualifiedLoadRiseEvidence(
+            EpbLoadRiseEvidenceSnapshot evidence)
+        {
+            if (!evidence.IsQualified || !evidence.FullRateValleyThenRise)
+                return false;
+            if (evidence.CaptureId == Guid.Empty || !evidence.TokenValid ||
+                !evidence.IdentityValid)
+                return false;
+            if (!evidence.IsGenerationMatched || !evidence.GenerationMatched ||
+                evidence.DaqGeneration <= 0 || evidence.Generation != evidence.DaqGeneration)
+                return false;
+            if (evidence.CutoffSequence != evidence.CutoffAcceptedSequence)
+                return false;
+            if (!evidence.IsFresh || !evidence.Fresh || !evidence.FreshnessValid)
+                return false;
+            if (evidence.ProcessedSequence <= evidence.StartProcessedSequence)
+                return false;
+            if (evidence.ValleyEquivalentSampleCount < 8 ||
+                evidence.ValleyWindowMs < 100.0 ||
+                !evidence.ValleyWindowQualified)
+                return false;
+            if (evidence.RiseContinuousSampleCount < 8 ||
+                evidence.RiseContinuousDurationMs < 4.0 ||
+                !evidence.RiseContinuityQualified)
+                return false;
+            if (evidence.PostValleyRiseA <
+                Math.Max(0.5, 4.0 * Math.Max(0, evidence.StableValleyMadA)))
+                return false;
+            var minimumSlope = evidence.MinimumRequiredSlopeAperMs > 0 &&
+                               !double.IsNaN(evidence.MinimumRequiredSlopeAperMs) &&
+                               !double.IsInfinity(evidence.MinimumRequiredSlopeAperMs)
+                ? evidence.MinimumRequiredSlopeAperMs
+                : 0.001;
+            if (evidence.PostValleySlopeAperMs < minimumSlope ||
+                evidence.LinearRiseSlopeAperMs < minimumSlope ||
+                evidence.RobustRiseSlopeAperMs < minimumSlope)
+                return false;
+            if (!evidence.EvidenceAgeValid ||
+                (evidence.MaximumEvidenceAgeMs > 0 &&
+                 evidence.EvidenceAgeMs > evidence.MaximumEvidenceAgeMs))
+                return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Strict identity gate for a consumer that still owns the expected
+        /// capture token.  Every identity field is checked against the frozen
+        /// snapshot; run epoch is intentionally included here even though the
+        /// DiagnosticOnly aggregation key excludes it.
+        /// </summary>
+        public static bool HasQualifiedLoadRiseEvidence(
+            EpbLoadRiseEvidenceSnapshot evidence,
+            PeakCaptureToken expectedToken)
+        {
+            if (expectedToken == null || !HasQualifiedLoadRiseEvidence(evidence))
+                return false;
+            return evidence.CaptureId == expectedToken.CaptureId &&
+                   evidence.RunId == expectedToken.TestRunId &&
+                   evidence.TestRunId == expectedToken.TestRunId &&
+                   evidence.RunEpoch == expectedToken.RunEpoch &&
+                   evidence.Channel == expectedToken.Channel &&
+                   evidence.CycleNumber == expectedToken.CycleNumber &&
+                   evidence.DaqGeneration == expectedToken.Generation &&
+                   evidence.Generation == expectedToken.Generation &&
+                   evidence.StartAcceptedSequence == expectedToken.StartAcceptedSequence &&
+                   evidence.StartProcessedSequence == expectedToken.StartProcessedSequence;
+        }
+
+        /// <summary>兼容测试/诊断调用方的语义别名。</summary>
+        public static bool IsLoadRiseEvidenceQualified(
+            EpbLoadRiseEvidenceSnapshot evidence)
+        {
+            return HasQualifiedLoadRiseEvidence(evidence);
         }
 
         public EpbAdaptiveDecision CheckWatchdog(long nowTick)
@@ -631,34 +781,50 @@ namespace Controller.Adaptive
                 }
 
                 // 现场可能在涌流忽略期结束时已经越过历史负载上升阈值，本圈因而没有
-                // 机会形成空行程窗口。稳定历史基线 + 明确正斜率足以证明“正在负载上升”，
-                // 允许进入 LoadRise；仍保留软预警，禁止把历史基线冒充本圈观测值。
+                // 机会形成空行程窗口。历史基线只能用于诊断，不能冒充本圈证据；否则
+                // 涌流尾部会被错误推进到 LoadRise，并触发后续“负载上升回落”硬故障。
+                // 这里必须保持 EmptyTravel，直到本圈取得合格空载窗口（或后续完整
+                // 速率证据直接达到目标，由下方快速夹紧保护处理）。
                 if (_observedForwardEmptyA <= 0 &&
                     historicalBaselineAvailable &&
                     current >= provisionalLoadRiseThreshold &&
                     WindowSlopeAperMs() > 0.001)
                 {
-                    SetStage(EpbCurrentStage.LoadRise);
-                    _loadRiseStartTick = tick;
-                    decision.StateChanged = true;
-                    decision.SoftWarning = true;
-                    decision.Reason =
-                        $"RapidLoadRiseWithoutObservedEmpty I={current:F3}A " +
-                        $"Threshold={provisionalLoadRiseThreshold:F3}A";
+                    if (!_rapidLoadRiseDiagnosticRaised)
+                    {
+                        _rapidLoadRiseDiagnosticRaised = true;
+                        decision.DiagnosticWarning = true;
+                        decision.DiagnosticCode = "RapidLoadRiseWithoutObservedEmpty";
+                        decision.DiagnosticEvent = new EpbAdaptiveDiagnosticEvent
+                        {
+                            Code = decision.DiagnosticCode,
+                            OccurredUtc = DateTime.UtcNow,
+                            Stage = _stage,
+                            CurrentA = current,
+                            Message =
+                                $"RapidLoadRiseWithoutObservedEmpty I={current:F3}A " +
+                                $"Threshold={provisionalLoadRiseThreshold:F3}A " +
+                                "StateUnchanged=true Evidence=PerCycleEmptyBaselineMissing"
+                        };
+                        // The Inrush->EmptyTravel transition can occur in the
+                        // same fast callback. It is a normal arming transition,
+                        // not an action caused by this diagnostic. Preserve the
+                        // control decision's existing Reason/StateChanged fields;
+                        // the independent event above carries diagnostic text.
+                    }
                 }
 
                 if (_observedForwardEmptyA > 0)
                 {
-                    var baseline = historicalBaselineAvailable
-                        ? _profile.ForwardEmptyCurrentA
-                        : _observedForwardEmptyA;
-                    var baselineMad = historicalBaselineAvailable
-                        ? _profile.ForwardEmptyMadA
-                        : _observedForwardEmptyMadA;
+                    // 本圈观测优先。历史画像只用于后续学习/审计，不能收紧本圈
+                    // 的进入条件或替代缺失的本圈证据。
+                    var baseline = _observedForwardEmptyA;
+                    var baselineMad = _observedForwardEmptyMadA;
                     var loadRiseThreshold = baseline + Math.Max(0.5, 4.0 * baselineMad);
                     if (current >= loadRiseThreshold && WindowSlopeAperMs() > 0.001)
                     {
                         SetStage(EpbCurrentStage.LoadRise);
+                        _loadRiseEvidenceQualified = true;
                         _loadRiseStartTick = tick;
                         decision.StateChanged = true;
                         decision.Reason = "LoadRise";
@@ -742,7 +908,8 @@ namespace Controller.Adaptive
                     return;
                 }
 
-                if (_loadRisePeakA - current >= 2.0 && current < _forwardA)
+                if (_loadRiseEvidenceQualified &&
+                    _loadRisePeakA - current >= 2.0 && current < _forwardA)
                 {
                     if (_loadRiseDropStartTick == 0) _loadRiseDropStartTick = tick;
                     if (ElapsedMs(_loadRiseDropStartTick, tick) >= 100)
@@ -1030,7 +1197,10 @@ namespace Controller.Adaptive
             double abnormalThreshold;
             if (_forwardDirection)
             {
-                if (_stage != EpbCurrentStage.EmptyTravel)
+                // 没有本圈空载窗口时，历史模型不足以证明已进入负载上升；
+                // 禁止把涌流尾部/中段平台升级为硬故障。后续仍由本圈进展期限、
+                // 完整速率证据或目标截止做有界决策。
+                if (_stage != EpbCurrentStage.EmptyTravel || !_loadRiseEvidenceQualified)
                 {
                     return;
                 }
@@ -1089,6 +1259,8 @@ namespace Controller.Adaptive
             _observedReverseEmptyA = 0;
             _loadRisePeakA = 0;
             _observedFullRatePeakA = 0;
+            _loadRiseEvidenceQualified = false;
+            _rapidLoadRiseDiagnosticRaised = false;
             _loadRiseDropStartTick = 0;
             _loadRiseStartTick = 0;
             _forwardProgressStallStartTick = 0;

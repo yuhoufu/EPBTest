@@ -1,17 +1,504 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Web.Script.Serialization;
 
 namespace MTTFTest.Watchdog.Protocol
 {
     public static class WatchdogProtocol
     {
-        public const int Version = 2;
-        public const int MinimumCompatibleVersion = 1;
-        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+        // V3 is the first contract that carries authoritative sidecar identity,
+        // stage-specific StopAll deadlines and explicit recovery ownership.
+        // Older peers must not silently omit these safety fields.
+        public const int Version = 3;
+        public const int MinimumCompatibleVersion = 3;
+        public static string Serialize(WatchdogMessage message)
+        {
+            var json = new JavaScriptSerializer();
+            if (message != null && string.Equals(message.Type, WatchdogMessageType.RecoveryAttemptFailedReceipt, StringComparison.Ordinal))
+            {
+                // Failure receipts have an intentionally tiny whitelist.  A
+                // recovery receipt is not an Attached/session/launch message;
+                // serializing the whole WatchdogMessage would leak unrelated
+                // payload and permit identity fields.
+                var values = new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    ["ProtocolVersion"] = message.ProtocolVersion,
+                    ["Type"] = message.Type,
+                    ["SessionId"] = message.SessionId,
+                    ["CorrelationId"] = message.CorrelationId,
+                    ["RecoveryFailureReceipt"] = message.RecoveryFailureReceipt?.Clone()
+                };
+                return json.Serialize(values);
+            }
+            if (message != null && string.Equals(message.Type, WatchdogMessageType.RecoveryAttemptFailed, StringComparison.Ordinal))
+            {
+                // This request is durable authority input.  Serialize only
+                // its exact v3 shape so the host can hash the accepted raw
+                // bytes and a retry can reproduce the same operation.
+                var values = new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    ["ProtocolVersion"] = message.ProtocolVersion,
+                    ["Type"] = message.Type,
+                    ["SessionId"] = message.SessionId ?? string.Empty,
+                    ["CorrelationId"] = message.CorrelationId ?? string.Empty,
+                    ["Reason"] = message.Reason ?? string.Empty,
+                    ["RecoveryFailureCode"] = message.RecoveryFailureCode ?? string.Empty,
+                    ["RecoveryFailurePermanent"] = message.RecoveryFailurePermanent,
+                    ["RecoveryFailureDetail"] = message.RecoveryFailureDetail ?? string.Empty,
+                    ["RecoveryFailureContextSha256"] = message.RecoveryFailureContextSha256 ?? string.Empty,
+                    ["RecoveryFailureOwner"] = message.RecoveryFailureOwner ?? string.Empty,
+                    ["RecoveryFailureCorrelationId"] = message.RecoveryFailureCorrelationId ?? string.Empty,
+                    ["RootCode"] = message.RootCode ?? string.Empty,
+                    ["DeviceOrChannelGroup"] = message.DeviceOrChannelGroup ?? string.Empty,
+                    ["RunId"] = message.RunId ?? string.Empty,
+                    ["RecoveryStage"] = message.RecoveryStage ?? string.Empty,
+                    ["RecoveryProgressToken"] = message.RecoveryProgressToken ?? string.Empty,
+                    ["RecoveryProcessSource"] = message.RecoveryProcessSource ?? string.Empty,
+                    ["RecoveryFailureFingerprint"] = message.RecoveryFailureFingerprint ?? string.Empty
+                };
+                return json.Serialize(values);
+            }
+            return json.Serialize(message);
+        }
+        public static WatchdogMessage Deserialize(string value) => new JavaScriptSerializer().Deserialize<WatchdogMessage>(value);
 
-        public static string Serialize(WatchdogMessage message) => Json.Serialize(message);
-        public static WatchdogMessage Deserialize(string value) => Json.Deserialize<WatchdogMessage>(value);
+        public static string ComputeWireSha256(string value)
+        {
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(
+                        sha.ComputeHash(new UTF8Encoding(false).GetBytes(value)))
+                    .Replace("-", string.Empty)
+                    .ToUpperInvariant();
+        }
+
+        public static bool TryPeekWireMessageType(string json, out string messageType)
+        {
+            messageType = null;
+            if (string.IsNullOrWhiteSpace(json)) return false;
+            try
+            {
+                var serializer = new JavaScriptSerializer
+                {
+                    MaxJsonLength = Math.Min(16 * 1024 * 1024,
+                        Math.Max(1024, json.Length + 16))
+                };
+                var root = serializer.DeserializeObject(json) as Dictionary<string, object>;
+                return TryString(root, "Type", out messageType);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Exact v3 parser for the only client message which can mutate the
+        /// durable relaunch authority.  Unknown keys, missing fields and
+        /// launch/session payloads are rejected before DTO deserialization.
+        /// The returned hash covers the exact accepted UTF-8 line.
+        /// </summary>
+        public static bool TryParseRecoveryFailureRequestWire(
+            string json,
+            string expectedSessionId,
+            out WatchdogMessage message,
+            out string requestPayloadSha256,
+            out string reason)
+        {
+            message = null;
+            requestPayloadSha256 = null;
+            reason = null;
+            if (string.IsNullOrWhiteSpace(json)) { reason = "JsonMissing"; return false; }
+            try
+            {
+                var serializer = new JavaScriptSerializer
+                {
+                    MaxJsonLength = Math.Min(16 * 1024 * 1024,
+                        Math.Max(1024, json.Length + 16))
+                };
+                var root = serializer.DeserializeObject(json) as Dictionary<string, object>;
+                if (root == null) { reason = "JsonRoot"; return false; }
+                var allowed = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "ProtocolVersion", "Type", "SessionId", "CorrelationId",
+                    "Reason", "RecoveryFailureCode", "RecoveryFailurePermanent",
+                    "RecoveryFailureDetail", "RecoveryFailureContextSha256",
+                    "RecoveryFailureOwner", "RecoveryFailureCorrelationId",
+                    "RootCode", "DeviceOrChannelGroup", "RunId", "RecoveryStage",
+                    "RecoveryProgressToken", "RecoveryProcessSource",
+                    "RecoveryFailureFingerprint"
+                };
+                if (root.Count != allowed.Count || root.Keys.Any(key => !allowed.Contains(key)))
+                { reason = "RequestShape"; return false; }
+
+                int protocol;
+                bool permanent;
+                string type, session, correlation, prose, code, detail, contextSha,
+                    owner, takeoverCorrelation, rootCode, group, runId, stage,
+                    progress, source, fingerprint;
+                if (!TryInt(root, "ProtocolVersion", out protocol) ||
+                    !TryString(root, "Type", out type) ||
+                    !TryString(root, "SessionId", out session) ||
+                    !TryString(root, "CorrelationId", out correlation) ||
+                    !TryString(root, "Reason", out prose) ||
+                    !TryString(root, "RecoveryFailureCode", out code) ||
+                    !TryBool(root, "RecoveryFailurePermanent", out permanent) ||
+                    !TryString(root, "RecoveryFailureDetail", out detail) ||
+                    !TryString(root, "RecoveryFailureContextSha256", out contextSha) ||
+                    !TryString(root, "RecoveryFailureOwner", out owner) ||
+                    !TryString(root, "RecoveryFailureCorrelationId", out takeoverCorrelation) ||
+                    !TryString(root, "RootCode", out rootCode) ||
+                    !TryString(root, "DeviceOrChannelGroup", out group) ||
+                    !TryString(root, "RunId", out runId) ||
+                    !TryString(root, "RecoveryStage", out stage) ||
+                    !TryString(root, "RecoveryProgressToken", out progress) ||
+                    !TryString(root, "RecoveryProcessSource", out source) ||
+                    !TryString(root, "RecoveryFailureFingerprint", out fingerprint))
+                { reason = "RequestFieldType"; return false; }
+                if (!IsSupportedVersion(protocol) ||
+                    !string.Equals(type, WatchdogMessageType.RecoveryAttemptFailed, StringComparison.Ordinal))
+                { reason = "RequestProtocolOrType"; return false; }
+                if (!IsCanonicalGuidN(session) ||
+                    (!string.IsNullOrEmpty(expectedSessionId) &&
+                     !string.Equals(session, expectedSessionId, StringComparison.Ordinal)) ||
+                    !IsCanonicalGuidN(correlation))
+                { reason = "RequestIdentity"; return false; }
+                if (!IsRequiredToken(code) || !IsRequiredToken(rootCode) ||
+                    !IsRequiredToken(group) || !IsRequiredToken(runId) ||
+                    !IsRequiredToken(stage) || !IsRequiredToken(progress) ||
+                    !IsRequiredToken(source) || !IsRequiredToken(fingerprint))
+                { reason = "RequestEvidence"; return false; }
+                if ((!string.IsNullOrEmpty(contextSha) && !RecoveryFailureReceipt.IsSha256(contextSha)) ||
+                    !IsDiagnosticText(prose) || !IsDiagnosticText(detail))
+                { reason = "RequestDiagnostic"; return false; }
+                var takeover = string.Equals(owner, "WatchdogTakeover", StringComparison.Ordinal);
+                if (takeover != IsCanonicalGuidN(takeoverCorrelation) ||
+                    (!takeover && (!string.IsNullOrEmpty(owner) ||
+                                   !string.IsNullOrEmpty(takeoverCorrelation))))
+                { reason = "RequestTakeoverIdentity"; return false; }
+
+                message = new WatchdogMessage
+                {
+                    ProtocolVersion = protocol,
+                    Type = type,
+                    SessionId = session,
+                    CorrelationId = correlation,
+                    Reason = prose,
+                    RecoveryFailureCode = code,
+                    RecoveryFailurePermanent = permanent,
+                    RecoveryFailureDetail = detail,
+                    RecoveryFailureContextSha256 = contextSha,
+                    RecoveryFailureOwner = owner,
+                    RecoveryFailureCorrelationId = takeoverCorrelation,
+                    RootCode = rootCode,
+                    DeviceOrChannelGroup = group,
+                    RunId = runId,
+                    RecoveryStage = stage,
+                    RecoveryProgressToken = progress,
+                    RecoveryProcessSource = source,
+                    RecoveryFailureFingerprint = fingerprint
+                };
+                requestPayloadSha256 = ComputeWireSha256(json);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = null;
+                requestPayloadSha256 = null;
+                reason = "JsonParse:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// The sole future wire entry point for a durable failure receipt.
+        /// It enumerates the raw JSON object and validates key names/types
+        /// before any permissive DTO deserialization can occur.  Unknown
+        /// fields, launch-only fields, and default-valued extras are rejected
+        /// rather than silently ignored.
+        /// </summary>
+        public static bool TryParseRecoveryFailureReceiptWire(
+            string json,
+            string expectedSessionId,
+            string expectedCorrelationId,
+            string expectedRequestPayloadSha256,
+            out WatchdogMessage message,
+            out RecoveryFailureReceipt receipt,
+            out string reason)
+        {
+            message = null;
+            receipt = null;
+            reason = null;
+            if (string.IsNullOrWhiteSpace(json)) { reason = "JsonMissing"; return false; }
+            try
+            {
+                var serializer = new JavaScriptSerializer { MaxJsonLength = Math.Min(16 * 1024 * 1024, Math.Max(1024, json.Length + 16)) };
+                var root = serializer.DeserializeObject(json) as Dictionary<string, object>;
+                if (root == null) { reason = "JsonRoot"; return false; }
+                var allowed = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "ProtocolVersion", "Type", "SessionId", "CorrelationId", "RecoveryFailureReceipt"
+                };
+                if (root.Keys.Any(key => !allowed.Contains(key))) { reason = "UnknownTopLevelKey"; return false; }
+                int protocol;
+                string type, session, correlation;
+                Dictionary<string, object> nested;
+                if (!TryInt(root, "ProtocolVersion", out protocol) ||
+                    !TryString(root, "Type", out type) ||
+                    !TryString(root, "SessionId", out session) ||
+                    !TryString(root, "CorrelationId", out correlation) ||
+                    !TryObject(root, "RecoveryFailureReceipt", out nested))
+                { reason = "TopLevelType"; return false; }
+                var nestedAllowed = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "RequestCorrelationId", "RequestPayloadSha256", "FailureCode", "FailureFingerprint",
+                    "Disposition", "Durable", "PermitClosed", "FailureRegistered", "CircuitOpen",
+                    "ConsecutiveCount", "RelaunchPermitGeneration", "DecisionSequence", "DecisionUtcTicks",
+                    "DetailCode"
+                };
+                if (nested.Keys.Any(key => !nestedAllowed.Contains(key))) { reason = "UnknownReceiptKey"; return false; }
+                string requestCorrelationId;
+                string requestPayloadSha256;
+                string failureCode;
+                string failureFingerprint;
+                string disposition;
+                string detailCode;
+                bool durable;
+                bool permitClosed;
+                bool failureRegistered;
+                bool circuitOpen;
+                int consecutiveCount;
+                long relaunchPermitGeneration;
+                long decisionSequence;
+                long decisionUtcTicks;
+                if (!TryString(nested, "RequestCorrelationId", out requestCorrelationId) ||
+                    !TryString(nested, "RequestPayloadSha256", out requestPayloadSha256) ||
+                    !TryString(nested, "FailureCode", out failureCode) ||
+                    !TryString(nested, "FailureFingerprint", out failureFingerprint) ||
+                    !TryString(nested, "Disposition", out disposition) ||
+                    !TryBool(nested, "Durable", out durable) ||
+                    !TryBool(nested, "PermitClosed", out permitClosed) ||
+                    !TryBool(nested, "FailureRegistered", out failureRegistered) ||
+                    !TryBool(nested, "CircuitOpen", out circuitOpen) ||
+                    !TryInt(nested, "ConsecutiveCount", out consecutiveCount) ||
+                    !TryLong(nested, "RelaunchPermitGeneration", out relaunchPermitGeneration) ||
+                    !TryLong(nested, "DecisionSequence", out decisionSequence) ||
+                    !TryLong(nested, "DecisionUtcTicks", out decisionUtcTicks) ||
+                    !TryString(nested, "DetailCode", out detailCode))
+                { reason = "ReceiptType"; return false; }
+                var parsed = new RecoveryFailureReceipt
+                {
+                    RequestCorrelationId = requestCorrelationId,
+                    RequestPayloadSha256 = requestPayloadSha256,
+                    FailureCode = failureCode,
+                    FailureFingerprint = failureFingerprint,
+                    Disposition = disposition,
+                    Durable = durable,
+                    PermitClosed = permitClosed,
+                    FailureRegistered = failureRegistered,
+                    CircuitOpen = circuitOpen,
+                    ConsecutiveCount = consecutiveCount,
+                    RelaunchPermitGeneration = relaunchPermitGeneration,
+                    DecisionSequence = decisionSequence,
+                    DecisionUtcTicks = decisionUtcTicks,
+                    DetailCode = detailCode
+                };
+                message = new WatchdogMessage
+                {
+                    ProtocolVersion = protocol, Type = type, SessionId = session,
+                    CorrelationId = correlation, RecoveryFailureReceipt = parsed
+                };
+                var valid = expectedSessionId == null && expectedCorrelationId == null && expectedRequestPayloadSha256 == null
+                    ? TryValidateRecoveryFailureReceipt(message, out receipt, out reason)
+                    : TryValidateRecoveryFailureReceipt(message, expectedSessionId, expectedCorrelationId,
+                        expectedRequestPayloadSha256, out receipt, out reason);
+                if (!valid)
+                {
+                    message = null;
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = null; receipt = null; reason = "JsonParse:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
+        public static bool TryParseRecoveryFailureReceiptWire(
+            string json,
+            out WatchdogMessage message,
+            out RecoveryFailureReceipt receipt,
+            out string reason)
+        {
+            return TryParseRecoveryFailureReceiptWire(json, null, null, null,
+                out message, out receipt, out reason);
+        }
+
+        private static bool TryObject(Dictionary<string, object> map, string key, out Dictionary<string, object> value)
+        {
+            value = null;
+            return map != null && map.ContainsKey(key) && map[key] is Dictionary<string, object> &&
+                   (value = (Dictionary<string, object>)map[key]) != null;
+        }
+
+        private static bool TryString(Dictionary<string, object> map, string key, out string value)
+        {
+            value = null;
+            if (map == null || !map.ContainsKey(key) || !(map[key] is string)) return false;
+            value = (string)map[key];
+            return true;
+        }
+
+        private static bool TryBool(Dictionary<string, object> map, string key, out bool value)
+        {
+            value = false;
+            if (map == null || !map.ContainsKey(key) || !(map[key] is bool)) return false;
+            value = (bool)map[key];
+            return true;
+        }
+
+        private static bool TryInt(Dictionary<string, object> map, string key, out int value)
+        {
+            value = 0;
+            if (map == null || !map.ContainsKey(key)) return false;
+            if (map[key] is int) { value = (int)map[key]; return true; }
+            if (map[key] is long && (long)map[key] >= int.MinValue && (long)map[key] <= int.MaxValue)
+            { value = (int)(long)map[key]; return true; }
+            return false;
+        }
+
+        private static bool TryLong(Dictionary<string, object> map, string key, out long value)
+        {
+            value = 0;
+            if (map == null || !map.ContainsKey(key)) return false;
+            if (map[key] is long) { value = (long)map[key]; return true; }
+            if (map[key] is int) { value = (int)map[key]; return true; }
+            return false;
+        }
+
+        /// <summary>
+        /// Validates the structured failure receipt at the protocol boundary.
+        /// The outer session/correlation are authoritative; the receipt never
+        /// carries or reconstructs a permit nonce.
+        /// </summary>
+        public static bool TryValidateRecoveryFailureReceipt(
+            WatchdogMessage message,
+            out RecoveryFailureReceipt receipt,
+            out string reason)
+        {
+            receipt = message?.RecoveryFailureReceipt?.Clone();
+            reason = null;
+            if (message == null) { reason = "MessageMissing"; return false; }
+            if (!IsSupportedVersion(message.ProtocolVersion)) { reason = "ProtocolVersion"; return false; }
+            if (!string.Equals(message.Type, WatchdogMessageType.RecoveryAttemptFailedReceipt, StringComparison.Ordinal))
+            { reason = "MessageType"; return false; }
+            if (!IsCanonicalGuidN(message.SessionId)) { reason = "SessionMissing"; return false; }
+            if (!IsCanonicalGuidN(message.CorrelationId)) { reason = "CorrelationMissing"; return false; }
+            if (receipt == null) { reason = "ReceiptMissing"; return false; }
+            if (message.Session != null || message.Heartbeat != null || message.StopSummary != null ||
+                message.CheckpointMirror != null || message.BatchStartFailure != null ||
+                !string.IsNullOrEmpty(message.Reason) ||
+                !string.IsNullOrEmpty(message.RecoveryFailureCode) || message.RecoveryFailurePermanent ||
+                !string.IsNullOrEmpty(message.RecoveryFailureDetail) ||
+                !string.IsNullOrEmpty(message.RecoveryFailureContextSha256) ||
+                !string.IsNullOrEmpty(message.RecoveryFailureOwner) ||
+                !string.IsNullOrEmpty(message.RecoveryFailureCorrelationId) ||
+                !string.IsNullOrEmpty(message.RootCode) || !string.IsNullOrEmpty(message.RunId) ||
+                !string.IsNullOrEmpty(message.RecoveryStage) || !string.IsNullOrEmpty(message.RecoveryProgressToken) ||
+                !string.IsNullOrEmpty(message.RecoveryProcessSource) ||
+                !string.IsNullOrEmpty(message.DeviceOrChannelGroup) ||
+                !string.IsNullOrEmpty(message.RecoveryFailureFingerprint) ||
+                !string.IsNullOrEmpty(message.SidecarAuthoritySessionId) || !string.IsNullOrEmpty(message.SidecarSessionId) ||
+                message.SidecarProcessId != 0 || message.SidecarProcessStartUtcTicks != 0 ||
+                message.SidecarStartUtcTicks != 0 || message.StartUtcTicks != 0 ||
+                !string.IsNullOrEmpty(message.SidecarInstanceNonce) || !string.IsNullOrEmpty(message.InstanceNonce) ||
+                message.RelaunchPermitGeneration != 0 || !string.IsNullOrEmpty(message.RelaunchPermitId) ||
+                !string.IsNullOrEmpty(message.RelaunchPermitNonce) || message.AckSequence != 0 ||
+                message.RecoveryCommitGeneration != 0)
+            { reason = "UnrelatedPayloadPresent"; return false; }
+            if (!RecoveryFailureReceipt.IsValidCorrelation(receipt.RequestCorrelationId) ||
+                !RecoveryFailureReceipt.IsValidCorrelation(message.CorrelationId) ||
+                !string.Equals(message.CorrelationId, receipt.RequestCorrelationId, StringComparison.Ordinal))
+            { reason = "CorrelationMismatch"; return false; }
+            if (!receipt.IsDecisionValid()) { reason = "ReceiptInvalid"; return false; }
+            return true;
+        }
+
+        /// <summary>
+        /// Strict authority validator.  The expected session/correlation are
+        /// supplied by the already validated connection and compared ordinally;
+        /// launch-only permit fields are forbidden on this message shape.
+        /// </summary>
+        public static bool TryValidateRecoveryFailureReceipt(
+            WatchdogMessage message,
+            string expectedSessionId,
+            string expectedCorrelationId,
+            out RecoveryFailureReceipt receipt,
+            out string reason)
+        {
+            return TryValidateRecoveryFailureReceipt(message, expectedSessionId, expectedCorrelationId, null, out receipt, out reason);
+        }
+
+        public static bool TryValidateRecoveryFailureReceipt(
+            WatchdogMessage message,
+            string expectedSessionId,
+            string expectedCorrelationId,
+            string expectedRequestPayloadSha256,
+            out RecoveryFailureReceipt receipt,
+            out string reason)
+        {
+            if (!TryValidateRecoveryFailureReceipt(message, out receipt, out reason)) return false;
+            Guid sessionGuid;
+            if (!Guid.TryParseExact(expectedSessionId ?? string.Empty, "N", out sessionGuid) ||
+                !string.Equals(expectedSessionId, sessionGuid.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(message.SessionId, expectedSessionId, StringComparison.Ordinal) ||
+                !Guid.TryParseExact(expectedCorrelationId ?? string.Empty, "N", out var expectedCorr) ||
+                !string.Equals(expectedCorrelationId, expectedCorr.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(message.CorrelationId, expectedCorrelationId, StringComparison.Ordinal))
+            {
+                reason = "ExpectedIdentityMismatch";
+                return false;
+            }
+            if (!string.IsNullOrEmpty(expectedRequestPayloadSha256) &&
+                !string.Equals(receipt.RequestPayloadSha256, expectedRequestPayloadSha256, StringComparison.Ordinal))
+            {
+                reason = "RequestPayloadMismatch";
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// V3 fields are safety evidence, so a peer must use the exact
+        /// contract version.  Treating a newer/older payload as compatible
+        /// would allow a missing identity or deadline to be interpreted as a
+        /// valid handshake.
+        /// </summary>
+        public static bool IsSupportedVersion(int protocolVersion) =>
+            protocolVersion >= MinimumCompatibleVersion &&
+            protocolVersion <= Version &&
+            protocolVersion == Version;
+
+        private static bool IsCanonicalGuidN(string value)
+        {
+            Guid parsed;
+            return !string.IsNullOrEmpty(value) && Guid.TryParseExact(value, "N", out parsed) &&
+                   string.Equals(parsed.ToString("N"), value, StringComparison.Ordinal);
+        }
+
+        private static bool IsRequiredToken(string value)
+        {
+            return !string.IsNullOrWhiteSpace(value) && value.Length <= 4096 &&
+                   value.IndexOfAny(new[] { '\r', '\n', '\0' }) < 0;
+        }
+
+        private static bool IsDiagnosticText(string value)
+        {
+            return value != null && value.Length <= 256 * 1024 &&
+                   value.IndexOf('\0') < 0;
+        }
     }
 
     public static class WatchdogMessageType
@@ -28,6 +515,7 @@ namespace MTTFTest.Watchdog.Protocol
         public const string SafetyPreflightPassed = "SafetyPreflightPassed";
         public const string RecoveryBatchCommitted = "RecoveryBatchCommitted";
         public const string RecoveryAttemptFailed = "RecoveryAttemptFailed";
+        public const string RecoveryAttemptFailedReceipt = "RecoveryAttemptFailedReceipt";
         public const string BatchStartFailed = "BatchStartFailed";
         public const string RequestStopAll = "RequestStopAll";
         public const string StopCompleted = "StopCompleted";
@@ -46,6 +534,23 @@ namespace MTTFTest.Watchdog.Protocol
         public string Type { get; set; }
         public string SessionId { get; set; }
         public string CorrelationId { get; set; }
+        /// <summary>Attached response authority identity; prevents a client from
+        /// treating a duplicate singleton launch as the active sidecar.</summary>
+        public int SidecarProcessId { get; set; }
+        public long SidecarProcessStartUtcTicks { get; set; }
+        /// <summary>Short canonical alias used by Attached handshake fixtures.</summary>
+        public long SidecarStartUtcTicks { get; set; }
+        /// <summary>
+        /// Compact v3 alias retained for peers which name the frozen process
+        /// start field simply <c>StartUtcTicks</c>.
+        /// </summary>
+        public long StartUtcTicks { get; set; }
+        public string SidecarAuthoritySessionId { get; set; }
+        public string SidecarSessionId { get; set; }
+        /// <summary>每个 Sidecar 进程启动时冻结的随机身份。</summary>
+        public string SidecarInstanceNonce { get; set; }
+        /// <summary>Canonical v3 alias for SidecarInstanceNonce.</summary>
+        public string InstanceNonce { get; set; }
         public string Reason { get; set; }
         /// <summary>机器可判定的恢复失败码；旧客户端缺失时由 sidecar 兼容分类。</summary>
         public string RecoveryFailureCode { get; set; }
@@ -58,6 +563,22 @@ namespace MTTFTest.Watchdog.Protocol
         /// <summary>若失败由 RequestStopAll 引起，回传该请求的关联号。</summary>
         public string RecoveryFailureCorrelationId { get; set; }
         /// <summary>
+        /// V3 structured recovery-failure evidence.  These fields are the
+        /// durable report identity; RecoveryFailureDetail/Reason remain
+        /// diagnostic prose only.
+        /// </summary>
+        public string RootCode { get; set; }
+        public string DeviceOrChannelGroup { get; set; }
+        public string RunId { get; set; }
+        public string RecoveryStage { get; set; }
+        public string RecoveryProgressToken { get; set; }
+        public string RecoveryProcessSource { get; set; }
+        public string RecoveryFailureFingerprint { get; set; }
+        /// <summary>Schema4 relaunch permit identity/evidence carried by a recovery attach.</summary>
+        public long RelaunchPermitGeneration { get; set; }
+        public string RelaunchPermitId { get; set; }
+        public string RelaunchPermitNonce { get; set; }
+        /// <summary>
         /// Heartbeat sequence acknowledged by the sidecar.  It is deliberately
         /// additive so old binaries can continue to deserialize the protocol.
         /// </summary>
@@ -67,6 +588,20 @@ namespace MTTFTest.Watchdog.Protocol
         public WatchdogHeartbeat Heartbeat { get; set; }
         public WatchdogStopSummary StopSummary { get; set; }
         public WatchdogCheckpointMirror CheckpointMirror { get; set; }
+        /// <summary>启动失败时是否具备跨进程恢复资格；缺失表示旧客户端或证据不足。</summary>
+        public WatchdogBatchStartFailureContext BatchStartFailure { get; set; }
+        /// <summary>Structured durable failure decision (v3 exact wire shape).</summary>
+        public RecoveryFailureReceipt RecoveryFailureReceipt { get; set; }
+    }
+
+    public sealed class WatchdogBatchStartFailureContext
+    {
+        public string RunId { get; set; }
+        public string CheckpointRunId { get; set; }
+        public long RunEpoch { get; set; }
+        public bool FormalRunCommitted { get; set; }
+        public bool CheckpointArmed { get; set; }
+        public bool RecoveryProcess { get; set; }
     }
 
     public sealed class WatchdogRunSession
@@ -76,11 +611,15 @@ namespace MTTFTest.Watchdog.Protocol
         public string ExecutablePath { get; set; }
         public int ProcessId { get; set; }
         public long ProcessStartUtcTicks { get; set; }
+        /// <summary>Local validated attachment epoch; never reused across Attach.</summary>
+        public long AttachEpoch { get; set; }
         public string RunId { get; set; }
         public long RunEpoch { get; set; }
         public int RecoveryAttempt { get; set; }
         /// <summary>每次创建恢复进程时递增，恢复成功后也不回退，用于审计。</summary>
         public long RelaunchGeneration { get; set; }
+        public string RelaunchPermitId { get; set; }
+        public string RelaunchPermitNonce { get; set; }
         public bool RecoveryProcess { get; set; }
         public int[] SelectedChannels { get; set; } = Array.Empty<int>();
     }
@@ -91,6 +630,8 @@ namespace MTTFTest.Watchdog.Protocol
         public string SessionId { get; set; }
         public int ProcessId { get; set; }
         public long ProcessStartUtcTicks { get; set; }
+        /// <summary>Attachment ordering domain stamped by the validated host.</summary>
+        public long AttachEpoch { get; set; }
         public string RunId { get; set; }
         public long RunEpoch { get; set; }
         public string Phase { get; set; }
@@ -127,6 +668,8 @@ namespace MTTFTest.Watchdog.Protocol
         public string RecoveryStage { get; set; }
         public string RecoveryIncident { get; set; }
         public string RecoveryContext { get; set; }
+        /// <summary>当前发送心跳的进程类型，便于恢复失败审计。</summary>
+        public string RecoveryProcessSource { get; set; }
         public int StageOrdinal { get; set; }
         public bool OrphanPaused { get; set; }
         public bool PowerDisablePending { get; set; }
@@ -141,6 +684,12 @@ namespace MTTFTest.Watchdog.Protocol
         public long PauseSince { get; set; }
         public long PowerDisableSince { get; set; }
         public long RecoveryProgressVersion { get; set; }
+        /// <summary>
+        /// Monotonic identity of the controller's immutable aggregate recovery
+        /// snapshot.  This is an evidence version, not material recovery
+        /// progress; the sidecar must not use it to reset a recovery deadline.
+        /// </summary>
+        public long RecoveryAggregateSnapshotVersion { get; set; }
         /// <summary>控制器恢复流水线硬截止 UTC DateTime ticks。</summary>
         public long RecoveryHardDeadlineUtc { get; set; }
         /// <summary>恢复批次真正提交后递增，并在后续心跳重复发送直到 Sidecar 观察到。</summary>
@@ -163,8 +712,32 @@ namespace MTTFTest.Watchdog.Protocol
         public bool StopAllActive { get; set; }
         public string StopStage { get; set; }
         public long StopStartedUtc { get; set; }
+        /// <summary>整个 StopAll 事务的 Controller 逃逸截止（UTC ticks）。</summary>
+        public long StopHardDeadlineUtc { get; set; }
         public long StopStageStartedUtc { get; set; }
         public long StopProgressVersion { get; set; }
+        /// <summary>当前 StopAll 阶段的硬截止，不使用全局固定五秒替代。</summary>
+        public long StopStageHardDeadlineUtc { get; set; }
+        /// <summary>当前 StopAll 阶段硬截止后的无材料进展宽限。</summary>
+        public int StopStageNoProgressGraceMs { get; set; }
+        /// <summary>Controller 最近一次压力/DAQ/持久化材料进展 UTC ticks。</summary>
+        public long StopLastMaterialProgressUtc { get; set; }
+        /// <summary>
+        /// Canonical stop-safety decision emitted by the Controller ledger.
+        /// These fields are deliberately separate from StopAllActive: a
+        /// terminal/takeover decision remains actionable even after the
+        /// Controller has marked the stop transaction inactive.
+        /// </summary>
+        public bool StopTakeoverRequired { get; set; }
+        public bool StopTimedOut { get; set; }
+        public string StopTerminalReason { get; set; }
+        public string StopTransactionId { get; set; }
+        public long StopGeneration { get; set; }
+        // Canonical names retained alongside the prefixed aliases so v3 peers can
+        // consume the same evidence without reconstructing it from UI text.
+        public long StageHardDeadlineUtc { get; set; }
+        public int StageNoProgressGraceMs { get; set; }
+        public long LastMaterialProgressUtc { get; set; }
         public bool StopPhysicalSafe { get; set; }
         public int TimerCount { get; set; }
         public int RunnerCount { get; set; }
@@ -206,6 +779,14 @@ namespace MTTFTest.Watchdog.Protocol
         public bool ResourcesMustBeInactive { get; set; }
         public bool ManualPauseOwned { get; set; }
         public bool RecoveryOwned { get; set; }
+        public string RecoveryOwnerKind { get; set; }
+        public string RecoveryOwnerId { get; set; }
+        public long RecoveryOwnerGeneration { get; set; }
+        public string RecoveryTargetPhase { get; set; }
+        public long SourceStateRevision { get; set; }
+        public bool WarningActive { get; set; }
+        public string WarningCode { get; set; }
+        public long WarningRevision { get; set; }
         public long PhaseHardDeadlineUtc { get; set; }
         public long StateRevision { get; set; }
         public long StateSinceUtcTicks { get; set; }

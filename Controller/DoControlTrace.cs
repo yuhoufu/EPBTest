@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Config;
 using Controller.Adaptive;
 using DataOperation;
@@ -350,16 +351,22 @@ namespace Controller
                 : dueUtc.ToUniversalTime();
         }
 
-        internal bool CommandEpbForward(int channel, string stage)
+        internal bool CommandEpbForward(
+            int channel,
+            string stage,
+            ChannelExecutionPermit permit)
         {
-            EnsureChannelExecutionPermit(channel, stage);
+            EnsureChannelExecutionPermit(channel, stage, permit);
             EnsurePowerSupplyEnergizationPermit(channel);
             return ExecuteDoCommand(channel, stage, EpbDoCommand.Forward, () => _do.SetEpbForward(channel));
         }
 
-        internal bool CommandEpbReverse(int channel, string stage)
+        internal bool CommandEpbReverse(
+            int channel,
+            string stage,
+            ChannelExecutionPermit permit)
         {
-            EnsureChannelExecutionPermit(channel, stage);
+            EnsureChannelExecutionPermit(channel, stage, permit);
             EnsurePowerSupplyEnergizationPermit(channel);
             return ExecuteDoCommand(channel, stage, EpbDoCommand.Reverse, () => _do.SetEpbReverse(channel));
         }
@@ -417,11 +424,24 @@ namespace Controller
             return result;
         }
 
-        private void EnsureChannelExecutionPermit(int channel, string stage)
+        private void EnsureChannelExecutionPermit(
+            int channel,
+            string stage,
+            ChannelExecutionPermit permit)
         {
             if (System.Threading.Volatile.Read(ref _energizationRevoked) != 0)
                 throw new InvalidOperationException(
                     $"停止安全栅栏已生效，拒绝 EPB{channel:D2} 上电命令。Stage={stage}");
+            if (permit.Channel != channel ||
+                !_channelExecutionFence.IsCurrent(permit) ||
+                permit.RunEpoch != Interlocked.Read(ref _runEpoch))
+                throw new ChannelExecutionPermitException(
+                    channel,
+                    _channelRuntimeStateStore.Get(channel)?.State ??
+                    ChannelRuntimeState.NotEnabled,
+                    $"StaleExecutionGeneration Stage={stage} " +
+                    $"Permit={permit.RunEpoch}/{permit.Generation} " +
+                    $"CurrentEpoch={Interlocked.Read(ref _runEpoch)}");
             if (!IsChannelEnabled(channel))
                 throw new ChannelExecutionPermitException(
                     channel,

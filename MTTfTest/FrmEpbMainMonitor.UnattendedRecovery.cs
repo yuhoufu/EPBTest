@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using MTTFTest.Watchdog.Protocol;
 using Config;
 using Controller;
+using MtEmbTest;
 
 namespace MTEmbTest
 {
@@ -19,19 +20,24 @@ namespace MTEmbTest
             Detail = detail ?? string.Empty;
         }
 
+        internal WatchdogHardwareUnavailableException(
+            RecoveryFailureReport report,
+            string detail)
+            : this(RecoveryFailurePolicy.BuildFingerprint(report), detail)
+        {
+            Report = RecoveryFailurePolicy.NormalizeReport(report);
+        }
+
         internal string Fingerprint { get; }
         internal string Detail { get; }
+        internal RecoveryFailureReport Report { get; }
     }
 
     public partial class FrmEpbMainMonitor
     {
         private const int UnattendedQuiesceTotalTimeoutMs = 30000;
         private int _watchdogTakeoverExit;
-        private long _watchdogRecoveryProgressVersion;
         private long _watchdogRecoveryBatchCommitGeneration;
-        private readonly object _watchdogProgressGate = new object();
-        private string _watchdogProgressSignature = string.Empty;
-        private long _watchdogStageStartedTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         private readonly object _hardwareRecoveryGate = new object();
         private bool _hardwareRecoveryActive;
         private string _hardwareFailureFingerprint = string.Empty;
@@ -101,8 +107,6 @@ namespace MTEmbTest
             UnattendedRecoveryCoordinator.Attach(_epb, _cfg);
             UnattendedRecoveryCoordinator.RegisterQuiesceAndFlush(
                 QuiesceAndFlushForUnattendedRestartAsync);
-            WatchdogRuntime.StopAllRequested -= OnWatchdogStopAllRequested;
-            WatchdogRuntime.StopAllRequested += OnWatchdogStopAllRequested;
             WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
             WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
             WatchdogRuntime.TransportLost += OnWatchdogTransportLost;
@@ -137,21 +141,43 @@ namespace MTEmbTest
 
         private WatchdogHeartbeat CreateWatchdogHeartbeat()
         {
-            ChannelRuntimeStateChangedEvent[] states;
-            lock (_channelRuntimeStates)
-                states = _channelRuntimeStates.Values.Select(x => x.Clone()).ToArray();
+            // EpbManager captures lifecycle state, contracts/registry leases,
+            // DAQ progress and Stop progress under one recovery gate.  The
+            // aggregate is the only source of channel state for this
+            // heartbeat.  If it is unavailable, fail closed with an empty
+            // state set; reading _channelRuntimeStates here would mix a UI
+            // revision with the controller aggregate and could resurrect a
+            // stale Recovering owner.
+            var capturedRecovery = WatchdogHeartbeatSourceCapture.CaptureOnce(
+                () => _epb?.CaptureWatchdogRecoverySnapshot());
+            var controllerRecovery = capturedRecovery.Snapshot;
+            var aggregate = capturedRecovery.Aggregate;
+            var states = RecoveryHeartbeatAggregateSource.CaptureChannelStates(aggregate);
             var enabled = states.Where(x => x.Enabled).Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
             var completed = states.Where(x => x.State == ChannelRuntimeState.Completed).Select(x => x.Channel).ToArray();
             var alarmed = states.Where(x => x.State == ChannelRuntimeState.AlarmStopped ||
                                             x.State == ChannelRuntimeState.InterlockStopped ||
                                             x.State == ChannelRuntimeState.StartBlocked)
                 .Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
-            var permanentAlarmed = CapturePermanentAlarmedChannels();
+            var permanentAlarmed = (aggregate?.Infrastructure?.PermanentAlarmedChannels ??
+                                    Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
             var manuallyDisabled = states.Where(x => !x.Enabled ||
                                                       x.State == ChannelRuntimeState.ManualStopped ||
                                                       x.State == ChannelRuntimeState.NotEnabled)
                 .Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
-            var recoveryEvidence = CaptureWatchdogRecoveryEvidence();
+            // A missing aggregate is an unavailable controller source, not an
+            // invitation to fall back to flattened/UI state.  Keep every
+            // recovery field fail-closed for this heartbeat.
+            // Pass the exact object captured above, including a null/legacy
+            // snapshot.  CaptureWatchdogRecoveryEvidence must never perform a
+            // second live manager read: doing so would mix aggregate
+            // revisions (or resurrect a stale owner when the first read was
+            // unavailable).
+            var recoveryEvidence = CaptureWatchdogRecoveryEvidence(controllerRecovery);
             // AlarmedChannels is diagnostic only.  The sidecar must not infer
             // permanence from a UI state; the controller publishes the
             // structured hardware latch through the controller-owned snapshot API.
@@ -171,8 +197,15 @@ namespace MTEmbTest
             var recovering = states.Where(x => x.State == ChannelRuntimeState.Recovering ||
                                                 x.State == ChannelRuntimeState.ResumeChecking)
                 .ToArray();
-            var logical = _epb?.CaptureWatchdogLogicalSnapshot();
-            var stop = _epb?.CaptureStopSafetyProgress();
+            // The aggregate is the only heartbeat source.  Do not fill any
+            // recovery field from a second live manager read: that would mix
+            // revisions and can resurrect a stale owner/stage in the sidecar.
+            var logical = aggregate?.Logical ?? new LogicalQuiescenceSnapshot();
+            var stop = aggregate?.StopProgress ?? new StopSafetyProgressSnapshot();
+            // All stop fields are mapped from the same immutable aggregate
+            // revision.  No second live manager read or UI cache participates
+            // in heartbeat construction.
+            var stopProjection = StopSafetyWatchdogHeartbeatMapper.Map(aggregate);
             var storage = _epb?.CaptureWatchdogStorageSnapshot();
             var manualPauseActive =
                 _epb?.CurrentBatchPauseState == BatchPauseState.Paused;
@@ -211,44 +244,19 @@ namespace MTEmbTest
                 recovering.Length > 0,
                 !string.IsNullOrWhiteSpace(recoveryIncident) ||
                 !string.IsNullOrWhiteSpace(recoveryContext));
-            var progressSignature = RecoveryProgressSignature.Build(
-                recovering.Select(state =>
-                        $"{state.Channel}:{state.State}:{state.ReasonCode}:{state.Revision}")
-                    .Concat(new[]
-                    {
-                        $"Stop:{stop?.ProgressVersion ?? 0}:{stop?.Stage}:{stop?.Active}:{stop?.PhysicalSafe}"
-                    }),
-                logical?.DaqRecoveryCount ?? 0,
-                logical?.SoftwareRecoveryCount ?? 0,
-                logical?.RecoveryOwnerCount ?? 0,
-                stageOrdinal,
-                recoveryIncident,
-                recoveryContext,
-                orphanPaused,
-                powerDisablePending);
-            lock (_watchdogProgressGate)
-            {
-                if (!string.Equals(
-                        progressSignature,
-                        _watchdogProgressSignature,
-                        StringComparison.Ordinal))
-                {
-                    _watchdogProgressSignature = progressSignature;
-                    _watchdogStageStartedTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-                    Interlocked.Increment(ref _watchdogRecoveryProgressVersion);
-                }
-            }
             var phase = hardwareUnavailable ? "SafeIdleHardwareUnavailable" :
                 manualPausePending ? "ManualPausePending" :
                 manualPauseActive ? "ManualPaused" :
                 states.Any(x => x.State == ChannelRuntimeState.Learning) ? "Learning" :
                 states.Any(x => x.State == ChannelRuntimeState.Running || x.State == ChannelRuntimeState.WarningRunning) ? "Formal" :
                 recovering.Length > 0 ? "Recovering" :
-                (_epb?.IsBatchSessionActive ?? false) ? "Paused" : "Idle";
+                (logical?.BatchSessionActive ?? false) ? "Paused" : "Idle";
+            var watchdogRunId = aggregate?.Infrastructure?.RunId ?? Guid.Empty;
+            var watchdogRunEpoch = aggregate?.Infrastructure?.RunEpoch ?? 0;
             return new WatchdogHeartbeat
             {
-                RunId = _epb?.WatchdogRunId.ToString("N") ?? string.Empty,
-                RunEpoch = _epb?.WatchdogRunEpoch ?? 0,
+                RunId = watchdogRunId == Guid.Empty ? string.Empty : watchdogRunId.ToString("N"),
+                RunEpoch = watchdogRunEpoch,
                 Phase = phase,
                 EnabledChannels = enabled,
                 EligibleChannels = eligible,
@@ -274,7 +282,9 @@ namespace MTEmbTest
                     ? (manualPausePending
                         ? "ManualPausePending"
                         : "ManualPaused")
-                    : recovering.FirstOrDefault()?.State.ToString() ?? string.Empty,
+                    : !string.IsNullOrWhiteSpace(recoveryEvidence.Stage)
+                        ? recoveryEvidence.Stage
+                        : recovering.FirstOrDefault()?.State.ToString() ?? string.Empty,
                 RecoveryIncident = recoveryIncident,
                 RecoveryContext = recoveryContext,
                 StageOrdinal = stageOrdinal,
@@ -284,11 +294,13 @@ namespace MTEmbTest
                 PowerOffUnconfirmed = recoveryEvidence.PowerOffUnconfirmed,
                 PauseSince = manualPauseCommanded ? 0 : pauseSince,
                 PowerDisableSince = recoveryEvidence.PowerDisableSince,
-                RecoveryProgressVersion = Interlocked.Read(ref _watchdogRecoveryProgressVersion),
+                RecoveryProgressVersion = recoveryEvidence.ProgressVersion,
+                RecoveryAggregateSnapshotVersion =
+                    RecoveryHeartbeatAggregateSource.CaptureVersion(aggregate),
                 RecoveryHardDeadlineUtc = recoveryEvidence.RecoveryHardDeadlineUtc,
                 RecoveryBatchCommitGeneration = Interlocked.Read(
                     ref _watchdogRecoveryBatchCommitGeneration),
-                StageStartedMonotonic = Interlocked.Read(ref _watchdogStageStartedTicks),
+                StageStartedMonotonic = recoveryEvidence.StageStartedUtcTicks,
                 DaqRecoveryCount = logical?.DaqRecoveryCount ?? 0,
                 ActiveCycleCount = logical?.ActiveCycleCount ?? 0,
                 SoftwareRecoveryCount = logical?.SoftwareRecoveryCount ?? 0,
@@ -296,8 +308,20 @@ namespace MTEmbTest
                 StopAllActive = stop?.Active == true,
                 StopStage = stop?.Stage.ToString() ?? string.Empty,
                 StopStartedUtc = stop?.StartedUtc.Ticks ?? 0,
+                StopHardDeadlineUtc = stop?.HardDeadlineUtc.Ticks ?? 0,
                 StopStageStartedUtc = stop?.StageStartedUtc.Ticks ?? 0,
                 StopProgressVersion = stop?.ProgressVersion ?? 0,
+                StopStageHardDeadlineUtc = stop?.StageHardDeadlineUtc.Ticks ?? 0,
+                StopStageNoProgressGraceMs = stop?.StageNoProgressGraceMs ?? 0,
+                StopLastMaterialProgressUtc = stop?.LastMaterialProgressUtc.Ticks ?? 0,
+                StopTakeoverRequired = stopProjection.TakeoverRequired,
+                StopTimedOut = stopProjection.TimedOut,
+                StopTerminalReason = stopProjection.TerminalReason,
+                StopTransactionId = stopProjection.TransactionId,
+                StopGeneration = stopProjection.Generation,
+                StageHardDeadlineUtc = stop?.StageHardDeadlineUtc.Ticks ?? 0,
+                StageNoProgressGraceMs = stop?.StageNoProgressGraceMs ?? 0,
+                LastMaterialProgressUtc = stop?.LastMaterialProgressUtc.Ticks ?? 0,
                 StopPhysicalSafe = stop?.PhysicalSafe == true,
                 TimerCount = logical?.TimerCount ?? 0,
                 RunnerCount = logical?.RunnerCount ?? 0,
@@ -313,6 +337,18 @@ namespace MTEmbTest
                     .Select(item =>
                     {
                         var contract = WatchdogRuntimeContractPolicy.Resolve(item.State);
+                        var recovering = string.Equals(
+                            item.State,
+                            ChannelRuntimeState.Recovering.ToString(),
+                            StringComparison.OrdinalIgnoreCase);
+                        var explicitRecoveryOwner = recovering &&
+                            !string.IsNullOrWhiteSpace(item.RecoveryOwnerKind) &&
+                            !string.Equals(item.RecoveryOwnerKind, RecoveryOwnerKind.None.ToString(), StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(item.RecoveryOwnerKind, RecoveryOwnerKind.Unknown.ToString(), StringComparison.OrdinalIgnoreCase) &&
+                            !string.IsNullOrWhiteSpace(item.RecoveryOwnerId) &&
+                            item.RecoveryOwnerGeneration == watchdogRunEpoch &&
+                            !string.IsNullOrWhiteSpace(item.RecoveryTargetPhase) &&
+                            !string.Equals(item.RecoveryTargetPhase, RecoveryTargetPhase.None.ToString(), StringComparison.OrdinalIgnoreCase);
                         return new WatchdogChannelProgress
                         {
                             Channel = item.Channel,
@@ -325,8 +361,20 @@ namespace MTEmbTest
                             ResourcesMustBeInactive = contract.ResourcesMustBeInactive,
                             ManualPauseOwned = manualPauseCommanded &&
                                 contract.ManualPauseOwnerRequired,
+                            // Recovering 必须由本通道的结构化 owner 覆盖；禁止再用全局
+                            // RecoveryOwnerCount 为任意通道“借”一个所有者。
                             RecoveryOwned = contract.RecoveryOwnerRequired &&
-                                (recoveryActive || (logical?.RecoveryOwnerCount ?? 0) > 0),
+                                (recovering
+                                    ? explicitRecoveryOwner
+                                    : recoveryActive || (logical?.RecoveryOwnerCount ?? 0) > 0),
+                            RecoveryOwnerKind = item.RecoveryOwnerKind,
+                            RecoveryOwnerId = item.RecoveryOwnerId,
+                            RecoveryOwnerGeneration = item.RecoveryOwnerGeneration,
+                            RecoveryTargetPhase = item.RecoveryTargetPhase,
+                            SourceStateRevision = item.SourceStateRevision,
+                            WarningActive = item.WarningActive,
+                            WarningCode = item.WarningCode,
+                            WarningRevision = item.WarningRevision,
                             PhaseHardDeadlineUtc = contract.RecoveryOwnerRequired
                                 ? recoveryEvidence.RecoveryHardDeadlineUtc
                                 : contract.ManualPauseOwnerRequired
@@ -384,7 +432,7 @@ namespace MTEmbTest
                 HardwareFailureDetail = hardwareDetail,
                 HardwareProbeAttempt = hardwareAttempt,
                 HardwareNextProbeUtc = hardwareNextProbeUtc.Ticks,
-                RunActive = _epb?.IsBatchSessionActive ?? false
+                RunActive = logical?.BatchSessionActive ?? false
             };
         }
 
@@ -400,15 +448,22 @@ namespace MTEmbTest
             public string Incident = string.Empty;
             public string Context = string.Empty;
             public int StageOrdinal;
+            public long ProgressVersion;
+            public long StageStartedUtcTicks;
+            public string Stage = string.Empty;
             public bool Active;
         }
 
-        private WatchdogRecoveryEvidence CaptureWatchdogRecoveryEvidence()
+        private WatchdogRecoveryEvidence CaptureWatchdogRecoveryEvidence(
+            WatchdogRecoverySnapshot suppliedSnapshot)
         {
             var result = new WatchdogRecoveryEvidence();
             try
             {
-                var snapshot = _epb?.CaptureWatchdogRecoverySnapshot();
+                // The heartbeat caller has already captured the controller
+                // snapshot exactly once.  Do not fall back to a second live
+                // CaptureWatchdogRecoverySnapshot call here.
+                var snapshot = suppliedSnapshot;
                 if (snapshot == null) return result;
                 result.OrphanPaused = snapshot.OrphanPaused;
                 result.PowerDisablePending = snapshot.PowerDisablePending;
@@ -419,7 +474,10 @@ namespace MTEmbTest
                 result.PowerDisableSince = snapshot.PowerDisableSinceUtcTicks;
                 result.Incident = snapshot.RecoveryIncident ?? string.Empty;
                 result.Context = snapshot.RecoveryContext ?? string.Empty;
+                result.Stage = snapshot.Stage ?? string.Empty;
                 result.StageOrdinal = snapshot.StageOrdinal;
+                result.ProgressVersion = snapshot.ProgressVersion;
+                result.StageStartedUtcTicks = snapshot.StageStartedUtcTicks;
                 result.Active = snapshot.ActiveRecovery;
             }
             catch (Exception ex)
@@ -431,65 +489,6 @@ namespace MTEmbTest
                     ex);
             }
             return result;
-        }
-
-
-        private void OnWatchdogStopAllRequested(string reason, string correlationId)
-        {
-            if (Volatile.Read(ref _operatorStopRequested) != 0) return;
-            try
-            {
-                BeginInvoke((Action)(async () =>
-                {
-                    if (Volatile.Read(ref _operatorStopRequested) != 0) return;
-                    try
-                    {
-                        var safety = await _epb.PrepareForFreshRestartAsync(
-                            new StopContext
-                            {
-                                Source = StopSource.SystemFault,
-                                Reason = "独立看门狗整批接管：" + reason,
-                                Initiator = "MTTFTest.Watchdog",
-                                CorrelationId = string.IsNullOrWhiteSpace(correlationId)
-                                    ? Guid.NewGuid().ToString("N")
-                                    : correlationId,
-                                RequestedUtc = DateTime.UtcNow
-                            }).ConfigureAwait(true);
-                        WatchdogRuntime.NotifyStopCompleted(ToWatchdogStopSummary(safety), reason);
-                        Interlocked.Exchange(ref _watchdogTakeoverExit, 1);
-                        ProjectLogHub.Flush(true);
-                        System.Windows.Forms.Application.Exit();
-                    }
-                    catch (Exception ex)
-                    {
-                        ProjectLogHub.Write(ProjectLogLevel.Error,
-                            "独立看门狗请求 StopAll 未能收口，外部进程将在15秒期限后强制接管：" + ex.Message,
-                            "独立看门狗", ex);
-                    }
-                }));
-            }
-            catch { }
-        }
-
-        private static WatchdogStopSummary ToWatchdogStopSummary(StopSafetyResult safety)
-        {
-            return new WatchdogStopSummary
-            {
-                MotorOffConfirmed = safety?.MotorOffCommandSucceeded == true,
-                PowerOffConfirmed = safety?.PowerOffConfirmed == true,
-                PressureSafeConfirmed = safety?.PressureSafeConfirmed == true,
-                RawDrained = safety?.RawStorageFlushed == true,
-                PersistenceConfirmed = safety?.PersistenceBoundaryConfirmed == true,
-                ContinuityConfirmed = safety?.DataContinuityCompromised == false,
-                LogicalQuiescenceConfirmed = safety?.LogicalQuiescenceConfirmed == true,
-                RequiresProcessRestart = safety?.RequiresProcessRestart == true,
-                TimedOut = safety?.TimedOut == true,
-                Outcome = safety?.Outcome.ToString() ?? string.Empty,
-                LastStage = safety?.LastStage.ToString() ?? string.Empty,
-                Detail = safety == null ? "StopSafetyResultUnavailable" :
-                    $"CanRestart={safety.CanRestartInProcess};Motor={safety.MotorError};Power={safety.PowerError};" +
-                    $"Pressure={safety.PressureError};Persistence={safety.PersistenceError};Logical={safety.LogicalError}"
-            };
         }
 
         private async Task QuiesceAndFlushForUnattendedRestartAsync()
@@ -672,6 +671,7 @@ namespace MTEmbTest
             if (state.State != ChannelRuntimeState.Completed) return;
             var checkpoint = UnattendedRunCheckpointStore.Load();
             if (checkpoint == null || !checkpoint.Armed || checkpoint.SelectedChannels == null) return;
+            bool completed = false;
             lock (_channelRuntimeStates)
             {
                 var permanent = new HashSet<int>(CapturePermanentAlarmedChannels());
@@ -695,8 +695,32 @@ namespace MTEmbTest
                         finished.State == ChannelRuntimeState.Completed))
                 {
                     WatchdogRuntime.NotifyRunCompleted();
-                    WatchdogRuntime.ShutdownLocalClient();
+                    completed = true;
                 }
+            }
+
+            if (completed)
+            {
+                var main = MdiParent as Main_Frm;
+                if (main == null)
+                {
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        "无人值守试验完成但缺少 Main-owned Watchdog shutdown owner。",
+                        "无人值守恢复");
+                    return;
+                }
+                _ = main.ShutdownWatchdogSessionAndReleaseUiAsync(
+                        "FormalRunCompleted")
+                    .ContinueWith(task =>
+                    {
+                        if (task.IsFaulted)
+                            ProjectLogHub.Write(
+                                ProjectLogLevel.Error,
+                                "无人值守试验完成后的 Watchdog 收口失败。",
+                                "无人值守恢复",
+                                task.Exception?.GetBaseException());
+                    }, TaskScheduler.Default);
             }
         }
 
@@ -733,12 +757,15 @@ namespace MTEmbTest
                     $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
                     $"Pressure={safety.PressureError}; Persistence={safety.PersistenceError}; " +
                     $"Logical={safety.LogicalError}; Latch={latchRejection}";
-                var fingerprint = RecoveryFailurePolicy.BuildFingerprint(
-                    $"SafetyTakeover|Motor={safety.MotorOffCommandSucceeded}|" +
-                    $"Power={safety.PowerOffConfirmed}|Pressure={safety.PressureSafeConfirmed}|" +
-                    $"Persistence={safety.PersistenceBoundaryConfirmed}|" +
-                    $"Logical={safety.LogicalQuiescenceConfirmed}|{detail}");
-                throw new WatchdogHardwareUnavailableException(fingerprint, detail);
+                var report = new RecoveryFailureReport
+                {
+                    RootCode = "HardwareUnavailable",
+                    DeviceOrChannelGroup = "SafetyTakeover",
+                    RunId = _epb?.WatchdogRunId.ToString("N"),
+                    RecoveryStage = "SafetyTakeover",
+                    RecoveryProgressToken = "Preflight"
+                };
+                throw new WatchdogHardwareUnavailableException(report, detail);
             }
             ClearHardwareUnavailable();
 
@@ -937,7 +964,6 @@ namespace MTEmbTest
 
         protected override void OnFormClosing(System.Windows.Forms.FormClosingEventArgs e)
         {
-            WatchdogRuntime.StopAllRequested -= OnWatchdogStopAllRequested;
             WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
             WatchdogRuntime.TransportError -= OnWatchdogTransportError;
             // Watchdog recovery children may close after a failed takeover and must leave

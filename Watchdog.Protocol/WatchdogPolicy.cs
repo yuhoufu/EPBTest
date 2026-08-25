@@ -2,9 +2,118 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace MTTFTest.Watchdog.Protocol
 {
+    public static class WatchdogTransportPolicy
+    {
+        // Both endpoints use the same bounded policy. A stale pipe must be
+        // abandoned quickly enough that UI/control operations never inherit
+        // an unbounded StreamWriter wait.
+        public const int SendGateWaitMs = 100;
+        public const int SendWriteTimeoutMs = 500;
+        public const int ReconnectMaxAttempts = 8;
+
+        // Keep the transport timing contract in one assembly.  These names
+        // are deliberately descriptive rather than scattered literals in the
+        // client/runtime; changing one stage must not silently change the
+        // enclosing session budget.
+        public const int PipeConnect5000 = 5000;
+        public const int Guard5500 = 5500;
+        public const int Handshake5000 = 5000;
+        public const int ConnectFailureJoin1000 = 1000;
+        public const int ReconnectInitial250 = 250;
+        public const int SidecarLaunchAllowance5000 = 5000;
+        public const int LaunchClosureJoin1000 = 1000;
+        public const int AttachDispatchGuard1000 = 1000;
+        public const int ProcessExitJoin1000 = 1000;
+        // Runtime callback dispatch is deliberately bounded so a closing
+        // session cannot leave the process waiting indefinitely on callbacks.
+        public const int RuntimeCallbackDrainMs = 2000;
+        public const int RecoveryFailureReceiptDeadlineMs = 90000;
+        public const int RecoveryFailureRequestRetryMs = 750;
+
+        // These are the reviewed envelope values used by the attach gate.
+        // The first and fifth values are derived directly from the primitive
+        // stages/backoff schedule; the remaining envelopes are named values
+        // so consumers cannot accidentally substitute a local timeout.
+        public const int ConnectAttemptBudgetMs =
+            Guard5500 + ConnectFailureJoin1000;
+        public const int GuardedConnectBudgetMs = 11100;
+        public const int HandshakeBudgetMs = 19000;
+        public const int RecoveryConnectBudgetMs = 75600;
+        public const int ReconnectBackoffBudgetMs = 23750;
+        public const int ReconnectSupervisorBudgetMs = 75750;
+        public const int SessionAttachDeadline = 158850;
+
+        // Suffix aliases make the unit explicit for callers that expose
+        // policy values in diagnostics/configuration.
+        public static int ConnectAttemptBudgetMilliseconds => ConnectAttemptBudgetMs;
+        public static int GuardedConnectBudgetMilliseconds => GuardedConnectBudgetMs;
+        public static int HandshakeBudgetMilliseconds => HandshakeBudgetMs;
+        public static int RecoveryConnectBudgetMilliseconds => RecoveryConnectBudgetMs;
+        public static int ReconnectBackoffBudgetMilliseconds => ReconnectBackoffBudgetMs;
+        public static int ReconnectSupervisorBudgetMilliseconds => ReconnectSupervisorBudgetMs;
+        public static int SessionAttachDeadlineMs => SessionAttachDeadline;
+
+        /// <summary>
+        /// One session owns one reconnect worker.  The first retry is short,
+        /// then the delay is capped so a dead pipe cannot create a launch storm.
+        /// </summary>
+        public static int SelectReconnectBackoffMs(int attempt)
+        {
+            if (attempt < 0) attempt = 0;
+            switch (attempt)
+            {
+                case 0: return 250;
+                case 1: return 500;
+                case 2: return 1000;
+                case 3: return 2000;
+                default: return 5000;
+            }
+        }
+    }
+
+    /// <summary>
+    /// BatchStartFailed 只有在已有武装检查点且 Run 身份一致时才允许跨进程接管。
+    /// 新试验尚未提交正式运行时，启动失败必须停留在安全空闲态，禁止杀进程重启。
+    /// </summary>
+    public static class BatchStartTakeoverPolicy
+    {
+        public static bool ShouldTakeover(WatchdogBatchStartFailureContext context)
+        {
+            if (context == null || !context.CheckpointArmed) return false;
+            if (!TryNormalizeRunId(context.CheckpointRunId, out var checkpointRunId)) return false;
+            if (!TryNormalizeRunId(context.RunId, out var runId) || runId != checkpointRunId) return false;
+            return context.RecoveryProcess || context.FormalRunCommitted;
+        }
+
+        public static string DescribeRejection(WatchdogBatchStartFailureContext context)
+        {
+            if (context == null) return "ContextMissing";
+            if (!context.CheckpointArmed) return "CheckpointDisarmed";
+            if (!TryNormalizeRunId(context.CheckpointRunId, out var checkpointRunId))
+                return "CheckpointRunIdMissing";
+            if (!TryNormalizeRunId(context.RunId, out var runId)) return "CurrentRunIdMissing";
+            if (runId != checkpointRunId) return "RunIdMismatch";
+            if (!context.RecoveryProcess && !context.FormalRunCommitted)
+                return "FormalRunNotCommitted";
+            return "Allowed";
+        }
+
+        private static bool TryNormalizeRunId(string value, out Guid runId)
+        {
+            if (!Guid.TryParse(value, out runId) || runId == Guid.Empty)
+            {
+                runId = Guid.Empty;
+                return false;
+            }
+            return true;
+        }
+    }
+
     public static class WatchdogLifecyclePolicy
     {
         public static bool IsTerminalMessage(string messageType)
@@ -108,6 +217,143 @@ namespace MTTFTest.Watchdog.Protocol
         public string Fingerprint { get; set; }
         public int ConsecutiveCount { get; set; }
         public bool ProcessRelaunchAllowed { get; set; }
+        public bool SameFingerprint { get; set; }
+        public bool SameProgressToken { get; set; }
+        public bool ProgressTokenChanged { get; set; }
+        public bool SafeIdleRecoveryBlocked { get; set; }
+        // True when this failure is otherwise eligible for a relaunch but a
+        // different failure report already owns the single outstanding
+        // relaunch permit.  It is not a safety block and must not schedule a
+        // second relaunch loop.
+        public bool RelaunchPermitAlreadyPending { get; set; }
+        /// <summary>
+        /// The strict authority was temporarily busy and did not mutate
+        /// durable bytes.  The exact request/correlation may be retried; this
+        /// is neither approval nor a permanent safe-idle circuit decision.
+        /// </summary>
+        public bool DurableDecisionRetryPending { get; set; }
+        public long RelaunchPermitGeneration { get; set; }
+        public bool RelaunchBudgetExhausted { get; set; }
+        public RecoveryFailureReport Report { get; set; }
+    }
+
+    /// <summary>
+    /// Linearizable one-shot permit gate for recovery-process launches.
+    ///
+    /// The watchdog journal remains the durable source of the generation
+    /// number; this gate owns only the in-memory reservation/consumption
+    /// transition.  A caller must persist the new generation before starting
+    /// a process and must revoke it when persistence fails.  Keeping the
+    /// reservation separate from the relaunch loop prevents two concurrent
+    /// failure reports from both turning the same failure into Process.Start.
+    /// </summary>
+    public sealed class RecoveryRelaunchPermitGate
+    {
+        private readonly object _gate = new object();
+        private long _nextGeneration;
+        private long _activeGeneration;
+        private long _consumedGeneration;
+
+        public long PendingGeneration
+        {
+            get
+            {
+                lock (_gate)
+                    return _activeGeneration > _consumedGeneration
+                        ? _activeGeneration
+                        : 0;
+            }
+        }
+
+        public long ConsumedGeneration
+        {
+            get { lock (_gate) return _consumedGeneration; }
+        }
+
+        public RecoveryRelaunchPermitDecision TryApprove(
+            long durableGeneration,
+            bool blocked,
+            bool manualStopRequested,
+            bool sessionRevoked,
+            int consecutiveFailures,
+            int maximumProcessRelaunches,
+            out long generation)
+        {
+            lock (_gate)
+            {
+                generation = 0;
+                if (blocked || manualStopRequested || sessionRevoked)
+                    return RecoveryRelaunchPermitDecision.Denied;
+                if (_activeGeneration > _consumedGeneration)
+                {
+                    generation = _activeGeneration;
+                    return RecoveryRelaunchPermitDecision.AlreadyPending;
+                }
+                if (maximumProcessRelaunches <= 0 ||
+                    consecutiveFailures >= maximumProcessRelaunches)
+                    return RecoveryRelaunchPermitDecision.Denied;
+
+                _nextGeneration = Math.Max(
+                    Math.Max(_nextGeneration, durableGeneration),
+                    _consumedGeneration) + 1;
+                _activeGeneration = _nextGeneration;
+                generation = _activeGeneration;
+                return RecoveryRelaunchPermitDecision.Approved;
+            }
+        }
+
+        public bool TryConsume(long generation)
+        {
+            lock (_gate)
+            {
+                if (generation <= 0 ||
+                    _activeGeneration != generation ||
+                    generation <= _consumedGeneration)
+                    return false;
+                _consumedGeneration = generation;
+                _activeGeneration = 0;
+                return true;
+            }
+        }
+
+        public void Revoke()
+        {
+            lock (_gate) _activeGeneration = 0;
+        }
+    }
+
+    public enum RecoveryRelaunchPermitDecision
+    {
+        Denied = 0,
+        AlreadyPending = 1,
+        Approved = 2
+    }
+
+    /// <summary>
+    /// Machine-readable recovery failure evidence.  Only these stable fields
+    /// participate in the circuit-breaker fingerprint.  Timestamps, PIDs,
+    /// attempt counters and exception prose deliberately stay outside the
+    /// identity so a repeated failure cannot evade the durable gate by changing
+    /// incidental text.
+    /// </summary>
+    public sealed class RecoveryFailureReport
+    {
+        public string RootCode { get; set; }
+        public string DeviceOrChannelGroup { get; set; }
+        public string RunId { get; set; }
+        public string RecoveryStage { get; set; }
+        public string RecoveryProgressToken { get; set; }
+        public string RecoveryProcessSource { get; set; }
+
+        public RecoveryFailureReport Clone() => new RecoveryFailureReport
+        {
+            RootCode = RootCode,
+            DeviceOrChannelGroup = DeviceOrChannelGroup,
+            RunId = RunId,
+            RecoveryStage = RecoveryStage,
+            RecoveryProgressToken = RecoveryProgressToken,
+            RecoveryProcessSource = RecoveryProcessSource
+        };
     }
 
     public sealed class RecoveryFailureClassification
@@ -160,6 +406,141 @@ namespace MTTFTest.Watchdog.Protocol
 
     public static class RecoveryFailurePolicy
     {
+        public const string InitialProcessSource = "InitialProcess";
+        public const string RecoveryProcessSource = "RecoveryProcess";
+        public const string SafeIdleRecoveryBlockedState = "SafeIdleRecoveryBlocked";
+
+        public static RecoveryFailureReport NormalizeReport(RecoveryFailureReport report)
+        {
+            report = report ?? new RecoveryFailureReport();
+            return new RecoveryFailureReport
+            {
+                RootCode = NormalizeStable(report.RootCode, "UnknownFailure"),
+                DeviceOrChannelGroup = NormalizeStable(
+                    report.DeviceOrChannelGroup,
+                    "UnknownDeviceOrChannelGroup"),
+                RunId = NormalizeStable(report.RunId, "UnknownRun"),
+                RecoveryStage = NormalizeStable(report.RecoveryStage, "UnknownStage"),
+                RecoveryProgressToken = NormalizeToken(report.RecoveryProgressToken),
+                RecoveryProcessSource = NormalizeStable(
+                    report.RecoveryProcessSource,
+                    InitialProcessSource)
+            };
+        }
+
+        /// <summary>
+        /// Stable failure identity.  The digest covers exactly the four stable
+        /// dimensions and never includes token/source/time/PID/attempt/prose.
+        /// </summary>
+        public static string BuildFingerprint(RecoveryFailureReport report)
+        {
+            var normalized = NormalizeReport(report);
+            var canonical = string.Join("|", new[]
+            {
+                normalized.RootCode,
+                normalized.DeviceOrChannelGroup,
+                normalized.RunId,
+                normalized.RecoveryStage
+            }).ToLowerInvariant();
+            using (var sha = SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(canonical));
+                return "RFP3-" + BitConverter.ToString(bytes).Replace("-", string.Empty)
+                    .ToLowerInvariant();
+            }
+        }
+
+        /// <summary>
+        /// Applies the durable same-fingerprint/same-token gate.  A changed
+        /// real progress token permits one new meaningful attempt; the next
+        /// failure at that token is terminal.  Permanent and unavailable
+        /// infrastructure classes never receive a process relaunch budget.
+        /// </summary>
+        public static RecoveryFailureDecision Evaluate(
+            RecoveryFailureReport report,
+            RecoveryFailureClassification classification,
+            string previousFingerprint,
+            string previousProgressToken,
+            string previousProcessSource,
+            int previousCount,
+            bool alreadyBlocked)
+        {
+            var normalized = NormalizeReport(report);
+            classification = classification ?? Classify(normalized.RootCode, false, string.Empty);
+            var fingerprint = BuildFingerprint(normalized);
+            var sameFingerprint = !string.IsNullOrWhiteSpace(previousFingerprint) &&
+                                  string.Equals(previousFingerprint, fingerprint, StringComparison.Ordinal);
+            var previousToken = NormalizeToken(previousProgressToken);
+            var hasCurrentToken = !string.IsNullOrWhiteSpace(normalized.RecoveryProgressToken);
+            var hasPreviousToken = !string.IsNullOrWhiteSpace(previousToken);
+            // Missing/invalid versions never count as progress.  Only two
+            // real P0-4 stage versions can establish a changed token.
+            var sameToken = sameFingerprint &&
+                            (!hasCurrentToken || !hasPreviousToken ||
+                             string.Equals(
+                                 previousToken,
+                                 normalized.RecoveryProgressToken,
+                                 StringComparison.Ordinal));
+            var tokenChanged = sameFingerprint && hasCurrentToken && hasPreviousToken &&
+                               !string.Equals(
+                                   previousToken,
+                                   normalized.RecoveryProgressToken,
+                                   StringComparison.Ordinal);
+            var count = sameFingerprint ? Math.Max(1, previousCount + 1) : 1;
+
+            // A second failure at the same stable point is not a new attempt,
+            // regardless of which process reported it.  This specifically
+            // limits the initial process to one recovery child and makes a
+            // recovery child failure immediately durable SafeIdle.
+            var samePointBlocked = sameFingerprint && sameToken;
+            var unavailable = IsHardwareOrDaqUnavailable(classification.Code);
+            var budget = classification.Permanent || unavailable
+                ? 0
+                : Math.Max(0, classification.MaximumProcessRelaunches);
+            // ConsecutiveCount is the number of failures for the current
+            // stable fingerprint, independent of progress token/source.  A
+            // token change is meaningful only while the previous count is
+            // still below the configured process-relaunch budget.  Once the
+            // old count reaches the budget, do not grant another relaunch by
+            // changing only the progress token.
+            var budgetExhausted = sameFingerprint &&
+                                  budget > 0 &&
+                                  previousCount >= budget;
+            var blocked = alreadyBlocked ||
+                          classification.Permanent ||
+                          samePointBlocked ||
+                          budgetExhausted;
+            return new RecoveryFailureDecision
+            {
+                Fingerprint = fingerprint,
+                ConsecutiveCount = count,
+                ProcessRelaunchAllowed = !blocked && budget > 0,
+                SameFingerprint = sameFingerprint,
+                SameProgressToken = sameToken,
+                ProgressTokenChanged = tokenChanged,
+                SafeIdleRecoveryBlocked = blocked,
+                RelaunchBudgetExhausted = budgetExhausted,
+                Report = normalized
+            };
+        }
+
+        public static bool IsRecoveryProcessSource(string source) =>
+            string.Equals(source, RecoveryProcessSource, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(source, "Recovery", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(source, "WatchdogRecovery", StringComparison.OrdinalIgnoreCase);
+
+        public static bool IsHardwareOrDaqUnavailable(string code)
+        {
+            return Contains(code, "HardwareUnavailable") ||
+                   Contains(code, "DaqUnavailable") ||
+                   Contains(code, "DAQUnavailable") ||
+                   Contains(code, "DaqCallbackStale") ||
+                   Contains(code, "DaqSampleStale") ||
+                   Contains(code, "DaqRecoveryFailed") ||
+                   Contains(code, "DaqStartPreflightFailed") ||
+                   Contains(code, "OffCurrentUnverifiableDaqStale");
+        }
+
         public static RecoveryFailureClassification Classify(
             string code,
             bool permanent,
@@ -195,14 +576,23 @@ namespace MTTFTest.Watchdog.Protocol
                 Contains(text, "Timeout") ||
                 Contains(text, "PortInUse") ||
                 Contains(text, "RecoveryAttachFailed");
+            var unavailable = Contains(text, "HardwareUnavailable") ||
+                              Contains(text, "DaqUnavailable") ||
+                              Contains(text, "DaqCallbackStale") ||
+                              Contains(text, "DaqSampleStale") ||
+                              Contains(text, "DaqRecoveryFailed") ||
+                              Contains(text, "DaqStartPreflightFailed") ||
+                              Contains(text, "OffCurrentUnverifiableDaqStale");
             return new RecoveryFailureClassification
             {
                 Code = string.IsNullOrWhiteSpace(code)
                     ? (transientHardware ? "TransientInfrastructure" : "UnhandledSoftwareStartup")
                     : code,
                 Permanent = false,
-                MaximumProcessRelaunches = transientHardware
-                    ? RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit
+                MaximumProcessRelaunches = unavailable
+                    ? 0
+                    : transientHardware
+                        ? RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit
                     : 2
             };
         }
@@ -254,11 +644,20 @@ namespace MTTFTest.Watchdog.Protocol
 
         public static string BuildFingerprint(string reason)
         {
-            var normalized = string.Join(" ", (reason ?? "UnknownFailure")
-                .Replace('\r', ' ')
-                .Replace('\n', ' ')
-                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
-            return normalized.Length <= 1024 ? normalized : normalized.Substring(0, 1024);
+            // Legacy callers only have prose.  Keep compatibility while
+            // preventing the prose itself from becoming an unbounded identity.
+            var text = (reason ?? string.Empty).Trim();
+            var root = text;
+            var separator = text.IndexOfAny(new[] { ':', ';', '|', '\r', '\n', ' ' });
+            if (separator > 0) root = text.Substring(0, separator);
+            var classification = Classify(root, false, text);
+            return BuildFingerprint(new RecoveryFailureReport
+            {
+                RootCode = classification.Code,
+                DeviceOrChannelGroup = "UnknownDeviceOrChannelGroup",
+                RunId = "UnknownRun",
+                RecoveryStage = "UnknownStage"
+            });
         }
 
         public static int SelectInProcessProbeDelaySeconds(int consecutiveAttempt)
@@ -297,6 +696,34 @@ namespace MTTFTest.Watchdog.Protocol
                 return "PackageVerificationFailed";
             return "PermanentRecoveryFailure";
         }
+
+        private static string NormalizeStable(string value, string fallback)
+        {
+            var normalized = string.Join(" ", (value ?? string.Empty)
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries));
+            if (string.IsNullOrWhiteSpace(normalized)) normalized = fallback;
+            if (normalized.Length > 256) normalized = normalized.Substring(0, 256);
+            return normalized;
+        }
+
+        private static string NormalizeToken(string value)
+        {
+            // RecoveryProgressToken is the serialized P0-4 monotonic stage
+            // version.  Do not let detail/prose (for example "Preflight" or
+            // an exception message) masquerade as progress and reopen the
+            // relaunch budget.  Empty/invalid tokens mean that no real stage
+            // progress was observed.
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            if (!long.TryParse(
+                    value.Trim(),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var version) || version < 0)
+                return string.Empty;
+            return version.ToString(CultureInfo.InvariantCulture);
+        }
     }
 
     public sealed class WatchdogRuntimeContract
@@ -318,7 +745,7 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public static class WatchdogRuntimeContractPolicy
     {
-        public const int CurrentRevision = 1;
+        public const int CurrentRevision = 3;
 
         public static WatchdogRuntimeContract Resolve(string state)
         {
@@ -381,6 +808,23 @@ namespace MTTFTest.Watchdog.Protocol
                    progress.ResourcesMustBeInactive == expected.ResourcesMustBeInactive;
         }
 
+        public static bool HasExplicitRecoveryOwner(
+            WatchdogChannelProgress progress,
+            long runEpoch)
+        {
+            if (progress == null ||
+                !string.Equals(progress.State, "Recovering", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return !string.IsNullOrWhiteSpace(progress.RecoveryOwnerKind) &&
+                   !string.Equals(progress.RecoveryOwnerKind, "None", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(progress.RecoveryOwnerKind, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+                   !string.IsNullOrWhiteSpace(progress.RecoveryOwnerId) &&
+                   progress.RecoveryOwnerGeneration > 0 &&
+                   progress.RecoveryOwnerGeneration == runEpoch &&
+                   !string.IsNullOrWhiteSpace(progress.RecoveryTargetPhase) &&
+                   !string.Equals(progress.RecoveryTargetPhase, "None", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool EqualsPhase(string left, string right) =>
             string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     }
@@ -435,6 +879,8 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public static class WatchdogTakeoverPolicy
     {
+        public const int DefaultStopStageNoProgressGraceMs = 5000;
+
         public static bool IsManualPauseCommanded(bool manualPauseActive, bool manualPausePending)
         {
             return manualPauseActive || manualPausePending;
@@ -475,14 +921,43 @@ namespace MTTFTest.Watchdog.Protocol
             bool manualPauseUnsafe = false,
             long recoveryHardDeadlineUtcTicks = 0,
             long nowUtcTicks = 0,
-            double recoveryNoProgressSeconds = 0)
+            double recoveryNoProgressSeconds = 0,
+            long stopStageHardDeadlineUtcTicks = 0,
+            double stopNoProgressSeconds = -1,
+            long stopStageNoProgressGraceMs = 0,
+            long stopHardDeadlineUtcTicks = 0)
         {
             if (sessionRevoked || alreadyTakingOver)
                 return false;
             if (!processAlive || heartbeatAgeSeconds >= 5)
                 return true;
-            if (stopAllActive && stageAgeSeconds >= 5)
-                return true;
+            if (stopAllActive)
+            {
+                // Immediate OFF and hydraulic release have different bounded
+                // deadlines.  The controller publishes the active stage deadline
+                // and the sidecar independently tracks material progress.  A
+                // missing deadline is not evidence for a guessed global timeout.
+                var stopDeadlineExceeded = stopStageHardDeadlineUtcTicks > 0
+                    && nowUtcTicks > 0
+                    && nowUtcTicks >= stopStageHardDeadlineUtcTicks;
+                var noProgress = stopNoProgressSeconds >= 0
+                    ? stopNoProgressSeconds
+                    : 0;
+                var graceMs = stopStageNoProgressGraceMs > 0
+                    ? stopStageNoProgressGraceMs
+                    : DefaultStopStageNoProgressGraceMs;
+                var totalDeadlineExceeded = stopHardDeadlineUtcTicks > 0 &&
+                                            nowUtcTicks > 0 &&
+                                            nowUtcTicks >= stopHardDeadlineUtcTicks;
+                // The 45s process-wide escape deadline is an independent hard
+                // safety boundary.  Once it expires, a changing Detail or
+                // stale callback cannot defer takeover; before it expires only
+                // the current stage deadline plus real material progress grace
+                // can authorize takeover.
+                if (totalDeadlineExceeded) return true;
+                return stopDeadlineExceeded &&
+                       noProgress >= graceMs / 1000.0;
+            }
             // A healthy manual pause is a commanded safe state.  Recovery
             // counters and old recovery timestamps are irrelevant here.
             if (manualPauseActive)
@@ -674,7 +1149,11 @@ namespace MTTFTest.Watchdog.Protocol
                         _mechanicalProgressTimestamps.Remove(item.Channel);
                     }
 
-                    var invariantCode = SelectInvariantCode(item, contract, active);
+                    var invariantCode = SelectInvariantCode(
+                        item,
+                        contract,
+                        active,
+                        heartbeat.RunEpoch);
                     if (string.IsNullOrEmpty(invariantCode))
                     {
                         _invariantTimestamps.Remove(item.Channel);
@@ -811,7 +1290,8 @@ namespace MTTFTest.Watchdog.Protocol
         private static string SelectInvariantCode(
             WatchdogChannelProgress item,
             WatchdogRuntimeContract contract,
-            bool active)
+            bool active,
+            long runEpoch)
         {
             if (!WatchdogRuntimeContractPolicy.PublishedContractMatches(item, contract))
                 return "ChannelRuntimeContractInconsistent";
@@ -819,7 +1299,9 @@ namespace MTTFTest.Watchdog.Protocol
                 return "ChannelPausedWithoutManualOwner";
             if (contract.RecoveryOwnerRequired &&
                 item.RuntimeContractRevision == WatchdogRuntimeContractPolicy.CurrentRevision &&
-                !item.RecoveryOwned)
+                (!item.RecoveryOwned ||
+                 (string.Equals(item.State, "Recovering", StringComparison.OrdinalIgnoreCase) &&
+                  !WatchdogRuntimeContractPolicy.HasExplicitRecoveryOwner(item, runEpoch))))
                 return "ChannelRecoveryOwnerMissing";
             if (contract.RunnerRequired && !item.RunnerActive &&
                 string.Equals(item.State, "Learning", StringComparison.OrdinalIgnoreCase))
@@ -881,6 +1363,35 @@ namespace MTTFTest.Watchdog.Protocol
 
     public static class WatchdogProcessIdentityPolicy
     {
+        public static bool IsValidChallengeNonce(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.Length != 32)
+                return false;
+            for (var index = 0; index < value.Length; index++)
+            {
+                var c = value[index];
+                var hex = (c >= '0' && c <= '9') ||
+                          (c >= 'a' && c <= 'f') ||
+                          (c >= 'A' && c <= 'F');
+                if (!hex) return false;
+            }
+            return true;
+        }
+
+        public static bool HasAuthoritativeIdentity(
+            string expectedSessionId,
+            string authoritySessionId,
+            int processId,
+            long processStartUtcTicks,
+            string instanceNonce)
+        {
+            return !string.IsNullOrWhiteSpace(expectedSessionId) &&
+                   string.Equals(expectedSessionId, authoritySessionId, StringComparison.Ordinal) &&
+                   processId > 0 &&
+                   processStartUtcTicks > 0 &&
+                   !string.IsNullOrWhiteSpace(instanceNonce);
+        }
+
         public static bool Matches(int expectedPid, long expectedStartTicks, int actualPid, long actualStartTicks)
         {
             return expectedPid > 0 && expectedStartTicks > 0 &&

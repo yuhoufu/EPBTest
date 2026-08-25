@@ -10,6 +10,7 @@ namespace IO.NI
     {
         public long Generation { get; private set; }
         public long StartAcceptedSequence { get; private set; }
+        public long StartProcessedSequence { get; private set; }
         public long StartMonotonicTicks { get; private set; }
         public long CutoffAcceptedSequence { get; private set; }
         public long CutoffMonotonicTicks { get; private set; }
@@ -19,10 +20,26 @@ namespace IO.NI
         public bool IsFrozen { get; private set; }
         public bool IsGenerationMatched { get; private set; }
 
-        public void Arm(long generation, long acceptedSequence, long monotonicTicks)
+        public void Arm(
+            long generation,
+            long acceptedSequence,
+            long monotonicTicks)
+        {
+            // Compatibility overload for callers that do not have a processed
+            // watermark.  Never infer it from the callback/accepted watermark:
+            // an accepted batch may still be in flight when a capture is armed.
+            Arm(generation, acceptedSequence, 0, monotonicTicks);
+        }
+
+        public void Arm(
+            long generation,
+            long acceptedSequence,
+            long processedSequence,
+            long monotonicTicks)
         {
             Generation = generation;
             StartAcceptedSequence = Math.Max(0, acceptedSequence);
+            StartProcessedSequence = Math.Max(0, processedSequence);
             StartMonotonicTicks = Math.Max(1, monotonicTicks);
             CutoffAcceptedSequence = 0;
             CutoffMonotonicTicks = 0;
@@ -37,7 +54,7 @@ namespace IO.NI
         {
             if (IsFrozen) return;
             IsFrozen = true;
-            IsGenerationMatched = generation == Generation;
+            IsGenerationMatched = IsGenerationMatched && generation == Generation;
             CutoffAcceptedSequence = Math.Max(0, acceptedSequence);
             CutoffMonotonicTicks = Math.Max(StartMonotonicTicks, monotonicTicks);
         }
@@ -48,7 +65,16 @@ namespace IO.NI
         /// </summary>
         public bool Observe(long generation, long sequence, long sampleMonotonicTicks)
         {
-            if (generation != Generation || sampleMonotonicTicks <= 0) return false;
+            // A generation mismatch is a terminal invalidation for this capture
+            // window.  Do not let a later sample from the original generation
+            // silently make the watermark valid again; the controller must arm a
+            // new window after DAQ recovery.
+            if (generation != Generation || sampleMonotonicTicks <= 0)
+            {
+                if (generation != Generation)
+                    IsGenerationMatched = false;
+                return false;
+            }
 
             if (sequence > ProcessedSequence)
                 ProcessedSequence = sequence;

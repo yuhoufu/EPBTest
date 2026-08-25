@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -37,11 +38,6 @@ namespace MtEmbTest
             {
                 var watchdogIntent = _watchdogRecoveryIntent;
                 _watchdogRecoveryIntent = null;
-                // The Watchdog-owned transition surface is only a bridge while
-                // the main process/UI is absent.  Do not wait for learning or
-                // formal control to begin: this window is now visible and owns
-                // all subsequent operator feedback.
-                WatchdogRuntime.NotifyMainUiReady("MainWindowShown");
                 BeginInvoke((Action)(async () =>
                 {
                     if (watchdogIntent.StartIdle)
@@ -69,11 +65,64 @@ namespace MtEmbTest
             OpenChildForm(monitor);
             try
             {
+                if (!await monitor.WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
+                    throw new InvalidOperationException("Watchdog 空闲监视窗口未完成控制对象初始化。");
+
+                // Idle restart is deliberately non-resuming, but it still
+                // owns the same exact attached UI pipeline as normal start
+                // and recovery.  This keeps the Main_Frm target/handler
+                // lifecycle observable while the controller remains in a
+                // safe idle state.
+                var idleChannels = Enumerable.Range(1, 12)
+                    .Where(channel => Cfg?.Test?.GetEpbRecord(channel)?.Enabled == true)
+                    .ToArray();
+                var idleStore = Cfg?.Test?.StoreDir;
+                var idleName = Cfg?.Test?.TestName;
+                if (!string.IsNullOrWhiteSpace(idleStore) && !string.IsNullOrWhiteSpace(idleName))
+                    WatchdogRuntime.ConfigureJournalExportPath(
+                        Path.Combine(idleStore, idleName, "WatchdogSessions"));
+                // An idle restart is still a recovery of the existing
+                // watchdog authority.  It must attach the frozen
+                // session/pipe/PID/start/nonce identity and may never launch
+                // a replacement Sidecar from this path.
+                await WatchdogRuntime.AttachRecoverySessionAsync(
+                        intent, idleChannels)
+                    .ConfigureAwait(true);
+                var idleAttachDecision = WinFormsWatchdogUiEntryPolicy
+                    .EvaluateRecoveryIntent(intent, WatchdogRuntime.IsAttached);
+                if (!idleAttachDecision.Allowed ||
+                    !idleAttachDecision.AttachExistingAuthorityOnly)
+                    throw new InvalidOperationException(
+                        "Watchdog 空闲模式未完成 exact Attached；AttachOnly恢复被拒绝：" +
+                        idleAttachDecision.Reason);
+                var uiBinding = await monitor.BindWatchdogUiAfterAttachAsync()
+                    .ConfigureAwait(true);
+                if (uiBinding == null || !uiBinding.Accepted || !uiBinding.Ready)
+                    throw new InvalidOperationException(
+                        "Watchdog 空闲模式 UI 管线未完成绑定：" +
+                        (uiBinding?.Reason ?? "Unknown"));
+                var idleReadyDecision = WinFormsWatchdogUiEntryPolicy.Evaluate(
+                    WinFormsWatchdogUiEntryKind.StartIdle,
+                    WatchdogRuntime.IsAttached,
+                    uiBinding.Accepted && uiBinding.Ready);
+                if (!idleReadyDecision.Allowed ||
+                    !idleReadyDecision.AttachExistingAuthorityOnly)
+                    throw new InvalidOperationException(
+                        "Watchdog 空闲模式UI入口未Ready：" + idleReadyDecision.Reason);
                 await monitor.PrepareSafeIdleAfterWatchdogAsync(intent.SessionId, intent.PreviousPid)
                     .ConfigureAwait(true);
             }
             catch (Exception ex)
             {
+                try
+                {
+                    // A failed attach/bind may leave a nonterminal retained
+                    // context.  Ask the Main-owned retention path to close it
+                    // safely; it keeps the message pump alive until terminal.
+                    if (WatchdogRuntime.CaptureTransportSnapshot()?.Context != null)
+                        RequestWatchdogOwnedExit("WatchdogIdleAttachRejected");
+                }
+                catch { }
                 ProjectLogHub.Write(
                     ProjectLogLevel.Error,
                     "Watchdog 空闲重启安全预检失败；开始试验保持禁用：" + ex.Message,
@@ -91,6 +140,7 @@ namespace MtEmbTest
         private async Task ResumeWatchdogRunAsync(WatchdogRecoveryIntent intent)
         {
             FrmEpbMainMonitor monitor = null;
+            var recoveryRunId = string.Empty;
             try
             {
                 if (!UnattendedRunCheckpointStore.TryConsumeWatchdogRecovery(
@@ -118,9 +168,10 @@ namespace MtEmbTest
                             "独立看门狗",
                             notifyError);
                     }
-                    BeginInvoke((Action)System.Windows.Forms.Application.Exit);
+                    RequestWatchdogOwnedExit("RecoveryCheckpointRejected");
                     return;
                 }
+                recoveryRunId = checkpoint.RunId ?? string.Empty;
 
                 // 恢复进程不会再次经过“点击开始”的 BatchGuard；必须在重新附着
                 // 原 Watchdog Session 前恢复封存目录，保证多次接管后的 Journal
@@ -133,6 +184,13 @@ namespace MtEmbTest
                 await WatchdogRuntime.AttachRecoverySessionAsync(
                     intent,
                     checkpoint.SelectedChannels).ConfigureAwait(true);
+                var recoveryAttachDecision = WinFormsWatchdogUiEntryPolicy
+                    .EvaluateRecoveryIntent(intent, WatchdogRuntime.IsAttached);
+                if (!recoveryAttachDecision.Allowed ||
+                    !recoveryAttachDecision.AttachExistingAuthorityOnly)
+                    throw new InvalidOperationException(
+                        "Watchdog恢复未完成 exact AttachOnly：" +
+                        recoveryAttachDecision.Reason);
                 WatchdogRuntime.NotifyRecoveryCheckpointValidated(
                     $"RunId={checkpoint.RunId};Revision={checkpoint.Revision};" +
                     $"Source={checkpoint.LastRecoveryLoadSource}",
@@ -157,6 +215,22 @@ namespace MtEmbTest
                     });
                 monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
                 OpenChildForm(monitor);
+                if (!await monitor.WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
+                    throw new InvalidOperationException("恢复监视窗口未完成控制对象初始化。");
+                var uiBinding = await monitor.BindWatchdogUiAfterAttachAsync()
+                    .ConfigureAwait(true);
+                if (uiBinding == null || !uiBinding.Accepted || !uiBinding.Ready)
+                    throw new InvalidOperationException(
+                        "恢复监视窗口未完成Watchdog UI管线绑定：" +
+                        (uiBinding?.Reason ?? "Unknown"));
+                var recoveryReadyDecision = WinFormsWatchdogUiEntryPolicy.Evaluate(
+                    WinFormsWatchdogUiEntryKind.Recovery,
+                    WatchdogRuntime.IsAttached,
+                    uiBinding.Accepted && uiBinding.Ready);
+                if (!recoveryReadyDecision.Allowed ||
+                    !recoveryReadyDecision.AttachExistingAuthorityOnly)
+                    throw new InvalidOperationException(
+                        "Watchdog恢复UI入口未Ready：" + recoveryReadyDecision.Reason);
                 var consecutiveHardwareFailures = 0;
                 var previousFingerprint = string.Empty;
                 while (!monitor.IsOperatorStopRequested)
@@ -168,8 +242,25 @@ namespace MtEmbTest
                         monitor.ClearHardwareUnavailable();
                         return;
                     }
-                    catch (WatchdogHardwareUnavailableException hardwareError)
+                    catch (Exception rawHardwareError) when (
+                        rawHardwareError is WatchdogHardwareUnavailableException ||
+                        RecoveryFailurePolicy.IsHardwareOrDaqUnavailable(
+                            rawHardwareError.GetBaseException().Message))
                     {
+                        var hardwareError = rawHardwareError as WatchdogHardwareUnavailableException ??
+                            new WatchdogHardwareUnavailableException(
+                                new RecoveryFailureReport
+                                {
+                                    RootCode = rawHardwareError.GetBaseException().Message
+                                        .IndexOf("Daq", StringComparison.OrdinalIgnoreCase) >= 0
+                                        ? "DaqUnavailable"
+                                        : "HardwareUnavailable",
+                                    DeviceOrChannelGroup = "RecoveryPreflight",
+                                    RunId = recoveryRunId,
+                                    RecoveryStage = "ResumeCheckpoint",
+                                    RecoveryProgressToken = "Preflight"
+                                },
+                                rawHardwareError.GetBaseException().Message);
                         consecutiveHardwareFailures = string.Equals(
                             previousFingerprint,
                             hardwareError.Fingerprint,
@@ -222,13 +313,13 @@ namespace MtEmbTest
                     "独立看门狗",
                     ex);
                 monitor?.PrepareForWatchdogRetryExit();
-                WatchdogRuntime.NotifyRecoveryAttemptFailed(
+                await WatchdogRuntime.NotifyRecoveryAttemptFailedAndAwaitReceiptAsync(
                     classification.Code,
                     classification.Permanent,
                     "WatchdogRecoveryStartupFailed:" + baseError.Message,
                     ex.ToString(),
-                    testConfigSha256);
-                BeginInvoke((Action)System.Windows.Forms.Application.Exit);
+                    testConfigSha256).ConfigureAwait(true);
+                RequestWatchdogOwnedExit("RecoveryStartupFailed");
             }
         }
 

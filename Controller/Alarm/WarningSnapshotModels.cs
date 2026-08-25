@@ -13,7 +13,8 @@ namespace Controller.Alarm
         PeakEvidenceMismatchWarning,
         PeakEvidenceLagWarning,
         PeakEvidenceTimestampMissing,
-        RecoverableControlFaultWarning
+        RecoverableControlFaultWarning,
+        RapidLoadRiseDiagnostic
     }
 
     public sealed class AdaptiveWarningEvent

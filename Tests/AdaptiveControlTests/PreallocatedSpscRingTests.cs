@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using IO.NI;
@@ -34,36 +36,173 @@ namespace AdaptiveControlTests
         {
             const int total = 100000;
             var ring = new PreallocatedSpscRing<StampedValue>(64);
-            var producer = Task.Run(() =>
+            using var stop = new CancellationTokenSource();
+            using var start = new Barrier(4);
+            var failures = new ConcurrentQueue<Exception>();
+            var deadline = new ProgressDeadlineState
             {
-                for (var value = 1; value <= total; value++)
-                {
-                    var item = new StampedValue(value, ~value);
-                    while (!ring.TryEnqueue(item)) Thread.Yield();
-                }
-            });
-            var consumer = Task.Run(() =>
+                StartedTicks = Stopwatch.GetTimestamp(),
+                LastProgressTicks = Stopwatch.GetTimestamp()
+            };
+            var produced = 0;
+            var consumed = 0;
+            var observed = 0;
+
+            void ReportFailure(Exception exception)
             {
-                for (var expected = 1; expected <= total; expected++)
-                {
-                    StampedValue item;
-                    while (!ring.TryDequeue(out item)) Thread.Yield();
-                    Assert(item.Value == expected && item.Complement == ~expected,
-                        "并发消费观察到乱序或撕裂值");
-                }
-            });
-            var observer = Task.Run(() =>
+                failures.Enqueue(exception);
+                stop.Cancel();
+            }
+
+            bool CheckDeadline()
             {
-                while (!producer.IsCompleted || !consumer.IsCompleted)
+                var now = Stopwatch.GetTimestamp();
+                var noProgressMs = (now - Volatile.Read(ref deadline.LastProgressTicks)) *
+                                   1000.0 / Stopwatch.Frequency;
+                var totalMs = (now - deadline.StartedTicks) *
+                              1000.0 / Stopwatch.Frequency;
+                if (noProgressMs <= 5000 && totalMs <= 60000)
+                    return stop.IsCancellationRequested;
+
+                if (Interlocked.Exchange(ref deadline.TimeoutReported, 1) == 0)
                 {
-                    if (ring.TryPeek(out var item))
-                        Assert(item.Value > 0 && item.Complement == ~item.Value,
-                            "看门狗并发窥视观察到撕裂值");
-                    Thread.Yield();
+                    ReportFailure(new TimeoutException(
+                        $"SPSC并发压力超过进度/总时限：noProgressMs={noProgressMs:F1} totalMs={totalMs:F1} " +
+                        $"produced={Volatile.Read(ref produced)} consumed={Volatile.Read(ref consumed)}"));
                 }
-            });
-            Assert(Task.WaitAll(new[] { producer, consumer, observer }, 10000),
-                "SPSC并发压力测试超时");
+                return true;
+            }
+
+            void TouchProgress()
+            {
+                Interlocked.Exchange(ref deadline.LastProgressTicks, Stopwatch.GetTimestamp());
+            }
+
+            var producer = new Thread(() =>
+            {
+                try
+                {
+                    start.SignalAndWait(5000);
+                    for (var value = 1; value <= total; value++)
+                    {
+                        var item = new StampedValue(value, ~value);
+                        while (!stop.IsCancellationRequested)
+                        {
+                            if (ring.TryEnqueue(item))
+                            {
+                                Interlocked.Increment(ref produced);
+                                TouchProgress();
+                                break;
+                            }
+
+                            if (CheckDeadline()) return;
+                            Thread.Yield();
+                        }
+                    }
+                }
+                catch (Exception exception)
+                {
+                    ReportFailure(exception);
+                }
+            }) { IsBackground = true, Name = "SpscProducer" };
+
+            var consumer = new Thread(() =>
+            {
+                try
+                {
+                    start.SignalAndWait(5000);
+                    for (var expected = 1; expected <= total; expected++)
+                    {
+                        while (!stop.IsCancellationRequested)
+                        {
+                            if (ring.TryDequeue(out var item))
+                            {
+                                Assert(item.Value == expected && item.Complement == ~expected,
+                                    "并发消费观察到乱序或撕裂值");
+                                Interlocked.Increment(ref consumed);
+                                TouchProgress();
+                                break;
+                            }
+
+                            if (CheckDeadline()) return;
+                            Thread.Yield();
+                        }
+                    }
+                }
+                catch (Exception exception)
+                {
+                    ReportFailure(exception);
+                }
+            }) { IsBackground = true, Name = "SpscConsumer" };
+
+            var observer = new Thread(() =>
+            {
+                try
+                {
+                    start.SignalAndWait(5000);
+                    while (!stop.IsCancellationRequested)
+                    {
+                        if (ring.TryPeek(out var item))
+                        {
+                            Assert(item.Value > 0 && item.Value <= total &&
+                                   item.Complement == ~item.Value,
+                                "看门狗并发窥视观察到撕裂值");
+                            Interlocked.Increment(ref observed);
+                        }
+
+                        if (Volatile.Read(ref produced) == total &&
+                            Volatile.Read(ref consumed) == total)
+                            return;
+                        if (CheckDeadline()) return;
+                        Thread.Yield();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    ReportFailure(exception);
+                }
+            }) { IsBackground = true, Name = "SpscObserver" };
+
+            var threads = new[] { producer, consumer, observer };
+            foreach (var thread in threads) thread.Start();
+            try
+            {
+                start.SignalAndWait(5000);
+            }
+            catch (Exception exception)
+            {
+                ReportFailure(exception);
+            }
+
+            var joinDeadline = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 60.0);
+            while (producer.IsAlive || consumer.IsAlive || observer.IsAlive)
+            {
+                if (CheckDeadline() || Stopwatch.GetTimestamp() >= joinDeadline)
+                {
+                    stop.Cancel();
+                    break;
+                }
+
+                Thread.Sleep(1);
+            }
+
+            stop.Cancel();
+            foreach (var thread in threads)
+            {
+                if (thread.IsAlive)
+                    thread.Join(1000);
+            }
+
+            if (producer.IsAlive || consumer.IsAlive || observer.IsAlive)
+                failures.Enqueue(new TimeoutException("SPSC并发线程未在有界时间内退出"));
+            if (failures.TryPeek(out var firstFailure))
+                throw new InvalidOperationException(
+                    "SPSC并发压力失败：" + firstFailure.Message,
+                    firstFailure);
+
+            Assert(Volatile.Read(ref produced) == total &&
+                   Volatile.Read(ref consumed) == total,
+                $"SPSC生产/消费数量不完整：produced={produced} consumed={consumed} observed={observed}");
             Assert(ring.Count == 0, "并发压力结束后环未排空");
         }
 
@@ -96,6 +235,13 @@ namespace AdaptiveControlTests
 
             public int Value { get; }
             public int Complement { get; }
+        }
+
+        private sealed class ProgressDeadlineState
+        {
+            public long StartedTicks;
+            public long LastProgressTicks;
+            public int TimeoutReported;
         }
 
         private static void Assert(bool condition, string message)

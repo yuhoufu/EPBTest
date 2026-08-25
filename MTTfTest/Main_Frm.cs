@@ -41,6 +41,8 @@ namespace MtEmbTest
             _ = typeof(EpbManager).FullName; // 用 Controller 内真实存在的公开类型名替换
             _ = typeof(TwoDeviceAiAcquirer).FullName; // 解决断电打不到TwoDeviceAiAcquirer中的问题
 
+            _watchdogUiAdapter = new MainWatchdogUiLifecycleAdapter(this);
+
         }
 
         private DialogResult ShowMainOperatorMessage(
@@ -109,6 +111,8 @@ namespace MtEmbTest
 
         private void Main_Frm_FormClosing(object sender, FormClosingEventArgs e)
         {
+            if (HandleWatchdogMainFormClosing(e))
+                return;
             if (MdiChildren.Length > 0)
             {
                 ShowMainOperatorMessage("可能存在正在运行的试验，请先停止试验，关闭子窗口，再退出程序！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -136,8 +140,17 @@ namespace MtEmbTest
             Logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
                 LogInformation, LogWarn, LogError, this);
             var buildIdentity = RuntimeBuildIdentity.Capture();
-            Text = $"{BuildWindowTitle()} [PID {buildIdentity.ProcessId}]";
+            var packageMarker = buildIdentity.ReleasePackageVerified
+                ? string.Empty
+                : $" [非受控包:{buildIdentity.ReleasePackageCode}]";
+            Text = $"{BuildWindowTitle()} [PID {buildIdentity.ProcessId}]{packageMarker}";
             Logger.Info(buildIdentity.ToStartupLogLine(), "启动构建身份");
+            if (!buildIdentity.ReleasePackageVerified)
+                Logger.Warn(
+                    $"当前运行目录未通过发布包身份校验；窗口标题将持续标记为非受控包。" +
+                    $"Code={buildIdentity.ReleasePackageCode} " +
+                    $"Detail={buildIdentity.ReleasePackageDetail}",
+                    "启动构建身份");
 
             // 加载配置文件
             Cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", Logger);

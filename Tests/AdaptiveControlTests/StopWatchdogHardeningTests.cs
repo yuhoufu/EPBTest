@@ -16,10 +16,16 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("Watchdog v2与v1心跳向后兼容", ProtocolV2IsAdditive, ref passed);
+            Run("Watchdog v3心跳字段与旧载荷兼容", ProtocolV2IsAdditive, ref passed);
+            Run("Stop阶段期限与材料进展宽限独立判定", StopStageDeadlineAndMaterialGrace, ref passed);
+            Run("Stop液压释放10.441/15秒不提前接管", StopHydraulicReleaseDeadlineIsIndependent, ref passed);
+            Run("Stop总45秒期限最终兜底", StopTotalHardDeadlineIsIndependent, ref passed);
+            Run("Stop材料证据仅接受单调版本", StopMaterialEvidenceMustBeMonotonic, ref passed);
+            Run("Stop阶段顺序包含液压释放后DAQ停止", StopStageOrderIsMonotonic, ref passed);
             Run("恢复过渡窗显示详细倒计时且仅在稳定态隐藏", RecoveryTransitionPresentationIsDeterministic, ref passed);
             Run("ManualStopIntent保留Kill权限", ManualStopIntentKeepsAuthority, ref passed);
             Run("启动失败和恢复失败不得伪装会话终止", RetryableFailuresAreNotTerminal, ref passed);
+            Run("未武装的新试验启动失败禁止Watchdog杀进程", UnarmedBatchStartFailureStaysSafeIdle, ref passed);
             Run("Stop阶段五秒无进展必须接管", StopStageStallTriggersTakeover, ref passed);
             Run("无RunId但逻辑对象残留必须接管", LogicalResidueTriggersTakeover, ref passed);
             Run("恢复对象与RecoveryActive矛盾必须接管", RecoveryEvidenceMismatchTriggersTakeover, ref passed);
@@ -47,6 +53,7 @@ namespace AdaptiveControlTests
             Run("检查点损坏时按分类回退到最近有效副本", DurableCheckpointFallsBackWithClassification, ref passed);
             Run("检查点并发轮询与原子替换无共享冲突", DurableCheckpointConcurrentReadWriteIsShareSafe, ref passed);
             Run("过渡窗公开人工停止按钮语义", TransitionWindowExposesOperatorStop, ref passed);
+            Run("双端Watchdog发送使用统一有界截止", WatchdogTransportWritesAreBounded, ref passed);
             Run("逐通道心跳字段可往返", PerChannelProgressIsSerializable, ref passed);
             Run("墙钟前后跳变均可检测", WallClockStepsAreDetected, ref passed);
             Run("机械圈与正式证据圈独立计数", MechanicalCyclesAreIndependent, ref passed);
@@ -55,6 +62,17 @@ namespace AdaptiveControlTests
             Run("必须重启终态统一闭锁开始入口且无矛盾文案",
                 ProcessRestartUiPolicyIsNonContradictory, ref passed);
             return passed;
+        }
+
+        private static void WatchdogTransportWritesAreBounded()
+        {
+            Assert(WatchdogTransportPolicy.SendGateWaitMs > 0 &&
+                   WatchdogTransportPolicy.SendGateWaitMs <= 250,
+                "发送串行锁必须快速失败，不能把控制线程拖入长等待。");
+            Assert(WatchdogTransportPolicy.SendWriteTimeoutMs >=
+                   WatchdogTransportPolicy.SendGateWaitMs &&
+                   WatchdogTransportPolicy.SendWriteTimeoutMs <= 1000,
+                "实际管道写必须有不超过1秒的统一硬截止。");
         }
 
         private static void ProtocolV2IsAdditive()
@@ -68,6 +86,18 @@ namespace AdaptiveControlTests
                     StopAllActive = true,
                     StopStage = "ClearRecoveryOwners",
                     StopProgressVersion = 7,
+                    StopHardDeadlineUtc = 456789,
+                    StopStageHardDeadlineUtc = 345678,
+                    StopStageNoProgressGraceMs = 5000,
+                    StopLastMaterialProgressUtc = 234567,
+                    StopTakeoverRequired = true,
+                    StopTimedOut = true,
+                    StopTerminalReason = "Stop safety hard deadline",
+                    StopTransactionId = "stop-transaction-1",
+                    StopGeneration = 11,
+                    StageHardDeadlineUtc = 345678,
+                    StageNoProgressGraceMs = 5000,
+                    LastMaterialProgressUtc = 234567,
                     ManualPauseStage = "CurrentCycleDrain",
                     ManualPauseProgressVersion = 9,
                     ManualPauseHardDeadlineUtc = 123456,
@@ -80,8 +110,18 @@ namespace AdaptiveControlTests
                 }
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
-            Assert(roundTrip.ProtocolVersion == 2 && roundTrip.Heartbeat.StopAllActive &&
+            Assert(roundTrip.ProtocolVersion == WatchdogProtocol.Version &&
+                   roundTrip.ProtocolVersion == 3 && roundTrip.Heartbeat.StopAllActive &&
                    roundTrip.Heartbeat.StopProgressVersion == 7 &&
+                   roundTrip.Heartbeat.StopHardDeadlineUtc == 456789 &&
+                   roundTrip.Heartbeat.StopStageHardDeadlineUtc == 345678 &&
+                   roundTrip.Heartbeat.StopStageNoProgressGraceMs == 5000 &&
+                   roundTrip.Heartbeat.StopLastMaterialProgressUtc == 234567 &&
+                   roundTrip.Heartbeat.StopTakeoverRequired &&
+                   roundTrip.Heartbeat.StopTimedOut &&
+                   roundTrip.Heartbeat.StopTerminalReason == "Stop safety hard deadline" &&
+                   roundTrip.Heartbeat.StopTransactionId == "stop-transaction-1" &&
+                   roundTrip.Heartbeat.StopGeneration == 11 &&
                    roundTrip.Heartbeat.ManualPauseProgressVersion == 9 &&
                    roundTrip.Heartbeat.ManualPauseEnergizedChannels.Length == 2 &&
                    roundTrip.Heartbeat.HardwareUnavailable &&
@@ -107,6 +147,193 @@ namespace AdaptiveControlTests
             Assert(uiReady.Type == WatchdogMessageType.MainUiReady &&
                    uiReady.Reason == "MainWindowShown",
                 "恢复主界面就绪消息不能序列化往返");
+
+            var runId = Guid.NewGuid().ToString("N");
+            var startFailure = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(
+                new WatchdogMessage
+                {
+                    Type = WatchdogMessageType.BatchStartFailed,
+                    BatchStartFailure = new WatchdogBatchStartFailureContext
+                    {
+                        RunId = runId,
+                        CheckpointRunId = runId,
+                        RunEpoch = 12,
+                        CheckpointArmed = true,
+                        RecoveryProcess = true
+                    }
+                }));
+            Assert(startFailure.BatchStartFailure != null &&
+                   startFailure.BatchStartFailure.CheckpointArmed &&
+                   startFailure.BatchStartFailure.RunEpoch == 12 &&
+                   startFailure.BatchStartFailure.RecoveryProcess,
+                "启动失败接管资格上下文未能协议往返。");
+        }
+
+        private static void StopStageDeadlineAndMaterialGrace()
+        {
+            const long now = 10_000_000;
+            Assert(!WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, false, false, true, 1, false, false, false, 99, false,
+                       stopAllActive: true,
+                       nowUtcTicks: now,
+                       stopNoProgressSeconds: 100,
+                       stopStageNoProgressGraceMs: 5000),
+                "缺少控制器阶段硬截止时不能猜测统一五秒接管");
+            Assert(!WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, false, false, true, 1, false, false, false, 99, false,
+                       stopAllActive: true,
+                       nowUtcTicks: now,
+                       stopStageHardDeadlineUtcTicks: now + 1,
+                       stopNoProgressSeconds: 100,
+                       stopStageNoProgressGraceMs: 5000),
+                "阶段硬截止尚未到达时不能仅因历史无进展而接管");
+            Assert(!WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, false, false, true, 1, false, false, false, 99, false,
+                       stopAllActive: true,
+                       nowUtcTicks: now + 2,
+                       stopStageHardDeadlineUtcTicks: now + 1,
+                       stopNoProgressSeconds: 4.999,
+                       stopStageNoProgressGraceMs: 5000),
+                "阶段硬截止后宽限期内不应接管");
+            Assert(WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, false, false, true, 1, false, false, false, 99, false,
+                       stopAllActive: true,
+                       nowUtcTicks: now + 2,
+                       stopStageHardDeadlineUtcTicks: now + 1,
+                       stopNoProgressSeconds: 5,
+                       stopStageNoProgressGraceMs: 5000),
+                "阶段硬截止且材料进展宽限耗尽后未接管");
+        }
+
+        private static void StopHydraulicReleaseDeadlineIsIndependent()
+        {
+            const long second = TimeSpan.TicksPerSecond;
+            const long start = 100_000_000;
+            const long releaseDeadline = start + 15 * second;
+            Assert(!WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, true, false, true, 1, false, false, false, 10.441, false,
+                       stopAllActive: true,
+                       nowUtcTicks: start + (long)(10.441 * second),
+                       stopStageHardDeadlineUtcTicks: releaseDeadline,
+                       stopNoProgressSeconds: 10.441,
+                       stopStageNoProgressGraceMs: 5000),
+                "液压释放约10.441秒仍在阶段截止前，不得接管");
+            Assert(!WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, true, false, true, 1, false, false, false, 15, false,
+                       stopAllActive: true,
+                       nowUtcTicks: releaseDeadline,
+                       stopStageHardDeadlineUtcTicks: releaseDeadline,
+                       stopNoProgressSeconds: 0,
+                       stopStageNoProgressGraceMs: 5000),
+                "液压释放恰到15秒但刚进入截止，仍应等待真实材料宽限");
+            Assert(WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, true, false, true, 1, false, false, false, 20, false,
+                       stopAllActive: true,
+                       nowUtcTicks: releaseDeadline + 5 * second,
+                       stopStageHardDeadlineUtcTicks: releaseDeadline,
+                       stopNoProgressSeconds: 5,
+                       stopStageNoProgressGraceMs: 5000),
+                "液压释放阶段截止后持续无真实进展未接管");
+        }
+
+        private static void StopTotalHardDeadlineIsIndependent()
+        {
+            const long now = 200_000_000;
+            Assert(!WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, true, false, true, 1, false, false, false, 44.999, false,
+                       stopAllActive: true,
+                       nowUtcTicks: now,
+                       stopStageHardDeadlineUtcTicks: now + 60 * TimeSpan.TicksPerSecond,
+                       stopNoProgressSeconds: 100,
+                       stopStageNoProgressGraceMs: 5000,
+                       stopHardDeadlineUtcTicks: now + 1),
+                "总45秒期限尚未到达时不能用过期的测试时钟提前接管");
+            Assert(WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, true, false, true, 1, false, false, false, 45, false,
+                       stopAllActive: true,
+                       nowUtcTicks: now + 2,
+                       stopStageHardDeadlineUtcTicks: now + 60 * TimeSpan.TicksPerSecond,
+                       stopNoProgressSeconds: 0,
+                       stopStageNoProgressGraceMs: 5000,
+                       stopHardDeadlineUtcTicks: now + 1),
+                "总逃逸期限到达后没有最终安全接管");
+        }
+
+        private static void StopMaterialEvidenceMustBeMonotonic()
+        {
+            var gate = new StopSafetyMaterialEvidenceGate();
+            Assert(gate.TryAccept("PersistenceBoundary:Dev1", 100) &&
+                   !gate.TryAccept("PersistenceBoundary:Dev1", 100) &&
+                   !gate.TryAccept("PersistenceBoundary:Dev1", 99) &&
+                   gate.TryAccept("PersistenceBoundary:Dev1", 101),
+                "重复或回退的持久化边界证据错误刷新Stop进展");
+            Assert(!gate.TryAccept("PersistenceBoundary:Dev1", 0) &&
+                   !gate.TryAccept("PersistenceBoundary:Dev2", 0) &&
+                   !gate.TryAccept("", 1),
+                "缺失来源或序列的诊断文本被错误当作材料进展");
+            gate.Reset();
+            Assert(gate.TryAccept("PersistenceBoundary:Dev1", 1),
+                "新Stop事务未重置材料证据游标");
+        }
+
+        private static void StopStageOrderIsMonotonic()
+        {
+            Assert((int)StopSafetyStage.ClearRecoveryOwners <
+                   (int)StopSafetyStage.ReleaseHydraulics &&
+                   (int)StopSafetyStage.ReleaseHydraulics <
+                   (int)StopSafetyStage.StopAcquisition &&
+                   (int)StopSafetyStage.StopAcquisition <
+                   (int)StopSafetyStage.ClosePersistenceBoundary,
+                "Stop阶段枚举顺序未反映 ReleaseHydraulics -> StopAcquisition -> Persistence");
+        }
+
+        private static void UnarmedBatchStartFailureStaysSafeIdle()
+        {
+            var runId = Guid.NewGuid().ToString("N");
+            Assert(!BatchStartTakeoverPolicy.ShouldTakeover(null),
+                "缺失启动失败资格证据时仍允许杀进程。");
+            Assert(!BatchStartTakeoverPolicy.ShouldTakeover(
+                       new WatchdogBatchStartFailureContext
+                       {
+                           RunId = runId,
+                           CheckpointRunId = runId,
+                           CheckpointArmed = false,
+                           FormalRunCommitted = false
+                       }) &&
+                   BatchStartTakeoverPolicy.DescribeRejection(
+                       new WatchdogBatchStartFailureContext
+                       {
+                           RunId = runId,
+                           CheckpointRunId = runId,
+                           CheckpointArmed = false
+                       }) == "CheckpointDisarmed",
+                "未武装的新试验启动失败没有停留在安全空闲态。");
+            Assert(!BatchStartTakeoverPolicy.ShouldTakeover(
+                       new WatchdogBatchStartFailureContext
+                       {
+                           RunId = runId,
+                           CheckpointRunId = Guid.NewGuid().ToString("N"),
+                           CheckpointArmed = true,
+                           FormalRunCommitted = true
+                       }),
+                "Run身份不匹配仍允许接管。");
+            Assert(BatchStartTakeoverPolicy.ShouldTakeover(
+                       new WatchdogBatchStartFailureContext
+                       {
+                           RunId = runId,
+                           CheckpointRunId = runId,
+                           CheckpointArmed = true,
+                           FormalRunCommitted = true
+                       }) &&
+                   BatchStartTakeoverPolicy.ShouldTakeover(
+                       new WatchdogBatchStartFailureContext
+                       {
+                           RunId = runId,
+                           CheckpointRunId = runId,
+                           CheckpointArmed = true,
+                           RecoveryProcess = true
+                       }),
+                "合法正式Run或恢复进程被错误拒绝接管。");
         }
 
         private static void RecoveryTransitionPresentationIsDeterministic()
@@ -155,8 +382,12 @@ namespace AdaptiveControlTests
         {
             Assert(WatchdogTakeoverPolicy.ShouldTakeover(
                     false, true, false, true, 1, false, false, false, 5, false,
-                    stopAllActive: true),
-                "Stop阶段五秒无进展未触发接管");
+                    stopAllActive: true,
+                    nowUtcTicks: 10,
+                    stopStageHardDeadlineUtcTicks: 9,
+                    stopNoProgressSeconds: 5,
+                    stopStageNoProgressGraceMs: 5000),
+                "Stop阶段硬截止后的材料无进展未触发接管");
         }
 
         private static void LogicalResidueTriggersTakeover()
@@ -439,6 +670,10 @@ namespace AdaptiveControlTests
             var tracker = new WatchdogChannelProgressTracker();
             var recovery = ContractProgress("Recovering", timer: false, runner: false);
             recovery.RecoveryOwned = true;
+            recovery.RecoveryOwnerKind = "FormalTimer";
+            recovery.RecoveryOwnerId = Guid.NewGuid().ToString("N");
+            recovery.RecoveryOwnerGeneration = 20;
+            recovery.RecoveryTargetPhase = "Formal";
             var heartbeat = new WatchdogHeartbeat
             {
                 RunActive = true,
@@ -1011,6 +1246,14 @@ namespace AdaptiveControlTests
                         TimerRequired = false,
                         RunnerRequired = true,
                         RecoveryOwned = false,
+                        RecoveryOwnerKind = "BatchLearning",
+                        RecoveryOwnerId = "owner123",
+                        RecoveryOwnerGeneration = 27,
+                        RecoveryTargetPhase = "Learning",
+                        SourceStateRevision = 11,
+                        WarningActive = true,
+                        WarningCode = "RapidLoadRise",
+                        WarningRevision = 9,
                         PhaseHardDeadlineUtc = 987654
                     }
                 }
@@ -1031,8 +1274,13 @@ namespace AdaptiveControlTests
                    roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffGeneration == 12 &&
                    roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffSequence == 455 &&
                    roundTrip.Heartbeat.ChannelProgress[0].LifecyclePhase == "Learning" &&
-                   roundTrip.Heartbeat.ChannelProgress[0].RuntimeContractRevision == 1 &&
+                   roundTrip.Heartbeat.ChannelProgress[0].RuntimeContractRevision ==
+                       WatchdogRuntimeContractPolicy.CurrentRevision &&
                    roundTrip.Heartbeat.ChannelProgress[0].RunnerRequired &&
+                   roundTrip.Heartbeat.ChannelProgress[0].RecoveryOwnerKind == "BatchLearning" &&
+                   roundTrip.Heartbeat.ChannelProgress[0].RecoveryOwnerGeneration == 27 &&
+                   roundTrip.Heartbeat.ChannelProgress[0].WarningActive &&
+                   roundTrip.Heartbeat.ChannelProgress[0].WarningCode == "RapidLoadRise" &&
                    roundTrip.Heartbeat.ChannelProgress[0].PhaseHardDeadlineUtc == 987654 &&
                    roundTrip.RecoveryFailureCode == "ConfigDuplicateEpbId" &&
                    roundTrip.RecoveryFailurePermanent &&

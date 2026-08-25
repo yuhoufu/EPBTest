@@ -45,6 +45,19 @@ namespace IO.NI
     }
 
     /// <summary>
+    /// Optional final physical batch-write boundary.  It is deliberately
+    /// owned by IO.NI; Controller cannot replace the high-priority worker or
+    /// its admission/receipt lifecycle.
+    /// </summary>
+    internal interface IHighPriorityOffPhysicalWriter
+    {
+        bool TryWrite(
+            string deviceName,
+            IReadOnlyList<int> channels,
+            bool[] nextStates);
+    }
+
+    /// <summary>
     /// DO 控制器：基于 <see cref="DoConfig"/>（EPB 与 Pressure）统一管理多个数字输出。
     /// - 与 AoController 一致，按“配置对象”而非“读取XML”初始化。
     /// - 支持 EPB 正/反互斥输出、Pressure 点位开/关。
@@ -929,6 +942,67 @@ namespace IO.NI
         public event Action<HighPriorityDoTelemetry> HighPriorityOffCompleted;
 
         /// <summary>
+        /// Acceptance-only seam at the final batch-write boundary.  The
+        /// production stop path still enters the real high-priority worker and
+        /// this method; the seam is intentionally below Controller so tests
+        /// cannot replace admission, registration, completion or receipt
+        /// handling in EpbManager.
+        /// </summary>
+        internal IHighPriorityOffPhysicalWriter HighPriorityOffPhysicalWriter { get; set; }
+
+        /// <summary>
+        /// Returns the configured EPB scope used by the same DO controller
+        /// that owns physical OFF admission.  It is deliberately not a
+        /// manager/test supplied affected-channel list.
+        /// </summary>
+        /// <summary>
+        /// Installs a logical device/index context for acceptance replay. It
+        /// creates the same device maps, per-device worker and state vectors
+        /// as Initialize, but deliberately does not touch NI hardware. The
+        /// final physical writer hook is still invoked only after mapping,
+        /// WriteGate acquisition and next-state construction.
+        /// </summary>
+        internal void ConfigureLogicalDeviceContextForAcceptance()
+        {
+            lock (_doTaskLock)
+            {
+                foreach (var device in _devices.Values)
+                {
+                    try { device.HighPriorityWorker.Dispose(); } catch { }
+                }
+                _devices.Clear();
+                _epbIndex.Clear();
+                if (_cfg?.Epb == null) return;
+
+                foreach (var record in _cfg.Epb
+                             .Where(item => item != null && item.Enabled &&
+                                            item.Channel >= 1 && item.Channel <= 12)
+                             .OrderBy(item => item.Channel))
+                {
+                    var deviceName = GetDeviceName(record.Pos);
+                    if (string.IsNullOrWhiteSpace(deviceName) ||
+                        !string.Equals(deviceName, GetDeviceName(record.Neg),
+                                       StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    var device = EnsureDevice(deviceName);
+                    var posIndex = device.Lines.Count;
+                    device.Lines.Add(record.Pos ?? string.Empty);
+                    device.DefaultStates.Add(
+                        string.Equals(record.Default, "正",
+                                      StringComparison.OrdinalIgnoreCase));
+                    var negIndex = device.Lines.Count;
+                    device.Lines.Add(record.Neg ?? string.Empty);
+                    device.DefaultStates.Add(
+                        string.Equals(record.Default, "反",
+                                      StringComparison.OrdinalIgnoreCase));
+                    device.States = device.DefaultStates.ToArray();
+                    _epbIndex[record.Channel] =
+                        (deviceName, posIndex, negIndex);
+                }
+            }
+        }
+
+        /// <summary>
         /// 兼容旧接口：设置 XML 路径（本实现不会再读取 XML，仅为保持方法签名不变）。
         /// </summary>
         /// <param name="xmlPath">历史遗留参数，忽略。</param>
@@ -1319,7 +1393,30 @@ namespace IO.NI
                         toWrite[map.negIdx] = false;
                     }
                     niWriteStartedTicks = Stopwatch.GetTimestamp();
-                    targetDevice.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                    var physicalWriter = HighPriorityOffPhysicalWriter;
+                    if (physicalWriter != null)
+                    {
+                        try
+                        {
+                            if (!physicalWriter.TryWrite(
+                                    targetDevice.Name,
+                                    channels,
+                                    toWrite))
+                                return false;
+                        }
+                        catch (Exception ex)
+                        {
+                            QueueLog(() => LogError(
+                                "EPB批量关闭注入写入失败：" + ex.Message,
+                                "DO操作",
+                                ex));
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        targetDevice.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                    }
                     niWriteCompletedTicks = Stopwatch.GetTimestamp();
                     targetDevice.States = toWrite;
                 }
@@ -1489,6 +1586,32 @@ namespace IO.NI
             }
         }
 
+        /// <summary>
+        /// 冷启动安全基线：无条件销毁并重建 DO 任务，然后再次写入全零。
+        /// 该入口不得在电源输出未确认关闭时调用，避免重建任务期间 XML 默认值
+        /// 或设备残留状态短暂驱动继电器。
+        /// </summary>
+        public bool EstablishColdStartAllOffBaseline()
+        {
+            lock (_doTaskLock)
+            {
+                if (!Initialize())
+                {
+                    LogError("冷启动安全基线失败：DO 任务无法重新初始化。", "DO初始化");
+                    return false;
+                }
+
+                if (!AllOff())
+                {
+                    LogError("冷启动安全基线失败：DO 全零写入未确认。", "DO操作");
+                    return false;
+                }
+
+                LogInfo("冷启动安全基线已建立：DO任务已重建且所有EPB/压力路线均为OFF。", "DO操作");
+                return true;
+            }
+        }
+
         /// <summary>方向友好名称封装，兼容旧调用：设为正向。</summary>
         public bool SetEpbForward(int channelNo) => SetEpb(channelNo, true);
 
@@ -1535,6 +1658,12 @@ namespace IO.NI
 
             foreach (var dev in _devices.Values)
             {
+                // Acceptance replay supplies a logical device/task state and
+                // replaces only the final NI writer call. Mapping, worker,
+                // WriteGate and state vectors remain real.
+                if (HighPriorityOffPhysicalWriter != null &&
+                    dev.States != null && dev.Lines.Count > 0)
+                    continue;
                 if (dev.Task == null || dev.Writer == null || dev.States == null)
                     return Initialize();
             }

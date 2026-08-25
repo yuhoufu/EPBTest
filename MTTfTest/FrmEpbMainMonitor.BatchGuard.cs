@@ -181,21 +181,43 @@ namespace MTEmbTest
                         .ToArray();
                     var watchdog = await WatchdogRuntime.StartSessionAsync(watchdogChannels)
                         .ConfigureAwait(true);
-                    if (watchdog.Attached)
-                    {
-                        UnattendedRunCheckpointStore.BindWatchdogSession(watchdog.SessionId);
-                        WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
-                        LogInfo("独立看门狗已就绪。");
-                        if (!string.IsNullOrWhiteSpace(watchdog.Warning))
-                            LogInfo("[警告] " + watchdog.Warning);
-                    }
-                    else
-                    {
-                        LogInfo("[警告] " + watchdog.Warning);
-                    }
+                    if (watchdog == null || !watchdog.Attached ||
+                        !WatchdogRuntime.IsAttached)
+                        throw new InvalidOperationException(
+                            "Watchdog exact Attached失败；已拒绝启动批次：" +
+                            (watchdog?.Warning ?? "Unknown"));
                 }
 
-                var startTask = StartNewBatchAsync(unattendedRecovery);
+                // Both a newly started session and an already-attached
+                // session must pass the same Main-held target/handler Ready
+                // gate.  A stale prior binding is never silently reused for a
+                // different transport identity.
+                if (!WatchdogRuntime.IsAttached)
+                    throw new InvalidOperationException(
+                        "Watchdog exact Attached不可用；已拒绝启动批次。");
+                var uiBinding = await BindWatchdogUiAfterAttachAsync()
+                    .ConfigureAwait(true);
+                if (uiBinding == null || !uiBinding.Accepted || !uiBinding.Ready)
+                    throw new InvalidOperationException(
+                        "Watchdog UI管线未完成Ready绑定；已拒绝启动批次：" +
+                        (uiBinding?.Reason ?? "Unknown"));
+                var entryDecision = WinFormsWatchdogUiEntryPolicy.Evaluate(
+                    unattendedRecovery
+                        ? WinFormsWatchdogUiEntryKind.Recovery
+                        : WinFormsWatchdogUiEntryKind.Normal,
+                    WatchdogRuntime.IsAttached,
+                    uiBinding.Accepted && uiBinding.Ready);
+                if (!entryDecision.Allowed)
+                    throw new InvalidOperationException(
+                        "Watchdog UI入口策略拒绝启动批次：" + entryDecision.Reason);
+                UnattendedRunCheckpointStore.BindWatchdogSession(
+                    WatchdogRuntime.SessionId);
+                WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
+                LogInfo("独立看门狗已就绪。");
+
+                var startTask = WinFormsWatchdogUiEntryCoordinator.StartIfAllowedAsync(
+                    entryDecision,
+                    () => StartNewBatchAsync(unattendedRecovery));
 
                 if (unattendedRecovery)
                 {

@@ -28,6 +28,8 @@ namespace Config
         public int StartupZeroStableMs { get; set; } = 300;
         public int StartupVoltageStableMs { get; set; } = 300;
         public int StartupZeroTimeoutMs { get; set; } = 5000;
+        /// <summary>确认全部电源关闭、DO/AO 归零后，继电器触点释放的冷启动稳定等待。</summary>
+        public int ColdStartRelaySettleMs { get; set; } = 300;
         public List<PowerSupplyDeviceConfig> Supplies { get; } = new List<PowerSupplyDeviceConfig>();
 
         public PowerSupplyDeviceConfig GetByGroup(int groupId) =>
@@ -77,7 +79,8 @@ namespace Config
                 StartupZeroCurrentA = DoubleAttr(root, "StartupZeroCurrentA", 0.50),
                 StartupZeroStableMs = IntAttr(root, "StartupZeroStableMs", 300),
                 StartupVoltageStableMs = IntAttr(root, "StartupVoltageStableMs", 300),
-                StartupZeroTimeoutMs = IntAttr(root, "StartupZeroTimeoutMs", 5000)
+                StartupZeroTimeoutMs = IntAttr(root, "StartupZeroTimeoutMs", 5000),
+                ColdStartRelaySettleMs = IntAttr(root, "ColdStartRelaySettleMs", 300)
             };
 
             foreach (var node in root.Elements("Supply"))
@@ -137,6 +140,8 @@ namespace Config
                 Math.Max(config.StartupZeroStableMs, config.StartupVoltageStableMs))
                 errors.Add(
                     "StartupZeroTimeoutMs 必须大于 StartupZeroStableMs 和 StartupVoltageStableMs。");
+            if (config.ColdStartRelaySettleMs < 50 || config.ColdStartRelaySettleMs > 5000)
+                errors.Add("ColdStartRelaySettleMs 必须在 50～5000ms 之间。");
             if (config.Supplies.Count != 4) errors.Add("必须配置四台程控电源。");
 
             foreach (var duplicate in config.Supplies.GroupBy(x => x.Id).Where(x => x.Count() > 1))

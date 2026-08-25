@@ -401,6 +401,8 @@ FodyWeavers.xsd
 DataStore/
 /tmp/
 *.csv
+!Tests/AdaptiveControlTests/Fixtures/field_v20_epb10_cycle_-002094.csv
+!Tests/AdaptiveControlTests/Fixtures/field_v15_epb10_cycle_084529.csv
 ErrorLog_*.txt
 RunLog_*.txt
 WarnLog_*.txt

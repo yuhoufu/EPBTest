@@ -13,17 +13,40 @@ namespace Controller
 
     public sealed partial class EpbCycleRunner
     {
+        private ChannelExecutionPermit _executionPermit;
+
+        internal void BindExecutionPermit(ChannelExecutionPermit permit)
+        {
+            if (!permit.Authorized)
+                throw new InvalidOperationException(
+                    $"EPB[{_channel}] Runner不能绑定未授权的执行许可。");
+            if (_executionPermit.Authorized &&
+                (_executionPermit.Generation != permit.Generation ||
+                 _executionPermit.RunEpoch != permit.RunEpoch))
+                throw new InvalidOperationException(
+                    $"EPB[{_channel}] 禁止把旧Runner重新绑定到新执行代次。");
+            _executionPermit = permit;
+        }
+
+        internal bool IsBoundToExecutionPermit(ChannelExecutionPermit permit)
+        {
+            return _executionPermit.Authorized && permit.Authorized &&
+                   _executionPermit.Channel == permit.Channel &&
+                   _executionPermit.RunEpoch == permit.RunEpoch &&
+                   _executionPermit.Generation == permit.Generation;
+        }
+
         private bool CommandForward([CallerMemberName] string stage = null)
         {
             return _manager != null
-                ? _manager.CommandEpbForward(_channel, stage)
+                ? _manager.CommandEpbForward(_channel, stage, _executionPermit)
                 : _do.SetEpbForward(_channel);
         }
 
         private bool CommandReverse([CallerMemberName] string stage = null)
         {
             return _manager != null
-                ? _manager.CommandEpbReverse(_channel, stage)
+                ? _manager.CommandEpbReverse(_channel, stage, _executionPermit)
                 : _do.SetEpbReverse(_channel);
         }
 

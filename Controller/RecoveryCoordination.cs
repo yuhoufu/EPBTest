@@ -302,25 +302,40 @@ namespace Controller
 
     internal enum DaqRecoveryPhase
     {
-        Created = 0,
-        CutoffStarted = 1,
-        CutoffCompleted = 2,
-        ValidationReady = 3,
-        Validating = 4,
-        Rejoining = 5,
-        RejoinCompleted = 6,
-        Committed = 7,
-        Terminal = 8
+        StaleDetected = 0,
+        DoOffSubmitted = 1,
+        DoOffConfirmed = 2,
+        PowerOffSubmitted = 3,
+        PowerOffConfirmed = 4,
+        CutoffCompleted = 5,
+        DaqRestartStarted = 6,
+        FirstFreshBatch = 7,
+        PressureRevalidated = 8,
+        PersistenceBoundaryClosed = 9,
+        Validating = 10,
+        Rejoining = 11,
+        Committed = 12,
+        SafeIdle = 13,
+        Terminal = 14,
+
+        // Source compatibility for the older phase names.  They intentionally
+        // alias the new monotonic stages; no caller can move the phase backward.
+        Created = StaleDetected,
+        CutoffStarted = DoOffSubmitted,
+        ValidationReady = PersistenceBoundaryClosed,
+        RejoinCompleted = Rejoining
     }
 
     /// <summary>
     ///     DAQ 自恢复的单调阶段门。恢复事件可以先于整组截止完成到达，但验证与重入
-    ///     必须等待 CutoffCompleted；需要重建 DAQ 时还必须等待 ValidationReady；
+    ///     必须等待 CutoffCompleted；重建后的首批新鲜数据、压力和持久化边界
+    ///     依次确认后才允许 Validation；
     ///     恢复终态只能在共同重入成功后提交。
     /// </summary>
     internal sealed class DaqRecoveryPhaseGate
     {
         private int _phase;
+        private int _rejoinCompleted;
         private readonly TaskCompletionSource<bool> _cutoffCompleted =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<bool> _validationReady =
@@ -331,21 +346,23 @@ namespace Controller
 
         internal bool BeginCutoff()
         {
-            return Interlocked.CompareExchange(
-                       ref _phase,
-                       (int)DaqRecoveryPhase.CutoffStarted,
-                       (int)DaqRecoveryPhase.Created) ==
-                   (int)DaqRecoveryPhase.Created;
+            // Entering the cutoff workflow is not a physical DO submission.
+            // The controller publishes DoOffSubmitted only after the real
+            // high-priority batch admission returns success.
+            return Current == DaqRecoveryPhase.StaleDetected;
         }
 
         internal bool CompleteCutoff()
         {
-            var advanced = Interlocked.CompareExchange(
-                               ref _phase,
-                               (int)DaqRecoveryPhase.CutoffCompleted,
-                               (int)DaqRecoveryPhase.CutoffStarted) ==
-                           (int)DaqRecoveryPhase.CutoffStarted;
-            if (advanced || (int)Current >= (int)DaqRecoveryPhase.CutoffCompleted)
+            // Cutoff is a real safety boundary.  It may only be published after
+            // both the DO and the electrical-group OFF confirmations have been
+            // observed; allowing this helper to jump from DoOffSubmitted made a
+            // late DAQ callback publish a completed cutoff while power was still
+            // being disabled.
+            if (Current != DaqRecoveryPhase.PowerOffConfirmed)
+                return false;
+            var advanced = TryAdvance(DaqRecoveryPhase.CutoffCompleted);
+            if ((int)Current >= (int)DaqRecoveryPhase.CutoffCompleted)
                 _cutoffCompleted.TrySetResult(true);
             return advanced;
         }
@@ -357,12 +374,13 @@ namespace Controller
 
         internal bool EnableValidation()
         {
-            var advanced = Interlocked.CompareExchange(
-                               ref _phase,
-                               (int)DaqRecoveryPhase.ValidationReady,
-                               (int)DaqRecoveryPhase.CutoffCompleted) ==
-                           (int)DaqRecoveryPhase.CutoffCompleted;
-            if (advanced || (int)Current >= (int)DaqRecoveryPhase.ValidationReady)
+            // This method is retained for source compatibility with older
+            // callers, but it is a barrier acknowledgement only.  It must not
+            // manufacture PersistenceBoundaryClosed (or skip Restart/Fresh/
+            // Pressure) before the controller has published those real events.
+            var advanced = Current >= DaqRecoveryPhase.PersistenceBoundaryClosed &&
+                           Current < DaqRecoveryPhase.Terminal;
+            if ((int)Current >= (int)DaqRecoveryPhase.PersistenceBoundaryClosed)
                 _validationReady.TrySetResult(true);
             return advanced;
         }
@@ -378,54 +396,111 @@ namespace Controller
             {
                 var current = Current;
                 if (current == DaqRecoveryPhase.Validating) return true;
-                if (current != DaqRecoveryPhase.ValidationReady) return false;
+                if (current != DaqRecoveryPhase.PersistenceBoundaryClosed) return false;
                 if (Interlocked.CompareExchange(
                         ref _phase,
                         (int)DaqRecoveryPhase.Validating,
-                        (int)DaqRecoveryPhase.ValidationReady) ==
-                    (int)DaqRecoveryPhase.ValidationReady)
+                        (int)DaqRecoveryPhase.PersistenceBoundaryClosed) ==
+                    (int)DaqRecoveryPhase.PersistenceBoundaryClosed)
                     return true;
             }
         }
 
         internal bool TryBeginRejoin()
         {
-            return Interlocked.CompareExchange(
-                       ref _phase,
-                       (int)DaqRecoveryPhase.Rejoining,
-                       (int)DaqRecoveryPhase.Validating) ==
-                   (int)DaqRecoveryPhase.Validating;
+            return Current == DaqRecoveryPhase.Validating &&
+                   TryAdvance(DaqRecoveryPhase.Rejoining);
         }
 
         internal bool CompleteRejoin()
         {
-            return Interlocked.CompareExchange(
-                       ref _phase,
-                       (int)DaqRecoveryPhase.RejoinCompleted,
-                       (int)DaqRecoveryPhase.Rejoining) ==
-                   (int)DaqRecoveryPhase.Rejoining;
+            if (Current != DaqRecoveryPhase.Rejoining) return false;
+            Interlocked.Exchange(ref _rejoinCompleted, 1);
+            return true;
         }
 
         internal bool TryCommit()
         {
-            return Interlocked.CompareExchange(
-                       ref _phase,
-                       (int)DaqRecoveryPhase.Committed,
-                       (int)DaqRecoveryPhase.RejoinCompleted) ==
-                   (int)DaqRecoveryPhase.RejoinCompleted;
+            if (Volatile.Read(ref _rejoinCompleted) == 0) return false;
+            return TryAdvance(DaqRecoveryPhase.Committed);
         }
 
         internal void FailRejoin()
         {
+            Interlocked.Exchange(ref _rejoinCompleted, 0);
             Interlocked.CompareExchange(
                 ref _phase,
                 (int)DaqRecoveryPhase.Validating,
                 (int)DaqRecoveryPhase.Rejoining);
         }
 
-        internal void MarkTerminal()
+        internal bool TryAdvance(DaqRecoveryPhase next)
         {
-            Interlocked.Exchange(ref _phase, (int)DaqRecoveryPhase.Terminal);
+            var target = (int)next;
+            if (target < (int)DaqRecoveryPhase.StaleDetected ||
+                target > (int)DaqRecoveryPhase.Terminal)
+                return false;
+            while (true)
+            {
+                var current = Volatile.Read(ref _phase);
+                if (current == target) return true;
+                if (current >= (int)DaqRecoveryPhase.Terminal) return false;
+                // SafeIdle is a terminal safety branch; it cannot be promoted
+                // back into validation/rejoin by a late callback.
+                if (current == (int)DaqRecoveryPhase.SafeIdle &&
+                    target != (int)DaqRecoveryPhase.Terminal)
+                    return false;
+                if (target < current) return false;
+
+                // Normal recovery is deliberately a strict state machine.  A
+                // caller cannot publish PowerOffConfirmed while the preceding
+                // DO/power submission stages are absent, nor can validation be
+                // enabled by jumping over the fresh-batch and persistence
+                // evidence.  SafeIdle is the only intentional branch out of
+                // the normal sequence and is handled by MarkSafeIdle below.
+                if (target == (int)DaqRecoveryPhase.Terminal)
+                {
+                    if (current != (int)DaqRecoveryPhase.Committed &&
+                        current != (int)DaqRecoveryPhase.SafeIdle)
+                        return false;
+                }
+                else if (target != current + 1)
+                {
+                    return false;
+                }
+                if (Interlocked.CompareExchange(ref _phase, target, current) == current)
+                {
+                    if (target >= (int)DaqRecoveryPhase.CutoffCompleted)
+                        _cutoffCompleted.TrySetResult(true);
+                    if (target >= (int)DaqRecoveryPhase.PersistenceBoundaryClosed)
+                        _validationReady.TrySetResult(true);
+                    return true;
+                }
+            }
+        }
+
+        internal bool MarkSafeIdle()
+        {
+            while (true)
+            {
+                var current = (int)Current;
+                if (current >= (int)DaqRecoveryPhase.Committed)
+                    return false;
+                if (current == (int)DaqRecoveryPhase.SafeIdle)
+                    return true;
+                if (current >= (int)DaqRecoveryPhase.Terminal)
+                    return false;
+                if (Interlocked.CompareExchange(
+                        ref _phase,
+                        (int)DaqRecoveryPhase.SafeIdle,
+                        current) == current)
+                    return true;
+            }
+        }
+
+        internal bool MarkTerminal()
+        {
+            return TryAdvance(DaqRecoveryPhase.Terminal);
         }
 
         private static async Task WaitWithCancellationAsync(

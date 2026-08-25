@@ -89,9 +89,16 @@
     <Compile Include="ReleasePackageVerifier.cs" />
     <Compile Include="RuntimeBuildIdentity.cs" />
     <Compile Include="RecoveryCoordination.cs" />
+    <Compile Include="RecoveryIncidentCoordinator.cs" />
+    <Compile Include="DaqRecoveryTransaction.cs" />
+    <Compile Include="DaqRecoveryTerminalSupervisor.cs" />
+    <Compile Include="RecoveryAggregateStore.cs" />
+    <Compile Include="RecoveryHeartbeatAggregateSource.cs" />
+    <Compile Include="WatchdogHeartbeatSourceCapture.cs" />
     <Compile Include="SoftwareSelfHealingLoop.cs" />
     <Compile Include="ChannelRuntimeStore.cs" />
     <Compile Include="ChannelRuntimeState.cs" />
+    <Compile Include="ChannelExecutionFence.cs" />
     <Compile Include="CycleAttemptContext.cs" />
     <Compile Include="NonCriticalObserver.cs" />
     <Compile Include="TaskSupervisor.cs" />
@@ -112,6 +119,9 @@
     <Compile Include="EpbManager.TimerRuntimeHealth.cs" />
     <Compile Include="EpbManager.DaqLiveness.cs" />
     <Compile Include="EpbManager.StopSafetyHardening.cs" />
+    <Compile Include="StopSafetyTransactionRunner.cs" />
+    <Compile Include="EpbManager.StopSafetyOperations.cs" />
+    <Compile Include="StopSafetyWatchdogHeartbeatMapper.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />
@@ -143,6 +153,9 @@
     <ProjectReference Include="..\IO.NI\IO.NI.csproj">
       <Project>{1FDE7D08-9014-474C-90C4-A13814D94327}</Project>
       <Name>IO.NI</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Name>Watchdog.Protocol</Name>
     </ProjectReference>
     <ProjectReference Include="..\Timing\Timing.csproj">
       <Project>{3D810EE2-A0EF-4D1F-84CD-2DDCF63FB434}</Project>

@@ -14,7 +14,7 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public sealed class WatchdogJournalPolicy
     {
-        public const int CurrentSchemaVersion = 2;
+        public const int CurrentSchemaVersion = 4;
         public const int DefaultRetentionDays = 90;
         public const int DefaultRetainSessionCount = 32;
         public const long DefaultMaxTotalBytes = 128L * 1024L * 1024L;
@@ -132,14 +132,98 @@ namespace MTTFTest.Watchdog.Protocol
         public bool OrphanPaused { get; set; }
         public bool PowerDisablePending { get; set; }
         public string RecoveryStage { get; set; }
+        public string RootCode { get; set; }
+        public string DeviceOrChannelGroup { get; set; }
+        public string RecoveryProgressToken { get; set; }
+        public string RecoveryProcessSource { get; set; }
+        public string RecoveryFailureFingerprint { get; set; }
         public string RecoveryIncident { get; set; }
         public string RecoveryContext { get; set; }
+        // Schema4 durable process-relaunch permit evidence.  These fields are
+        // additive; old event readers can ignore them while v4 validators
+        // refuse to infer a runnable permit from prose/PID alone.
+        public string RelaunchState { get; set; }
+        public long RelaunchGeneration { get; set; }
+        public string RelaunchPermitId { get; set; }
+        public string RelaunchPermitNonce { get; set; }
+        public string RelaunchFingerprint { get; set; }
+        public string RelaunchProgressToken { get; set; }
+        public string RelaunchProcessSource { get; set; }
+        public string RelaunchRunId { get; set; }
+        public string RelaunchRecoveryStage { get; set; }
+        public int RelaunchProcessId { get; set; }
+        public long RelaunchProcessStartUtcTicks { get; set; }
+        public int RelaunchConsecutiveFailures { get; set; }
+        public int RelaunchMaximumProcessRelaunches { get; set; }
+        public long RelaunchRecoveryCommitGeneration { get; set; }
+        public string RelaunchFailureCode { get; set; }
+        public string RelaunchFailureReason { get; set; }
         public int[] EnabledChannels { get; set; } = Array.Empty<int>();
         public int[] EligibleChannels { get; set; } = Array.Empty<int>();
         public int[] CompletedChannels { get; set; } = Array.Empty<int>();
         public int[] PermanentAlarmedChannels { get; set; } = Array.Empty<int>();
         public long DroppedEventCount { get; set; }
         public string Detail { get; set; }
+    }
+
+    /// <summary>
+    /// Schema migration is intentionally additive.  A V2 event is accepted,
+    /// upgraded in memory to V4, and all existing state (including blocked
+    /// recovery evidence) is retained.  Unknown/newer schemas are rejected by
+    /// the readers instead of being guessed.
+    /// </summary>
+    public static class WatchdogJournalMigration
+    {
+        public static WatchdogJournalEvent MigrateEvent(WatchdogJournalEvent value)
+        {
+            if (value == null) return null;
+            if (value.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion)
+                return value;
+            if (value.SchemaVersion == 2 || value.SchemaVersion == 3)
+            {
+                value.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
+                return value;
+            }
+            return null;
+        }
+
+        public static string MigrateEventJson(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return null;
+            try
+            {
+                var value = Json.Deserialize<WatchdogJournalEvent>(json);
+                var migrated = MigrateEvent(value);
+                return migrated == null ? null : Json.Serialize(migrated);
+            }
+            catch { return null; }
+        }
+
+        public static string MigrateJournalJson(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return null;
+            try
+            {
+                var values = Json.DeserializeObject(json) as Dictionary<string, object>;
+                if (values == null) return null;
+                var schema = 0;
+                if (values.TryGetValue("SchemaVersion", out var rawSchema))
+                    schema = Convert.ToInt32(rawSchema, CultureInfo.InvariantCulture);
+                if (schema == 2 || schema == 3)
+                {
+                    // Preserve every legacy field, especially RecoveryBlocked
+                    // and its failure evidence; only the schema marker changes.
+                    values["SchemaVersion"] = WatchdogJournalPolicy.CurrentSchemaVersion;
+                    return Json.Serialize(values);
+                }
+                return schema == WatchdogJournalPolicy.CurrentSchemaVersion
+                    ? json
+                    : null;
+            }
+            catch { return null; }
+        }
+
+        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
     }
 
     public sealed class WatchdogJournalLease
@@ -149,6 +233,9 @@ namespace MTTFTest.Watchdog.Protocol
         public int ProcessId { get; set; }
         public long ProcessStartUtcTicks { get; set; }
         public string UpdatedUtc { get; set; }
+        public string RelaunchState { get; set; }
+        public long RelaunchGeneration { get; set; }
+        public string RelaunchPermitId { get; set; }
     }
 
     public sealed class WatchdogSessionManifest
@@ -160,6 +247,22 @@ namespace MTTFTest.Watchdog.Protocol
         public string Reason { get; set; }
         public long DroppedEventCount { get; set; }
         public long TotalBytes { get; set; }
+        public string RelaunchState { get; set; }
+        public long RelaunchGeneration { get; set; }
+        public string RelaunchPermitId { get; set; }
+    }
+
+    /// <summary>
+    /// Controls which classes of journal state a store is allowed to own.
+    /// FullAuthority is the historical sidecar/bootstrap behavior.  A
+    /// recovery client may only append its own audit events/errors and must
+    /// never replay or mutate the authority snapshot, lease, or terminal
+    /// manifest.
+    /// </summary>
+    public enum WatchdogJournalStoreMode
+    {
+        FullAuthority = 0,
+        ClientAuditOnly = 1
     }
 
     public static class WatchdogJournalPaths
@@ -188,10 +291,26 @@ namespace MTTFTest.Watchdog.Protocol
         public static string ProjectRevocationPath(string directory, string sessionId) => Path.Combine(
             ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".revoked");
 
+        public static string LocalRecoveryCommitPath(string sessionId) => Path.Combine(
+            LocalControlDirectory, "session-" + SafeName(sessionId) + ".recovery-committed");
+
+        public static string ProjectRecoveryCommitPath(string directory, string sessionId) => Path.Combine(
+            ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".recovery-committed");
+
         public static string LocalSpoolDirectory(string projectDirectory, string sessionId) => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MTTFTest", "WatchdogSpoolV2", StablePathToken(ValidateProjectDirectory(projectDirectory)),
             "session-" + SafeName(sessionId));
+
+        /// <summary>
+        /// Emergency evidence owned by a ClientAuditOnly store is kept below a
+        /// per-session child directory.  The parent session spool is reserved
+        /// for the authority's snapshot/lease/terminal pending files; keeping
+        /// the two namespaces physically separate prevents an audit client
+        /// from ever budget-scanning or deleting authority recovery state.
+        /// </summary>
+        public static string ClientAuditSpoolDirectory(string projectDirectory, string sessionId) => Path.Combine(
+            LocalSpoolDirectory(projectDirectory, sessionId), "client-audit");
 
         public static string SafeName(string value)
         {
@@ -242,6 +361,7 @@ namespace MTTFTest.Watchdog.Protocol
                 if (!directory.Exists || (directory.Attributes & FileAttributes.ReparsePoint) != 0) return;
                 var cutoff = DateTime.UtcNow.AddDays(-Math.Max(1, retentionDays));
                 var files = directory.GetFiles("session-*.revoked", SearchOption.TopDirectoryOnly)
+                    .Concat(directory.GetFiles("session-*.recovery-committed", SearchOption.TopDirectoryOnly))
                     .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
                     .OrderBy(file => file.LastWriteTimeUtc).ToList();
                 foreach (var file in files.Where(file => file.LastWriteTimeUtc < cutoff).ToArray())
@@ -286,6 +406,90 @@ namespace MTTFTest.Watchdog.Protocol
     }
 
     /// <summary>
+    /// 恢复批次已提交的跨进程耐久旁路。命名管道只负责低延迟通知；即使双向管道
+    /// 正在重连，Sidecar 仍能从本机或项目目录确认新 Run 已经正式提交并关闭过渡窗。
+    /// </summary>
+    public static class WatchdogRecoveryCommitMarker
+    {
+        public static void WriteLocal(string sessionId, long generation, string reason) =>
+            AtomicWrite(WatchdogJournalPaths.LocalRecoveryCommitPath(sessionId), generation, reason);
+
+        public static void WriteProject(
+            string projectDirectory,
+            string sessionId,
+            long generation,
+            string reason) =>
+            AtomicWrite(
+                WatchdogJournalPaths.ProjectRecoveryCommitPath(projectDirectory, sessionId),
+                generation,
+                reason);
+
+        public static bool TryRead(string projectDirectory, string sessionId, out long generation)
+        {
+            generation = 0;
+            foreach (var path in CandidatePaths(projectDirectory, sessionId))
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    string content;
+                    using (var stream = new FileStream(
+                               path,
+                               FileMode.Open,
+                               FileAccess.Read,
+                               FileShare.ReadWrite | FileShare.Delete))
+                    using (var reader = new StreamReader(stream, new UTF8Encoding(false), true))
+                        content = reader.ReadToEnd();
+                    var separator = (content ?? string.Empty).IndexOf('|');
+                    var token = separator < 0 ? content : content.Substring(0, separator);
+                    if (long.TryParse(
+                            token,
+                            NumberStyles.Integer,
+                            CultureInfo.InvariantCulture,
+                            out var parsed) && parsed > generation)
+                        generation = parsed;
+                }
+                catch { }
+            }
+            return generation > 0;
+        }
+
+        private static IEnumerable<string> CandidatePaths(string projectDirectory, string sessionId)
+        {
+            yield return WatchdogJournalPaths.LocalRecoveryCommitPath(sessionId);
+            if (string.IsNullOrWhiteSpace(projectDirectory)) yield break;
+            string projectPath = null;
+            try { projectPath = WatchdogJournalPaths.ProjectRecoveryCommitPath(projectDirectory, sessionId); }
+            catch { }
+            if (!string.IsNullOrWhiteSpace(projectPath)) yield return projectPath;
+        }
+
+        private static void AtomicWrite(string path, long generation, string reason)
+        {
+            if (generation <= 0) throw new ArgumentOutOfRangeException(nameof(generation));
+            var directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(directory))
+                throw new InvalidOperationException("恢复提交marker目录无效。");
+            Directory.CreateDirectory(directory);
+            var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                var payload = generation.ToString(CultureInfo.InvariantCulture) + "|" +
+                              DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture) + "|" +
+                              (reason ?? string.Empty);
+                File.WriteAllText(temporary, payload, new UTF8Encoding(false));
+                using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+                    stream.Flush(true);
+                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+            }
+            finally
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
     /// Bounded, best-effort journal writer.  All filesystem work happens on its
     /// private worker so project or network storage cannot block watchdog IPC.
     /// </summary>
@@ -300,7 +504,7 @@ namespace MTTFTest.Watchdog.Protocol
         private const int ErrorArchiveCount = 1;
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private static readonly Regex OwnedFile = new Regex(
-            @"^session-(?<id>[0-9a-f]{32})\.(json|lease\.json|manifest\.json|revoked|sidecar-events(?:\.\d+)?\.jsonl|client-events(?:\.\d+)?\.jsonl|errors(?:\.\d+)?\.log)$",
+            @"^session-(?<id>[0-9a-f]{32})\.(json|bootstrap\.json|relaunch\.json|lease\.json|manifest\.json|revoked|recovery-committed|sidecar-events(?:\.\d+)?\.jsonl|client-events(?:\.\d+)?\.jsonl|errors(?:\.\d+)?\.log)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         private readonly object _gate = new object();
@@ -313,6 +517,7 @@ namespace MTTFTest.Watchdog.Protocol
         private readonly string _sessionId;
         private readonly string _safeSession;
         private readonly string _source;
+        private readonly WatchdogJournalStoreMode _mode;
         private readonly WatchdogJournalPolicy _policy;
         private readonly int _processId;
         private readonly long _processStartTicks;
@@ -356,7 +561,8 @@ namespace MTTFTest.Watchdog.Protocol
             string source,
             WatchdogJournalPolicy policy,
             int processId,
-            long processStartTicks)
+            long processStartTicks,
+            WatchdogJournalStoreMode mode = WatchdogJournalStoreMode.FullAuthority)
         {
             _directory = WatchdogJournalPaths.ValidateProjectDirectory(directory);
             if (!Guid.TryParseExact(sessionId, "N", out _))
@@ -364,11 +570,15 @@ namespace MTTFTest.Watchdog.Protocol
             _sessionId = sessionId.ToLowerInvariant();
             _safeSession = WatchdogJournalPaths.SafeName(_sessionId);
             _source = string.Equals(source, "client", StringComparison.OrdinalIgnoreCase) ? "client" : "sidecar";
-            _leasePending = _source == "sidecar";
+            _mode = mode;
+            _leasePending = _mode == WatchdogJournalStoreMode.FullAuthority && _source == "sidecar";
+            _retentionPending = _mode == WatchdogJournalStoreMode.FullAuthority;
             _policy = (policy ?? new WatchdogJournalPolicy()).Normalize();
             _processId = processId;
             _processStartTicks = processStartTicks;
-            _spoolDirectory = WatchdogJournalPaths.LocalSpoolDirectory(_directory, _sessionId);
+            _spoolDirectory = IsClientAuditOnly
+                ? WatchdogJournalPaths.ClientAuditSpoolDirectory(_directory, _sessionId)
+                : WatchdogJournalPaths.LocalSpoolDirectory(_directory, _sessionId);
             _worker = new Thread(WorkerLoop)
             {
                 IsBackground = true,
@@ -380,23 +590,74 @@ namespace MTTFTest.Watchdog.Protocol
 
         public long DroppedEventCount => Interlocked.Read(ref _droppedEvents);
 
-        public void PublishSnapshot(string json)
+        public WatchdogJournalStoreMode Mode => _mode;
+
+        private bool IsClientAuditOnly => _mode == WatchdogJournalStoreMode.ClientAuditOnly;
+
+        private bool RejectAuthorityOperation(string operation)
         {
-            if (string.IsNullOrWhiteSpace(json)) return;
+            // Keep the rejection observable through the permitted audit
+            // channel; callers also receive false from the bool APIs.
+            RecordError("ClientAuditOnlyRejected:" + (operation ?? "Unknown"));
+            return false;
+        }
+
+        public bool PublishSnapshot(string json)
+        {
+            if (IsClientAuditOnly) return RejectAuthorityOperation("PublishSnapshot");
+            if (string.IsNullOrWhiteSpace(json)) return false;
             lock (_gate)
             {
-                if (_stopping) return;
+                if (_stopping) return false;
                 _snapshot = json;
                 if (DateTime.UtcNow.Ticks - _lastLeaseUtcTicks >= TimeSpan.FromSeconds(30).Ticks)
                     _leasePending = true;
                 _idle.Reset();
             }
             _wake.Set();
+            return true;
+        }
+
+        /// <summary>
+        /// Synchronously commits a safety-critical snapshot.  The ordinary
+        /// PublishSnapshot path is intentionally asynchronous for heartbeat
+        /// throughput; recovery-block decisions must use this path before any
+        /// process relaunch is scheduled.  A failure is returned to the
+        /// caller, which must fail closed in memory and refuse relaunch.
+        /// </summary>
+        public bool TryPublishSnapshotSynchronously(string json)
+        {
+            if (IsClientAuditOnly) return RejectAuthorityOperation("TryPublishSnapshotSynchronously");
+            if (string.IsNullOrWhiteSpace(json)) return false;
+            lock (_gate)
+            {
+                if (_stopping) return false;
+                try
+                {
+                    Directory.CreateDirectory(_directory);
+                    AtomicWrite(
+                        Path.Combine(_directory, "session-" + _safeSession + ".json"),
+                        json);
+                    _snapshot = null;
+                    _idle.Set();
+                    TryDelete(Path.Combine(_spoolDirectory, "session.snapshot.pending.json"));
+                    return true;
+                }
+                catch
+                {
+                    // Keep the emergency spool attempt for later replay, but
+                    // report false so the caller cannot treat this as durable.
+                    TrySpoolAtomic("session.snapshot.pending.json", json);
+                    return false;
+                }
+            }
         }
 
         public bool Record(WatchdogJournalEvent value, bool checkpoint = false)
         {
             if (value == null) return false;
+            if (IsClientAuditOnly && !string.Equals(_source, "client", StringComparison.OrdinalIgnoreCase))
+                return RejectAuthorityOperation("NonClientRecord");
             value.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
             value.SessionId = _sessionId;
             value.Source = _source;
@@ -409,9 +670,25 @@ namespace MTTFTest.Watchdog.Protocol
             value.EventType = Truncate(value.EventType, 256);
             value.State = Truncate(value.State, 256);
             value.Reason = Truncate(value.Reason, 16 * 1024);
+            value.RunId = Truncate(value.RunId, 256);
             value.RecoveryStage = Truncate(value.RecoveryStage, 1024);
+            value.RootCode = Truncate(value.RootCode, 256);
+            value.DeviceOrChannelGroup = Truncate(value.DeviceOrChannelGroup, 1024);
+            value.RecoveryProgressToken = Truncate(value.RecoveryProgressToken, 256);
+            value.RecoveryProcessSource = Truncate(value.RecoveryProcessSource, 128);
+            value.RecoveryFailureFingerprint = Truncate(value.RecoveryFailureFingerprint, 128);
             value.RecoveryIncident = Truncate(value.RecoveryIncident, 4096);
             value.RecoveryContext = Truncate(value.RecoveryContext, 16 * 1024);
+            value.RelaunchState = Truncate(value.RelaunchState, 64);
+            value.RelaunchPermitId = Truncate(value.RelaunchPermitId, 128);
+            value.RelaunchPermitNonce = Truncate(value.RelaunchPermitNonce, 128);
+            value.RelaunchFingerprint = Truncate(value.RelaunchFingerprint, 128);
+            value.RelaunchProgressToken = Truncate(value.RelaunchProgressToken, 256);
+            value.RelaunchProcessSource = Truncate(value.RelaunchProcessSource, 128);
+            value.RelaunchRunId = Truncate(value.RelaunchRunId, 256);
+            value.RelaunchRecoveryStage = Truncate(value.RelaunchRecoveryStage, 1024);
+            value.RelaunchFailureCode = Truncate(value.RelaunchFailureCode, 256);
+            value.RelaunchFailureReason = Truncate(value.RelaunchFailureReason, 16 * 1024);
             value.Detail = Truncate(value.Detail, 64 * 1024);
             value.EnabledChannels = Limit(value.EnabledChannels);
             value.EligibleChannels = Limit(value.EligibleChannels);
@@ -471,27 +748,30 @@ namespace MTTFTest.Watchdog.Protocol
             _wake.Set();
         }
 
-        public void PublishTerminal(string state, string reason)
+        public bool PublishTerminal(string state, string reason)
         {
+            if (IsClientAuditOnly) return RejectAuthorityOperation("PublishTerminal");
             lock (_gate)
             {
-                if (_stopping) return;
+                if (_stopping) return false;
                 _terminal = new PendingTerminal { State = state ?? string.Empty, Reason = reason ?? string.Empty };
                 _retentionPending = true;
                 _idle.Reset();
             }
             _wake.Set();
+            return true;
         }
 
-        public void PublishRevocation(string reason)
+        public bool PublishRevocation(string reason)
         {
             lock (_gate)
             {
-                if (_stopping) return;
+                if (_stopping) return false;
                 _revocationReason = reason ?? string.Empty;
                 _idle.Reset();
             }
             _wake.Set();
+            return true;
         }
 
         public bool Flush(TimeSpan timeout)
@@ -500,15 +780,17 @@ namespace MTTFTest.Watchdog.Protocol
             return _idle.Wait(timeout < TimeSpan.Zero ? TimeSpan.Zero : timeout);
         }
 
-        public void RequestRetention()
+        public bool RequestRetention()
         {
+            if (IsClientAuditOnly) return RejectAuthorityOperation("RequestRetention");
             lock (_gate)
             {
-                if (_stopping) return;
+                if (_stopping) return false;
                 _retentionPending = true;
                 _idle.Reset();
             }
             _wake.Set();
+            return true;
         }
 
         private void WorkerLoop()
@@ -544,8 +826,8 @@ namespace MTTFTest.Watchdog.Protocol
                 }
 
                 TryReplaySpool();
-                if (lease) TryWriteLease();
-                if (snapshot != null) TryWriteSnapshot(snapshot);
+                if (!IsClientAuditOnly && lease) TryWriteLease();
+                if (!IsClientAuditOnly && snapshot != null) TryWriteSnapshot(snapshot);
                 foreach (var item in events)
                 {
                     if (item.Checkpoint && IsStopping())
@@ -557,9 +839,14 @@ namespace MTTFTest.Watchdog.Protocol
                 }
                 foreach (var error in errors) TryWriteError(error);
                 if (revocationReason != null) TryWriteProjectRevocation(revocationReason);
-                if (terminal != null) TryPublishTerminal(terminal);
-                if (retention && _source == "sidecar") TryEnforceRetention();
-                if (Interlocked.Exchange(ref _spoolWritesSinceBudget, 0) > 0) EnforceSpoolBudget();
+                if (!IsClientAuditOnly && terminal != null) TryPublishTerminal(terminal);
+                if (!IsClientAuditOnly && retention && _source == "sidecar") TryEnforceRetention();
+                // Both authority and audit stores have an independent bounded
+                // emergency spool.  EnforceSpoolBudget selects the historical
+                // authority root for FullAuthority and this store's private
+                // client-audit directory for ClientAuditOnly.
+                if (Interlocked.Exchange(ref _spoolWritesSinceBudget, 0) > 0)
+                    EnforceSpoolBudget();
 
                 lock (_gate)
                 {
@@ -574,6 +861,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         private void TryWriteSnapshot(string content)
         {
+            if (IsClientAuditOnly) return;
             try
             {
                 Directory.CreateDirectory(_directory);
@@ -589,6 +877,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         private void TryWriteLease()
         {
+            if (IsClientAuditOnly) return;
             var lease = Json.Serialize(new WatchdogJournalLease
             {
                 SessionId = _sessionId,
@@ -643,6 +932,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         private bool TryPublishTerminal(PendingTerminal value)
         {
+            if (IsClientAuditOnly) return false;
             try
             {
                 Directory.CreateDirectory(_directory);
@@ -679,6 +969,11 @@ namespace MTTFTest.Watchdog.Protocol
 
         private void TryReplaySpool()
         {
+            if (IsClientAuditOnly)
+            {
+                TryReplayAuditSpool();
+                return;
+            }
             try
             {
                 if (!Directory.Exists(_spoolDirectory)) return;
@@ -739,6 +1034,49 @@ namespace MTTFTest.Watchdog.Protocol
             catch { }
         }
 
+        private void TryReplayAuditSpool()
+        {
+            try
+            {
+                if (!Directory.Exists(_spoolDirectory)) return;
+
+                // AuditOnly may recover only client event/error evidence.  In
+                // particular, leave snapshot/lease/terminal pending files in
+                // place: consuming them would transfer authority to the
+                // recovery client.
+                foreach (var file in new DirectoryInfo(_spoolDirectory).GetFiles("event-*.pending.json")
+                             .OrderBy(value => value.CreationTimeUtc))
+                {
+                    var json = File.ReadAllText(file.FullName, Encoding.UTF8);
+                    var id = Path.GetFileName(file.Name).Substring("event-".Length);
+                    id = id.Substring(0, id.Length - ".pending.json".Length);
+                    if (!ContainsValidEventId(id))
+                        AppendRotated(EventPath("client"), json + Environment.NewLine,
+                            ClientEventSegmentBytes, ClientEventArchiveCount);
+                    file.Delete();
+                }
+                foreach (var file in new DirectoryInfo(_spoolDirectory).GetFiles("error-*.pending.log")
+                             .OrderBy(value => value.CreationTimeUtc))
+                {
+                    AppendRotated(Path.Combine(_directory, "session-" + _safeSession + ".errors.log"),
+                        File.ReadAllText(file.FullName, Encoding.UTF8) + Environment.NewLine,
+                        ErrorSegmentBytes, ErrorArchiveCount);
+                    file.Delete();
+                }
+
+                // Revocation is an existing explicit safety marker, not a
+                // session-authority transition, so it remains permitted.
+                var revoked = Path.Combine(_spoolDirectory, "session.revoked.pending.txt");
+                if (File.Exists(revoked))
+                {
+                    WatchdogControlMarker.WriteProject(
+                        _directory, _sessionId, File.ReadAllText(revoked, Encoding.UTF8));
+                    File.Delete(revoked);
+                }
+            }
+            catch { }
+        }
+
         private void TrySpoolAtomic(string name, string content)
         {
             try
@@ -754,11 +1092,17 @@ namespace MTTFTest.Watchdog.Protocol
         {
             try
             {
-                var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "MTTFTest", "WatchdogSpoolV2");
+                // Preserve FullAuthority's historical cross-session budget
+                // behavior.  AuditOnly must never enumerate the parent spool:
+                // it is allowed to see only its own client-audit directory.
+                var root = IsClientAuditOnly
+                    ? _spoolDirectory
+                    : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "MTTFTest", "WatchdogSpoolV2");
                 if (!Directory.Exists(root)) return;
                 var cutoff = DateTime.UtcNow.AddDays(-WatchdogJournalPolicy.EmergencySpoolRetentionDays);
-                var files = new DirectoryInfo(root).EnumerateFiles("*.pending.*", SearchOption.AllDirectories)
+                var searchOption = IsClientAuditOnly ? SearchOption.TopDirectoryOnly : SearchOption.AllDirectories;
+                var files = new DirectoryInfo(root).EnumerateFiles("*.pending.*", searchOption)
                     .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
                     .OrderBy(file => file.LastWriteTimeUtc)
                     .ToList();
@@ -904,7 +1248,9 @@ namespace MTTFTest.Watchdog.Protocol
             try
             {
                 var lease = Json.Deserialize<WatchdogJournalLease>(File.ReadAllText(leaseFile.FullName, Encoding.UTF8));
-                if (lease == null || lease.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion ||
+                if (lease == null ||
+                    (lease.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion &&
+                     lease.SchemaVersion != 3 && lease.SchemaVersion != 2) ||
                     lease.ProcessId <= 0 || lease.ProcessStartUtcTicks <= 0) return false;
                 using (var process = Process.GetProcessById(lease.ProcessId))
                     return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == lease.ProcessStartUtcTicks;
@@ -918,7 +1264,11 @@ namespace MTTFTest.Watchdog.Protocol
             try
             {
                 var text = File.ReadAllText(file.FullName, Encoding.UTF8);
-                return text.IndexOf("\"SchemaVersion\":2", StringComparison.Ordinal) >= 0;
+                // V2/V3 journals remain recognizable for retention/migration,
+                // but all new leases/snapshots are stamped with CurrentSchemaVersion.
+                return text.IndexOf("\"SchemaVersion\":4", StringComparison.Ordinal) >= 0 ||
+                       text.IndexOf("\"SchemaVersion\":3", StringComparison.Ordinal) >= 0 ||
+                       text.IndexOf("\"SchemaVersion\":2", StringComparison.Ordinal) >= 0;
             }
             catch { return false; }
         }
@@ -972,8 +1322,9 @@ namespace MTTFTest.Watchdog.Protocol
                         {
                             try
                             {
-                                var value = Json.Deserialize<WatchdogJournalEvent>(line);
-                                if (value?.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion &&
+                                var value = WatchdogJournalMigration.MigrateEvent(
+                                    Json.Deserialize<WatchdogJournalEvent>(line));
+                                if (value != null &&
                                     string.Equals(value.EventId, eventId, StringComparison.Ordinal))
                                     return true;
                             }
@@ -997,8 +1348,9 @@ namespace MTTFTest.Watchdog.Protocol
                 {
                     try
                     {
-                        var value = Json.Deserialize<WatchdogJournalEvent>(line);
-                        if (value?.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion &&
+                        var value = WatchdogJournalMigration.MigrateEvent(
+                            Json.Deserialize<WatchdogJournalEvent>(line));
+                        if (value != null &&
                             !string.IsNullOrWhiteSpace(value.EventId))
                             result.Add(value);
                     }

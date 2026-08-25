@@ -27,9 +27,22 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="WatchdogProtocol.cs" />
+    <Compile Include="StopSafetyHeartbeatProjection.cs" />
     <Compile Include="WatchdogPolicy.cs" />
+    <Compile Include="SidecarIdentityStateMachine.cs" />
+    <Compile Include="SidecarProcessHandleOwner.cs" />
+    <Compile Include="DurableRelaunchPermit.cs" />
+    <Compile Include="RecoveryFailureProtocol.cs" />
+    <Compile Include="DurableRelaunchCoordinator.cs" />
+    <Compile Include="WatchdogJournalV4Validator.cs" />
+    <Compile Include="WatchdogJournalBootstrap.cs" />
     <Compile Include="WatchdogJournalStorage.cs" />
     <Compile Include="DurableJsonFileStore.cs" />
+    <Compile Include="DurableRelaunchFileStore.cs" />
+    <Compile Include="DurableRelaunchAuthorityV4.cs" />
+    <Compile Include="DurableRelaunchAuthorityV4Validator.cs" />
+    <Compile Include="DurableRelaunchAuthorityFileStore.cs" />
+    <Compile Include="DurableRelaunchLaunchProtocol.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

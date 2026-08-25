@@ -22,6 +22,10 @@ namespace AdaptiveControlTests
             Run("启动电压爬升后连续稳定可通过", StartupVoltageRampIsAllowed, ref passed);
             Run("启动电压持续过低才超时回滚", StartupLowVoltageTimeoutRollsBackOutput, ref passed);
             Run("启动电流不回零则关电并禁止启动", StartupZeroTimeoutRollsBackOutput, ref passed);
+            Run("残余负载异常包含电流统计并只允许一次清基线", ResidualLoadIsTypedAndBounded, ref passed);
+            Run("多电气组残余负载一次汇总而非只报首组", MultipleResidualLoadsAreAggregated, ref passed);
+            Run("冷启动安全基线要求全部电源确认OFF", ColdStartBaselineRequiresEveryPowerOutputOff, ref passed);
+            Run("冷启动安全基线严格按电源DOAO触点顺序", ColdStartBaselineOrderIsEnforced, ref passed);
             Run("完整预检写入回读并确认关闭", ValidPreflightAndShutdown, ref passed);
             Run("恢复复核不循环健康电源输出", RevalidationDoesNotCycleHealthyOutput, ref passed);
             Run("计划关闭不产生意外掉电故障", PlannedShutdownIsNotUnexpectedOutputOff, ref passed);
@@ -457,6 +461,166 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void ResidualLoadIsTypedAndBounded()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.StartupZeroStableMs = 100;
+            config.StartupVoltageStableMs = 100;
+            config.StartupZeroTimeoutMs = 250;
+            var clients = NewClients(config);
+            clients[1].DefaultOutputCurrent = 4.0;
+
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                ResidualStartupLoadException failure = null;
+                try
+                {
+                    coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                }
+                catch (ResidualStartupLoadException ex)
+                {
+                    failure = ex;
+                }
+
+                Assert(failure != null && failure.ElectricalGroupId == 1 &&
+                       failure.SampleCount >= 3 &&
+                       Math.Abs(failure.MinimumCurrentA - 4.0) < 0.001 &&
+                       Math.Abs(failure.AverageCurrentA - 4.0) < 0.001 &&
+                       Math.Abs(failure.MaximumCurrentA - 4.0) < 0.001,
+                    "持续残余负载未形成带组号和Min/Avg/Max统计的结构化异常。");
+                Assert(!clients[1].OutputEnabled && clients[1].OutputOffCount == 1,
+                    "残余负载异常后没有回滚关闭电源输出。");
+            }
+
+            Assert(ColdStartSafetyBaselinePolicy.CanRetryResidualLoad(0) &&
+                   !ColdStartSafetyBaselinePolicy.CanRetryResidualLoad(1),
+                "残余负载清基线重试预算不是严格的一次。");
+        }
+
+        private static void MultipleResidualLoadsAreAggregated()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.StartupZeroStableMs = 100;
+            config.StartupVoltageStableMs = 100;
+            config.StartupZeroTimeoutMs = 250;
+            var clients = NewClients(config);
+            clients[1].DefaultOutputCurrent = 2.2;
+            clients[2].DefaultOutputCurrent = 1.6;
+
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                ResidualStartupLoadAggregateException failure = null;
+                try
+                {
+                    coordinator.PrepareAndEnableAsync(new[] { 1, 4 }, CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                }
+                catch (ResidualStartupLoadAggregateException ex)
+                {
+                    failure = ex;
+                }
+
+                Assert(failure?.Failures.Count == 2 &&
+                       failure.Failures.Select(item => item.ElectricalGroupId)
+                           .SequenceEqual(new[] { 1, 2 }) &&
+                       failure.Message.Contains("Iavg=2.200A") &&
+                       failure.Message.Contains("Iavg=1.600A"),
+                    "并行启动的多组残余负载仍只保留了第一个异常。");
+                Assert(!clients[1].OutputEnabled && !clients[2].OutputEnabled,
+                    "多组残余负载汇总前没有全部回滚关电。");
+            }
+        }
+
+        private static void ColdStartBaselineRequiresEveryPowerOutputOff()
+        {
+            var confirmed = Enumerable.Range(1, 4)
+                .Select(group => new PowerSafetyDisableResult
+                {
+                    ElectricalGroupId = group,
+                    ConfirmedOff = true,
+                    Outcome = PowerSafetyDisableOutcome.ConfirmedOff
+                })
+                .ToArray();
+            Assert(ColdStartSafetyBaselinePolicy.SelectUnconfirmedPowerOutputs(confirmed).Length == 0,
+                "四台电源全部确认OFF仍被拒绝。");
+
+            confirmed[2].ConfirmedOff = false;
+            confirmed[2].Outcome = PowerSafetyDisableOutcome.PowerOffUnconfirmed;
+            var rejected = ColdStartSafetyBaselinePolicy.SelectUnconfirmedPowerOutputs(confirmed);
+            Assert(rejected.Length == 1 && rejected[0].ElectricalGroupId == 3,
+                "任一电源未确认OFF时冷启动基线没有拒绝继续执行DO初始化。");
+
+            var doCalled = false;
+            AssertThrows<ColdStartSafetyBaselineException>(() =>
+                ColdStartSafetyBaselinePolicy.ExecuteAsync(
+                        () => Task.FromResult(confirmed.Take(3).Select(item =>
+                            new PowerSafetyDisableResult
+                            {
+                                ElectricalGroupId = item.ElectricalGroupId,
+                                ConfirmedOff = true,
+                                Outcome = PowerSafetyDisableOutcome.ConfirmedOff
+                            }).ToArray()),
+                        () => { doCalled = true; return true; },
+                        () => true,
+                        300,
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult());
+            Assert(!doCalled, "四台电源OFF证据缺组时仍进入了DO初始化。");
+        }
+
+        private static void ColdStartBaselineOrderIsEnforced()
+        {
+            var order = new List<string>();
+            ColdStartSafetyBaselinePolicy.ExecuteAsync(
+                    () =>
+                    {
+                        order.Add("PowerOff");
+                        return Task.FromResult(Enumerable.Range(1, 4)
+                            .Select(group => new PowerSafetyDisableResult
+                            {
+                                ElectricalGroupId = group,
+                                ConfirmedOff = true,
+                                Outcome = PowerSafetyDisableOutcome.ConfirmedOff
+                            })
+                            .ToArray());
+                    },
+                    () => { order.Add("DoAllOff"); return true; },
+                    () => { order.Add("AoZero"); return true; },
+                    300,
+                    CancellationToken.None,
+                    (milliseconds, _) =>
+                    {
+                        order.Add("RelaySettle:" + milliseconds);
+                        return Task.CompletedTask;
+                    })
+                .GetAwaiter().GetResult();
+            Assert(string.Join(",", order) ==
+                   "PowerOff,DoAllOff,AoZero,RelaySettle:300",
+                "冷启动安全基线没有严格执行 PowerOff→DO全零→AO归零→触点等待。");
+
+            var doCalled = false;
+            AssertThrows<ColdStartSafetyBaselineException>(() =>
+                ColdStartSafetyBaselinePolicy.ExecuteAsync(
+                        () => Task.FromResult(new[]
+                        {
+                            new PowerSafetyDisableResult
+                            {
+                                ElectricalGroupId = 2,
+                                ConfirmedOff = false,
+                                Outcome = PowerSafetyDisableOutcome.PowerOffUnconfirmed
+                            }
+                        }),
+                        () => { doCalled = true; return true; },
+                        () => true,
+                        300,
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult());
+            Assert(!doCalled, "电源OFF未确认时仍进入了DO任务重建。");
+        }
+
         private static void FaultIsScopedAndFreshPreflightClearsLatch()
         {
             var config = NewConfig();
@@ -581,7 +745,8 @@ namespace AdaptiveControlTests
                 StartupZeroCurrentA = 0.5,
                 StartupZeroStableMs = 100,
                 StartupVoltageStableMs = 100,
-                StartupZeroTimeoutMs = 1000
+                StartupZeroTimeoutMs = 1000,
+                ColdStartRelaySettleMs = 300
             };
             for (var id = 1; id <= 4; id++)
             {

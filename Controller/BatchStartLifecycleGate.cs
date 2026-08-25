@@ -13,6 +13,7 @@ namespace Controller
         private int _activeOperations;
 
         public bool IsBusy => Volatile.Read(ref _activeOperations) != 0;
+        public int ActiveOperationCount => Math.Max(0, Volatile.Read(ref _activeOperations));
 
         public async Task<T> RunAsync<T>(Func<Task<T>> operation, CancellationToken token)
         {

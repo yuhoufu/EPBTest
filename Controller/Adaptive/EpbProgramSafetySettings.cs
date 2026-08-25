@@ -16,7 +16,7 @@ namespace Controller.Adaptive
     /// </summary>
     public sealed class EpbProgramSafetySettings
     {
-        public const string SafetyPolicyVersion = "2026.08.08.2";
+        public const string SafetyPolicyVersion = "2026.08.22.1";
 
         public const int DefaultForwardProgressConfirmMs = 200;
         public const double DefaultForwardMinimumRiseSlopeAperMs = 0.001;

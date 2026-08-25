@@ -15,6 +15,32 @@ using NLogger = Config.NullLogger;
 
 namespace Controller
 {
+    internal enum MonotonicWaitPlanKind
+    {
+        Completed = 0,
+        Delay = 1,
+        AlignmentSpin = 2
+    }
+
+    /// <summary>
+    /// A deterministic, allocation-free decision for a monotonic deadline wait.
+    /// The plan deliberately keeps the coarse wait separate from the final
+    /// alignment spin so callers can test the boundary without consulting a
+    /// wall clock or mutating runner state.
+    /// </summary>
+    internal readonly struct MonotonicWaitPlan
+    {
+        internal MonotonicWaitPlan(MonotonicWaitPlanKind kind, int delayMilliseconds)
+        {
+            Kind = kind;
+            DelayMilliseconds = delayMilliseconds;
+        }
+
+        internal MonotonicWaitPlanKind Kind { get; }
+
+        internal int DelayMilliseconds { get; }
+    }
+
     public sealed partial class EpbCycleRunner
     {
         public delegate double ReadCurrentDelegate(int epbChannel);
@@ -761,7 +787,8 @@ namespace Controller
 
                 // —— 接入点：上电前的液压进入（与 Learn… 一致）——
                 if (_manager != null)
-                    await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
+                    await _manager.HydraulicEnterAsync(_channel, _executionPermit, token)
+                        .ConfigureAwait(false);
 
                 // ===================== ① 头部未上电（可交给外壳相位） =====================
                 // 旧版本中 ① 按比例分配；现在若 UseNoHeadPhase=true，则完全由外壳承担并在此跳过。
@@ -1169,7 +1196,43 @@ namespace Controller
             return (long)((Stopwatch.GetTimestamp() - startTick) * 1000.0 / Stopwatch.Frequency);
         }
 
-        private const double MaximumAlignmentSpinMs = 0.2;
+        // 0.2 ms expressed as a tick count.  The integer boundary is
+        // intentional: a plan is selected from integer timestamps and must
+        // never classify a positive wait above the boundary as a spin.
+        private const long AlignmentWindowDenominator = 5000;
+
+        internal static MonotonicWaitPlan SelectMonotonicWaitPlan(
+            long remainingTicks,
+            long frequency)
+        {
+            if (frequency <= 0)
+                throw new ArgumentOutOfRangeException(nameof(frequency));
+
+            if (remainingTicks <= 0)
+                return new MonotonicWaitPlan(MonotonicWaitPlanKind.Completed, 0);
+
+            var alignmentTicks = frequency / AlignmentWindowDenominator;
+            // At a synthetic frequency below 5 kHz one tick is already
+            // longer than 0.2 ms, so there is no positive integer tick in
+            // the alignment window.  Do not round that empty window up to a
+            // spin tick: doing so would violate the >0.2 ms no-spin rule.
+            if (alignmentTicks > 0 && remainingTicks <= alignmentTicks)
+                return new MonotonicWaitPlan(MonotonicWaitPlanKind.AlignmentSpin, 0);
+
+            // Keep the last alignment window out of Task.Delay.  Use double
+            // only for the coarse conversion so long timestamps cannot
+            // overflow in remainingTicks * 1000; the returned plan remains a
+            // value type and this method performs no allocation.
+            var coarseMilliseconds =
+                (remainingTicks - alignmentTicks) * 1000.0 / frequency;
+            var delayMilliseconds = coarseMilliseconds >= int.MaxValue
+                ? int.MaxValue
+                : (int)Math.Floor(coarseMilliseconds);
+            if (delayMilliseconds < 0)
+                delayMilliseconds = 0;
+
+            return new MonotonicWaitPlan(MonotonicWaitPlanKind.Delay, delayMilliseconds);
+        }
 
         /// <summary>
         ///     Waits for a monotonic deadline without burning the final 1-2 ms of every
@@ -1185,27 +1248,35 @@ namespace Controller
                 token.ThrowIfCancellationRequested();
                 var now = Stopwatch.GetTimestamp();
                 var remainingTicks = dueTimestamp - now;
-                if (remainingTicks <= 0) return now;
-
-                var remainingMs = remainingTicks * 1000.0 / Stopwatch.Frequency;
-                if (remainingMs > MaximumAlignmentSpinMs)
+                var plan = SelectMonotonicWaitPlan(remainingTicks, Stopwatch.Frequency);
+                switch (plan.Kind)
                 {
-                    var delayMs = (int)Math.Floor(remainingMs - MaximumAlignmentSpinMs);
-                    if (delayMs > 0)
-                        await Task.Delay(delayMs, token).ConfigureAwait(false);
-                    else
-                        await Task.Yield();
-                    continue;
+                    case MonotonicWaitPlanKind.Completed:
+                        return now;
+                    case MonotonicWaitPlanKind.Delay:
+                        if (plan.DelayMilliseconds > 0)
+                            await Task.Delay(plan.DelayMilliseconds, token).ConfigureAwait(false);
+                        else
+                        {
+                            // A zero millisecond coarse plan is still above
+                            // the spin boundary. Yield once rather than
+                            // silently turning it into a busy spin.
+                            token.ThrowIfCancellationRequested();
+                            await Task.Yield();
+                        }
+                        break;
+                    case MonotonicWaitPlanKind.AlignmentSpin:
+                        var spinner = new SpinWait();
+                        do
+                        {
+                            token.ThrowIfCancellationRequested();
+                            spinner.SpinOnce();
+                            now = Stopwatch.GetTimestamp();
+                        } while (now < dueTimestamp);
+                        return now;
+                    default:
+                        throw new InvalidOperationException("未知的单调等待计划");
                 }
-
-                var spinner = new SpinWait();
-                do
-                {
-                    token.ThrowIfCancellationRequested();
-                    spinner.SpinOnce();
-                    now = Stopwatch.GetTimestamp();
-                } while (now < dueTimestamp);
-                return now;
             }
         }
 

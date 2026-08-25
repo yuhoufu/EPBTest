@@ -25,6 +25,16 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 2 &&
+                    args[0].Equals("--watchdog-guarded-launch-child", StringComparison.OrdinalIgnoreCase))
+                {
+                    File.AppendAllText(
+                        Path.GetFullPath(args[1]),
+                        Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) +
+                        "|" + Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks
+                            .ToString(CultureInfo.InvariantCulture) + Environment.NewLine);
+                    return 0;
+                }
                 if (args.Length == 2 && args[0].Equals("--replay", StringComparison.OrdinalIgnoreCase))
                     return ReplayCsv(args[1]);
                 if (args.Length == 1 &&
@@ -60,6 +70,36 @@ namespace AdaptiveControlTests
                     args[0].Equals("--recovery-hardening", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryHardeningTests.RunAll();
+                    _passed += DurableRelaunchCoordinatorTests.RunAll();
+                    _passed += WatchdogHostIntegrationTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--recovery-lifecycle", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryLifecycleIsolationTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--recovery-production-seam", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryProductionSeamTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-host-integration", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogHostIntegrationTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-host-strict-v4", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += StrictHostV4ProductionTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -67,6 +107,71 @@ namespace AdaptiveControlTests
                     args[0].Equals("--stop-watchdog-hardening", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += StopWatchdogHardeningTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--stop-production-seam", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += StopSafetyProductionSeamTests.RunProductionAcceptance();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-transport-hardening", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogAttachWaitCoordinatorTests.RunAll();
+                    _passed += WatchdogTransportHardeningTests.RunAll();
+                    _passed += WatchdogClientTransportProductionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-client-real50", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogClientTransportProductionTests.RunRealEngineOnly();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-client-send-ack", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogClientTransportProductionTests.RunPublicSendAckOnly();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-client-send-hardening", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogClientTransportProductionTests.RunPublicSendHardeningOnly();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-client-failclosed-attached", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogClientTransportProductionTests.RunPublicFailClosedAttachedOnly();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-client-reconnect-lifecycle", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogClientTransportProductionTests.RunPublicReconnectLifecycleOnly();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-client-recovery-policy", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogClientTransportProductionTests.RunPublicRecoveryPolicyOnly();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-journal", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogJournalStorageTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -97,9 +202,76 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
-                    args[0].Equals("--watchdog-journal", StringComparison.OrdinalIgnoreCase))
+                    (args[0].Equals("--watchdog-recovery-failure-receipt", StringComparison.OrdinalIgnoreCase) ||
+                     args[0].Equals("--watchdog-recovery-authority-v4", StringComparison.OrdinalIgnoreCase)))
                 {
-                    _passed += WatchdogJournalStorageTests.RunAll();
+                    _passed += RecoveryFailureReceiptProtocolTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length >= 1 && args[0].Equals("--watchdog-authority-child", StringComparison.OrdinalIgnoreCase))
+                {
+                    return RecoveryFailureReceiptProtocolTests.RunAuthorityChild(args);
+                }
+                if (args.Length == 1 && args[0].Equals("--watchdog-recovery-authority-v4-stress", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryFailureReceiptProtocolTests.RunRealPressure();
+                    Console.WriteLine("PASS " + _passed + "/" + _passed);
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-callback-dispatch", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogCallbackDispatchProductionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-stopall-coordinator", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogStopAllOfferCoordinatorProductionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-runtime-callback-pipeline", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogRuntimeCallbackPipelineProductionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-runtime-shutdown-retention", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogRuntimeShutdownRetentionProductionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-winforms-ui", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogWinFormsUiProductionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-journal-open-existing", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogJournalStorageTests.RunOpenExistingRegression();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-journal-audit-spool", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogJournalStorageTests.RunClientAuditSpoolRegression();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--field-waveform", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += FieldWaveformReplayTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -107,6 +279,27 @@ namespace AdaptiveControlTests
                     args[0].Equals("--daq-realtime", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += DaqRealtimeControlTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--daq-deterministic", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DaqRealtimeControlTests.RunDeterministicTimingRegression();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--daq-background-supervisor", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DaqRealtimeControlTests.RunBackgroundSupervisorRegression();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--daq-duplicate-off", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DaqRealtimeControlTests.RunDuplicateOffRegression(1000);
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -253,7 +446,12 @@ namespace AdaptiveControlTests
                 _passed += PowerSupplyTelemetryRecorderTests.RunAll();
                 _passed += HistoricalStorageBudgetTests.RunAll();
                 _passed += WatchdogJournalStorageTests.RunAll();
+                _passed += RecoveryFailureReceiptProtocolTests.RunAll();
+                _passed += WatchdogHostIntegrationTests.RunAll();
+                _passed += FieldWaveformReplayTests.RunAll();
                 _passed += StopWatchdogHardeningTests.RunAll();
+                _passed += StopSafetyProductionSeamTests.RunUnitTests();
+                _passed += RecoveryLifecycleIsolationTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
@@ -361,6 +559,9 @@ namespace AdaptiveControlTests
                 Run("计划等待窗口内暂停不误启动下一圈", TimerPauseDuringPlannedDelayBlocksNextCycle);
                 Run("Timer暂停事件立即纠正运行态", TimerPauseStateCorrectsRunningStatus);
                 Run("Timer失活看门狗识别停止和陈旧心跳", TimerRuntimeWatchdogDetectsStoppedAndStale);
+                Run("Runner软预警不覆盖学习资格等生命周期", RunnerWarningPreservesLifecyclePhase);
+                Run("批次启动自愈原因受生命周期拥有者覆盖", BatchLifecycleRecoveryReasonsAreCovered);
+                Run("启动失败收尾不把当前生命周期栈误判为残留", FailingStartCleanupIgnoresOnlyCurrentLifecycleOwner);
                 Run("非人工Timer异常允许自动重建续测", TimerAnomalyRecoveryEligibility);
                 Run("Timer和组恢复三次失败后只熔断一次并整批重建", TimerRecoveryRetryAndCircuitBreaker);
                 Run("只有卡钳通道硬件故障允许锁存停机", ExternalEquipmentFaultsRemainRecoverable);
@@ -925,9 +1126,11 @@ namespace AdaptiveControlTests
                 (1233, 14.548)
             };
             EpbAdaptiveDecision terminal = null;
+            var rapidDiagnostic = false;
             foreach (var point in fieldHead)
             {
                 var decision = machine.OnSample(Tick(point.Item1), point.Item2);
+                rapidDiagnostic |= decision.DiagnosticWarning;
                 Assert(!decision.HardFault,
                     $"85993现场头部在{point.Item1}ms仍被误判：{decision.Reason}");
             }
@@ -939,13 +1142,19 @@ namespace AdaptiveControlTests
                 break;
             }
 
-            Assert(terminal != null && terminal.ClampReached && !terminal.HardFault &&
-                   terminal.CutoffReason == "NearTargetPlateau",
-                $"85993未按目标附近平台安全完成：{terminal?.Reason ?? "NoTerminal"}");
-            Assert(terminal.Reason.IndexOf(
-                       "AbnormalHighCurrentPlateau",
+            // This replay has no qualified per-cycle empty window and never
+            // reaches the 15A target. The corrected contract must keep it in
+            // EmptyTravel, record at most a diagnostic, and avoid the old
+            // historical-only LoadRise/plateau hard-fault path.
+            Assert(terminal == null || !terminal.HardFault ||
+                   terminal.Reason.IndexOf(
+                       "AbnormalLoadRiseDrop",
                        StringComparison.OrdinalIgnoreCase) < 0,
-                "85993仍被7.5A通用高平台规则错误归类");
+                $"85993仍由无本圈证据的负载回落规则硬故障：{terminal?.Reason ?? "NoTerminal"}");
+            Assert(machine.Stage == EpbCurrentStage.EmptyTravel,
+                $"85993无本圈基线却迁移了LoadRise：{machine.Stage}");
+            Assert(rapidDiagnostic || terminal == null,
+                "85993快速负载回放未保留可审计诊断或安全等待状态。");
         }
 
         private static void RapidLoadRiseMidTravelPlateauDoesNotCutPower()
@@ -957,10 +1166,15 @@ namespace AdaptiveControlTests
             machine.OnSample(Tick(94), 1.719);
             var rapidRise = machine.OnSample(Tick(109), 2.318);
             Assert(
-                rapidRise.Stage == EpbCurrentStage.LoadRise &&
-                rapidRise.SoftWarning &&
-                rapidRise.Reason.Contains("RapidLoadRiseWithoutObservedEmpty"),
-                "现场涌流结束后的快速负载上升回放未进入预期状态");
+                rapidRise.Stage == EpbCurrentStage.EmptyTravel &&
+                rapidRise.DiagnosticWarning &&
+                !rapidRise.SoftWarning &&
+                rapidRise.DiagnosticEvent != null &&
+                rapidRise.DiagnosticEvent.Message.Contains(
+                    "RapidLoadRiseWithoutObservedEmpty") &&
+                (rapidRise.Reason == null ||
+                 rapidRise.Reason.Contains("EmptyTravel")),
+                "现场涌流结束后的快速负载上升回放未保持证据缺失诊断状态");
 
             Feed(
                 machine,
@@ -1922,8 +2136,8 @@ namespace AdaptiveControlTests
                     "不同代次样本错误推进截止水印");
                 Assert(!watermark.Observe(7, 103, start + 1100000),
                     "截止后的样本被错误纳入峰值");
-                Assert(watermark.IsCutoffCovered,
-                    $"墙钟跳变{wallJumpMs}ms改变了单调水印覆盖判定：{wallBefore:O}->{wallAfter:O}");
+                Assert(!watermark.IsCutoffCovered,
+                    $"代次失配未粘性使证据失效，且墙钟跳变{wallJumpMs}ms不应改变单调水印判定：{wallBefore:O}->{wallAfter:O}");
                 Assert(watermark.GetEvidenceTailLagMs(frequency) >= 0,
                     "单调尾差出现负值");
             }
@@ -3343,6 +3557,14 @@ namespace AdaptiveControlTests
             Assert(fastRise.Contains("快速夹紧候选已断开正向供电") &&
                    !fastRise.Contains("FastRiseCandidate"),
                 "快速夹紧候选仍暴露英文码，或未明确已经执行安全断电");
+
+            var learningWarning = AlarmMessageLocalizer.ToUserWarningMessage(
+                "RapidLoadRiseWithoutObservedEmpty I=1.893A Threshold=1.189A");
+            Assert(learningWarning.Contains("本圈尚未取得空载电流基线") &&
+                   learningWarning.Contains("这是诊断事件") &&
+                   learningWarning.Contains("不会单独触发卡钳永久停机") &&
+                   !learningWarning.Contains("已执行安全保护"),
+                "学习阶段负载快速上升软预警仍被误报为已执行安全保护");
         }
 
         private static void ConcurrentUiConfigSaveIsAtomic()
@@ -3732,6 +3954,55 @@ namespace AdaptiveControlTests
                 "自恢复状态被看门狗错误覆盖");
             timer.Stop();
             Assert(run.Wait(1000), "心跳测试停止超时");
+        }
+
+        private static void RunnerWarningPreservesLifecyclePhase()
+        {
+            Assert(EpbManager.ResolveRuntimeStateForRunnerWarning(ChannelRuntimeState.Learning) ==
+                       ChannelRuntimeState.Learning &&
+                   EpbManager.ResolveRuntimeStateForRunnerWarning(ChannelRuntimeState.Qualification) ==
+                       ChannelRuntimeState.Qualification &&
+                   EpbManager.ResolveRuntimeStateForRunnerWarning(ChannelRuntimeState.Starting) ==
+                       ChannelRuntimeState.Starting &&
+                   EpbManager.ResolveRuntimeStateForRunnerWarning(ChannelRuntimeState.Recovering) ==
+                       ChannelRuntimeState.Recovering &&
+                   EpbManager.ResolveRuntimeStateForRunnerWarning(ChannelRuntimeState.Paused) ==
+                       ChannelRuntimeState.Paused,
+                "Runner软预警仍会覆盖非正式阶段的生命周期所有者");
+            Assert(EpbManager.ResolveRuntimeStateForRunnerWarning(ChannelRuntimeState.Running) ==
+                       ChannelRuntimeState.Running &&
+                   EpbManager.ResolveRuntimeStateForRunnerWarning(ChannelRuntimeState.WarningRunning) ==
+                       ChannelRuntimeState.WarningRunning,
+                "独立预警覆盖层仍在改写正式运行生命周期");
+        }
+
+        private static void BatchLifecycleRecoveryReasonsAreCovered()
+        {
+            Assert(EpbManager.IsBatchLifecycleOwnedRecoveryReason("DaqStartSelfHealing") &&
+                   EpbManager.IsBatchLifecycleOwnedRecoveryReason("PowerStartSelfHealing") &&
+                   EpbManager.IsBatchLifecycleOwnedRecoveryReason("LearningPersistenceSelfHealing") &&
+                   EpbManager.IsBatchLifecycleOwnedRecoveryReason("HydraulicGenerationSelfHealing") &&
+                   EpbManager.IsBatchLifecycleOwnedRecoveryReason("StartupPositioningSelfHealing"),
+                "批次启动调用栈内的恢复原因仍可能被1秒孤儿恢复检查误杀");
+            Assert(!EpbManager.IsBatchLifecycleOwnedRecoveryReason("DaqSelfMaintenance"),
+                "正式运行后台恢复被错误冒充为批次启动调用栈所有权");
+        }
+
+        private static void FailingStartCleanupIgnoresOnlyCurrentLifecycleOwner()
+        {
+            var context = new StopContext
+            {
+                Source = StopSource.SystemFault,
+                Initiator = "StartBatchSynchronizedWithResultAsync"
+            };
+            Assert(EpbManager.CanIgnoreLifecycleBusyDuringFailingStartCleanup(context, 1, false),
+                "启动失败catch持有的唯一生命周期租约仍被误判成进程级逻辑残留");
+            Assert(!EpbManager.CanIgnoreLifecycleBusyDuringFailingStartCleanup(context, 2, false) &&
+                   !EpbManager.CanIgnoreLifecycleBusyDuringFailingStartCleanup(context, 1, true),
+                "存在排队启动或活动批次时错误放宽生命周期清场门禁");
+            context.Initiator = "MTTFTest.Watchdog";
+            Assert(!EpbManager.CanIgnoreLifecycleBusyDuringFailingStartCleanup(context, 1, false),
+                "非启动调用栈错误借用启动失败收尾豁免");
         }
 
         private static void TimerAnomalyRecoveryEligibility()

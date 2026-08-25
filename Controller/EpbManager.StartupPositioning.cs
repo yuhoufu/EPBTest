@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Config;
 
@@ -10,6 +11,101 @@ namespace Controller
 {
     public sealed partial class EpbManager
     {
+        /// <summary>
+        /// Performs one startup-positioning retry under a real recovery
+        /// worker.  The worker owns the output-off confirmation and backoff;
+        /// no caller/stagger executor Task is registered as the owner.
+        /// </summary>
+        private async Task RunStartupPositioningRetryIncidentAsync(
+            int channel,
+            Guid runId,
+            int attempt,
+            string reasonCode,
+            string reasonText,
+            int delayMs,
+            CancellationToken token,
+            string offReason)
+        {
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            if (_channelRuntimeStateStore.Get(channel)?.State ==
+                ChannelRuntimeState.Recovering)
+            {
+                if (!TryEnsureSoftwareRecoveryOutputOff(channel, offReason))
+                {
+                    RequestElectricalGroupEmergencyShutdown(channel, offReason);
+                    throw new SoftwareSelfHealingRetryException(
+                        $"EPB[{channel}] 启动定位断电尚未确认。");
+                }
+                await Task.Delay(delayMs, token).ConfigureAwait(false);
+                return;
+            }
+
+            var ownerId = Guid.NewGuid();
+            RecoveryIncidentHandle recoveryIncident = null;
+            Func<Task> BuildRecoveryWorker()
+            {
+                return async () =>
+                {
+                    if (!TryEnsureSoftwareRecoveryOutputOff(channel, offReason))
+                    {
+                        RequestElectricalGroupEmergencyShutdown(channel, offReason);
+                        throw new SoftwareSelfHealingRetryException(
+                            $"EPB[{channel}] 启动定位断电尚未确认。");
+                    }
+                    await Task.Delay(delayMs, token).ConfigureAwait(false);
+                };
+            }
+
+            if (!TryBeginRecoveryIncident(
+                    "StartupPositioningSelfHealing",
+                    runId,
+                    runEpoch,
+                    RecoveryOwnerKind.BatchStartup,
+                    RecoveryTargetPhase.Startup,
+                    ownerId,
+                    new[] { channel },
+                    _ => BuildRecoveryWorker(),
+                    contract =>
+                    {
+                        PublishRecoveryIncidentState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            reasonCode,
+                            reasonText,
+                            affectedChannels: contract.Channels,
+                            correlationId: contract.IncidentId,
+                            allowTerminalReset: true,
+                            recoveryOwnerKind: contract.OwnerKind,
+                            recoveryTargetPhase: contract.TargetPhase,
+                            recoveryOwnerId: contract.OwnerId,
+                            recoveryOwnerGeneration: contract.RunEpoch);
+                    },
+                    out recoveryIncident))
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 启动定位恢复事务建立失败，已保持安全终态。");
+
+            try
+            {
+                _taskSupervisor.Observe(
+                    recoveryIncident.WorkerTask,
+                    "StartupPositioningSelfHealing",
+                    _activeBatchId,
+                    channel);
+                if (!recoveryIncident.Start())
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] 启动定位恢复worker启动许可被拒绝。");
+                await recoveryIncident.WorkerTask.ConfigureAwait(false);
+            }
+            finally
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                    CommitRecoveryIncidentStateForRelease(
+                        contract,
+                        "StartupPositioningRetryReady",
+                        "启动定位重试前安全断电已确认，继续当前定位流程。"));
+            }
+        }
+
         internal async Task PublishStartupPositioningFailureAsync(StartupPositioningResult result)
         {
             if (result == null || result.Succeeded) return;
@@ -39,13 +135,12 @@ namespace Controller
 
             if (classification != FaultClassification.HardwareConfirmed)
             {
-                PublishChannelRuntimeState(
-                    result.Channel,
-                    ChannelRuntimeState.Recovering,
-                    "StartupPositioningSelfHealing",
-                    "启动定位未获得硬件故障双证据；已安全断电，按软件瞬态继续自愈。" + reason,
-                    affectedChannels: fault.AffectedChannels,
-                    correlationId: fault.CorrelationId);
+                await RunStartupPositioningFailureIncidentAsync(
+                        result,
+                        fault,
+                        "StartupPositioningSelfHealing",
+                        "启动定位未获得硬件故障双证据；已安全断电，按软件瞬态继续自愈。" + reason)
+                    .ConfigureAwait(false);
                 _log?.Warn(
                     $"EPB[{result.Channel}] 启动定位未获得硬件故障双证据，保持自愈。" +
                     $"CorrelationId={fault.CorrelationId:N} {reason}",
@@ -109,6 +204,89 @@ namespace Controller
                     observerEx => _log?.Warn(
                         $"启动定位快照失败观察者异常，已隔离：{observerEx.Message}",
                         "落盘"));
+            }
+        }
+
+        private async Task RunStartupPositioningFailureIncidentAsync(
+            StartupPositioningResult result,
+            ControlFault fault,
+            string reasonCode,
+            string reasonText)
+        {
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var ownerId = fault?.CorrelationId ?? Guid.NewGuid();
+            var channel = result?.Channel ?? 0;
+            if (runId == Guid.Empty || runEpoch <= 0 || channel < 1 || channel > 12)
+                throw new InvalidOperationException(
+                    "启动定位软件故障缺少当前运行身份，拒绝创建孤儿恢复事务。");
+
+            RecoveryIncidentHandle recoveryIncident = null;
+            Func<Task> BuildRecoveryWorker()
+            {
+                return () =>
+                {
+                    if (!TryEnsureSoftwareRecoveryOutputOff(
+                            channel,
+                            "StartupPositioningFailureIncident"))
+                    {
+                        RequestElectricalGroupEmergencyShutdown(
+                            channel,
+                            "StartupPositioningFailureIncident");
+                        throw new SoftwareSelfHealingRetryException(
+                            $"EPB[{channel}] 启动定位故障后的断电确认失败。");
+                    }
+                    return Task.CompletedTask;
+                };
+            }
+
+            if (!TryBeginRecoveryIncident(
+                    "StartupPositioningFailureIncident",
+                    runId,
+                    runEpoch,
+                    RecoveryOwnerKind.BatchStartup,
+                    RecoveryTargetPhase.Startup,
+                    ownerId,
+                    new[] { channel },
+                    _ => BuildRecoveryWorker(),
+                    contract =>
+                    {
+                        PublishRecoveryIncidentState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            reasonCode,
+                            reasonText,
+                            affectedChannels: contract.Channels,
+                            correlationId: contract.IncidentId,
+                            allowTerminalReset: true,
+                            recoveryOwnerKind: contract.OwnerKind,
+                            recoveryTargetPhase: contract.TargetPhase,
+                            recoveryOwnerId: contract.OwnerId,
+                            recoveryOwnerGeneration: contract.RunEpoch);
+                    },
+                    out recoveryIncident))
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 启动定位故障恢复事务建立失败，已保持安全终态。");
+
+            try
+            {
+                _taskSupervisor.Observe(
+                    recoveryIncident.WorkerTask,
+                    "StartupPositioningFailureIncident",
+                    _activeBatchId,
+                    channel);
+                if (!recoveryIncident.Start())
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] 启动定位故障恢复worker启动许可被拒绝。");
+                await recoveryIncident.WorkerTask.ConfigureAwait(false);
+            }
+            finally
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                    CommitRecoveryIncidentStateForRelease(
+                        contract,
+                        "StartupPositioningFailureRetryReady",
+                        "启动定位软件故障已安全断电，等待原流程有界重试。"));
             }
         }
 

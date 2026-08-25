@@ -305,20 +305,20 @@ namespace Controller
 
         private async Task<StopPersistenceBoundaryResult[]> WaitForStopPersistenceBoundariesAsync(
             IReadOnlyDictionary<string, long> boundaries,
-            int timeoutMs,
             bool requireRecoveredState)
         {
-            var deadline = Stopwatch.GetTimestamp() +
-                           (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
+            // The transaction runner owns the only stop-stage deadline.  This
+            // persistence helper intentionally has no competing 5/15-second
+            // timeout; a slow device remains an orphan supervised by the
+            // outer runner and cannot race its terminal publication.
+            const int unboundedTimeoutMs = int.MaxValue;
             // DAQ 已在调用方停止。正式义务仍是 boundaries 中的冻结前缀，但还必须把
             // 截止后已接纳的抑制尾段推进到明确终态，避免仅验证前缀后遗留后台所有权。
             var finalBoundaries = boundaries.ToDictionary(
                 pair => pair.Key,
                 pair => Math.Max(pair.Value, _acq.GetLastProcessRecycleBoundary(pair.Key)),
                 StringComparer.OrdinalIgnoreCase);
-            var rawDrainMs = (int)Math.Max(
-                1,
-                (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+            var rawDrainMs = unboundedTimeoutMs;
             var rawPipelineDrained = await _acq.DrainBackgroundPipelinesToBoundariesAsync(
                     finalBoundaries.TryGetValue("Dev1", out var dev1Boundary) ? dev1Boundary : 0,
                     finalBoundaries.TryGetValue("Dev2", out var dev2Boundary) ? dev2Boundary : 0,
@@ -329,9 +329,7 @@ namespace Controller
             // SQLite边界扩大到B，否则A+1..B的Raw尚未移交也会被伪装成完整收口。
             foreach (var pair in boundaries)
             {
-                var remainingMs = (int)Math.Max(
-                    1,
-                    (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+                var remainingMs = unboundedTimeoutMs;
                 await _persistence.WaitForPersistedAsync(
                         pair.Key,
                         pair.Value,
@@ -340,9 +338,7 @@ namespace Controller
                     .ConfigureAwait(false);
             }
 
-            var remainingDrainMs = (int)Math.Max(
-                1,
-                (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+            var remainingDrainMs = unboundedTimeoutMs;
             var persistenceQueueDrained = await _persistence.DrainAsync(remainingDrainMs)
                 .ConfigureAwait(false);
 

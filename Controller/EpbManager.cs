@@ -163,6 +163,7 @@ namespace Controller
         public event Action<DaqPersistenceStateChanged> DaqPersistenceStateChanged;
         public event Action<PressureQualification> PressureQualificationChanged;
         public event Action<ChannelRuntimeStateChangedEvent> ChannelRuntimeStateChanged;
+        public event Action<ChannelWarningOverlayChangedEvent> ChannelWarningOverlayChanged;
 
         /// <summary>
         /// 人工复位指定电源组的故障锁存。只有输出已关闭、保护已解除且身份校验通过时才会成功；
@@ -188,16 +189,37 @@ namespace Controller
         private readonly bool _requirePowerSupply;
         private PowerSupplyTelemetryCsvRecorder _powerTelemetryRecorder;
         private readonly TaskSupervisor _taskSupervisor;
+        // All Runner adaptive callbacks and manager lifecycle outputs use the
+        // same production port.  The port is also the deterministic replay
+        // seam; it never invents a second control path for diagnostics.
+        private readonly EpbManagerAdaptiveLifecyclePort _adaptiveLifecyclePort;
         private readonly RecoveryTaskRegistry _recoveryTaskRegistry = new RecoveryTaskRegistry();
+        // One gate covers incident registration, owner publication and terminal
+        // cleanup.  This closes the small race in which a Timer/DAQ callback
+        // could expose Recovering before its worker had an identity.
+        private readonly object _recoveryContractGate = new object();
+        private readonly Dictionary<Guid, RecoveryIncidentHandle> _activeRecoveryContracts =
+            new Dictionary<Guid, RecoveryIncidentHandle>();
+        private readonly RecoveryIncidentCoordinator _recoveryIncidentCoordinator;
+        // Single committed source for watchdog recovery evidence.  All source
+        // publishers replace immutable copies; heartbeat capture never scans
+        // the live dictionaries to assemble an aggregate.
+        private readonly RecoveryAggregateStore _recoveryAggregateStore =
+            new RecoveryAggregateStore();
         private long _energizedChannelsMask;
         private readonly long _dev1ChannelMask;
         private readonly long _dev2ChannelMask;
         private readonly ChannelRuntimeStateStore _channelRuntimeStateStore = new();
+        private readonly ChannelWarningOverlayStore _channelWarningOverlayStore = new();
+        private readonly ChannelExecutionFence _channelExecutionFence = new();
+        private readonly object[] _channelExecutionGates =
+            Enumerable.Range(0, 12).Select(_ => new object()).ToArray();
         private readonly ConcurrentDictionary<int, long> _watchdogLastMechanicalCompletedUtcTicks = new();
         private readonly ConcurrentDictionary<int, long> _watchdogMechanicalCompletedCount = new();
         private readonly ConcurrentDictionary<int, long> _mechanicalCycleBaseline = new();
         private readonly ConcurrentDictionary<int, int> _watchdogConsecutiveSoftwareAborts = new();
         private readonly ConcurrentDictionary<int, long> _watchdogDoCommandSequence = new();
+        private readonly ConcurrentDictionary<int, long> _physicalEnergizationEdges = new();
 
         private readonly SafetyMarginControlMode _safetyMarginControlMode;
         private readonly EpbControlMode _epbControlMode;
@@ -267,6 +289,11 @@ namespace Controller
             return _channelRuntimeStateStore.Snapshot();
         }
 
+        public IReadOnlyList<ChannelWarningOverlayChangedEvent> GetChannelWarningOverlays()
+        {
+            return _channelWarningOverlayStore.Snapshot();
+        }
+
         internal static bool ShouldPreserveDaqRecoveringState(
             ChannelRuntimeState requestedState,
             bool daqRecoveryActive)
@@ -274,6 +301,52 @@ namespace Controller
             return daqRecoveryActive &&
                    (requestedState == ChannelRuntimeState.Running ||
                     requestedState == ChannelRuntimeState.WarningRunning);
+        }
+
+        internal static ChannelRuntimeState ResolveRuntimeStateForRunnerWarning(
+            ChannelRuntimeState? currentState)
+        {
+            // V2.13.0.20 起预警使用独立 overlay；该兼容入口只返回原生命周期，绝不再
+            // 生成 WarningRunning。没有历史状态时按 Running 处理，但调用方仍只应发布 overlay。
+            return currentState ?? ChannelRuntimeState.Running;
+        }
+
+        private void PublishChannelWarningOverlay(
+            int channel,
+            string warningCode,
+            string warningText,
+            Guid correlationId = default)
+        {
+            var update = _channelWarningOverlayStore.Publish(new ChannelWarningOverlayChangedEvent
+            {
+                Channel = channel,
+                Active = true,
+                WarningCode = warningCode ?? string.Empty,
+                WarningText = warningText ?? string.Empty,
+                TimestampUtc = DateTime.UtcNow,
+                CorrelationId = correlationId,
+                RunId = _activeBatchId,
+                RunEpoch = Interlocked.Read(ref _runEpoch)
+            });
+            NonCriticalObserver.Invoke(
+                ChannelWarningOverlayChanged,
+                update,
+                ex => _log?.Warn($"通道预警覆盖层观察者异常已隔离：{ex.Message}", "EPB"));
+        }
+
+        private void ClearChannelWarningOverlay(int channel, Guid correlationId = default)
+        {
+            var current = _channelWarningOverlayStore.Get(channel);
+            if (current == null || !current.Active) return;
+            var update = _channelWarningOverlayStore.Clear(
+                channel,
+                _activeBatchId,
+                Interlocked.Read(ref _runEpoch),
+                correlationId);
+            NonCriticalObserver.Invoke(
+                ChannelWarningOverlayChanged,
+                update,
+                ex => _log?.Warn($"通道预警覆盖层观察者异常已隔离：{ex.Message}", "EPB"));
         }
 
         internal static bool ShouldRejectRecoveryPauseOverride(
@@ -287,6 +360,67 @@ namespace Controller
                     requestedState == ChannelRuntimeState.Paused);
         }
 
+        internal static bool IsValidFirstRecoveryPublication(
+            Guid updateRunId,
+            long runEpoch,
+            RecoveryOwnerKind ownerKind,
+            RecoveryTargetPhase targetPhase,
+            Guid ownerId,
+            long ownerGeneration)
+        {
+            return updateRunId != Guid.Empty &&
+                   runEpoch > 0 &&
+                   ownerKind != RecoveryOwnerKind.None &&
+                   ownerKind != RecoveryOwnerKind.Unknown &&
+                   targetPhase != RecoveryTargetPhase.None &&
+                   ownerId != Guid.Empty &&
+                   ownerGeneration == runEpoch;
+        }
+
+        /// <summary>
+        /// Unified entry point for every first Recovering publication outside
+        /// the explicit TryBeginRecoveryIncident transaction.  Keeping these
+        /// calls behind a named recovery boundary makes it auditable that a
+        /// caller is publishing lifecycle state (and not a diagnostic overlay).
+        /// The central publisher still performs the contract/lease gate and
+        /// rejects a missing real worker; this method never creates a monitor
+        /// task or a start-signal sentinel.
+        /// </summary>
+        private void PublishRecoveryIncidentState(
+            int channel,
+            ChannelRuntimeState state,
+            string reasonCode,
+            string reasonText,
+            int? sourceChannel = null,
+            IEnumerable<int> affectedChannels = null,
+            Guid correlationId = default,
+            bool allowTerminalReset = false,
+            bool allowSystemFaultReset = false,
+            Guid runIdOverride = default,
+            RecoveryOwnerKind recoveryOwnerKind = RecoveryOwnerKind.None,
+            RecoveryTargetPhase recoveryTargetPhase = RecoveryTargetPhase.None,
+            Guid recoveryOwnerId = default,
+            long recoveryOwnerGeneration = 0,
+            long runEpochOverride = 0)
+        {
+            PublishChannelRuntimeState(
+                channel,
+                state,
+                reasonCode,
+                reasonText,
+                sourceChannel,
+                affectedChannels,
+                correlationId,
+                allowTerminalReset,
+                allowSystemFaultReset,
+                runIdOverride,
+                recoveryOwnerKind,
+                recoveryTargetPhase,
+                recoveryOwnerId,
+                recoveryOwnerGeneration,
+                runEpochOverride);
+        }
+
         private void PublishChannelRuntimeState(
             int channel,
             ChannelRuntimeState state,
@@ -297,7 +431,12 @@ namespace Controller
             Guid correlationId = default,
             bool allowTerminalReset = false,
             bool allowSystemFaultReset = false,
-            Guid runIdOverride = default)
+            Guid runIdOverride = default,
+            RecoveryOwnerKind recoveryOwnerKind = RecoveryOwnerKind.None,
+            RecoveryTargetPhase recoveryTargetPhase = RecoveryTargetPhase.None,
+            Guid recoveryOwnerId = default,
+            long recoveryOwnerGeneration = 0,
+            long runEpochOverride = 0)
         {
             // 物理安全目标可以包含同组全部硬件成员，但禁用通道不属于当前运行状态机。
             // 这是中央不变量：任何故障、恢复或迟到事件都不能把 Enabled=false 污染为
@@ -333,6 +472,12 @@ namespace Controller
                     correlationId = recovery.CorrelationId;
                     allowTerminalReset = false;
                     allowSystemFaultReset = false;
+                    recoveryOwnerKind = RecoveryOwnerKind.DaqRecovery;
+                    recoveryTargetPhase = IsFormalPhaseCommitted
+                        ? RecoveryTargetPhase.Formal
+                        : RecoveryTargetPhase.Startup;
+                    recoveryOwnerId = recovery.CorrelationId;
+                    recoveryOwnerGeneration = Interlocked.Read(ref _runEpoch);
                 }
             }
             var previous = _channelRuntimeStateStore.Get(channel);
@@ -352,27 +497,189 @@ namespace Controller
                     "EPB");
                 return;
             }
-            var update = _channelRuntimeStateStore.Publish(
-                new ChannelRuntimeStateChangedEvent
+            // Terminal cleanup may legitimately run after CancelAll advanced
+            // the global epoch.  Callers which hold a frozen incident
+            // identity may supply that epoch explicitly; ordinary lifecycle
+            // publications continue to use the current run epoch.
+            var runEpoch = runEpochOverride > 0
+                ? runEpochOverride
+                : Interlocked.Read(ref _runEpoch);
+            var updateRunId = runIdOverride == Guid.Empty ? _activeBatchId : runIdOverride;
+            var firstRecovering = state == ChannelRuntimeState.Recovering &&
+                                  (previous == null ||
+                                   previous.State != ChannelRuntimeState.Recovering);
+            if (state == ChannelRuntimeState.Recovering)
+            {
+                // 同一恢复事务中的迟到状态更新允许省略所有权，但只能继承上一条结构化所有权。
+                if (!firstRecovering &&
+                    recoveryOwnerKind == RecoveryOwnerKind.None &&
+                    RecoveryOwnershipPolicy.HasExplicitOwner(previous))
                 {
-                    Channel = channel,
-                    State = state,
-                    ReasonCode = reasonCode ?? string.Empty,
-                    ReasonText = reasonText ?? string.Empty,
-                    SourceChannel = sourceChannel,
-                    AffectedChannels = (affectedChannels ?? new[] { channel }).Distinct().ToArray(),
-                    TimestampUtc = DateTime.UtcNow,
-                    CorrelationId = correlationId,
-                    RunId = runIdOverride == Guid.Empty ? _activeBatchId : runIdOverride,
-                    RunEpoch = Interlocked.Read(ref _runEpoch),
-                    Enabled = IsChannelEnabled(channel),
-                    FormalPhaseCommitted = IsFormalPhaseCommitted,
-                    TimerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel),
-                    RunnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel),
-                    Energized = IsChannelEnergized(channel)
-                },
-                allowTerminalReset,
-                allowSystemFaultReset);
+                    recoveryOwnerKind = previous.RecoveryOwnerKind;
+                    recoveryTargetPhase = previous.RecoveryTargetPhase;
+                    recoveryOwnerId = previous.RecoveryOwnerId;
+                    recoveryOwnerGeneration = previous.RecoveryOwnerGeneration;
+                }
+                else if (!firstRecovering &&
+                         recoveryOwnerKind != RecoveryOwnerKind.None &&
+                         !RecoveryOwnershipPolicy.MatchesExplicitOwner(
+                             previous,
+                             recoveryOwnerKind,
+                             recoveryTargetPhase,
+                             recoveryOwnerId,
+                             recoveryOwnerGeneration))
+                {
+                    _log?.Warn(
+                        $"ChannelRuntimeTransitionRejected Channel={channel} " +
+                        "ReasonCode=RecoveryOwnerIdentityMismatch",
+                        "EPB");
+                    return;
+                }
+
+                if (firstRecovering &&
+                    !IsValidFirstRecoveryPublication(
+                        updateRunId,
+                        runEpoch,
+                        recoveryOwnerKind,
+                        recoveryTargetPhase,
+                        recoveryOwnerId,
+                        recoveryOwnerGeneration))
+                {
+                    // A first Recovering without a complete current owner is
+                    // not a recoverable display state.  Safety order is OFF
+                    // first, then one terminal StartBlocked publication.
+                    try { CommandEpbOffHighPriority(channel, "RecoveryOwnerInvalid"); }
+                    catch { }
+                    state = ChannelRuntimeState.StartBlocked;
+                    var requestedReason = reasonCode;
+                    reasonCode = "RecoveryOwnerMissingSafeTerminal";
+                    reasonText =
+                        $"恢复状态缺少结构化owner，已拒绝进入Recovering并保持安全终态。" +
+                        $"原始Reason={requestedReason}";
+                    affectedChannels = affectedChannels ?? new[] { channel };
+                    recoveryOwnerKind = RecoveryOwnerKind.None;
+                    recoveryTargetPhase = RecoveryTargetPhase.None;
+                    recoveryOwnerId = Guid.Empty;
+                    recoveryOwnerGeneration = 0;
+                    _log?.Error(
+                        $"RecoveryOwnerMissingSafeTerminal Channel={channel} " +
+                        $"RunEpoch={runEpoch}",
+                        "EPB");
+                }
+            }
+            else
+            {
+                recoveryOwnerKind = RecoveryOwnerKind.None;
+                recoveryTargetPhase = RecoveryTargetPhase.None;
+                recoveryOwnerId = Guid.Empty;
+                recoveryOwnerGeneration = 0;
+            }
+            var sourceStateRevision = previous?.Revision ?? 0;
+            if (state == ChannelRuntimeState.Recovering &&
+                previous?.State == ChannelRuntimeState.Recovering &&
+                previous.RunId == updateRunId &&
+                previous.RunEpoch == runEpoch &&
+                previous.RecoveryOwnerKind == recoveryOwnerKind &&
+                previous.RecoveryOwnerId == recoveryOwnerId &&
+                previous.RecoveryOwnerGeneration == recoveryOwnerGeneration &&
+                previous.RecoveryTargetPhase == recoveryTargetPhase &&
+                previous.SourceStateRevision > 0)
+                sourceStateRevision = previous.SourceStateRevision;
+            if (state == ChannelRuntimeState.Recovering &&
+                firstRecovering &&
+                IsValidFirstRecoveryPublication(
+                    updateRunId,
+                    runEpoch,
+                    recoveryOwnerKind,
+                    recoveryTargetPhase,
+                    recoveryOwnerId,
+                    recoveryOwnerGeneration))
+            {
+                RecoveryIncidentHandle existingRecoveryContract;
+                lock (_recoveryContractGate)
+                {
+                    existingRecoveryContract = FindActiveRecoveryContractLocked(
+                        channel,
+                        updateRunId,
+                        runEpoch,
+                        RecoveryOwnerKind.None,
+                        RecoveryTargetPhase.None,
+                        Guid.Empty);
+                }
+                var ownerConflict = existingRecoveryContract != null &&
+                                     (existingRecoveryContract.Contract.OwnerKind != recoveryOwnerKind ||
+                                      existingRecoveryContract.Contract.TargetPhase != recoveryTargetPhase ||
+                                      existingRecoveryContract.Contract.OwnerId != recoveryOwnerId);
+                if (existingRecoveryContract == null || ownerConflict)
+                {
+                    var failCode = ownerConflict
+                        ? "RecoveryOwnerConflictSafeTerminal"
+                        : "RecoveryContractMissingSafeTerminal";
+                    foreach (var affected in (affectedChannels ?? new[] { channel }).Distinct())
+                    {
+                        try { CommandEpbOffHighPriority(affected, failCode); }
+                        catch { }
+                    }
+                    state = ChannelRuntimeState.StartBlocked;
+                    reasonCode = failCode;
+                    reasonText = ownerConflict
+                        ? "当前通道已有其它恢复事务占有；已拒绝第二个Recovering所有者并保持安全终态。"
+                        : "首发Recovering缺少统一恢复合同与真实执行体，已先断电并保持安全终态。";
+                    recoveryOwnerKind = RecoveryOwnerKind.None;
+                    recoveryTargetPhase = RecoveryTargetPhase.None;
+                    recoveryOwnerId = Guid.Empty;
+                    recoveryOwnerGeneration = 0;
+                    allowTerminalReset = true;
+                    allowSystemFaultReset = true;
+                    _log?.Error(
+                        $"{failCode} Channel={channel}; RunEpoch={runEpoch}",
+                        "EPB");
+                }
+                else if (correlationId == Guid.Empty)
+                {
+                    correlationId = existingRecoveryContract.Contract.IncidentId;
+                }
+            }
+            ChannelRuntimeStateChangedEvent update;
+            // The state store operation is part of the same contract gate used by
+            // TryBeginRecoveryIncident and CompleteRecoveryIncident.  Observers
+            // therefore cannot observe a new owner without its Recovering state,
+            // or a terminal state after its owner has already been removed.
+            lock (_recoveryContractGate)
+            {
+                update = _channelRuntimeStateStore.Publish(
+                        new ChannelRuntimeStateChangedEvent
+                        {
+                            Channel = channel,
+                            State = state,
+                            ReasonCode = reasonCode ?? string.Empty,
+                            ReasonText = reasonText ?? string.Empty,
+                            SourceChannel = sourceChannel,
+                            AffectedChannels = (affectedChannels ?? new[] { channel }).Distinct().ToArray(),
+                            TimestampUtc = DateTime.UtcNow,
+                            CorrelationId = correlationId,
+                            RunId = updateRunId,
+                            RunEpoch = runEpoch,
+                            Enabled = IsChannelEnabled(channel),
+                            FormalPhaseCommitted = IsFormalPhaseCommitted,
+                            TimerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel),
+                            RunnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel),
+                            Energized = IsChannelEnergized(channel),
+                            RecoveryOwnerKind = recoveryOwnerKind,
+                            RecoveryOwnerId = recoveryOwnerId,
+                            RecoveryOwnerGeneration = recoveryOwnerGeneration,
+                            RecoveryTargetPhase = recoveryTargetPhase,
+                            SourceStateRevision = sourceStateRevision
+                        },
+                        allowTerminalReset,
+                        allowSystemFaultReset);
+                PublishRecoveryAggregateOwnershipSourceLocked();
+                // Refresh the logical and operational sources at the same
+                // producer boundary.  The resulting aggregate is the only
+                // heartbeat truth; capture never reconstructs it from live
+                // dictionaries.
+                CaptureLogicalQuiescenceSnapshotLocked();
+            }
             TrackRecoveringRuntimeTransition(previous, update);
             if (previous == null ||
                 previous.State != update.State ||
@@ -380,10 +687,38 @@ namespace Controller
                 previous.RunId != update.RunId ||
                 previous.CorrelationId != update.CorrelationId)
                 LogFieldRuntimeStateMetric(update);
-            NonCriticalObserver.Invoke(
-                ChannelRuntimeStateChanged,
-                update,
-                ex => _log?.Warn($"通道状态观察者异常已隔离：{ex.Message}", "EPB"));
+            _adaptiveLifecyclePort.PublishRuntimeState(update);
+            if (state == ChannelRuntimeState.Starting ||
+                state == ChannelRuntimeState.Completed ||
+                ChannelRuntimeStateStore.IsLatchedStop(state))
+                ClearChannelWarningOverlay(channel, update.CorrelationId);
+        }
+
+        /// <summary>
+        /// Replace the aggregate ownership source while the same contract gate
+        /// protects the channel state, incident contracts and registry lease
+        /// relation.  The aggregate store performs its own short copy/commit
+        /// lock; no live Task or dictionary escapes to the watchdog.
+        /// </summary>
+        private void PublishRecoveryAggregateOwnershipSourceLocked()
+        {
+            var contracts = _activeRecoveryContracts.Values
+                .Where(incident => incident != null &&
+                                   incident.TerminalPublished == 0 &&
+                                   incident.Contract != null)
+                .Select(incident => incident.Contract);
+            var leases = _recoveryTaskRegistry.CaptureSnapshot()
+                .Select(lease => new WatchdogRecoveryLeaseSnapshot(
+                    lease.Id,
+                    lease.Operation,
+                    lease.RunEpoch,
+                    lease.Channels,
+                    lease.IsBound,
+                    lease.IsTerminal));
+            _recoveryAggregateStore.PublishOwnershipSource(
+                _channelRuntimeStateStore.Snapshot(),
+                contracts,
+                leases);
         }
 
         private void PublishFaultRuntimeStates(ControlFault fault, int? sourceChannel)
@@ -487,11 +822,61 @@ namespace Controller
         private readonly IDaqHardwareProbe _daqHardwareProbe;
         private readonly ConcurrentDictionary<string, DaqAutoRecoveryContext> _daqAutoRecovery =
             new(StringComparer.OrdinalIgnoreCase);
+        // A committed/terminal incident remains observable for a short,
+        // bounded window after its live owner is removed.  Without this
+        // evidence window the heartbeat could jump directly from Rejoining to
+        // no recovery at all, and a watchdog could misclassify a healthy commit
+        // as a lost owner.
+        private const int DaqRecoveryTerminalSnapshotRetentionMs = 2_000;
+        private readonly ConcurrentDictionary<string, DaqRecoveryTerminalSnapshot>
+            _daqRecoveryTerminalSnapshots =
+                new(StringComparer.OrdinalIgnoreCase);
+        // Keep a separate committed evidence record.  A terminal record alone
+        // cannot prove that the watchdog observed the successful rejoin before
+        // the owner was removed; both records are retained independently.
+        private readonly ConcurrentDictionary<string, DaqRecoveryTerminalSnapshot>
+            _daqRecoveryCommittedSnapshots =
+                new(StringComparer.OrdinalIgnoreCase);
         // 同一扫描的双DAQ故障共享批次 CorrelationId，但每台设备仍需各自完成终态。
         // 因此终态去重身份必须包含 Device；仅按 Guid 会让先完成的 Dev1 错误吞掉
         // Dev2 的升级/恢复。
         private readonly ConcurrentDictionary<string, DateTime> _daqRecoveryTerminalCorrelations = new(
             StringComparer.OrdinalIgnoreCase);
+        // A short post-terminal grace keeps a 1.2s DAQ transient on the same
+        // incident identity.  It is generation-scoped and expires quickly, so
+        // a genuinely new DAQ generation still creates a new incident.
+        private sealed class DaqIncidentGrace
+        {
+            internal Guid CorrelationId;
+            internal long Generation;
+            internal long ExpiresMonotonicTicks;
+        }
+
+        private sealed class DaqRecoveryTerminalSnapshot
+        {
+            internal string Device;
+            internal Guid RunId;
+            internal Guid CorrelationId;
+            internal long RunEpoch;
+            internal DaqRecoveryTerminal Terminal;
+            internal DaqRecoveryPhase ProgressStage;
+            internal long ProgressVersion;
+            internal DateTime StartedUtc;
+            internal DateTime StageStartedUtc;
+            internal DateTime HardDeadlineUtc;
+            internal DateTime RetainedUntilUtc;
+            internal int[] AffectedChannels;
+            internal bool TerminalClosureBlocked;
+            internal string TerminalFailureReason;
+        }
+        private readonly ConcurrentDictionary<string, DaqIncidentGrace> _daqIncidentGrace =
+            new(StringComparer.OrdinalIgnoreCase);
+        // One SafeIdle decision per DAQ incident.  This circuit is deliberately
+        // separate from the software batch-recycle circuit: a permanent DAQ
+        // disconnect must never emit SystemFaultRaised or request a process
+        // restart, and repeated callbacks must not publish duplicate terminals.
+        private readonly ConcurrentDictionary<string, byte> _daqSafeIdleCircuitKeys =
+            new(StringComparer.OrdinalIgnoreCase);
         // Batch-scoped correlation IDs are the only safe signal that both DAQ
         // devices are expected in one Incident root.  The first device may
         // publish before the second recovery context is created, so retain the
@@ -534,6 +919,10 @@ namespace Controller
         private readonly object _daqMechanicalRequalificationGate = new();
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
+        // A closing request may arrive while the operator stop is still in
+        // flight.  Keep one continuation per process so final-exit cleanup
+        // cannot create parallel stop cores.
+        private Task<StopSafetyResult> _stopSafetyFinalExitTask;
         private StopSource _stopSafetyTaskSource = StopSource.UnknownLegacy;
         private StopSafetyResult _lastStopSafetyResult;
 
@@ -556,6 +945,35 @@ namespace Controller
                 new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
             public int RecoveryAttempt;
             public int MaintenanceScheduled;
+            // A terminal publication retry is a supervised continuation of
+            // this incident, never a second recovery owner/worker.
+            public int TerminalRetryScheduled;
+            // Set only after bounded terminal receipt retries are exhausted.
+            // The fail-closed snapshot is retained as an explicit, observable
+            // safety outcome; it is never confused with a successful recovery.
+            public int TerminalClosureBlocked;
+            public string TerminalFailureReason;
+            // Frozen identity for the safety/terminal transaction.  This is
+            // deliberately independent of _runEpoch: StopAll/CancelAll may
+            // revoke the global epoch while this exact owner still has to
+            // finish its terminal receipt.
+            public Guid RecoveryTransactionId;
+            // The registry lease is the heartbeat-visible owner/task
+            // identity for this same context.  It is completed only after the
+            // authoritative terminal state has been published.
+            public RecoveryTaskRegistry.RecoveryTaskLease RegistryLease;
+            // The production terminal supervisor is shared by normal
+            // recovery and SafeIdle/cancelled closure.  It retries the same
+            // transaction/owner and never creates a second worker.
+            public readonly DaqRecoveryTerminalSupervisor TerminalSupervisor =
+                new DaqRecoveryTerminalSupervisor();
+            // Controller-owned monotonic progress.  The UI/Watchdog must consume
+            // these values and never derive a new version from a string signature.
+            public long ProgressVersion;
+            public DaqRecoveryPhase ProgressStage;
+            public DateTime StageStartedUtc;
+            public DateTime HardDeadlineUtc;
+            public readonly object ProgressGate = new object();
             public readonly RecoveryFailureBackoffState FailureBackoff =
                 new RecoveryFailureBackoffState();
             public readonly object ValidationFailureLogGate = new object();
@@ -576,10 +994,16 @@ namespace Controller
             public DaqFreshnessSnapshot BeforeClock;
             public DaqFreshnessSnapshot AfterClock;
             public string ValidationPhase;
+            public string ValidationDetail;
             public HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease[] Ownerships;
             public CancellationTokenRegistration[] OwnershipCancellationRegistrations;
             public int OwnershipReleased;
             public readonly DaqRecoveryPhaseGate Phase = new DaqRecoveryPhaseGate();
+            // Safety-boundary facts (OFF admission, physical completion,
+            // incident SafeIdle and stable checkpoint) are owned by one
+            // transaction.  The long-running DAQ rebuild remains in this
+            // context, but it cannot publish a safety stage by inference.
+            public DaqRecoveryTransaction Transaction;
             public Dictionary<int, long> CutoffParticipantVersions;
             public Dictionary<int, int> CutoffCycles;
             public long CutoffPersistenceBoundary;
@@ -597,6 +1021,38 @@ namespace Controller
             public int CutoffCyclesFinalized;
             public readonly object CutoffCyclesFinalizationGate = new object();
             public TaskCompletionSource<bool> CutoffCyclesFinalizationCompletion;
+        }
+
+        internal sealed class RecoveryIncidentHandle
+        {
+            private readonly EpbManager _manager;
+            private readonly RecoveryIncidentCoordinator.Incident _inner;
+
+            internal RecoveryIncidentHandle(
+                EpbManager manager,
+                RecoveryIncidentCoordinator.Incident inner)
+            {
+                _manager = manager ?? throw new ArgumentNullException(nameof(manager));
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            }
+
+            internal RecoveryContractSnapshot Contract => _inner.Contract;
+            internal RecoveryTaskRegistry.RecoveryTaskLease TaskLease => _inner.TaskLease;
+            internal Task WorkerTask => _inner.WorkerTask;
+            internal int TerminalPublished => _inner.TerminalPublished;
+            internal int TerminalPublishing => _inner.TerminalPublishing;
+
+            internal bool Start() => _inner.Start();
+
+            internal bool CompleteAfterTerminal(
+                Action<RecoveryContractSnapshot> publishTerminal)
+            {
+                return _manager.CompleteRecoveryIncident(this, publishTerminal);
+            }
+
+            internal bool CompleteOnCoordinator(
+                Action<RecoveryContractSnapshot> publishTerminal) =>
+                _inner.CompleteAfterTerminal(publishTerminal);
         }
 
         /// <summary>
@@ -1547,6 +2003,8 @@ namespace Controller
                 $"EPB[{channel}] 已完成全部目标圈数，开始安全断电、液压释放和最近10圈持久化。",
                 "EPB");
 
+            RevokeChannelExecutionPermit(channel, "NaturalCompletion");
+
             // 1) 先从液压判定参与者中移除
             UnmarkHydraulicParticipant(channel);
 
@@ -1643,6 +2101,37 @@ namespace Controller
             //_readCurrent = acq.ReadCurrent;
             _readCurrent = acq.ReadCurrentFast;
             _log = log ?? NullLogger.Instance;
+            _adaptiveLifecyclePort = new EpbManagerAdaptiveLifecyclePort(
+                alarmRaised: OnRunnerAlarmRaised,
+                warningRaised: OnRunnerWarningRaised,
+                warningEvidenceRaised: OnRunnerWarningEvidenceRaised,
+                recoverableFaultRaised: OnRunnerRecoverableFaultRaised,
+                decisionObserved: OnRunnerAdaptiveDecisionObserved,
+                diagnosticObserved: OnRunnerAdaptiveDiagnosticObserved,
+                diagnosticSummaryObserved: OnRunnerAdaptiveDiagnosticSummaryObserved,
+                channelPaused: lifecycle => NonCriticalObserver.Invoke(
+                    ChannelPaused,
+                    lifecycle.Channel,
+                    ex => _log?.Warn(
+                        $"EPB[{lifecycle.Channel}] 暂停观察者异常已隔离：{ex.Message}",
+                        "EPB")),
+                runtimeStateChanged: lifecycle => NonCriticalObserver.Invoke(
+                    ChannelRuntimeStateChanged,
+                    lifecycle.RuntimeState,
+                    ex => _log?.Warn(
+                        $"EPB[{lifecycle.Channel}] 状态观察者异常已隔离：{ex.Message}",
+                        "EPB")),
+                systemFault: lifecycle => NonCriticalObserver.Invoke(
+                    SystemFaultRaised,
+                    lifecycle.ControlFault,
+                    ex => _log?.Warn(
+                        $"系统故障观察者异常已隔离：{ex.Message}",
+                        "EPB")),
+                runIdForChannel: channel =>
+                    _runIdByChannel.TryGetValue(channel, out var runId)
+                        ? runId
+                        : _activeBatchId,
+                runEpochForChannel: _ => Interlocked.Read(ref _runEpoch));
             var startupStoragePolicy = ProgramStoragePolicy.Load(
                 message => _log.Warn(message, "Storage"));
             _historicalStorageEnabled = startupStoragePolicy.HistoricalEnabled;
@@ -1697,6 +2186,7 @@ namespace Controller
                 _log.Warn($"Learning在线保留器初始化失败，保持数据不清理：{ex.Message}", "Storage");
             }
             _taskSupervisor = new TaskSupervisor(_log);
+            _recoveryIncidentCoordinator = CreateRecoveryIncidentCoordinator();
             _acq = acq;
             _dev1ChannelMask = BuildDaqChannelMask("Dev1");
             _dev2ChannelMask = BuildDaqChannelMask("Dev2");
@@ -1957,8 +2447,17 @@ namespace Controller
         }
 
         // EpbManager.cs 里（EpbManager 类内）新增：
-        public async Task HydraulicEnterAsync(int channel, CancellationToken token)
+        internal async Task HydraulicEnterAsync(
+            int channel,
+            ChannelExecutionPermit permit,
+            CancellationToken token)
         {
+            if (!IsChannelExecutionPermitCurrent(channel, permit))
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 旧执行代次禁止进入液压代次。");
+            using var executionCts = CancellationTokenSource.CreateLinkedTokenSource(
+                token,
+                permit.RevocationToken);
             if (_hydCoordinator == null) return;
             if (_hydraulicLeaseByChannel.TryGetValue(channel, out var existing))
             {
@@ -1975,15 +2474,36 @@ namespace Controller
                 hydId,
                 HydraulicPhaseKind.SingleChannel,
                 Interlocked.Increment(ref _singleHydraulicGeneration));
-            await EnterSingleHydraulicGenerationAsync(key, channel, token).ConfigureAwait(false);
+            await EnterSingleHydraulicGenerationAsync(
+                    key,
+                    channel,
+                    permit,
+                    executionCts.Token)
+                .ConfigureAwait(false);
         }
 
         private void OnHighPriorityOffCompleted(HighPriorityDoTelemetry telemetry)
         {
             if (telemetry == null) return;
+            RecordPhysicalEnergizationEdge(telemetry);
             LogHighPriorityOffFieldMetric(telemetry);
             RecordLateTerminalOffCompletion(telemetry);
-            if (telemetry.Result) SetChannelEnergized(telemetry.Channel, false);
+            if (telemetry.Result)
+                ObserveEnergizationEdge(telemetry.Channel, false);
+            // Route the physical completion to the owning DAQ incident.  The
+            // transaction checks commandId, channel and accepted receipt, so
+            // a late completion from an older run cannot confirm a new one.
+            foreach (var recovery in _daqAutoRecovery.Values.ToArray())
+            {
+                if (recovery == null || recovery.Transaction == null ||
+                    !(recovery.AffectedChannels ?? Array.Empty<int>())
+                        .Contains(telemetry.Channel))
+                    continue;
+                recovery.Transaction.ReportPhysicalCompletion(
+                    telemetry.Channel,
+                    telemetry.CommandId,
+                    telemetry.Result);
+            }
             if (!telemetry.LateHardwareSuccess) return;
 
             _log.Warn(
@@ -1997,11 +2517,37 @@ namespace Controller
         private async Task EnterSingleHydraulicGenerationAsync(
             HydraulicGenerationKey key,
             int channel,
+            ChannelExecutionPermit permit,
             CancellationToken token)
         {
+            if (!IsChannelExecutionPermitCurrent(channel, permit))
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 液压进入前执行许可已经失效。");
             var lease = await _hydCoordinator.EnterGenerationAsync(key, new[] { channel }, token)
                 .ConfigureAwait(false);
-            _hydraulicLeaseByChannel[channel] = _hydCoordinator.CreateChannelScope(lease, channel);
+            var scope = _hydCoordinator.CreateChannelScope(lease, channel);
+            if (!IsChannelExecutionPermitCurrent(channel, permit))
+            {
+                try { await scope.AbortAsync("StaleExecutionPermit").ConfigureAwait(false); }
+                catch { }
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 液压进入完成时执行许可已经失效；新代次已作废。");
+            }
+            _hydraulicLeaseByChannel[channel] = scope;
+            // Pressure qualification is a real hydraulic evidence callback.  It
+            // may advance an active StopAll material-progress clock, but the
+            // recorder never changes the current stage deadline.
+            var qualification = lease.Qualification;
+            if (qualification != null)
+            {
+                RecordStopSafetyMaterialProgress(
+                    Interlocked.Read(ref _stopSafetyGeneration),
+                    $"HydraulicQualification:{qualification.HydraulicId}",
+                    qualification.GenerationId,
+                    $"压力资格材料事件 Hydraulic={qualification.HydraulicId};" +
+                    $"Generation={qualification.GenerationId};" +
+                    $"ActualBar={qualification.ActualBar:F3}");
+            }
             NonCriticalObserver.Invoke(
                 PressureQualificationChanged,
                 lease.Qualification,
@@ -2033,6 +2579,51 @@ namespace Controller
                 ((ICollection<KeyValuePair<int, HydraulicChannelLeaseScope>>)_hydraulicLeaseByChannel)
                     .Remove(new KeyValuePair<int, HydraulicChannelLeaseScope>(channel, scope));
             }
+        }
+
+        /// <summary>
+        /// Records the physical OFF receipt edge from the real DO worker.
+        /// This is intentionally fed by HighPriorityOffCompleted rather than
+        /// by a Controller-level test seam, so the EPB4/EPB10 scope and the
+        /// command receipt remain the same ones used in production.
+        /// </summary>
+        internal void RecordPhysicalEnergizationEdge(HighPriorityDoTelemetry telemetry)
+        {
+            if (telemetry == null || telemetry.Channel < 1 || telemetry.Channel > 12)
+                return;
+            _physicalEnergizationEdges.AddOrUpdate(
+                telemetry.Channel,
+                1L,
+                (_, previous) => previous == long.MaxValue ? previous : previous + 1L);
+        }
+
+        /// <summary>
+        /// Single energized-state edge used by real Forward/Reverse success,
+        /// real OFF receipts, and deterministic acceptance setup.  The stop
+        /// scope observes only this runtime state; it never imports a config
+        /// channel list supplied by a test seam.
+        /// </summary>
+        internal void ObserveEnergizationEdge(int channel, bool energized)
+        {
+            if (channel < 1 || channel > 12) return;
+            var bit = 1L << channel;
+            while (true)
+            {
+                var current = Interlocked.Read(ref _energizedChannelsMask);
+                var next = energized ? current | bit : current & ~bit;
+                if (Interlocked.CompareExchange(
+                        ref _energizedChannelsMask,
+                        next,
+                        current) == current)
+                    return;
+            }
+        }
+
+        internal long GetPhysicalEnergizationEdgeCount(int channel)
+        {
+            return _physicalEnergizationEdges.TryGetValue(channel, out var count)
+                ? count
+                : 0L;
         }
 
         private async Task AbortHydraulicLeaseForChannelAsync(int channel, string reason)
@@ -2089,6 +2680,352 @@ namespace Controller
                 affected);
         }
 
+        // Recovery entry points own their lifecycle through
+        // TryBeginRecoveryIncident.  Callers may still need supervision for
+        // the public async facade, but that facade must not be tracked as a
+        // second recovery worker before the real, bound wrapper exists.
+        internal void ObserveNonRecoveryLifecycleTask(
+            Task task,
+            string operation,
+            int channel = 0)
+        {
+            _taskSupervisor.Observe(task, operation, _activeBatchId, channel);
+        }
+
+        internal void ObserveNonRecoveryLifecycleTask(
+            Task task,
+            string operation,
+            IEnumerable<int> channels)
+        {
+            var firstChannel = (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .FirstOrDefault();
+            _taskSupervisor.Observe(task, operation, _activeBatchId, firstChannel);
+        }
+
+        private RecoveryIncidentCoordinator CreateRecoveryIncidentCoordinator()
+        {
+            return new RecoveryIncidentCoordinator(
+                _recoveryContractGate,
+                new RecoveryIncidentCoordinator.Port
+                {
+                    Reserve = (operation, runEpoch, channels) =>
+                        _recoveryTaskRegistry.Reserve(
+                            operation,
+                            runEpoch,
+                            channels?.ToArray() ?? Array.Empty<int>()),
+                    Schedule = body => Task.Run(body),
+                    Bind = (lease, worker) => lease != null && lease.TryBind(worker),
+                    PublishRecovering = contract => { },
+                    Observe = (incident, worker) =>
+                    {
+                        _taskSupervisor.Observe(
+                            worker,
+                            incident.Contract.Operation,
+                            _activeBatchId,
+                            incident.Contract.Channels.FirstOrDefault());
+                    },
+                    CommandOff = (contract, reason) =>
+                    {
+                        foreach (var channel in contract.Channels ?? Array.Empty<int>())
+                            CommandEpbOffHighPriority(channel, reason);
+                    },
+                    PublishSafeTerminal = (contract, reasonCode, reasonText) =>
+                        PublishRecoverySafeTerminal(contract, reasonCode, reasonText),
+                    IsRecoveringPublished = IsRecoveryContractPublished,
+                    IsTerminalCommitted = IsRecoveryTerminalStateCommitted,
+                    IsRegistered = contract =>
+                    {
+                        if (contract == null) return false;
+                        lock (_recoveryContractGate)
+                            return _activeRecoveryContracts.ContainsKey(contract.IncidentId);
+                    },
+                    Start = incident => incident.ReleaseStartSignal(),
+                     Register = incident =>
+                     {
+                         lock (_recoveryContractGate)
+                         {
+                             _activeRecoveryContracts[incident.Contract.IncidentId] =
+                                 new RecoveryIncidentHandle(this, incident);
+                             PublishRecoveryAggregateOwnershipSourceLocked();
+                         }
+                     },
+                     Unregister = incident =>
+                     {
+                         if (incident == null) return;
+                         lock (_recoveryContractGate)
+                         {
+                             _activeRecoveryContracts.Remove(incident.Contract.IncidentId);
+                             PublishRecoveryAggregateOwnershipSourceLocked();
+                         }
+                     },
+                    Fault = (stage, error) =>
+                        _log?.Error(
+                            $"RecoveryIncidentCoordinator {stage} failed: {error?.Message}",
+                            "EPB",
+                            error)
+                });
+        }
+
+        /// <summary>
+        /// Starts a recovery incident using the required transaction order:
+        /// reserve lease -> register immutable contract -> create/bind a
+        /// non-running wrapper -> publish owner+Recovering.  The caller must
+        /// explicitly call RecoveryIncidentHandle.Start() after this method
+        /// returns true.  The factory returns a body delegate, never a running
+        /// Task; this is what makes a factory/publish failure unable to leak a
+        /// worker into the hardware path.
+        /// </summary>
+        internal bool TryBeginRecoveryIncident(
+            string operation,
+            Guid runId,
+            long runEpoch,
+            RecoveryOwnerKind ownerKind,
+            RecoveryTargetPhase targetPhase,
+            Guid ownerId,
+            IEnumerable<int> channels,
+            Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
+            Action<RecoveryContractSnapshot> publishRecovering,
+            out RecoveryIncidentHandle incident)
+        {
+            incident = null;
+            if (runId != _activeBatchId ||
+                runEpoch != Interlocked.Read(ref _runEpoch))
+                return false;
+
+            var result = _recoveryIncidentCoordinator.TryBegin(
+                operation,
+                runId,
+                runEpoch,
+                ownerKind,
+                targetPhase,
+                ownerId,
+                channels,
+                workerFactory,
+                publishRecovering,
+                out var createdIncident);
+            if (result != RecoveryIncidentCoordinator.BeginResult.Created ||
+                createdIncident == null)
+                return false;
+
+            lock (_recoveryContractGate)
+                return _activeRecoveryContracts.TryGetValue(
+                           createdIncident.Contract.IncidentId,
+                           out incident);
+        }
+
+        private RecoveryIncidentHandle FindActiveRecoveryContractLocked(
+            int channel,
+            Guid runId,
+            long runEpoch,
+            RecoveryOwnerKind ownerKind,
+            RecoveryTargetPhase targetPhase,
+            Guid ownerId)
+        {
+            return _activeRecoveryContracts.Values
+                .Where(incident => incident?.Contract != null &&
+                                   incident.TerminalPublished == 0)
+                .Where(incident => incident.Contract.RunId == runId &&
+                                   incident.Contract.RunEpoch == runEpoch &&
+                                   (incident.Contract.Channels ?? Array.Empty<int>()).Contains(channel))
+                .Where(incident => ownerKind == RecoveryOwnerKind.None ||
+                                   (incident.Contract.OwnerKind == ownerKind &&
+                                    incident.Contract.TargetPhase == targetPhase &&
+                                    incident.Contract.OwnerId == ownerId))
+                .OrderBy(incident => incident.Contract.StartedUtc)
+                .FirstOrDefault();
+        }
+
+        private bool IsRecoveryContractPublished(RecoveryContractSnapshot contract)
+        {
+            if (contract == null) return false;
+            foreach (var channel in contract.Channels ?? Array.Empty<int>())
+            {
+                var state = _channelRuntimeStateStore.Get(channel);
+                if (state == null ||
+                    state.State != ChannelRuntimeState.Recovering ||
+                    state.RunId != contract.RunId ||
+                    state.RunEpoch != contract.RunEpoch ||
+                    state.RecoveryOwnerKind != contract.OwnerKind ||
+                    state.RecoveryOwnerId != contract.OwnerId ||
+                    state.RecoveryOwnerGeneration != contract.RunEpoch ||
+                    state.RecoveryTargetPhase != contract.TargetPhase)
+                    return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Abort a transaction that has not been handed to its caller.  The
+        /// safety order is deliberate and observable: cancel the non-running
+        /// wrapper, submit high-priority OFF for every affected channel, publish
+        /// exactly one safe terminal, then remove the contract and lease.
+        /// </summary>
+        /// <summary>Publish one idempotent terminal fallback without a worker owner.</summary>
+        private void PublishRecoverySafeTerminal(
+            RecoveryContractSnapshot contract,
+            string reasonCode,
+            string reasonText)
+        {
+            if (contract == null) return;
+            foreach (var channel in contract.Channels ?? Array.Empty<int>())
+            {
+                var current = _channelRuntimeStateStore.Get(channel);
+                if (current != null &&
+                    current.CorrelationId == contract.IncidentId &&
+                    ChannelRuntimeStateStore.IsLatchedStop(current.State))
+                    continue;
+                try
+                {
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.StartBlocked,
+                        reasonCode ?? "RecoverySafeTerminal",
+                        reasonText ?? "恢复事务已安全收口。",
+                        correlationId: contract.IncidentId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true,
+                        runIdOverride: contract.RunId);
+                }
+                catch (Exception terminalError)
+                {
+                    // The normal publisher may be fault-injected or an
+                    // observer/store can fail.  Keep the safety terminal in
+                    // the authoritative store and never retain owner state.
+                    try
+                    {
+                        _channelRuntimeStateStore.Publish(
+                            new ChannelRuntimeStateChangedEvent
+                            {
+                                Channel = channel,
+                                State = ChannelRuntimeState.StartBlocked,
+                                ReasonCode = reasonCode ?? "RecoverySafeTerminal",
+                                ReasonText = reasonText ?? "恢复事务已安全收口。",
+                                TimestampUtc = DateTime.UtcNow,
+                                CorrelationId = contract.IncidentId,
+                                RunId = contract.RunId,
+                                RunEpoch = contract.RunEpoch,
+                                Enabled = IsChannelEnabled(channel),
+                                AffectedChannels = new[] { channel }
+                            },
+                            allowTerminalReset: true,
+                            allowSystemFaultReset: true);
+                    }
+                    catch (Exception fallbackError)
+                    {
+                        _log?.Error(
+                            $"Recovery safe terminal fallback failed. " +
+                            $"Incident={contract.IncidentId:N}; EPB={channel}; " +
+                            $"Primary={terminalError.Message}; Fallback={fallbackError.Message}",
+                            "EPB",
+                            fallbackError);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Normalize the post-worker state before releasing a recovery
+        /// contract.  Rejoin helpers may have already moved a channel to
+        /// Running/Paused with their own correlation id; that is a real
+        /// terminal lifecycle transition, but CompleteRecoveryIncident still
+        /// requires the immutable incident correlation to be observable before
+        /// releasing the lease.  Re-publish the existing lifecycle state with
+        /// the contract id, or fail closed to StartBlocked if it is still
+        /// Recovering/missing.
+        /// </summary>
+        private void CommitRecoveryIncidentStateForRelease(
+            RecoveryContractSnapshot contract,
+            string reasonCode,
+            string reasonText)
+        {
+            if (contract == null) return;
+            foreach (var channel in contract.Channels ?? Array.Empty<int>())
+            {
+                var current = _channelRuntimeStateStore.Get(channel);
+                if (current == null || current.State == ChannelRuntimeState.Recovering)
+                {
+                    PublishRecoverySafeTerminal(
+                        contract,
+                        reasonCode ?? "RecoveryTerminalWithoutRejoin",
+                        reasonText ?? "恢复worker未完成重入，已保持安全终态。 ");
+                    continue;
+                }
+                if (current.RunId == contract.RunId &&
+                    current.RunEpoch == contract.RunEpoch &&
+                    current.CorrelationId == contract.IncidentId)
+                    continue;
+                try
+                {
+                    PublishChannelRuntimeState(
+                        channel,
+                        current.State,
+                        reasonCode ?? "RecoveryCommitted",
+                        reasonText ?? "恢复worker已完成，已提交当前生命周期状态。",
+                        affectedChannels: contract.Channels,
+                        correlationId: contract.IncidentId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true,
+                        runIdOverride: contract.RunId);
+                }
+                catch (Exception stateError)
+                {
+                    try { CommandEpbOffHighPriority(channel, "RecoveryTerminalStateNormalizeFailed"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        new RecoveryContractSnapshot(
+                            contract.IncidentId,
+                            contract.RunId,
+                            contract.RunEpoch,
+                            contract.OwnerId,
+                            contract.OwnerKind,
+                            contract.TargetPhase,
+                            contract.Operation,
+                            contract.StartedUtc,
+                            contract.HardDeadlineUtc,
+                            new[] { channel }),
+                        "RecoveryTerminalStateNormalizeFailed",
+                        $"恢复终态关联提交失败，已保持安全终态：{stateError.Message}");
+                }
+            }
+        }
+
+        private bool IsRecoveryTerminalStateCommitted(
+            RecoveryContractSnapshot contract)
+        {
+            if (contract == null) return false;
+            foreach (var channel in contract.Channels ?? Array.Empty<int>())
+            {
+                var state = _channelRuntimeStateStore.Get(channel);
+                if (state == null ||
+                    state.State == ChannelRuntimeState.Recovering ||
+                    state.RunId != contract.RunId ||
+                    state.RunEpoch != contract.RunEpoch ||
+                    state.CorrelationId != contract.IncidentId)
+                    return false;
+            }
+            return true;
+        }
+
+        private bool CompleteRecoveryIncident(
+            RecoveryIncidentHandle incident,
+            Action<RecoveryContractSnapshot> publishTerminal)
+        {
+            return incident?.CompleteOnCoordinator(publishTerminal) == true;
+        }
+
+        internal bool HasActiveRecoveryContract(int channel, long runEpoch)
+        {
+            lock (_recoveryContractGate)
+                return _activeRecoveryContracts.Values.Any(contract =>
+                    contract?.Contract != null &&
+                    contract.Contract.RunEpoch == runEpoch &&
+                    contract.TerminalPublished == 0 &&
+                    (contract.Contract.Channels ?? Array.Empty<int>()).Contains(channel));
+        }
+
         internal TaskSupervisorEntry[] CaptureBackgroundTasks()
         {
             return _taskSupervisor.Snapshot();
@@ -2118,6 +3055,8 @@ namespace Controller
 
             var singleRunId = Guid.NewGuid();
             _activeBatchId = singleRunId;
+            var singleRunEpoch = Interlocked.Increment(ref _runEpoch);
+            Interlocked.Exchange(ref _formalPhaseCommitted, 0);
             Interlocked.Exchange(ref _idleSessionClosureScheduled, 0);
             BeginDaqIncidentRun(singleRunId, new[] { channel });
             InvalidateStopSafetyCache();
@@ -2127,6 +3066,14 @@ namespace Controller
             using var startLinked = CancellationTokenSource.CreateLinkedTokenSource(uiToken, stopCts.Token);
             try
             {
+                // 空闲台架的单通道开始同样必须消除上次进程退出后可能遗留的物理DO状态。
+                // 已有其它通道运行时不能全局关闭四台电源；该场景继续使用现有运行链的
+                // 组级上电许可，不得破坏正在运行的通道。
+                if (!IsBatchSessionActive && _timers.IsEmpty && _runners.IsEmpty)
+                    await EstablishColdStartSafeBaselineAsync(
+                            new[] { channel },
+                            startLinked.Token)
+                        .ConfigureAwait(false);
                 await EnsureDaqReadyBeforeStartAsync(new[] { channel }, startLinked.Token).ConfigureAwait(false);
                 EnsureStrictCurveControl(new[] { channel });
                 SaveProgramSafetySnapshot();
@@ -2169,6 +3116,8 @@ namespace Controller
                 throw;
             }
 
+            AuthorizeFreshRunAfterSafetyPreflight();
+            AuthorizeChannelExecution(channel, singleRunEpoch);
             PublishChannelRuntimeState(
                 channel,
                 ChannelRuntimeState.Starting,
@@ -2580,10 +3529,10 @@ namespace Controller
             if (_timers.TryGetValue(channel, out var t)) t.Pause("ManualPause");
             _channelPausedUtc[channel] = DateTime.UtcNow;
             PublishChannelRuntimeState(channel, ChannelRuntimeState.Paused, "Paused", "试验已暂停");
-            NonCriticalObserver.Invoke(
-                ChannelPaused,
+            _adaptiveLifecyclePort.PublishChannelPaused(
                 channel,
-                ex => _log?.Warn($"EPB[{channel}] 暂停观察者异常已隔离：{ex.Message}", "EPB"));
+                _activeBatchId,
+                Interlocked.Read(ref _runEpoch));
         }
 
         public void ResumeChannel(int channel)
@@ -2617,7 +3566,13 @@ namespace Controller
 
         private void StopChannelForInternalCleanup(int channel)
         {
+            _adaptiveLifecyclePort.PublishStop(
+                channel,
+                "StopChannel",
+                _activeBatchId,
+                Interlocked.Read(ref _runEpoch));
             _currentCycleNumberByChannel.TryGetValue(channel, out var interruptedCycleNumber);
+            RevokeChannelExecutionPermit(channel, "StopChannel");
 
             // 该通道停止后不再参与液压判定
             UnmarkHydraulicParticipant(channel);
@@ -2677,6 +3632,7 @@ namespace Controller
         /// </summary>
         private bool RevokeChannelExecutionBeforeTerminalState(int channel, string reason)
         {
+            RevokeChannelExecutionPermit(channel, reason);
             UnmarkHydraulicParticipant(channel);
             try { CancelStopCts(channel); } catch { }
             RemoveTimerRuntime(channel, reason);
@@ -2698,6 +3654,54 @@ namespace Controller
                 _runnerCache.ContainsKey(channel),
                 IsChannelEnergized(channel),
                 offSucceeded);
+        }
+
+        private void AuthorizeChannelExecution(int channel, long runEpoch)
+        {
+            lock (_channelExecutionGates[channel - 1])
+                _channelExecutionFence.Authorize(channel, runEpoch);
+        }
+
+        private void RevokeChannelExecutionPermit(int channel, string reason)
+        {
+            lock (_channelExecutionGates[channel - 1])
+                _channelExecutionFence.Revoke(channel);
+            var hydraulicGroup = GetHydraulicGroupForChannel(channel);
+            if (hydraulicGroup > 0)
+                _recoveryOwnership.CancelGroup(hydraulicGroup);
+            _log?.Info(
+                $"EPB[{channel}] 执行代际授权已撤销。Reason={reason}",
+                "EPB并发");
+        }
+
+        private ChannelExecutionPermit RequireCurrentChannelExecutionPermit(
+            int channel,
+            string resource)
+        {
+            var permit = _channelExecutionFence.Capture(channel);
+            var state = _channelRuntimeStateStore.Get(channel);
+            if (!_channelExecutionFence.IsCurrent(permit) ||
+                permit.RunEpoch != Interlocked.Read(ref _runEpoch) ||
+                !ChannelExecutionFence.CanCreateRuntime(
+                    state,
+                    IsChannelEnabled(channel),
+                    RequiresProcessRestart))
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 禁止创建{resource}：执行授权缺失、代际过期或生命周期已终止。" +
+                    $" State={state?.State} PermitEpoch={permit.RunEpoch} " +
+                    $"CurrentEpoch={Interlocked.Read(ref _runEpoch)}");
+            return permit;
+        }
+
+        private bool IsChannelExecutionPermitCurrent(
+            int channel,
+            ChannelExecutionPermit permit)
+        {
+            return permit.Channel == channel &&
+                   _channelExecutionFence.IsCurrent(permit) &&
+                   permit.RunEpoch == Interlocked.Read(ref _runEpoch) &&
+                   IsChannelEnabled(channel) &&
+                   !RequiresProcessRestart;
         }
 
         internal static bool IsTerminalExecutionQuiescent(
@@ -2749,6 +3753,7 @@ namespace Controller
         /// <param name="channel">EPB 通道号（1..12）。</param>
         private void StopChannelOnAlarm(int channel)
         {
+            RevokeChannelExecutionPermit(channel, "AlarmStop");
             // 报警停机：立即从“参与液压判定”集合中移除，防止其阻塞其它通道释压
             UnmarkHydraulicParticipant(channel);
 
@@ -3402,14 +4407,13 @@ namespace Controller
                 $"{faultCode} 连续={confirmation.Streak}/{confirmation.ConfirmThreshold}；" +
                 "已安全断电，本圈作废并自动重试。",
                 ex => _log?.Warn($"EPB[{channel}] 预警观察者异常已隔离：{ex.Message}", "EPB"));
-            PublishChannelRuntimeState(
-                channel,
-                ChannelRuntimeState.WarningRunning,
-                faultCode,
-                reason,
-                affectedChannels: new[] { channel },
-                correlationId: correlationId,
-                allowTerminalReset: false);
+            var lifecycle = _channelRuntimeStateStore.Get(channel);
+            PublishChannelWarningOverlay(channel, faultCode, reason, correlationId);
+            _log.Info(
+                $"FieldMetric WARNING_OVERLAY EPB={channel} " +
+                $"LifecyclePreserved={lifecycle?.State} " +
+                $"LifecycleRevision={lifecycle?.Revision ?? 0} Reason={faultCode}",
+                "FIELD");
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "ConfirmedFaultWarning")) return;
             var pauseCompletion = _timers.TryGetValue(channel, out var timer)
                 ? timer.PauseAfterCurrentCycleAsync($"RecoverableWarning:{faultCode}")
@@ -3447,6 +4451,20 @@ namespace Controller
                         _channelPausedUtc.ContainsKey(channel) ||
                         ShouldHoldDaqRecoveredChannelsForBatchPause(CurrentBatchPauseState))
                         return;
+                    var currentLifecycle = _channelRuntimeStateStore.Get(channel);
+                    if (!CanRouteRecoverableWarningToFormalRejoin(
+                            currentLifecycle,
+                            IsFormalPhaseCommitted))
+                    {
+                        _log?.Info(
+                            $"RecoverableWarningDelegatedToLifecycleOwner EPB={channel} " +
+                            $"State={currentLifecycle?.State} " +
+                            $"Owner={currentLifecycle?.RecoveryOwnerKind} " +
+                            $"Target={currentLifecycle?.RecoveryTargetPhase} " +
+                            $"Code={faultCode}",
+                            "EPB");
+                        return;
+                    }
                     var plan = GetCompatibleStaggerPlan(new[] { channel });
                     RejoinFormalChannelsAtSharedFutureSlot(
                         new[] { channel },
@@ -3468,6 +4486,17 @@ namespace Controller
                         "EPB");
                 }
             }), "RecoverableWarningRetry", channel);
+        }
+
+        internal static bool CanRouteRecoverableWarningToFormalRejoin(
+            ChannelRuntimeStateChangedEvent lifecycle,
+            bool formalPhaseCommitted)
+        {
+            if (!formalPhaseCommitted || lifecycle == null ||
+                !lifecycle.FormalPhaseCommitted)
+                return false;
+            return lifecycle.State == ChannelRuntimeState.Running ||
+                   lifecycle.State == ChannelRuntimeState.WarningRunning;
         }
 
         internal static bool IsImmediateCurrentHardFault(string reason)
@@ -3633,7 +4662,7 @@ namespace Controller
                     $"DAQ事故补充了更高优先级软件证据。Device={device} " +
                     $"Code={observation.Context.PrimaryCode} CorrelationId={observation.Context.CorrelationId:N}",
                     "AI");
-            ObserveBackgroundTask(BeginDaqAutoRecoveryAsync(
+            ObserveNonRecoveryLifecycleTask(BeginDaqAutoRecoveryAsync(
                 device,
                 faultCode,
                 faultReason,
@@ -3703,6 +4732,9 @@ namespace Controller
                 return;
             }
 
+            if (TrySuppressDaqIncidentGrace(deviceFault))
+                return;
+
             DaqIncidentObservation observation;
             try
             {
@@ -3747,7 +4779,7 @@ namespace Controller
                 // 分支只做诊断合并，不重复注册 attempt。
                 if (!HasCurrentDaqRecoveryOwner(deviceFault.Device))
                 {
-                    ObserveBackgroundTask(
+                    ObserveNonRecoveryLifecycleTask(
                         BeginDaqAutoRecoveryAsync(
                             deviceFault.Device,
                             deviceFault.Code,
@@ -3786,7 +4818,7 @@ namespace Controller
             // BeginDaqAutoRecoveryAsync 在第一次 await 前完成 TryAdd、RunEpoch 校验、
             // 冻结边界和所有安全动作，因此 RecoveryOwner 在任何可能阻塞的 DO/电源
             // I/O 之前已经可观察；安全事件和 publication 统一走此入口。
-            ObserveBackgroundTask(
+            ObserveNonRecoveryLifecycleTask(
                 BeginDaqAutoRecoveryAsync(
                     deviceFault.Device,
                     deviceFault.Code,
@@ -3811,12 +4843,63 @@ namespace Controller
                    context.Terminal.Current == DaqRecoveryTerminal.None;
         }
 
+        private bool TrySuppressDaqIncidentGrace(DaqDeviceFault deviceFault)
+        {
+            if (deviceFault == null || string.IsNullOrWhiteSpace(deviceFault.Device))
+                return false;
+            if (!_daqIncidentGrace.TryGetValue(deviceFault.Device.Trim(), out var grace) ||
+                grace == null)
+                return false;
+            var now = Stopwatch.GetTimestamp();
+            if (now > grace.ExpiresMonotonicTicks ||
+                (grace.Generation > 0 && deviceFault.Generation > 0 &&
+                 grace.Generation != deviceFault.Generation))
+            {
+                _daqIncidentGrace.TryRemove(deviceFault.Device.Trim(), out _);
+                return false;
+            }
+            _log.Info(
+                $"DaqIncidentTransientGraceSuppressed Device={deviceFault.Device} " +
+                $"Generation={deviceFault.Generation} CorrelationId={grace.CorrelationId:N} " +
+                "WindowMs=1200;SameIncident=true",
+                "AI");
+            return true;
+        }
+
         private void OnDaqPersistenceStateChanged(DaqPersistenceStateChanged update)
         {
             if (update == null) return;
+            // A DAQ/persistence callback is material evidence only when a StopAll
+            // transaction is active.  The stop-progress recorder ignores ordinary
+            // heartbeats and keeps the stage deadline unchanged.  A repeated
+            // state callback must also carry a strictly advanced persisted or
+            // terminal sequence; State/Code text alone is not evidence.
+            var daqEvidenceVersion = new[]
+                {
+                    update.Sequence,
+                    update.LastTerminallyHandledSequence,
+                    update.SuppressThroughSequence,
+                    update.LastSuppressedSequence
+                }
+                .Where(value => value > 0)
+                .DefaultIfEmpty(0)
+                .Max();
+            if (daqEvidenceVersion > 0)
+            {
+                var device = string.IsNullOrWhiteSpace(update.Device)
+                    ? "Unknown"
+                    : update.Device.Trim();
+                var generation = update.Generation > 0 ? update.Generation : 0;
+                RecordStopSafetyMaterialProgress(
+                    Interlocked.Read(ref _stopSafetyGeneration),
+                    $"DaqPersistence:{device}:Generation={generation}",
+                    daqEvidenceVersion,
+                    $"DAQ持久化材料事件 State={update.State};Device={device};" +
+                    $"Code={update.Code};Sequence={daqEvidenceVersion}");
+            }
             if (update.State == DaqPersistenceState.Paused)
             {
-                ObserveBackgroundTask(BeginDaqAutoRecoveryAsync(
+                ObserveNonRecoveryLifecycleTask(BeginDaqAutoRecoveryAsync(
                     update.Device,
                     update.Code,
                     update.Reason,
@@ -4192,6 +5275,422 @@ namespace Controller
             if (string.IsNullOrWhiteSpace(device)) return;
             var affected = GetDaqGroupChannels(device);
             if (affected.Length == 0) return;
+
+            // A concurrent signal may arrive while the first incident is
+            // still in its pre-await admission window.  It is a diagnostic
+            // merge, not a second owner/worker.
+            var effectiveCorrelationId = correlationId == Guid.Empty
+                ? Guid.NewGuid()
+                : correlationId;
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            lock (_recoveryContractGate)
+            {
+                if (_daqAutoRecovery.ContainsKey(device) ||
+                    FindActiveRecoveryContractLocked(
+                        affected[0],
+                        runId,
+                        runEpoch,
+                        RecoveryOwnerKind.DaqRecovery,
+                        IsFormalPhaseCommitted
+                            ? RecoveryTargetPhase.Formal
+                            : RecoveryTargetPhase.Startup,
+                        effectiveCorrelationId) != null)
+                    return;
+            }
+
+            RecoveryIncidentHandle incident = null;
+            Func<Task> BuildRecoveryWorker()
+            {
+                return async () =>
+                {
+                    try
+                    {
+                        await BeginDaqAutoRecoveryBodyAsync(
+                                device,
+                                code,
+                                reason,
+                                effectiveCorrelationId,
+                                restartDaq,
+                                eventUtc,
+                                recoveryAttempt,
+                                raiseRecoverableAlarm,
+                                recoverableAlarmChannel)
+                            .ConfigureAwait(false);
+
+                        // Self-maintenance may outlive the initial cutoff
+                        // attempt.  Keep this real worker bound until the
+                        // authoritative DAQ context reaches its terminal
+                        // result, so the contract cannot disappear while a
+                        // retry task is still changing lifecycle state.
+                        if (_daqAutoRecovery.TryGetValue(device, out var context) &&
+                            context.Terminal.Current == DaqRecoveryTerminal.None)
+                            await context.Completion.Task.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        incident?.CompleteAfterTerminal(contract =>
+                            CommitRecoveryIncidentStateForRelease(
+                                contract,
+                                "DaqRecoveryTerminalWithoutRejoin",
+                                "DAQ恢复执行体已结束；已完成终态复核并释放恢复合同。"));
+                    }
+                };
+            }
+
+            var started = TryBeginRecoveryIncident(
+                "DaqAutoRecovery",
+                runId,
+                runEpoch,
+                RecoveryOwnerKind.DaqRecovery,
+                IsFormalPhaseCommitted
+                    ? RecoveryTargetPhase.Formal
+                    : RecoveryTargetPhase.Startup,
+                effectiveCorrelationId,
+                affected,
+                _ => BuildRecoveryWorker(),
+                contract =>
+                {
+                    foreach (var channel in contract.Channels ?? Array.Empty<int>())
+                        PublishRecoveryIncidentState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            string.IsNullOrWhiteSpace(code) ? "DaqRecovery" : code,
+                            reason ?? "DAQ自动恢复已建立真实执行任务。",
+                            affectedChannels: contract.Channels,
+                            correlationId: contract.IncidentId,
+                            recoveryOwnerKind: contract.OwnerKind,
+                            recoveryTargetPhase: contract.TargetPhase,
+                            recoveryOwnerId: contract.OwnerId,
+                            recoveryOwnerGeneration: contract.RunEpoch);
+                },
+                out incident);
+            if (!started || incident == null) return;
+
+            try
+            {
+                _taskSupervisor.Observe(
+                    incident.WorkerTask,
+                    "DaqAutoRecovery",
+                    _activeBatchId,
+                    affected.FirstOrDefault());
+                if (!incident.Start())
+                {
+                    incident.CompleteAfterTerminal(contract =>
+                        PublishRecoverySafeTerminal(
+                            contract,
+                            "DaqRecoveryStartRejected",
+                            "DAQ恢复启动许可被拒绝，已保持安全终态。"));
+                    return;
+                }
+                await incident.WorkerTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                incident?.CompleteAfterTerminal(contract =>
+                    CommitRecoveryIncidentStateForRelease(
+                        contract,
+                        "DaqRecoveryWorkerFailed",
+                        "DAQ恢复执行体异常，已完成终态复核并保持安全状态。"));
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Creates the DAQ safety transaction used by the real recovery body.
+        /// The port deliberately returns command receipts from the actual
+        /// high-priority DO worker and routes its completion callback back into
+        /// this same incident.  No UI/watchdog callback is allowed to infer a
+        /// submitted or physically confirmed stage.
+        /// </summary>
+        private DaqRecoveryTransaction CreateDaqRecoveryTransaction(
+            DaqAutoRecoveryContext context)
+        {
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            return new DaqRecoveryTransaction(
+                context.AffectedChannels,
+                new DaqRecoveryTransaction.Port
+                {
+                    TrySubmitOff = channel =>
+                    {
+                        Guid commandId;
+                        var accepted = TrySubmitEpbOffHighPriority(
+                            channel,
+                            telemetry =>
+                            {
+                                if (telemetry == null) return;
+                                context.Transaction?.ReportPhysicalCompletion(
+                                    telemetry.Channel,
+                                    telemetry.CommandId,
+                                    telemetry.Result);
+                            },
+                            out commandId);
+                        return new DaqRecoveryTransaction.OffReceipt(
+                            channel,
+                            commandId,
+                            accepted,
+                            false,
+                            accepted ? string.Empty : "DaqOffAdmissionRejected");
+                    },
+                    PublishPhase = phase =>
+                    {
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                phase,
+                                "DaqRecoveryTransaction:" + phase))
+                        {
+                            // A duplicate callback is harmless when the
+                            // controller already published this exact stage;
+                            // an out-of-order callback is not.
+                            if (context.Phase.Current != phase)
+                                throw new InvalidOperationException(
+                                    $"DAQ事务阶段发布失败 Phase={phase};" +
+                                    $"Current={context.Phase.Current};" +
+                                    $"Device={context.Device}");
+                        }
+                    },
+                    SubmitSafetyOff = missing =>
+                    {
+                        var channels = (missing ?? Array.Empty<int>())
+                            .Where(channel => channel >= 1 && channel <= 12)
+                            .Distinct()
+                            .OrderBy(channel => channel)
+                            .ToArray();
+                        if (channels.Length == 0) return;
+                        var rejected = SubmitEpbOffHighPriorityBatch(
+                            channels,
+                            "DaqTransactionSafeIdleOffAdmissionRejected",
+                            "DaqTransactionSafeIdleOffSubmissionException");
+                        ScheduleRejectedOffFallbacks(
+                            rejected,
+                            "DaqTransactionSafeIdleImmediateOffFallback");
+                    },
+                    DisablePower = _ => StartDaqRecoveryPowerDisableOnce(context),
+                    PublishTerminal = missing =>
+                    {
+                        var published = new List<int>();
+                        // Normal recovery must close the channel-state barrier
+                        // while the contract/context is still alive.  The old
+                        // path returned the requested list unconditionally and
+                        // let Terminal.TryCommit run before the state store had
+                        // left Recovering, which made a failed terminal
+                        // publication indistinguishable from a completed run.
+                        if (context.Phase.Current == DaqRecoveryPhase.Committed)
+                        {
+                            var requested = (missing ?? Array.Empty<int>())
+                                .Where(channel => channel >= 1 && channel <= 12)
+                                .Distinct()
+                                .OrderBy(channel => channel)
+                                .ToArray();
+                            lock (_recoveryContractGate)
+                            {
+                                foreach (var channel in requested)
+                                {
+                                    var state = _channelRuntimeStateStore.Get(channel);
+                                    if (state == null ||
+                                        state.RunId != context.RunId ||
+                                        state.RunEpoch != context.RunEpoch)
+                                        continue;
+                                    if (state.State == ChannelRuntimeState.Recovering)
+                                    {
+                                        // This is an authoritative terminal
+                                        // barrier publication, not the normal
+                                        // public helper: that helper correctly
+                                        // preserves Recovering while the DAQ
+                                        // context is active.  Here the
+                                        // transaction has already committed
+                                        // rejoin, and the context remains the
+                                        // owner until the later stable terminal
+                                        // aggregate receipt succeeds.
+                                        var terminalState = state.Clone();
+                                        terminalState.State = ChannelRuntimeState.Running;
+                                        terminalState.ReasonCode =
+                                            "DaqRecoveryTerminalState";
+                                        terminalState.ReasonText =
+                                            "DAQ恢复已完成重入，终态提交前关闭Recovering状态。";
+                                        terminalState.TimestampUtc = DateTime.UtcNow;
+                                        terminalState.CorrelationId = context.CorrelationId;
+                                        terminalState.RecoveryOwnerKind = RecoveryOwnerKind.None;
+                                        terminalState.RecoveryOwnerId = Guid.Empty;
+                                        terminalState.RecoveryOwnerGeneration = 0;
+                                        terminalState.RecoveryTargetPhase = RecoveryTargetPhase.None;
+                                        _channelRuntimeStateStore.Publish(
+                                            terminalState,
+                                            allowTerminalReset: true,
+                                            allowSystemFaultReset: true);
+                                    }
+                                    var after = _channelRuntimeStateStore.Get(channel);
+                                    if (after != null &&
+                                        after.RunId == context.RunId &&
+                                        after.RunEpoch == context.RunEpoch &&
+                                        after.State != ChannelRuntimeState.Recovering)
+                                        published.Add(channel);
+                                }
+                                PublishRecoveryAggregateOwnershipSourceLocked();
+                            }
+                            return published;
+                        }
+                        if (context.Phase.Current == DaqRecoveryPhase.SafeIdle)
+                        {
+                            var requested = (missing ?? Array.Empty<int>()).ToArray();
+                            if (PublishDaqSafeTerminalStates(
+                                    context,
+                                    "DaqRecoveryTransactionSafeTerminal",
+                                    ChannelRuntimeState.StartBlocked,
+                                    requested))
+                                return requested;
+                        }
+                        foreach (var channel in missing ?? Array.Empty<int>())
+                        {
+                            var state = _channelRuntimeStateStore.Get(channel);
+                            if (state != null &&
+                                state.RunId == context.RunId &&
+                                state.RunEpoch == context.RunEpoch &&
+                                state.State != ChannelRuntimeState.Recovering)
+                                published.Add(channel);
+                        }
+                        return published;
+                    },
+                    // The aggregate store will replace this publisher in the
+                    // next component.  For now this is an explicit stable,
+                    // monotonic in-memory production checkpoint rather than an
+                    // implicit permission to delete the live recovery owner.
+                    PublishCheckpoint = version =>
+                    {
+                        var checkpoint = PublishDaqAggregateCheckpoint(context);
+                        return new DaqRecoveryTransaction.CheckpointReceipt(
+                            checkpoint.Version,
+                            checkpoint.Stable && checkpoint.Version >= version,
+                            checkpoint.Detail);
+                    },
+                    PublishTerminalCheckpoint = version =>
+                    {
+                        var terminal = PublishDaqAggregateTerminal(context);
+                        return new DaqRecoveryTransaction.CheckpointReceipt(
+                            terminal.Version,
+                            terminal.Stable && terminal.Version > version,
+                            terminal.Detail);
+                    }
+                },
+                context.RecoveryTransactionId);
+        }
+
+        /// <summary>
+        /// Publishes one Controller-owned DAQ source revision.  The context is
+        /// sampled under its progress gate, then the aggregate store performs
+        /// the immutable source replacement under its own short lock.
+        /// </summary>
+        private RecoveryAggregateStore.DaqCheckpointReceipt
+            PublishDaqAggregateCheckpoint(DaqAutoRecoveryContext context)
+        {
+            if (context == null)
+                return new RecoveryAggregateStore.DaqCheckpointReceipt(0, false, "NullDaqContext");
+
+            DaqRecoveryPhase stage;
+            long progressVersion;
+            DateTime stageStartedUtc;
+            DateTime hardDeadlineUtc;
+            lock (context.ProgressGate)
+            {
+                stage = context.ProgressStage;
+                progressVersion = context.ProgressVersion;
+                stageStartedUtc = context.StageStartedUtc;
+                hardDeadlineUtc = context.HardDeadlineUtc;
+            }
+            var receipt = _recoveryAggregateStore.PublishDaqCheckpoint(
+                _daqAutoRecovery.Count,
+                stage.ToString(),
+                progressVersion,
+                stageStartedUtc,
+                hardDeadlineUtc,
+                stage == DaqRecoveryPhase.Committed
+                    ? stage.ToString()
+                    : null,
+                stage == DaqRecoveryPhase.Committed ? progressVersion : 0,
+                stage == DaqRecoveryPhase.Committed ? stageStartedUtc : default(DateTime),
+                stage == DaqRecoveryPhase.Committed ? hardDeadlineUtc : default(DateTime),
+                "DaqRecoveryCheckpoint",
+                context.RunId,
+                context.RunEpoch);
+            lock (_recoveryContractGate)
+                PublishRecoveryOperationalSourcesLocked();
+            return receipt;
+        }
+
+        /// <summary>
+        /// Retains the later terminal aggregate version.  It is called after
+        /// the Controller has advanced the DAQ context to Terminal and before
+        /// its owner/lease cleanup.
+        /// </summary>
+        private RecoveryAggregateStore.DaqCheckpointReceipt
+            PublishDaqAggregateTerminal(DaqAutoRecoveryContext context)
+        {
+            if (context == null)
+                return new RecoveryAggregateStore.DaqCheckpointReceipt(0, false, "NullDaqContext");
+
+            DaqRecoveryPhase stage;
+            long progressVersion;
+            DateTime stageStartedUtc;
+            DateTime hardDeadlineUtc;
+            lock (context.ProgressGate)
+            {
+                stage = context.ProgressStage;
+                progressVersion = context.ProgressVersion;
+                stageStartedUtc = context.StageStartedUtc;
+                hardDeadlineUtc = context.HardDeadlineUtc;
+            }
+            var receipt = _recoveryAggregateStore.PublishDaqTerminal(
+                stage.ToString(),
+                progressVersion,
+                stageStartedUtc,
+                hardDeadlineUtc,
+                "DaqRecoveryTerminal",
+                context.RunId,
+                context.RunEpoch);
+            lock (_recoveryContractGate)
+                PublishRecoveryOperationalSourcesLocked();
+            return receipt;
+        }
+
+        private void StartDaqRecoveryPowerDisableOnce(DaqAutoRecoveryContext context)
+        {
+            if (context == null || _powerSupply == null) return;
+            if (Interlocked.CompareExchange(
+                    ref context.PowerDisableStartedTicks,
+                    Stopwatch.GetTimestamp(),
+                    0) != 0)
+                return;
+            var powerDisableTasks = StartElectricalGroupSafetyDisables(
+                context.AffectedChannels,
+                $"DAQ截止安全断电 Device={context.Device} " +
+                    $"CorrelationId={context.CorrelationId:N}",
+                "DaqCutoffPowerDisable");
+            context.PowerDisableTasks = powerDisableTasks.Values
+                .Where(task => task != null)
+                .ToArray();
+            context.PowerDisableTasksByGroup = powerDisableTasks
+                .Where(pair => pair.Key > 0 && pair.Value != null)
+                .ToDictionary(pair => pair.Key, pair => (Task)pair.Value);
+            Interlocked.Exchange(
+                ref context.PowerDisableStartedUtcTicks,
+                DateTime.UtcNow.Ticks);
+            StartDaqPowerDisableDeadline(context);
+        }
+
+        private async Task BeginDaqAutoRecoveryBodyAsync(
+            string device,
+            string code,
+            string reason,
+            Guid correlationId,
+            bool restartDaq,
+            DateTime eventUtc,
+            int recoveryAttempt = 0,
+            bool raiseRecoverableAlarm = false,
+            int recoverableAlarmChannel = 0)
+        {
+            if (string.IsNullOrWhiteSpace(device)) return;
+            var affected = GetDaqGroupChannels(device);
+            if (affected.Length == 0) return;
             var context = new DaqAutoRecoveryContext
             {
                 Device = device,
@@ -4221,6 +5720,7 @@ namespace Controller
                 TriggerReason = reason ?? string.Empty,
                 RaiseRecoverableAlarm = raiseRecoverableAlarm ? 1 : 0,
                 RecoverableAlarmChannel = recoverableAlarmChannel,
+                RecoveryTransactionId = Guid.NewGuid(),
                 BeforeClock = _acq.GetDaqFreshnessSnapshot(device, 100),
                 PreviousGeneration = _acq.GetCurrentGeneration(device),
                 CutoffParticipantVersions = affected.ToDictionary(
@@ -4229,7 +5729,16 @@ namespace Controller
                 CutoffCycles = new Dictionary<int, int>(),
                 CutoffPersistenceBoundary = 0
             };
+            context.StageStartedUtc = context.StartedUtc;
+            context.HardDeadlineUtc = context.StartedUtc.AddMilliseconds(
+                Math.Max(1, RecoveryGroupHardDeadlineMs));
+            context.ProgressStage = DaqRecoveryPhase.StaleDetected;
+            context.Transaction = CreateDaqRecoveryTransaction(context);
             if (!_daqAutoRecovery.TryAdd(device, context)) return;
+            AdvanceDaqRecoveryStage(
+                context,
+                DaqRecoveryPhase.StaleDetected,
+                "DAQ回调陈旧/失联事故已登记。");
             // TryAdd 与 StopAll 的 run-epoch 撤权必须在同一提交门内复核。若 Stop 已经
             // 完成快照并递增 epoch，迟到上下文不得漏过 CancelAll 后再开始截止/取锁。
             var registrationCurrent = false;
@@ -4266,6 +5775,7 @@ namespace Controller
             {
                 var cutoffSafetyDiagnostics = new List<string>();
                 Dictionary<int, string> cutoffOffFallbacks = null;
+                var cutoffOffSubmissionAccepted = false;
                 var hydraulicReleaseTasks = new List<Task>(affected.Length);
                 ExecuteDaqCutoffBeforeOwnershipWait(
                     () =>
@@ -4340,30 +5850,28 @@ namespace Controller
                                     $"DAQ截止取消当前圈失败 EPB={channel}: {ex.Message}");
                             }
                         }
-                        cutoffOffFallbacks = SubmitEpbOffHighPriorityBatch(
-                            affected,
-                            "DaqCutoffAdmissionRejected",
-                            "DaqCutoffSubmissionException");
+                        var transactionAccepted = context.Transaction != null &&
+                            context.Transaction.SubmitOffBatch();
+                        cutoffOffFallbacks = (context.Transaction?.OffReceipts ??
+                                              Array.Empty<DaqRecoveryTransaction.OffReceipt>())
+                            .Where(receipt => !receipt.Accepted)
+                            .GroupBy(receipt => receipt.Channel)
+                            .ToDictionary(
+                                group => group.Key,
+                                group => group.Last().Failure);
+                        // DoOffSubmitted is a real admission fact, not a
+                        // declaration made when the cutoff worker is entered.
+                        // Any rejected/exceptional channel keeps the incident
+                        // before this stage and is closed through SafeIdle by
+                        // the transaction itself.
+                        cutoffOffSubmissionAccepted = transactionAccepted &&
+                            context.Transaction.Phase >= DaqRecoveryPhase.DoOffSubmitted &&
+                            context.Transaction.CurrentOutcome ==
+                                DaqRecoveryTransaction.Outcome.Active;
                     },
                     () =>
                     {
-                        var powerDisableTasks = StartElectricalGroupSafetyDisables(
-                            affected,
-                            $"DAQ截止安全断电 Device={device} CorrelationId={context.CorrelationId:N}",
-                            "DaqCutoffPowerDisable");
-                        context.PowerDisableTasks = powerDisableTasks.Values
-                            .Where(task => task != null)
-                            .ToArray();
-                        context.PowerDisableTasksByGroup = powerDisableTasks
-                            .Where(pair => pair.Key > 0 && pair.Value != null)
-                            .ToDictionary(pair => pair.Key, pair => (Task)pair.Value);
-                        Interlocked.Exchange(
-                            ref context.PowerDisableStartedTicks,
-                            Stopwatch.GetTimestamp());
-                        Interlocked.Exchange(
-                            ref context.PowerDisableStartedUtcTicks,
-                            DateTime.UtcNow.Ticks);
-                        StartDaqPowerDisableDeadline(context);
+                        StartDaqRecoveryPowerDisableOnce(context);
                     },
                     () => ScheduleRejectedOffFallbacks(
                         cutoffOffFallbacks,
@@ -4424,13 +5932,19 @@ namespace Controller
                             if (!IsCurrentRecovery(context)) break;
                             try
                             {
-                                PublishChannelRuntimeState(
+                                PublishRecoveryIncidentState(
                                     channel,
                                     ChannelRuntimeState.Recovering,
                                     context.TriggerCode,
                                     reason,
                                     affectedChannels: affected,
-                                    correlationId: context.CorrelationId);
+                                    correlationId: context.CorrelationId,
+                                    recoveryOwnerKind: RecoveryOwnerKind.DaqRecovery,
+                                    recoveryTargetPhase: IsFormalPhaseCommitted
+                                        ? RecoveryTargetPhase.Formal
+                                        : RecoveryTargetPhase.Startup,
+                                    recoveryOwnerId: context.CorrelationId,
+                                    recoveryOwnerGeneration: context.RunEpoch);
                             }
                             catch (Exception ex)
                             {
@@ -4446,6 +5960,14 @@ namespace Controller
                                     "AI"));
                         }
                     }), "DaqCutoffStatePublication"));
+
+                if (!cutoffOffSubmissionAccepted)
+                {
+                    CompleteCancelledRecovery(
+                        context,
+                        "DaqOffSubmissionNotAcceptedSafeIdle");
+                    return;
+                }
 
                 if (TryEscalatePermanentDataContinuityGap(
                         "BeginDaqAutoRecovery",
@@ -4567,6 +6089,36 @@ namespace Controller
                     return;
                 }
 
+                // The stage order is intentionally stricter than the physical
+                // submission order: power disable may be queued while the
+                // high-priority DO command is settling, but it is not exposed
+                // as a recovery stage until DO OFF is confirmed.  This keeps
+                // watchdog/heartbeat consumers from observing PowerOff* before
+                // the preceding safety evidence exists.
+                context.Transaction?.ConfirmPhysicalFromController(
+                    channel => !IsChannelEnergized(channel));
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.DoOffConfirmed,
+                        "受影响通道DO OFF已确认。"))
+                    throw new InvalidOperationException(
+                        $"DAQ DO OFF确认阶段顺序无效 Device={device} " +
+                        $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.PowerOffSubmitted,
+                        "受影响电源组Disable提交已确认进入截止阶段。"))
+                    throw new InvalidOperationException(
+                        $"DAQ电源Disable提交阶段顺序无效 Device={device} " +
+                        $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.PowerOffConfirmed,
+                        "受影响电源组OFF已确认。"))
+                    throw new InvalidOperationException(
+                        $"DAQ电源OFF确认阶段顺序无效 Device={device} " +
+                        $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+
                 // The whole DAQ group is now de-energized. It is safe to abandon stale control
                 // history and validate from the newest batch; while energized this operation is
                 // forbidden because skipped batches could contain an over-current peak.
@@ -4584,11 +6136,14 @@ namespace Controller
                     throw new InvalidOperationException(
                         $"DAQ截止阶段无法提交 Device={device} " +
                         $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
-                if (!restartDaq && !context.Phase.EnableValidation())
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.CutoffCompleted,
+                        "整组安全截止已完成。" ) &&
+                    context.ProgressStage != DaqRecoveryPhase.CutoffCompleted)
                     throw new InvalidOperationException(
-                        $"DAQ截止后无法开放验证 Device={device} " +
+                        $"DAQ截止完成阶段发布失败 Device={device} " +
                         $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
-
                 _log.Warn(
                     $"DAQ软件自恢复开始 Device={device} Affected=[{string.Join(",", affected)}] " +
                     $"CorrelationId={context.CorrelationId:N} Code={context.TriggerCode} " +
@@ -4596,6 +6151,14 @@ namespace Controller
                     $"FastResyncDiscarded={fastResyncDiscarded} CutoffCompleted=true。",
                     "AI");
                 PublishRecoveryProgress(context, "安全断电已完成，正在恢复数据链。");
+                if (!restartDaq &&
+                    !AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.DaqRestartStarted,
+                        "DAQ任务仍在线，跳过重建并开始首批新鲜数据确认。"))
+                    throw new InvalidOperationException(
+                        $"DAQ截止后无法进入首批数据确认阶段 Device={device} " +
+                        $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
                 SubmitDaqIncidentSnapshot(context, reason, "10-cutoff");
 
                 if (restartDaq)
@@ -4603,6 +6166,14 @@ namespace Controller
                     DaqRecoveryResult result = null;
                     try
                     {
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.DaqRestartStarted,
+                                "DAQ任务重建已开始。" ) &&
+                            context.ProgressStage != DaqRecoveryPhase.DaqRestartStarted)
+                            throw new InvalidOperationException(
+                                $"DAQ重建开始阶段发布失败 Device={device} " +
+                                $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
                         await RecoveryStageDeadline.RunAsync(
                                 "DaqTaskRecovery",
                                 _daqPersistenceRecoveryTimeoutMs,
@@ -4643,6 +6214,15 @@ namespace Controller
                     context.FirstVerifiedSequence = result.FirstVerifiedSequence;
                     context.LastVerifiedSequence = result.LastVerifiedSequence;
                     context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
+                    if (result.Recovered &&
+                        !AdvanceDaqRecoveryStage(
+                            context,
+                            DaqRecoveryPhase.FirstFreshBatch,
+                            "DAQ重建后首批新鲜数据已确认。" ) &&
+                        context.ProgressStage != DaqRecoveryPhase.FirstFreshBatch)
+                        throw new InvalidOperationException(
+                            $"DAQ首批新鲜数据阶段发布失败 Device={device} " +
+                            $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
                     SubmitDaqIncidentSnapshot(context, result.FailureReason, "20-rebuild");
                     if (!result.Recovered)
                     {
@@ -4664,10 +6244,6 @@ namespace Controller
                             context))
                         return;
                     _persistence.AcceptGeneration(device, _acq.GetCurrentGeneration(device));
-                    if (!context.Phase.EnableValidation())
-                        throw new InvalidOperationException(
-                            $"DAQ重建后无法开放验证 Device={device} " +
-                            $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
                     await TryCompleteDaqAutoRecoveryAsync(device).ConfigureAwait(false);
                     return;
                 }
@@ -4701,26 +6277,30 @@ namespace Controller
                         context.CorrelationId,
                         context))
                     return;
-                context.ValidationPhase = "CutoffBarrier";
+                context.ValidationDetail = "CutoffBarrier";
                 await context.Phase.WaitForCutoffAsync(context.Cancellation.Token)
-                    .ConfigureAwait(false);
-                context.ValidationPhase = "ValidationReadyBarrier";
-                await context.Phase.WaitForValidationReadyAsync(context.Cancellation.Token)
                     .ConfigureAwait(false);
                 if (!IsCurrentRecovery(context))
                 {
                     CompleteCancelledRecovery(context, "RunEpochChangedBeforeValidation");
                     return;
                 }
-                if (!context.Phase.TryBeginValidation())
+
+                // A restart-capable recovery must not let a concurrent
+                // persistence callback validate while the DAQ task is still
+                // being rebuilt.  The no-restart path publishes this stage as
+                // soon as its cutoff is confirmed; the restart path publishes
+                // it immediately before RecoverDeviceAsync.
+                if (context.RestartDaq != 0 &&
+                    (int)context.Phase.Current < (int)DaqRecoveryPhase.FirstFreshBatch)
                     return;
-                context.ValidationPhase = "PersistenceQueue";
+                context.ValidationDetail = "PersistenceQueue";
                 var queue = _persistence.GetSnapshot(device);
                 if (queue.QueueDepth > _daqPersistenceResumeDepth ||
                     queue.OldestBatchAgeMs > _daqPersistenceResumeAgeMs ||
                     queue.Generation != _acq.GetCurrentGeneration(device))
                     return;
-                context.ValidationPhase = "FreshDaqSamples";
+                context.ValidationDetail = "FreshDaqSamples";
                 DaqRecoveryResult[] ready = null;
                 await RecoveryStageDeadline.RunAsync(
                         "FreshDaqSamples",
@@ -4741,6 +6321,12 @@ namespace Controller
                     .ConfigureAwait(false);
                 if (ready.Any(x => !x.Recovered)) return;
                 if (!IsCurrentRecovery(context)) return;
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.FirstFreshBatch,
+                        "验证阶段首批新鲜DAQ数据已确认。" ) &&
+                    context.ProgressStage != DaqRecoveryPhase.FirstFreshBatch)
+                    return;
                 if (TryEscalatePermanentDataContinuityGap(
                         "FreshDaqSamplesValidated",
                         context.AffectedChannels,
@@ -4750,11 +6336,31 @@ namespace Controller
                         context))
                     return;
                 context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.PressureRevalidated,
+                        "DAQ新鲜度与压力相关采样资格已复核。" ) &&
+                    context.ProgressStage != DaqRecoveryPhase.PressureRevalidated)
+                    return;
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.PersistenceBoundaryClosed,
+                        "持久化截止边界已关闭，允许进入重入。" ) &&
+                    context.ProgressStage != DaqRecoveryPhase.PersistenceBoundaryClosed)
+                    return;
+                if (!context.Phase.TryBeginValidation())
+                    return;
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.Validating,
+                        "DAQ恢复验证条件已满足。" ) &&
+                    context.ProgressStage != DaqRecoveryPhase.Validating)
+                    return;
                 SubmitDaqIncidentSnapshot(
                     context,
                     "DAQ与持久化新鲜度验证通过",
                     "30-validate");
-                context.ValidationPhase = "TerminalOffCurrentVerification";
+                context.ValidationDetail = "TerminalOffCurrentVerification";
                 var terminalOffTasks = context.AffectedChannels
                     .Select(channel => _runners.TryGetValue(channel, out var runner)
                         ? runner.GetTerminalOffCurrentVerificationTask()
@@ -4776,7 +6382,7 @@ namespace Controller
                         context))
                     return;
 
-                context.ValidationPhase = "DaqBatchRecoveryBarrier";
+                context.ValidationDetail = "DaqBatchRecoveryBarrier";
                 if (!await WaitForDaqRecoveryBatchBarrierAsync(context).ConfigureAwait(false))
                     return;
                 if (!IsCurrentRecovery(context)) return;
@@ -4801,7 +6407,7 @@ namespace Controller
                     rejoinPlan = GetCompatibleStaggerPlan(rejoinChannels);
                 if (!holdForBatchPause && powerRecoveryChannels.Length > 0)
                 {
-                    context.ValidationPhase = "EmergencyPowerOffBarrier";
+                    context.ValidationDetail = "EmergencyPowerOffBarrier";
                     if (_powerSupply != null)
                     {
                         foreach (var groupId in powerRecoveryChannels
@@ -4824,7 +6430,7 @@ namespace Controller
                     }
                     if (!IsCurrentRecovery(context)) return;
 
-                    context.ValidationPhase = "PowerEnableThenMechanicalRelease";
+                    context.ValidationDetail = "PowerEnableThenMechanicalRelease";
                     await ExecuteDaqRecoveryRejoinPrerequisitesAsync(
                             powerRecoveryChannels,
                             _powerSupply == null
@@ -4862,7 +6468,7 @@ namespace Controller
 
                 // 共同重入和恢复终态提交共用同一把门。人工 Stop/运行代次取消也必须
                 // 取得该门，因此不可能在“Timer 已重建、终态尚未提交”的缝隙中抢先取消。
-                context.ValidationPhase = "RejoinAndCommit";
+                context.ValidationDetail = "RejoinAndCommit";
                 try
                 {
                     lock (_daqRecoveryCommitGate)
@@ -4880,6 +6486,14 @@ namespace Controller
                             throw new InvalidOperationException(
                                 $"DAQ恢复重入阶段顺序无效 Device={device} " +
                                 $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.Rejoining,
+                                "DAQ恢复开始共同节拍重入。" ) &&
+                            context.ProgressStage != DaqRecoveryPhase.Rejoining)
+                            throw new InvalidOperationException(
+                                $"DAQ重入阶段发布失败 Device={device} " +
+                                $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
 
                         if (!holdForBatchPause && rejoinChannels.Length > 0)
                             RejoinFormalChannelsAtSharedFutureSlot(
@@ -4895,19 +6509,78 @@ namespace Controller
                             throw new InvalidOperationException(
                                 $"DAQ恢复重入完成阶段顺序无效 Device={device} " +
                                 $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
-                        if (!context.Phase.TryCommit() ||
-                            !context.Terminal.TryCommit(DaqRecoveryTerminal.Recovered))
+                        if (!context.Phase.TryCommit())
                             return;
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.Committed,
+                                "DAQ恢复与共同节拍重入已提交。" ) &&
+                            context.ProgressStage != DaqRecoveryPhase.Committed)
+                            throw new InvalidOperationException(
+                                $"DAQCommitted阶段发布失败 Device={device} " +
+                                $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
 
-                        context.FailureBackoff.CommitSuccess();
-                        MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
-                        MarkDaqRecoveryBatchTerminal(context);
-                        _persistence.ResumeAdmission(
-                            device,
-                            _acq.GetLastAcceptedSequence(device));
-                        LogDaqRecoveryFieldMetric(context, "Recovered", "RejoinAndCommit");
-                        TryRemoveExactDaqRecoveryContext(context);
-                        context.Completion.TrySetResult(result);
+                        // Committed is observable only after the transaction
+                        // has produced a stable checkpoint receipt.  A
+                        // checkpoint failure retains the live incident so a
+                        // later maintenance tick can retry it, rather than
+                        // deleting the owner and forcing a watchdog restart.
+                        context.Transaction?.SynchronizeControllerPhase(
+                            DaqRecoveryPhase.Committed);
+                        if (context.Transaction != null &&
+                            !context.Transaction.PublishCommittedCheckpoint())
+                        {
+                            Interlocked.Exchange(ref context.Completing, 0);
+                            return;
+                        }
+
+                        // Commit is a separately observable evidence point.
+                        // Retain it before moving to Terminal so a heartbeat
+                        // cannot lose the committed evidence when the live
+                        // owner is removed immediately afterwards.
+                        RetainDaqRecoveryCommittedSnapshot(context);
+
+                        // Keep the committed and terminal evidence observable
+                        // for the watchdog before removing the live owner.
+                        // TryTerminal performs the complete normal ordering:
+                        // authoritative channel exit -> Controller Terminal
+                        // phase -> stable terminal aggregate receipt.  The
+                        // context terminal gate is deliberately committed only
+                        // after that transaction succeeds.
+                        if (context.Transaction != null &&
+                            !context.Transaction.TryTerminal())
+                        {
+                            ScheduleDaqTerminalRetry(
+                                context,
+                                result,
+                                rejoinChannels,
+                                holdForBatchPause,
+                                batchPauseState);
+                            Interlocked.Exchange(ref context.Completing, 0);
+                            return;
+                        }
+                        if (context.Transaction == null)
+                        {
+                            if (!AdvanceDaqRecoveryStage(
+                                    context,
+                                    DaqRecoveryPhase.Terminal,
+                                    "DAQ恢复终态已提交；保留终态快照供看门狗确认.") &&
+                                context.ProgressStage != DaqRecoveryPhase.Terminal)
+                                return;
+                            PublishDaqAggregateTerminal(context);
+                        }
+                        if (!TryFinalizeDaqRecoveredTerminalLocked(context, result))
+                        {
+                            ScheduleDaqTerminalRetry(
+                                context,
+                                result,
+                                rejoinChannels,
+                                holdForBatchPause,
+                                batchPauseState);
+                            Interlocked.Exchange(ref context.Completing, 0);
+                            return;
+                        }
+                        RetainDaqRecoveryTerminalSnapshot(context);
                     }
                 }
                 catch
@@ -5012,9 +6685,11 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                var phase = string.IsNullOrWhiteSpace(context.ValidationPhase)
-                    ? "Unknown"
-                    : context.ValidationPhase;
+                var phase = string.IsNullOrWhiteSpace(context.ValidationDetail)
+                    ? (string.IsNullOrWhiteSpace(context.ValidationPhase)
+                        ? "Unknown"
+                        : context.ValidationPhase)
+                    : context.ValidationDetail;
                 if (RequiresImmediateDaqRejoinSafetyRollback(phase))
                 {
                     RollbackDaqRecoveryRejoinSafety(context, phase, ex.Message);
@@ -5057,6 +6732,137 @@ namespace Controller
             {
                 Interlocked.Exchange(ref context.Completing, 0);
             }
+        }
+
+        /// <summary>
+        /// Complete the recovered incident only after the transaction has
+        /// published its Terminal phase and stable terminal aggregate receipt.
+        /// The caller holds _daqRecoveryCommitGate.  This method is also used
+        /// by the bounded terminal retry supervisor, so a transient state-store
+        /// or checkpoint failure never requires a second recovery owner.
+        /// </summary>
+        private bool TryFinalizeDaqRecoveredTerminalLocked(
+            DaqAutoRecoveryContext context,
+            DaqRecoveryResult result)
+        {
+            if (context == null || result == null || !IsCurrentRecovery(context))
+                return false;
+
+            if (context.Transaction != null)
+            {
+                if (!context.Transaction.TryTerminal())
+                    return false;
+                if (context.Transaction.CurrentOutcome !=
+                        DaqRecoveryTransaction.Outcome.Terminal ||
+                    context.Transaction.TerminalAggregateVersion <=
+                        context.Transaction.CommittedAggregateVersion)
+                    return false;
+            }
+            else
+            {
+                if (!AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.Terminal,
+                        "DAQ恢复终态已提交；保留终态快照供看门狗确认.") &&
+                    context.ProgressStage != DaqRecoveryPhase.Terminal)
+                    return false;
+                var terminal = PublishDaqAggregateTerminal(context);
+                if (terminal == null || !terminal.Stable)
+                    return false;
+            }
+
+            if (context.Phase.Current != DaqRecoveryPhase.Terminal)
+                return false;
+            if (!context.Terminal.TryCommit(DaqRecoveryTerminal.Recovered))
+                return false;
+
+            // Retain terminal evidence before removing the live context and
+            // releasing its incident lease.  A heartbeat can therefore see a
+            // complete terminal snapshot even while cleanup callbacks run.
+            RetainDaqRecoveryTerminalSnapshot(context);
+            context.FailureBackoff.CommitSuccess();
+            MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
+            MarkDaqRecoveryBatchTerminal(context);
+            _persistence.ResumeAdmission(
+                context.Device,
+                _acq.GetLastAcceptedSequence(context.Device));
+            LogDaqRecoveryFieldMetric(context, "Recovered", "RejoinAndCommit");
+            TryRemoveExactDaqRecoveryContext(context);
+            context.Completion.TrySetResult(result);
+            return true;
+        }
+
+        /// <summary>
+        /// Supervise a partial terminal publication without creating another
+        /// RecoveryIncident.  The same context/contract/lease remains live;
+        /// each attempt only asks the transaction for missing terminal routes
+        /// and retries the failed phase/checkpoint with bounded backoff.
+        /// </summary>
+        private void ScheduleDaqTerminalRetry(
+            DaqAutoRecoveryContext context,
+            DaqRecoveryResult result,
+            int[] rejoinChannels,
+            bool holdForBatchPause,
+            BatchPauseState batchPauseState)
+        {
+            if (context == null || result == null || !IsCurrentRecovery(context))
+                return;
+            if (Interlocked.CompareExchange(ref context.TerminalRetryScheduled, 1, 0) != 0)
+                return;
+
+            // Both the normal Recovered path and the SafeIdle/cancel path use
+            // this same production supervisor.  It retries the original
+            // transaction/owner and only releases it after a stable terminal
+            // aggregate receipt has been observed.
+            ScheduleDaqTerminalRetryProduction(
+                context.TerminalSupervisor,
+                () =>
+                {
+                    lock (_daqRecoveryCommitGate)
+                        return IsCurrentRecovery(context) &&
+                               TryFinalizeDaqRecoveredTerminalLocked(context, result);
+                },
+                () => IsCurrentRecovery(context),
+                () =>
+                {
+                    Interlocked.Exchange(ref context.TerminalRetryScheduled, 0);
+                    ReleaseDaqRecoveryOwnerships(context);
+                    foreach (var channel in rejoinChannels ?? Array.Empty<int>())
+                    {
+                        PublishChannelRuntimeState(
+                            channel,
+                            holdForBatchPause
+                                ? GetDaqRecoveredHeldRuntimeState(batchPauseState)
+                                : ChannelRuntimeState.Running,
+                            holdForBatchPause
+                                ? "DaqRecoveredHeldForBatchPause"
+                                : "DaqSoftwareRecoveredCommitted",
+                            holdForBatchPause
+                                ? "DAQ软件数据链已恢复；批次仍处于暂停/恢复预检。"
+                                : "DAQ恢复终态已提交，通道已按公共节律重入。",
+                            affectedChannels: rejoinChannels,
+                            correlationId: context.CorrelationId);
+                    }
+                    try { context.Cancellation.Cancel(); } catch { }
+                    SubmitDaqIncidentSnapshot(
+                        context,
+                        "自动恢复终态重试成功",
+                        "90-recovered-terminal-retry");
+                },
+                reason =>
+                {
+                    Interlocked.Exchange(ref context.TerminalRetryScheduled, 0);
+                    if (!TryFinalizeDaqTerminalRetryFailClosed(context, reason))
+                        _log?.Error(
+                            $"DAQ终态aggregate凭证持续失败，安全终态尚未完成复核，保留owner。" +
+                            $"Device={context.Device}; CorrelationId={context.CorrelationId:N};" +
+                            $"Reason={reason}",
+                            "AI");
+                },
+                "DaqTerminalRetryDeadline;SafeIdleOnly",
+                onFinished: () => Interlocked.Exchange(
+                    ref context.TerminalRetryScheduled,
+                    0));
         }
 
         private async Task EscalateDaqAutoRecoveryAsync(
@@ -5102,8 +6908,27 @@ namespace Controller
             {
                 lock (_daqRecoveryCommitGate)
                 {
+                    AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.SafeIdle,
+                        "DAQ硬件失联证据已确认，进入单次SafeIdle。");
+                    if (!PublishDaqSafeTerminalStates(
+                            context,
+                            "DAQ硬件失联证据已确认，通道已进入安全终态。",
+                            ChannelRuntimeState.AlarmStopped))
+                    {
+                        _log?.Error(
+                            $"DAQ硬件确认安全终态尚未覆盖整组，保留context/owner。" +
+                            $"Device={context.Device}; CorrelationId={context.CorrelationId:N}",
+                            "AI");
+                        return;
+                    }
                     if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
-                    context.Phase.MarkTerminal();
+                    AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.Terminal,
+                        "DAQ硬件确认事故已进入终态。");
+                    RetainDaqRecoveryTerminalSnapshot(context);
                     MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
                     MarkDaqRecoveryBatchTerminal(context);
                     TryRemoveExactDaqRecoveryContext(context);
@@ -5206,24 +7031,32 @@ namespace Controller
             if (Interlocked.CompareExchange(ref context.MaintenanceScheduled, 1, 0) != 0) return;
 
             var failureCount = context.FailureBackoff.RecordFailure();
-            if (TryEscalateSoftwareRecoveryCircuitOpen(
-                    "DaqSelfMaintenance",
-                    $"Device={context.Device}; Code={code}; Error={reason}",
-                    context.AffectedChannels,
-                    context.RunId,
-                    context.RunEpoch,
-                    failureCount,
-                    faultCode: context.TriggerCode))
+            if (failureCount >= SoftwareRecoveryEscalationAttempts)
+            {
+                // DAQ software maintenance is bounded per incident.  Reaching
+                // the budget is a single SafeIdle/Terminal outcome, not an
+                // instruction to recycle the batch or relaunch the process.
+                CompleteCancelledRecovery(
+                    context,
+                    $"DaqSelfMaintenanceBudgetExhausted Device={context.Device}; " +
+                    $"Failure={failureCount}; Code={code}; SafeIdleOnly");
                 return;
+            }
             var delayMs = GetDaqSelfMaintenanceDelayMs(failureCount);
             foreach (var channel in context.AffectedChannels)
-                PublishChannelRuntimeState(
+                PublishRecoveryIncidentState(
                     channel,
                     ChannelRuntimeState.Recovering,
                     "DaqSelfMaintenance",
                     $"软件数据链自维护中，第{failureCount}次，{delayMs}ms后重试。",
                     affectedChannels: context.AffectedChannels,
-                    correlationId: context.CorrelationId);
+                    correlationId: context.CorrelationId,
+                    recoveryOwnerKind: RecoveryOwnerKind.DaqRecovery,
+                    recoveryTargetPhase: IsFormalPhaseCommitted
+                        ? RecoveryTargetPhase.Formal
+                        : RecoveryTargetPhase.Startup,
+                    recoveryOwnerId: context.CorrelationId,
+                    recoveryOwnerGeneration: context.RunEpoch);
             _log.Warn(
                 $"DAQ软件自维护等待重试 Device={context.Device} Failure={failureCount} " +
                 $"DelayMs={delayMs} Code={code} CorrelationId={context.CorrelationId:N} " +
@@ -5233,7 +7066,11 @@ namespace Controller
             PublishRecoveryProgress(context, $"软件自维护等待 {delayMs}ms 后重试。");
             SubmitDaqIncidentSnapshot(context, reason, "40-self-maintenance");
 
-            ObserveBackgroundTask(Task.Run(async () =>
+            // The DAQ incident wrapper remains bound until context.Completion
+            // is signalled.  This maintenance continuation is therefore a
+            // subordinate safety operation, not a second recovery owner or
+            // registry entry.
+            ObserveNonRecoveryLifecycleTask(Task.Run(async () =>
             {
                 try
                 {
@@ -5254,8 +7091,61 @@ namespace Controller
                             "整组断电尚未确认；保持安全断电重试，不执行DAQ重同步。");
                         return;
                     }
+                    // The physical cutoff is authoritative before any DAQ
+                    // restart.  Commit it now so the monotonic phase cannot
+                    // later move backward from DaqRestartStarted.
+                    if ((int)context.Phase.Current < (int)DaqRecoveryPhase.CutoffCompleted)
+                    {
+                        try
+                        {
+                            _acq.ResynchronizeInactiveControlToLatest(context.Device);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn(
+                                $"DAQ自维护快速重同步未执行 Device={context.Device}: {ex.Message}",
+                                "AI");
+                        }
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.DoOffConfirmed,
+                                "DAQ自维护重试确认整组DO OFF。"))
+                            throw new InvalidOperationException(
+                                $"DAQ自维护DO OFF确认阶段顺序无效 Device={context.Device} " +
+                                $"Phase={context.Phase.Current}");
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.PowerOffSubmitted,
+                                "DAQ自维护确认电源Disable提交。"))
+                            throw new InvalidOperationException(
+                                $"DAQ自维护电源Disable提交阶段顺序无效 Device={context.Device} " +
+                                $"Phase={context.Phase.Current}");
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.PowerOffConfirmed,
+                                "DAQ自维护重试确认整组电源OFF。"))
+                            throw new InvalidOperationException(
+                                $"DAQ自维护电源OFF确认阶段顺序无效 Device={context.Device} " +
+                                $"Phase={context.Phase.Current}");
+                        if (!context.Phase.CompleteCutoff())
+                            throw new InvalidOperationException(
+                                $"DAQ自维护无法提交截止阶段 Device={context.Device} " +
+                                $"Phase={context.Phase.Current}");
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.CutoffCompleted,
+                                "DAQ自维护确认整组安全截止完成。" ) &&
+                            context.ProgressStage != DaqRecoveryPhase.CutoffCompleted)
+                            throw new InvalidOperationException(
+                                $"DAQ自维护截止完成阶段发布失败 Device={context.Device} " +
+                                $"Phase={context.Phase.Current}");
+                    }
 
                     DaqRecoveryResult result = null;
+                    AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.DaqRestartStarted,
+                        "DAQ自维护重建任务已开始。");
                     await RecoveryStageDeadline.RunAsync(
                             "DaqSelfMaintenanceTaskRecovery",
                             _daqPersistenceRecoveryTimeoutMs,
@@ -5282,6 +7172,11 @@ namespace Controller
                     context.AfterClock = _acq.GetDaqFreshnessSnapshot(
                         context.Device,
                         _daqPersistenceResumeAgeMs);
+                    if (result.Recovered)
+                        AdvanceDaqRecoveryStage(
+                            context,
+                            DaqRecoveryPhase.FirstFreshBatch,
+                            "DAQ自维护重建后的首批新鲜数据已确认。");
                     SubmitDaqIncidentSnapshot(
                         context,
                         result.FailureReason,
@@ -5352,6 +7247,14 @@ namespace Controller
                             throw new InvalidOperationException(
                                 $"DAQ自维护无法补交截止阶段 Device={context.Device} " +
                                 $"Phase={context.Phase.Current}");
+                        if (!AdvanceDaqRecoveryStage(
+                                context,
+                                DaqRecoveryPhase.CutoffCompleted,
+                                "DAQ自维护补交整组安全截止。" ) &&
+                            context.ProgressStage != DaqRecoveryPhase.CutoffCompleted)
+                            throw new InvalidOperationException(
+                                $"DAQ自维护补交截止阶段发布失败 Device={context.Device} " +
+                                $"Phase={context.Phase.Current}");
                         _log.Warn(
                             $"DAQ自维护确认整组断电、重建成功并补交截止阶段 Device={context.Device} " +
                             $"RecoveryEpoch={context.RecoveryEpoch} " +
@@ -5364,12 +7267,14 @@ namespace Controller
                     _persistence.AcceptGeneration(
                         context.Device,
                         _acq.GetCurrentGeneration(context.Device));
-                    if (!context.Phase.EnableValidation() &&
-                        (int)context.Phase.Current < (int)DaqRecoveryPhase.ValidationReady)
-                        throw new InvalidOperationException(
-                            $"DAQ自维护重建后无法开放验证 Device={context.Device} " +
-                            $"Phase={context.Phase.Current}");
-
+                    AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.PressureRevalidated,
+                        "DAQ自维护压力与新鲜度已复核。");
+                    AdvanceDaqRecoveryStage(
+                        context,
+                        DaqRecoveryPhase.PersistenceBoundaryClosed,
+                        "DAQ自维护持久化截止边界已关闭。");
                     // Persistence and PSU validation can lag the DAQ rebuild briefly. Keep
                     // checking without rebuilding again; successful validation commits the
                     // normal Recovered terminal and resumes at the next complete cycle.
@@ -5417,6 +7322,17 @@ namespace Controller
             if (context == null || string.IsNullOrWhiteSpace(context.Device)) return false;
             if (retryUnresolvedOff)
             {
+                if (context.Transaction != null)
+                {
+                    // The incident transaction owns the missing-route set and
+                    // never resubmits a route whose physical completion is
+                    // already authoritative.
+                    context.Transaction.RetryMissingOff();
+                    context.Transaction.ConfirmPhysicalFromController(
+                        channel => !IsChannelEnergized(channel));
+                }
+                else
+                {
                 foreach (var channel in context.AffectedChannels ?? Array.Empty<int>())
                 {
                     // 初次截止已经为每个通道提交过一次 OFF。维护阶段只对仍在带电
@@ -5450,6 +7366,7 @@ namespace Controller
                             $"DAQ维护OFF兜底调度失败 EPB={channel}: {ex.Message}",
                             "AI");
                     }
+                }
                 }
             }
             var deenergized = !IsDaqDeviceControlActive(context.Device);
@@ -5988,6 +7905,8 @@ namespace Controller
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             _daqIncidentLatch.BeginRun(runId, devices);
+            foreach (var device in devices)
+                _daqIncidentGrace.TryRemove(device, out _);
             var runKey = $"{runId:N}:{Interlocked.Read(ref _runEpoch)}";
             foreach (var key in _daqIncidentExpectedDevicesByRun.Keys)
                 if (!string.Equals(key, runKey, StringComparison.OrdinalIgnoreCase))
@@ -6044,15 +7963,7 @@ namespace Controller
 
         private void SetChannelEnergized(int channel, bool energized)
         {
-            if (channel < 1 || channel > 12) return;
-            var bit = 1L << channel;
-            while (true)
-            {
-                var current = Interlocked.Read(ref _energizedChannelsMask);
-                var next = energized ? current | bit : current & ~bit;
-                if (Interlocked.CompareExchange(ref _energizedChannelsMask, next, current) == current)
-                    return;
-            }
+            ObserveEnergizationEdge(channel, energized);
         }
 
         private async Task WaitForDaqRecoveryAsync(int channel, CancellationToken token)
@@ -6593,10 +8504,27 @@ namespace Controller
                 .OrderBy(channel => channel)
                 .ToArray();
             if (selected.Length == 0) return;
+            var executionPermits = selected.ToDictionary(
+                channel => channel,
+                channel => _channelExecutionFence.Capture(channel));
+            if (executionPermits.Any(pair =>
+                    !IsChannelExecutionPermitCurrent(pair.Key, pair.Value)))
+                throw new OperationCanceledException(
+                    $"PowerEnableRejected StaleExecutionPermit " +
+                    $"Channels=[{string.Join(",", selected)}]");
+            using var executionCts = CancellationTokenSource.CreateLinkedTokenSource(
+                new[] { token }.Concat(
+                    executionPermits.Values.Select(permit => permit.RevocationToken))
+                    .ToArray());
             var groups = selected.Select(GetElectricalGroupId).Where(id => id > 0).Distinct().ToArray();
             if (groups.Length > 0 && groups.All(group => _powerSupply.HasEnergizationPermit(group, out _)))
                 return;
-            await _powerSupply.PrepareAndEnableAsync(selected, token).ConfigureAwait(false);
+            await _powerSupply.PrepareAndEnableAsync(selected, executionCts.Token).ConfigureAwait(false);
+            if (executionPermits.Any(pair =>
+                    !IsChannelExecutionPermitCurrent(pair.Key, pair.Value)))
+                throw new OperationCanceledException(
+                    $"PowerEnableCanceled ExecutionPermitRevoked " +
+                    $"Channels=[{string.Join(",", selected)}]");
             var denied = groups
                 .Select(group => new { Group = group, Allowed = _powerSupply.HasEnergizationPermit(group, out var reason), Reason = reason })
                 .FirstOrDefault(item => !item.Allowed);
@@ -6736,17 +8664,18 @@ namespace Controller
                         channel);
                 }
                 catch { }
-                PublishChannelRuntimeState(
-                    channel,
-                    ChannelRuntimeState.Recovering,
-                    "HydraulicSelfHealingQueued",
-                    "液压同步软件自愈已排队；通道已冻结并提交断电，等待同组恢复所有权。",
-                    affectedChannels: channels,
-                    correlationId: fault.CorrelationId);
             }
 
-            ObserveBackgroundTask(Task.Run(async () =>
+            // The queued recovery must have a real, not-yet-running worker
+            // bound before Recovering is first published.  The old ordering
+            // published the state and only then created Task.Run, leaving a
+            // short owner/task coverage hole and making the batch caller look
+            // like the recovery owner.
+            RecoveryIncidentHandle recoveryIncident = null;
+            Func<Task> BuildRecoveryWorker()
             {
+                return async () =>
+                {
                 var attempt = 0;
                 var hardDeadlineReached = false;
                 HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
@@ -6958,16 +8887,104 @@ namespace Controller
                     hardDeadline?.Dispose();
                     ownership?.Dispose();
                     _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
+                    if (hardDeadlineReached)
+                    {
+                        try
+                        {
+                            await ExecuteAffectedGroupResetAsync(
+                                    channels,
+                                    $"HydraulicRecoveryHardDeadline:{fault.Code}",
+                                    fault.CorrelationId,
+                                    recoveryRunId,
+                                    recoveryRunEpoch,
+                                    RecoveryTargetPhase.Formal)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception resetError)
+                        {
+                            _log.Error(
+                                $"液压组{hydraulicId}硬期限清场失败，保持安全终态：{resetError.Message}",
+                                "液压协调",
+                                resetError);
+                        }
+                    }
+
+                    recoveryIncident?.CompleteAfterTerminal(contract =>
+                        CommitRecoveryIncidentStateForRelease(
+                            contract,
+                            "HydraulicRecoveryTerminalWithoutRejoin",
+                            "液压软件自愈未完成重入，已保持受影响通道安全终态。 "));
                 }
-                if (hardDeadlineReached)
-                    await ExecuteAffectedGroupResetAsync(
-                            channels,
-                            $"HydraulicRecoveryHardDeadline:{fault.Code}",
-                            fault.CorrelationId,
-                            recoveryRunId,
-                            recoveryRunEpoch)
-                        .ConfigureAwait(false);
-            }), "HydraulicSoftwareRecovery", channels);
+                };
+            }
+
+            var started = TryBeginRecoveryIncident(
+                "HydraulicSoftwareRecovery",
+                recoveryRunId,
+                recoveryRunEpoch,
+                RecoveryOwnerKind.HydraulicGroupRecovery,
+                IsFormalPhaseCommitted
+                    ? RecoveryTargetPhase.Formal
+                    : RecoveryTargetPhase.Startup,
+                fault.CorrelationId,
+                channels,
+                _ => BuildRecoveryWorker(),
+                contract =>
+                {
+                    foreach (var channel in contract.Channels ?? Array.Empty<int>())
+                        PublishRecoveryIncidentState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            "HydraulicSelfHealingQueued",
+                            "液压同步软件自愈已排队；通道已冻结并提交断电，等待同组恢复所有权。",
+                            affectedChannels: contract.Channels,
+                            correlationId: contract.IncidentId,
+                            recoveryOwnerKind: contract.OwnerKind,
+                            recoveryTargetPhase: contract.TargetPhase,
+                            recoveryOwnerId: contract.OwnerId,
+                            recoveryOwnerGeneration: contract.RunEpoch);
+                },
+                out recoveryIncident);
+            if (!started)
+            {
+                _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
+                return;
+            }
+            try
+            {
+                _taskSupervisor.Observe(
+                    recoveryIncident.WorkerTask,
+                    "HydraulicSoftwareRecovery",
+                    _activeBatchId,
+                    channels.FirstOrDefault());
+            }
+            catch (Exception observeError)
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(contract.Channels.FirstOrDefault(), "HydraulicRecoveryObserveFailed"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        contract,
+                        "HydraulicRecoveryObserveFailed",
+                        $"液压软件自愈任务登记失败，已保持安全终态：{observeError.Message}");
+                });
+                _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
+                return;
+            }
+            if (!recoveryIncident.Start())
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(contract.Channels.FirstOrDefault(), "HydraulicRecoveryStartRejected"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        contract,
+                        "HydraulicRecoveryStartRejected",
+                        "液压软件自愈启动许可被拒绝，已保持安全终态。 ");
+                });
+                _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
+            }
         }
 
         private void BeginPowerSupplyTelemetryRecording(Guid runId)
@@ -7154,17 +9171,16 @@ namespace Controller
                         channel);
                 }
                 catch { }
-                PublishChannelRuntimeState(
-                    channel,
-                    ChannelRuntimeState.Recovering,
-                    "PowerSupplySelfHealingQueued",
-                    "程控电源软件自愈已排队；通道已冻结并提交断电，等待同组恢复所有权。",
-                    affectedChannels: channels,
-                    correlationId: controlFault.CorrelationId);
             }
 
-            ObserveBackgroundTask(Task.Run(async () =>
+            // Establish/bind the actual ownership worker before publishing the
+            // first Recovering state.  A queued power recovery must never use
+            // the fault callback or a monitor Task as its owner.
+            RecoveryIncidentHandle recoveryIncident = null;
+            Func<Task> BuildRecoveryWorker()
             {
+                return async () =>
+                {
                 var attempt = 0;
                 var hardDeadlineReached = false;
                 HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease[] ownerships = null;
@@ -7284,7 +9300,7 @@ namespace Controller
                             if (startupPositioningOwner)
                             {
                                 foreach (var channel in channels.Where(IsChannelEnabled))
-                                    PublishChannelRuntimeState(
+                                    PublishRecoveryIncidentState(
                                         channel,
                                         ChannelRuntimeState.Recovering,
                                         "PowerSupplyRecoveredForStartup",
@@ -7426,16 +9442,104 @@ namespace Controller
                                  Array.Empty<HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease>())
                         ownership.Dispose();
                     _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
+                    if (hardDeadlineReached)
+                    {
+                        try
+                        {
+                            await ExecuteAffectedGroupResetAsync(
+                                    channels,
+                                    $"PowerRecoveryHardDeadline:{sourceFault.Code}",
+                                    controlFault.CorrelationId,
+                                    recoveryRunId,
+                                    recoveryRunEpoch,
+                                    RecoveryTargetPhase.Formal)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception resetError)
+                        {
+                            _log.Error(
+                                $"电源组{groupId}硬期限清场失败，保持安全终态：{resetError.Message}",
+                                "程控电源",
+                                resetError);
+                        }
+                    }
+
+                    recoveryIncident?.CompleteAfterTerminal(contract =>
+                        CommitRecoveryIncidentStateForRelease(
+                            contract,
+                            "PowerRecoveryTerminalWithoutRejoin",
+                            "程控电源软件自愈未完成重入，已保持受影响通道安全终态。 "));
                 }
-                if (hardDeadlineReached)
-                    await ExecuteAffectedGroupResetAsync(
-                            channels,
-                            $"PowerRecoveryHardDeadline:{sourceFault.Code}",
-                            controlFault.CorrelationId,
-                            recoveryRunId,
-                            recoveryRunEpoch)
-                        .ConfigureAwait(false);
-            }), "PowerSupplySoftwareRecovery", channels);
+                };
+            }
+
+            var started = TryBeginRecoveryIncident(
+                "PowerSupplySoftwareRecovery",
+                recoveryRunId,
+                recoveryRunEpoch,
+                RecoveryOwnerKind.PowerRecovery,
+                IsFormalPhaseCommitted
+                    ? RecoveryTargetPhase.Formal
+                    : RecoveryTargetPhase.Startup,
+                controlFault.CorrelationId,
+                channels,
+                _ => BuildRecoveryWorker(),
+                contract =>
+                {
+                    foreach (var channel in contract.Channels ?? Array.Empty<int>())
+                        PublishRecoveryIncidentState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            "PowerSupplySelfHealingQueued",
+                            "程控电源软件自愈已排队；通道已冻结并提交断电，等待同组恢复所有权。",
+                            affectedChannels: contract.Channels,
+                            correlationId: contract.IncidentId,
+                            recoveryOwnerKind: contract.OwnerKind,
+                            recoveryTargetPhase: contract.TargetPhase,
+                            recoveryOwnerId: contract.OwnerId,
+                            recoveryOwnerGeneration: contract.RunEpoch);
+                },
+                out recoveryIncident);
+            if (!started)
+            {
+                _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
+                return;
+            }
+            try
+            {
+                _taskSupervisor.Observe(
+                    recoveryIncident.WorkerTask,
+                    "PowerSupplySoftwareRecovery",
+                    _activeBatchId,
+                    channels.FirstOrDefault());
+            }
+            catch (Exception observeError)
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(contract.Channels.FirstOrDefault(), "PowerRecoveryObserveFailed"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        contract,
+                        "PowerRecoveryObserveFailed",
+                        $"程控电源软件自愈任务登记失败，已保持安全终态：{observeError.Message}");
+                });
+                _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
+                return;
+            }
+            if (!recoveryIncident.Start())
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(contract.Channels.FirstOrDefault(), "PowerRecoveryStartRejected"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        contract,
+                        "PowerRecoveryStartRejected",
+                        "程控电源软件自愈启动许可被拒绝，已保持安全终态。 ");
+                });
+                _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
+            }
         }
 
         private bool IsSoftwareRecoveryRunCurrent(
@@ -7448,6 +9552,14 @@ namespace Controller
                 return false;
 
             var affected = (channels ?? Array.Empty<int>()).Distinct().ToArray();
+            if (affected.Any(channel =>
+            {
+                if (channel < 1 || channel > 12) return true;
+                var permit = _channelExecutionFence.Capture(channel);
+                return !_channelExecutionFence.IsCurrent(permit) ||
+                       permit.RunEpoch != expectedRunEpoch;
+            }))
+                return false;
             // 硬件确认/报警停机是恢复事务的终止事实。旧的软件自愈任务即使仍持有
             // Timer、Runner 或批次身份，也不得在隔离命令之后继续重新使能电源。
             if (!CanContinueSoftwareRecovery(
@@ -7481,11 +9593,14 @@ namespace Controller
         private void OnRunnerWarningRaised(int channel, string reason)
         {
             _log.Warn($"EPB[{channel}] 自适应软预警：{reason}", "EPB");
-            PublishChannelRuntimeState(
-                channel,
-                ChannelRuntimeState.WarningRunning,
-                ExtractFaultCode(reason),
-                reason);
+            var warningCode = ExtractFaultCode(reason);
+            var lifecycle = _channelRuntimeStateStore.Get(channel);
+            PublishChannelWarningOverlay(channel, warningCode, reason);
+            _log.Info(
+                $"FieldMetric WARNING_OVERLAY EPB={channel} " +
+                $"LifecyclePreserved={lifecycle?.State} " +
+                $"LifecycleRevision={lifecycle?.Revision ?? 0} Reason={warningCode}",
+                "FIELD");
             NonCriticalObserver.Invoke(
                 ChannelWarningRaised,
                 channel,
@@ -8025,8 +10140,27 @@ namespace Controller
             {
                 if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
                 {
+                    if (IsFinalExitStopSource(context.Source))
+                    {
+                        if (_stopSafetyFinalExitTask != null &&
+                            !_stopSafetyFinalExitTask.IsCompleted)
+                            return _stopSafetyFinalExitTask;
+                        _stopSafetyFinalExitTask = ContinueWithFinalExitStopAsync(
+                            _stopSafetyTask,
+                            context,
+                            token);
+                        return _stopSafetyFinalExitTask;
+                    }
                     return _stopSafetyTask;
                 }
+                // A physical failure/timeout is already a terminal safety
+                // decision.  Final-exit re-entry must consume that retained
+                // result instead of creating a second StopAll core and
+                // issuing another round of physical IO.
+                if (_lastStopSafetyResult != null &&
+                    (_lastStopSafetyResult.RequiresProcessRestart ||
+                     _lastStopSafetyResult.TimedOut))
+                    return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
                 if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
                     _lastStopSafetyResult.CanRestartInProcess &&
@@ -8038,6 +10172,8 @@ namespace Controller
                 var generation = Interlocked.Increment(ref _stopSafetyGeneration);
                 _stopSafetyTask = RunBoundedStopSafetyAsync(context, token, generation);
                 _stopSafetyTaskSource = context.Source;
+                if (IsFinalExitStopSource(context.Source))
+                    _stopSafetyFinalExitTask = _stopSafetyTask;
                 return _stopSafetyTask;
             }
         }
@@ -8146,7 +10282,10 @@ namespace Controller
             return powerDisable;
         }
 
-        private async Task<StopSafetyResult> RunStopSafetyAsync(
+        // Retained only for the diagnostic legacy fallback.  Production StopAll
+        // is owned by the stage-specific execution port in
+        // EpbManager.StopSafetyOperations.cs.
+        private async Task<StopSafetyResult> RunStopSafetyLegacyCoreAsync(
             StopContext context,
             CancellationToken token,
             long stopGeneration)
@@ -8263,8 +10402,8 @@ namespace Controller
                         try { UnmarkHydraulicParticipant(channel); } catch { }
                         try { CancelCyclePauseCts(channel); } catch { }
                         try { CancelStopCts(channel); } catch { }
-                        try { RemoveTimerRuntime(channel, nameof(RunStopSafetyAsync)); } catch { }
-                        try { RemoveRunnerRuntime(channel, nameof(RunStopSafetyAsync)); } catch { }
+                        try { RemoveTimerRuntime(channel, nameof(RunStopSafetyLegacyCoreAsync)); } catch { }
+                        try { RemoveRunnerRuntime(channel, nameof(RunStopSafetyLegacyCoreAsync)); } catch { }
                     }
 
                     foreach (var channel in channels)
@@ -8295,7 +10434,7 @@ namespace Controller
                         }
                     }
                 },
-                () => ConfirmPowerOffForStopAsync(context, token),
+                () => ConfirmPowerOffForStopAsync(context, token, stopGeneration),
                 () =>
                 {
                     // 全部通道的异步 OFF 已经尝试，且总电源 Disable 已经启动。现在才为
@@ -8382,7 +10521,7 @@ namespace Controller
                             _log.Warn($"StopAll发布终态失败 EPB={channel}: {ex.Message}", "EPB");
                         }
                     }
-                    try { ClearChannelRuntimes(nameof(RunStopSafetyAsync)); }
+                    try { ClearChannelRuntimes(nameof(RunStopSafetyLegacyCoreAsync)); }
                     catch (Exception ex) { _log.Warn($"StopAll清场运行对象失败：{ex.Message}", "EPB"); }
                 });
 
@@ -8494,7 +10633,10 @@ namespace Controller
                 stopGeneration,
                 StopSafetyStage.ReleaseHydraulics,
                 "正在释放液压并确认压力安全");
-            var pressureTask = ConfirmPressureSafeForStopAsync(context, powerTask);
+            var pressureTask = ConfirmPressureSafeForStopAsync(
+                context,
+                powerTask,
+                stopGeneration);
             var pressure = await pressureTask.ConfigureAwait(false);
             var power = await powerTask.ConfigureAwait(false);
             // StopAll 的耐久证明必须建立在一个不再增长的接纳边界上。即使是
@@ -8595,9 +10737,19 @@ namespace Controller
             }
             var persistenceBoundaries = await WaitForStopPersistenceBoundariesAsync(
                     stopPersistenceBoundaries,
-                    10000,
                     RequiresRecoveredPersistenceStateForStop(context.Source))
                 .ConfigureAwait(false);
+            foreach (var boundary in persistenceBoundaries.Where(item => item.Closed))
+            {
+                var evidenceVersion = Math.Max(boundary.Boundary, boundary.Persisted);
+                if (evidenceVersion > 0)
+                    RecordStopSafetyMaterialProgress(
+                        stopGeneration,
+                        $"PersistenceBoundary:{boundary.Device}",
+                        evidenceVersion,
+                        $"持久化边界已推进 Device={boundary.Device};" +
+                        $"Boundary={boundary.Boundary};Persisted={boundary.Persisted}");
+            }
             var persistenceBoundaryConfirmed =
                 rawStorageFlushed &&
                 persistenceBoundaries.Length == stopPersistenceBoundaries.Count &&
@@ -8654,7 +10806,7 @@ namespace Controller
             }
             if (!persistenceBoundaryConfirmed)
                 _log.Error(
-                    "停止流程未能在10秒内同时越过Raw发布边界和持久化边界；" +
+                    "停止流程未能同时越过Raw发布边界和持久化边界；" +
                     "禁止把本次停止视为可直接重启的完整收尾。",
                     "落盘");
             // Never cancel/dispose the writer while the accepted production prefix is still
@@ -8662,13 +10814,14 @@ namespace Controller
             // recovers; shutting down here would make that retry impossible and could discard
             // the final Raw batch/alarm evidence.
             if (ShouldShutdownPersistenceForStop(context.Source, persistenceBoundaryConfirmed))
-                await _persistence.ShutdownAsync(10000).ConfigureAwait(false);
+                await _persistence.ShutdownAsync(int.MaxValue)
+                    .ConfigureAwait(false);
 
             AdvanceStopSafetyProgress(
                 stopGeneration,
                 StopSafetyStage.VerifyLogicalQuiescence,
                 "正在验证 Timer、Runner、CTS、恢复 owner 与液压代次清场");
-            var logicalState = CaptureLogicalQuiescenceSnapshot();
+            var logicalState = CaptureLogicalQuiescenceSnapshotForStop(context);
             var result = new StopSafetyResult
             {
                 Source = context.Source,
@@ -8824,9 +10977,10 @@ namespace Controller
                 : string.Empty;
         }
 
-        private async Task<(bool ok, string error)> ConfirmPressureSafeForStopAsync(
+        private async Task<(bool ok, string error)> ConfirmPressureSafeForStopCoreAsync(
             StopContext context,
-            Task<(bool ok, string error)> powerOffTask)
+            Task<(bool ok, string error)> powerOffTask,
+            long stopGeneration)
         {
             var hydraulicIds = _cfg.Test.Hydraulics.Select(x => x.Id).Distinct().ToArray();
             Exception lastFailure = null;
@@ -8866,7 +11020,7 @@ namespace Controller
                         IO.NI.DaqRecoveryResult[] ready = null;
                         await RecoveryStageDeadline.RunAsync(
                                 "StopPressureSensingRearm",
-                                RecoveryMechanicalReleaseTimeoutMs,
+                                StopReleaseHydraulicsStageDeadlineMs,
                                 async ct =>
                                 {
                                     ready = await _acq.EnsureChannelsReadyAsync(
@@ -8886,6 +11040,20 @@ namespace Controller
                                     $"{result.Device}:{result.FailureKind}:{result.FailureReason}") ??
                                     Array.Empty<string>()));
 
+                        var rearmEvidenceVersion = ready
+                            .Where(result => result != null)
+                            .Select(result => result.LastVerifiedSequence)
+                            .Where(sequence => sequence > 0)
+                            .DefaultIfEmpty(0)
+                            .Max();
+                        if (rearmEvidenceVersion > 0)
+                            RecordStopSafetyMaterialProgress(
+                                stopGeneration,
+                                $"DaqPressureRearm:Hydraulic={ex.HydraulicId}",
+                                rearmEvidenceVersion,
+                                $"DAQ压力取证重建已取得新鲜批次 Hydraulic={ex.HydraulicId};" +
+                                $"Channels=[{string.Join(",", channels)}];" +
+                                $"Sequence={rearmEvidenceVersion}");
                         _log.Warn(
                             $"StopAll检测到液压组{ex.HydraulicId}压力证据陈旧；所有输出保持断能，" +
                             $"已只恢复DAQ采样 Channels=[{string.Join(",", channels)}]，现在重新确认新鲜压力。",
@@ -8922,7 +11090,8 @@ namespace Controller
 
         private async Task<(bool ok, string error)> ConfirmPowerOffForStopAsync(
             StopContext context,
-            CancellationToken callerWaitToken)
+            CancellationToken callerWaitToken,
+            long stopGeneration)
         {
             if (_powerSupply == null) return (true, string.Empty);
             var results = await _powerSupply.DisableAllForSafetyAsync(
@@ -8970,6 +11139,8 @@ namespace Controller
                     _stopSafetyTask = null;
                     _stopSafetyTaskSource = StopSource.UnknownLegacy;
                 }
+                if (_stopSafetyFinalExitTask?.IsCompleted == true)
+                    _stopSafetyFinalExitTask = null;
             }
         }
 
@@ -9175,15 +11346,10 @@ namespace Controller
                         ControlFaultRaised,
                         interlockFault,
                         ex => _log?.Warn($"电源联锁观察者异常，已隔离：{ex.Message}", "程控电源"));
-                    foreach (var member in members.Where(IsChannelEnabled))
-                        PublishChannelRuntimeState(
-                            member,
-                            ChannelRuntimeState.Recovering,
-                            "ElectricalGroupEmergencySelfHealing",
-                            $"电源组安全断电异常，正在持续复核并自动续测。Reason={reason}",
-                            sourceChannel,
-                            members,
-                            correlationId);
+                    // BeginPowerSupplySoftwareRecovery is the sole lifecycle
+                    // owner for this path.  It reserves and binds the real
+                    // recovery body before publishing Recovering; the
+                    // emergency safety worker must not publish a second owner.
                 }
 
                 if (powerDisableTasks != null &&
@@ -9256,6 +11422,15 @@ namespace Controller
 
         private LogicalQuiescenceSnapshot CaptureLogicalQuiescenceSnapshot()
         {
+            // Recovery contracts, registry leases and channel lifecycle must
+            // be sampled with one owner gate.  Monitor is re-entrant for the
+            // callers that already hold the incident transaction.
+            lock (_recoveryContractGate)
+                return CaptureLogicalQuiescenceSnapshotLocked();
+        }
+
+        private LogicalQuiescenceSnapshot CaptureLogicalQuiescenceSnapshotLocked()
+        {
             var hydraulicGroups = _hydCoordinator == null
                 ? Array.Empty<HydraulicGenerationSnapshot>()
                 : (_cfg.Test?.Hydraulics ?? new List<HydraulicItem>())
@@ -9275,7 +11450,7 @@ namespace Controller
                 _activeCycleLimitRecoveries.Count,
                 _alarmCycleFinalizationRetries.Count,
                 _formalPersistenceRecoveryPendingCycles.Count);
-            return new LogicalQuiescenceSnapshot
+            var snapshot = new LogicalQuiescenceSnapshot
             {
                 BatchLifecycleBusy = _batchLifecycleGate.IsBusy,
                 BatchSessionActive = IsBatchSessionActive,
@@ -9291,10 +11466,15 @@ namespace Controller
                 ActiveCycleCount = recoveryCounts.ActiveCycleCount,
                 SoftwareRecoveryCount = recoveryCounts.SoftwareRecoveryCount,
                 RecoveryOwnerCount = _recoveryOwnership.ActiveCount,
+                ActiveRecoveryContractCount = _activeRecoveryContracts.Values.Count(
+                    incident => incident != null &&
+                                incident.TerminalPublished == 0),
+                ActiveRecoveryRegistryLeaseCount = _recoveryTaskRegistry.ActiveCount,
                 HydraulicGroups = hydraulicGroups,
                 ChannelProgress = Enumerable.Range(1, 12).Select(channel =>
                 {
                     var state = _channelRuntimeStateStore.Get(channel);
+                    var warning = _channelWarningOverlayStore.Get(channel);
                     _watchdogLastMechanicalCompletedUtcTicks.TryGetValue(channel, out var completedUtc);
                     var completedCount = GetObservedMechanicalCycleCount(channel);
                     _watchdogConsecutiveSoftwareAborts.TryGetValue(channel, out var aborts);
@@ -9320,10 +11500,56 @@ namespace Controller
                         ConsecutiveSoftwareAbortCount = aborts,
                         DoCommandSequence = doSequence,
                         PeakCutoffGeneration = cutoffGeneration,
-                        PeakCutoffSequence = cutoffSequence
+                        PeakCutoffSequence = cutoffSequence,
+                        RecoveryOwnerKind = state?.RecoveryOwnerKind.ToString() ?? string.Empty,
+                        RecoveryOwnerId = state?.RecoveryOwnerId.ToString("N") ?? string.Empty,
+                        RecoveryOwnerGeneration = state?.RecoveryOwnerGeneration ?? 0,
+                        RecoveryTargetPhase = state?.RecoveryTargetPhase.ToString() ?? string.Empty,
+                        SourceStateRevision = state?.SourceStateRevision ?? 0,
+                        WarningActive = warning?.Active == true,
+                        WarningCode = warning?.WarningCode ?? string.Empty,
+                        WarningRevision = warning?.Revision ?? 0
                     };
                 }).ToArray()
             };
+            _recoveryAggregateStore.PublishLogicalSource(snapshot);
+            PublishRecoveryOperationalSourcesLocked();
+            return snapshot;
+        }
+
+        private LogicalQuiescenceSnapshot CaptureLogicalQuiescenceSnapshotForStop(StopContext context)
+        {
+            var snapshot = CaptureLogicalQuiescenceSnapshot();
+            if (!CanIgnoreLifecycleBusyDuringFailingStartCleanup(
+                    context,
+                    _batchLifecycleGate.ActiveOperationCount,
+                    snapshot.BatchSessionActive))
+                return snapshot;
+
+            // StartBatch 的 catch 正在持有唯一生命周期租约，并已先 EndBatchSession、
+            // 清空执行资源。该租约会在 catch 返回后的 finally 立即释放，不能把它
+            // 当成未知后台残留并无条件升级为进程重启。
+            snapshot.BatchLifecycleBusy = false;
+            _log?.Info(
+                "批量启动失败收尾仅剩当前 StartBatch 生命周期栈；按当前拥有者清场证明忽略该瞬时 Busy。",
+                "EPB");
+            return snapshot;
+        }
+
+        internal static bool CanIgnoreLifecycleBusyDuringFailingStartCleanup(
+            StopContext context,
+            int activeLifecycleOperations,
+            bool batchSessionActive)
+        {
+            if (context == null || batchSessionActive || activeLifecycleOperations != 1)
+                return false;
+            if (!string.Equals(
+                    context.Initiator,
+                    nameof(StartBatchSynchronizedWithResultAsync),
+                    StringComparison.Ordinal))
+                return false;
+            return context.Source == StopSource.StartupRollback ||
+                   context.Source == StopSource.SystemFault;
         }
 
         private async Task<StopSafetyResult> FinalizeLogicalQuiescenceForRestartAsync(
@@ -9745,15 +11971,25 @@ namespace Controller
                                                 $"EPB[{ch}] 启动定位断电连续{attempt}次未确认。",
                                                 ex));
                                     var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
-                                    PublishChannelRuntimeState(
-                                        ch,
-                                        ChannelRuntimeState.Recovering,
-                                        "StartupPositioningOutputOffSelfHealing",
-                                        $"启动定位断电尚未确认，{offDelayMs}ms后有界重试；三次失败将整批重建。",
-                                        affectedChannels: runnableChannels,
-                                        correlationId: runId,
-                                        allowTerminalReset: false);
-                                    await Task.Delay(offDelayMs, ct).ConfigureAwait(false);
+                                    try
+                                    {
+                                        await RunStartupPositioningRetryIncidentAsync(
+                                                ch,
+                                                runId,
+                                                attempt,
+                                                "StartupPositioningOutputOffSelfHealing",
+                                                $"启动定位断电尚未确认，{offDelayMs}ms后有界重试；三次失败将整批重建。",
+                                                offDelayMs,
+                                                ct,
+                                                "StartupPositioningOutputOffCommandFailed")
+                                            .ConfigureAwait(false);
+                                    }
+                                    catch (SoftwareSelfHealingRetryException retryEx)
+                                    {
+                                        _log.Warn(
+                                            $"EPB[{ch}] 启动定位断电恢复worker未通过，继续重试：{retryEx.Message}",
+                                            "EPB");
+                                    }
                                     continue;
                                 }
                                 if (ShouldEscalateSoftwareRecovery(attempt))
@@ -9764,20 +12000,30 @@ namespace Controller
                                             $"EPB[{ch}] 启动定位连续{attempt}次软件异常。",
                                             ex));
                                 var exceptionDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
-                                PublishChannelRuntimeState(
-                                    ch,
-                                    ChannelRuntimeState.Recovering,
-                                    "StartupPositioningExceptionSelfHealing",
-                                    $"启动定位软件异常，第{attempt}次有界自愈，{exceptionDelayMs}ms后重试。",
-                                    affectedChannels: runnableChannels,
-                                    correlationId: runId,
-                                    allowTerminalReset: false);
                                 _log.Warn(
                                     $"EPB[{ch}] 启动定位抛出软件异常，自动重试且不标记启动受阻。" +
                                     $"Attempt={attempt} DelayMs={exceptionDelayMs} " +
                                     $"Exception={ex.GetType().Name} Message={ex.Message}",
                                     "EPB");
-                                await Task.Delay(exceptionDelayMs, ct).ConfigureAwait(false);
+                                try
+                                {
+                                    await RunStartupPositioningRetryIncidentAsync(
+                                            ch,
+                                            runId,
+                                            attempt,
+                                            "StartupPositioningExceptionSelfHealing",
+                                            $"启动定位软件异常，第{attempt}次有界自愈，{exceptionDelayMs}ms后重试。",
+                                            exceptionDelayMs,
+                                            ct,
+                                            "StartupPositioningOutputOffCommandFailed")
+                                        .ConfigureAwait(false);
+                                }
+                                catch (SoftwareSelfHealingRetryException retryEx)
+                                {
+                                    _log.Warn(
+                                        $"EPB[{ch}] 启动定位异常恢复worker未通过，继续重试：{retryEx.Message}",
+                                        "EPB");
+                                }
                                 continue;
                             }
                             if (result.Succeeded) break;
@@ -9802,15 +12048,25 @@ namespace Controller
                                         new SoftwareSelfHealingRetryException(
                                             $"EPB[{ch}] 启动定位重试前断电连续{attempt}次未确认。"));
                                 var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
-                                PublishChannelRuntimeState(
-                                    ch,
-                                    ChannelRuntimeState.Recovering,
-                                    "StartupPositioningOutputOffSelfHealing",
-                                    $"启动定位重试前断电尚未确认，{offDelayMs}ms后有界重试；三次失败将整批重建。",
-                                    affectedChannels: runnableChannels,
-                                    correlationId: runId,
-                                    allowTerminalReset: false);
-                                await Task.Delay(offDelayMs, ct).ConfigureAwait(false);
+                                try
+                                {
+                                    await RunStartupPositioningRetryIncidentAsync(
+                                            ch,
+                                            runId,
+                                            attempt,
+                                            "StartupPositioningOutputOffSelfHealing",
+                                            $"启动定位重试前断电尚未确认，{offDelayMs}ms后有界重试；三次失败将整批重建。",
+                                            offDelayMs,
+                                            ct,
+                                            "StartupPositioningOutputOffCommandFailed")
+                                        .ConfigureAwait(false);
+                                }
+                                catch (SoftwareSelfHealingRetryException retryEx)
+                                {
+                                    _log.Warn(
+                                        $"EPB[{ch}] 启动定位重试前断电worker未通过，继续重试：{retryEx.Message}",
+                                        "EPB");
+                                }
                                 continue;
                             }
                             if (ShouldEscalateSoftwareRecovery(attempt))
@@ -9821,19 +12077,29 @@ namespace Controller
                                         $"EPB[{ch}] 启动定位连续{attempt}次软件瞬态未通过。" +
                                         $"Code={result.Code} Reason={result.Reason}"));
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
-                            PublishChannelRuntimeState(
-                                ch,
-                                ChannelRuntimeState.Recovering,
-                                "StartupPositioningSelfHealing",
-                                $"启动定位软件瞬态未通过，第{attempt}次有界自愈，{delayMs}ms后重试。",
-                                affectedChannels: runnableChannels,
-                                correlationId: runId,
-                                allowTerminalReset: false);
                             _log.Warn(
                                 $"EPB[{ch}] 启动定位软件瞬态自动重试，不标记启动受阻。" +
                                 $"Attempt={attempt} DelayMs={delayMs} Code={result.Code} Reason={result.Reason}",
                                 "EPB");
-                            await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                            try
+                            {
+                                await RunStartupPositioningRetryIncidentAsync(
+                                        ch,
+                                        runId,
+                                        attempt,
+                                        "StartupPositioningSelfHealing",
+                                        $"启动定位软件瞬态未通过，第{attempt}次有界自愈，{delayMs}ms后重试。",
+                                        delayMs,
+                                        ct,
+                                        "StartupPositioningOutputOffCommandFailed")
+                                    .ConfigureAwait(false);
+                            }
+                            catch (SoftwareSelfHealingRetryException retryEx)
+                            {
+                                _log.Warn(
+                                    $"EPB[{ch}] 启动定位恢复worker未通过，继续重试：{retryEx.Message}",
+                                    "EPB");
+                            }
                         }
                     },
                     token).ConfigureAwait(false);

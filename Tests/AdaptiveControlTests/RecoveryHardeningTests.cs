@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -53,7 +54,314 @@ namespace AdaptiveControlTests
                 DaqBatchCorrelationIsSharedAndIdempotent, ref passed);
             Run("永久报警、人工禁用、完成通道不进入恢复候选",
                 PermanentAlarmAndCompletedChannelsAreExcluded, ref passed);
+            Run("结构化失败报告仅稳定字段指纹且同点恢复立即熔断",
+                StructuredFailureReportCircuitGate, ref passed);
+            Run("恢复预算达到边界后进度变化仍保持阻断",
+                RecoveryBudgetBoundaryIgnoresTokenChange, ref passed);
+            Run("并发失败报告只能获得一个原子重拉许可",
+                ConcurrentRelaunchPermitIsSingleUse, ref passed);
+            Run("重拉许可持久化失败必须故障闭锁",
+                RelaunchPermitPersistenceFailureFailsClosed, ref passed);
+            Run("V2到V3迁移跨重启保留RecoveryBlocked",
+                SchemaV2BlockedStateSurvivesRestartMigration, ref passed);
             return passed;
+        }
+
+        private static void RecoveryBudgetBoundaryIgnoresTokenChange()
+        {
+            var report = new RecoveryFailureReport
+            {
+                RootCode = "UnhandledSoftwareStartup",
+                DeviceOrChannelGroup = "EPB10",
+                RunId = "run-boundary",
+                RecoveryStage = "DaqRecovery",
+                RecoveryProgressToken = "201",
+                RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource
+            };
+            var classification = RecoveryFailurePolicy.Classify(
+                report.RootCode,
+                false,
+                string.Empty);
+            Assert(classification.MaximumProcessRelaunches == 2,
+                "边界测试未使用固定的两次软件重拉预算");
+
+            var fingerprint = RecoveryFailurePolicy.BuildFingerprint(report);
+            var progressed = report.Clone();
+            progressed.RecoveryProgressToken = "202";
+            var decision = RecoveryFailurePolicy.Evaluate(
+                progressed,
+                classification,
+                fingerprint,
+                report.RecoveryProgressToken,
+                report.RecoveryProcessSource,
+                classification.MaximumProcessRelaunches,
+                false);
+            Assert(decision.ProgressTokenChanged &&
+                   decision.RelaunchBudgetExhausted &&
+                   decision.SafeIdleRecoveryBlocked &&
+                   !decision.ProcessRelaunchAllowed,
+                "旧计数达到预算后，仅改变真实进度令牌仍获得重拉许可");
+
+            var detailOnly = report.Clone();
+            detailOnly.RecoveryProgressToken = "Preflight detail=heartbeat-only";
+            var detailDecision = RecoveryFailurePolicy.Evaluate(
+                detailOnly,
+                classification,
+                fingerprint,
+                report.RecoveryProgressToken,
+                report.RecoveryProcessSource,
+                1,
+                false);
+            Assert(!detailDecision.ProgressTokenChanged &&
+                   detailDecision.SafeIdleRecoveryBlocked,
+                "泛心跳/Detail被错误当作P0-4真实恢复进度");
+        }
+
+        private static void ConcurrentRelaunchPermitIsSingleUse()
+        {
+            var gate = new RecoveryRelaunchPermitGate();
+            var approved = 0;
+            var pending = 0;
+            var generation = 0L;
+            Parallel.For(0, 64, _ =>
+            {
+                long candidate;
+                var result = gate.TryApprove(
+                    durableGeneration: 0,
+                    blocked: false,
+                    manualStopRequested: false,
+                    sessionRevoked: false,
+                    consecutiveFailures: 0,
+                    maximumProcessRelaunches: 5,
+                    generation: out candidate);
+                if (result == RecoveryRelaunchPermitDecision.Approved)
+                {
+                    Interlocked.Increment(ref approved);
+                    Interlocked.CompareExchange(ref generation, candidate, 0);
+                }
+                else if (result == RecoveryRelaunchPermitDecision.AlreadyPending)
+                {
+                    Interlocked.Increment(ref pending);
+                    Assert(candidate > 0, "已有重拉许可没有返回稳定generation");
+                }
+            });
+            Assert(approved == 1 && pending == 63 && generation > 0,
+                "并发失败报告产生了多个重拉许可或丢失了pending状态");
+            Assert(gate.PendingGeneration == generation &&
+                   gate.TryConsume(generation) &&
+                   !gate.TryConsume(generation) &&
+                   gate.PendingGeneration == 0,
+                "重拉许可未按一次性generation消费");
+
+            long next;
+            Assert(gate.TryApprove(
+                       generation,
+                       false,
+                       false,
+                       false,
+                       consecutiveFailures: 1,
+                       maximumProcessRelaunches: 2,
+                       generation: out next) == RecoveryRelaunchPermitDecision.Approved,
+                "预算未耗尽时第二个真实许可未生成");
+            Assert(gate.TryConsume(next), "第二个许可无法消费");
+            Assert(gate.TryApprove(
+                       next,
+                       false,
+                       false,
+                       false,
+                       consecutiveFailures: 2,
+                       maximumProcessRelaunches: 2,
+                       generation: out next) == RecoveryRelaunchPermitDecision.Denied,
+                "达到预算边界后仍允许新的重拉许可");
+        }
+
+        private static void RelaunchPermitPersistenceFailureFailsClosed()
+        {
+            var root = Path.Combine(
+                Path.GetTempPath(),
+                "mttf-watchdog-journal-blocked-" + Guid.NewGuid().ToString("N"));
+            var session = Guid.NewGuid().ToString("N");
+            Directory.CreateDirectory(root);
+            var snapshotPath = Path.Combine(
+                root,
+                "session-" + WatchdogJournalPaths.SafeName(session) + ".json");
+            // Make the atomic snapshot target a directory.  The synchronous
+            // commit must report failure; callers then close the relaunch
+            // circuit instead of treating an emergency spool as durable.
+            Directory.CreateDirectory(snapshotPath);
+            try
+            {
+                using (var store = new WatchdogJournalStore(
+                           root,
+                           session,
+                           "sidecar",
+                           new WatchdogJournalPolicy(),
+                           Process.GetCurrentProcess().Id,
+                           DateTime.UtcNow.Ticks))
+                {
+                    Assert(!store.TryPublishSnapshotSynchronously(
+                               "{\"SchemaVersion\":3,\"RecoveryBlocked\":true}"),
+                        "不可写Journal目标未触发同步持久化失败");
+                }
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        private static void SchemaV2BlockedStateSurvivesRestartMigration()
+        {
+            var legacy = "{\"SchemaVersion\":2,\"RecoveryBlocked\":true," +
+                         "\"RecoveryFailureFingerprint\":\"RFP2-legacy\"," +
+                         "\"ConsecutiveStartupFailures\":5," +
+                         "\"RelaunchGeneration\":9}";
+            var migrated = WatchdogJournalMigration.MigrateJournalJson(legacy);
+            Assert(!string.IsNullOrWhiteSpace(migrated) &&
+                   migrated.Contains("\"SchemaVersion\":4") &&
+                   migrated.Contains("\"RecoveryBlocked\":true") &&
+                   migrated.Contains("\"RecoveryFailureFingerprint\":\"RFP2-legacy\"") &&
+                   migrated.Contains("\"ConsecutiveStartupFailures\":5") &&
+                   migrated.Contains("\"RelaunchGeneration\":9"),
+                "V2 Journal迁移丢失RecoveryBlocked或预算状态");
+            var afterRestart = WatchdogJournalMigration.MigrateJournalJson(migrated);
+            Assert(afterRestart == migrated && afterRestart.Contains("\"RecoveryBlocked\":true"),
+                "重启后的V4 Journal再次读取时没有保持RecoveryBlocked");
+            var restoredDecision = RecoveryFailurePolicy.Evaluate(
+                new RecoveryFailureReport
+                {
+                    RootCode = "UnhandledSoftwareStartup",
+                    DeviceOrChannelGroup = "EPB10",
+                    RunId = "run-boundary",
+                    RecoveryStage = "DaqRecovery",
+                    RecoveryProgressToken = "203"
+                },
+                RecoveryFailurePolicy.Classify("UnhandledSoftwareStartup", false, string.Empty),
+                RecoveryFailurePolicy.BuildFingerprint(new RecoveryFailureReport
+                {
+                    RootCode = "UnhandledSoftwareStartup",
+                    DeviceOrChannelGroup = "EPB10",
+                    RunId = "run-boundary",
+                    RecoveryStage = "DaqRecovery"
+                }),
+                "202",
+                RecoveryFailurePolicy.RecoveryProcessSource,
+                2,
+                alreadyBlocked: true);
+            Assert(restoredDecision.SafeIdleRecoveryBlocked &&
+                   !restoredDecision.ProcessRelaunchAllowed,
+                "重启恢复的RecoveryBlocked状态仍可被一次失败报告打开重拉");
+        }
+
+        private static void StructuredFailureReportCircuitGate()
+        {
+            var firstReport = new RecoveryFailureReport
+            {
+                RootCode = "RecoveryAttachFailed",
+                DeviceOrChannelGroup = "Dev1,Dev2",
+                RunId = "run-001",
+                RecoveryStage = "SafetyPreflight",
+                RecoveryProgressToken = "17",
+                RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource
+            };
+            var proseVariant = firstReport.Clone();
+            // No timestamp/PID/attempt/prose fields exist in the identity.  A
+            // report with the same four stable dimensions must hash identically.
+            Assert(RecoveryFailurePolicy.BuildFingerprint(firstReport) ==
+                   RecoveryFailurePolicy.BuildFingerprint(proseVariant),
+                "失败指纹被时间/PID/attempt/prose污染");
+            Assert(RecoveryFailurePolicy.BuildFingerprint(
+                       "RecoveryAttachFailed;Utc=2026-08-22T10:00:00Z;Pid=101;Attempt=1;Detail=first") ==
+                   RecoveryFailurePolicy.BuildFingerprint(
+                       "RecoveryAttachFailed;Utc=2026-08-22T10:01:00Z;Pid=999;Attempt=8;Detail=second"),
+                "Legacy失败文本中的时间/PID/attempt/prose改变了稳定指纹");
+
+            var classification = RecoveryFailurePolicy.Classify(
+                firstReport.RootCode,
+                false,
+                "RecoveryAttachFailed: transient detail");
+            var first = RecoveryFailurePolicy.Evaluate(
+                firstReport,
+                classification,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                0,
+                false);
+            Assert(first.ProcessRelaunchAllowed && !first.SafeIdleRecoveryBlocked,
+                "初始进程首次失败未允许唯一恢复进程");
+            var recoveryRepeatedReport = firstReport.Clone();
+            recoveryRepeatedReport.RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource;
+            var repeated = RecoveryFailurePolicy.Evaluate(
+                recoveryRepeatedReport,
+                classification,
+                first.Fingerprint,
+                firstReport.RecoveryProgressToken,
+                RecoveryFailurePolicy.RecoveryProcessSource,
+                first.ConsecutiveCount,
+                false);
+            Assert(repeated.SafeIdleRecoveryBlocked && !repeated.ProcessRelaunchAllowed,
+                "同指纹同进度恢复失败未立即进入SafeIdleRecoveryBlocked");
+
+            var progressed = firstReport.Clone();
+            progressed.RecoveryProgressToken = "18";
+            progressed.RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource;
+            var next = RecoveryFailurePolicy.Evaluate(
+                progressed,
+                classification,
+                first.Fingerprint,
+                firstReport.RecoveryProgressToken,
+                RecoveryFailurePolicy.InitialProcessSource,
+                first.ConsecutiveCount,
+                false);
+            Assert(next.ProgressTokenChanged && next.ProcessRelaunchAllowed,
+                "真实进度变化未允许一次新的有意义恢复尝试");
+
+            var nextRepeated = RecoveryFailurePolicy.Evaluate(
+                progressed,
+                classification,
+                next.Fingerprint,
+                progressed.RecoveryProgressToken,
+                progressed.RecoveryProcessSource,
+                next.ConsecutiveCount,
+                false);
+            Assert(nextRepeated.SafeIdleRecoveryBlocked,
+                "同一新进度再次失败未被熔断");
+
+            var permanent = RecoveryFailurePolicy.Evaluate(
+                firstReport,
+                RecoveryFailurePolicy.Classify("ConfigDuplicateEpbId", true, string.Empty),
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                0,
+                false);
+            Assert(permanent.SafeIdleRecoveryBlocked && !permanent.ProcessRelaunchAllowed,
+                "永久错误未直接阻断恢复");
+
+            var hardware = RecoveryFailurePolicy.Classify(
+                "HardwareUnavailable", false, "hardware detail with changing prose");
+            Assert(hardware.MaximumProcessRelaunches == 0,
+                "HardwareUnavailable仍获得主进程重拉预算");
+
+            var wire = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(
+                new WatchdogMessage
+                {
+                    Type = WatchdogMessageType.RecoveryAttemptFailed,
+                    RootCode = firstReport.RootCode,
+                    DeviceOrChannelGroup = firstReport.DeviceOrChannelGroup,
+                    RunId = firstReport.RunId,
+                    RecoveryStage = firstReport.RecoveryStage,
+                    RecoveryProgressToken = firstReport.RecoveryProgressToken,
+                    RecoveryProcessSource = firstReport.RecoveryProcessSource,
+                    RecoveryFailureFingerprint = first.Fingerprint
+                }));
+            Assert(wire.RootCode == firstReport.RootCode &&
+                   wire.DeviceOrChannelGroup == firstReport.DeviceOrChannelGroup &&
+                   wire.RunId == firstReport.RunId &&
+                   wire.RecoveryProgressToken == firstReport.RecoveryProgressToken &&
+                   wire.RecoveryFailureFingerprint == first.Fingerprint,
+                "结构化失败报告未完整通过Watchdog协议");
         }
 
         private static void DaqGapBuildsRecoveryBeforeSafetyAwait()

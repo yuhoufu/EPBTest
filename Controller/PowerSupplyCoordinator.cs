@@ -99,6 +99,69 @@ namespace Controller
         public string Error { get; set; } = string.Empty;
     }
 
+    /// <summary>
+    /// 电源输出电压已建立，但在启动空载窗口内持续检测到负载电流。
+    /// 该异常表示下游继电器/DO 仍可能接通，不能按普通通信瞬态盲目重试。
+    /// </summary>
+    public sealed class ResidualStartupLoadException : InvalidOperationException
+    {
+        public ResidualStartupLoadException(
+            int electricalGroupId,
+            string supplyName,
+            int sampleCount,
+            double minimumCurrentA,
+            double maximumCurrentA,
+            double averageCurrentA,
+            double measuredVoltageV,
+            string message)
+            : base(message)
+        {
+            ElectricalGroupId = electricalGroupId;
+            SupplyName = supplyName ?? string.Empty;
+            SampleCount = sampleCount;
+            MinimumCurrentA = minimumCurrentA;
+            MaximumCurrentA = maximumCurrentA;
+            AverageCurrentA = averageCurrentA;
+            MeasuredVoltageV = measuredVoltageV;
+        }
+
+        public int ElectricalGroupId { get; }
+        public string SupplyName { get; }
+        public int SampleCount { get; }
+        public double MinimumCurrentA { get; }
+        public double MaximumCurrentA { get; }
+        public double AverageCurrentA { get; }
+        public double MeasuredVoltageV { get; }
+    }
+
+    public sealed class ResidualStartupLoadAggregateException : InvalidOperationException
+    {
+        public ResidualStartupLoadAggregateException(
+            IEnumerable<ResidualStartupLoadException> failures)
+            : base(BuildMessage(failures))
+        {
+            Failures = (failures ?? Enumerable.Empty<ResidualStartupLoadException>())
+                .Where(failure => failure != null)
+                .OrderBy(failure => failure.ElectricalGroupId)
+                .ToArray();
+        }
+
+        public IReadOnlyList<ResidualStartupLoadException> Failures { get; }
+
+        private static string BuildMessage(IEnumerable<ResidualStartupLoadException> failures)
+        {
+            var items = (failures ?? Enumerable.Empty<ResidualStartupLoadException>())
+                .Where(failure => failure != null)
+                .OrderBy(failure => failure.ElectricalGroupId)
+                .Select(failure =>
+                    $"Group={failure.ElectricalGroupId},Samples={failure.SampleCount}," +
+                    $"Imin={failure.MinimumCurrentA:F3}A,Iavg={failure.AverageCurrentA:F3}A," +
+                    $"Imax={failure.MaximumCurrentA:F3}A,Vout={failure.MeasuredVoltageV:F3}V")
+                .ToArray();
+            return "多个电气组检测到启动残余负载；" + string.Join(";", items);
+        }
+    }
+
     public interface IPowerSupplyCoordinator : IDisposable
     {
         event Action<PowerSupplyTelemetry> TelemetryUpdated;
@@ -118,6 +181,7 @@ namespace Controller
         PowerSupplyRuntimeState GetRuntimeState(int electricalGroupId);
         IReadOnlyList<PowerSupplyTelemetry> GetRecentTelemetry(int electricalGroupId, TimeSpan window);
         IReadOnlyCollection<int> ActiveGroups { get; }
+        int ColdStartRelaySettleMs { get; }
     }
 
     public sealed class PowerSupplyCoordinator : IPowerSupplyCoordinator
@@ -210,6 +274,7 @@ namespace Controller
         public event Action<PowerSupplyFault> FaultRaised;
 
         public IReadOnlyCollection<int> ActiveGroups => _activeGroups.Keys.OrderBy(x => x).ToArray();
+        public int ColdStartRelaySettleMs => _config.ColdStartRelaySettleMs;
 
         public async Task PrepareAndEnableAsync(IEnumerable<int> selectedChannels, CancellationToken token)
         {
@@ -229,15 +294,26 @@ namespace Controller
             }
 
             var enabledThisAttempt = new ConcurrentBag<int>();
+            var prepareTasks = requiredGroups
+                .Select(group => PrepareGroupAsync(group, enabledThisAttempt, token))
+                .ToArray();
+            var allGroups = Task.WhenAll(prepareTasks);
             try
             {
-                await Task.WhenAll(requiredGroups.Select(group =>
-                        PrepareGroupAsync(group, enabledThisAttempt, token)))
-                    .ConfigureAwait(false);
+                await allGroups.ConfigureAwait(false);
             }
             catch
             {
                 await RollbackGroupsAsync(enabledThisAttempt, "启动预检失败回滚").ConfigureAwait(false);
+                if (token.IsCancellationRequested)
+                    throw new OperationCanceledException(token);
+                var residualLoads = allGroups.Exception?.Flatten().InnerExceptions
+                    .OfType<ResidualStartupLoadException>()
+                    .OrderBy(failure => failure.ElectricalGroupId)
+                    .ToArray() ?? Array.Empty<ResidualStartupLoadException>();
+                if (residualLoads.Length == 1) throw residualLoads[0];
+                if (residualLoads.Length > 1)
+                    throw new ResidualStartupLoadAggregateException(residualLoads);
                 throw;
             }
         }
@@ -943,6 +1019,7 @@ namespace Controller
             long zeroSince = 0;
             long voltageSince = 0;
             var snapshot = initialSnapshot;
+            var energizedLoadSamples = new List<double>();
             _log.Info(
                 $"{supply.DisplayName} OUTP ON 已确认，等待启动输出稳定：" +
                 $"Vout≥{supply.MinimumOutputVoltageV:F3}V 连续 {_config.StartupVoltageStableMs}ms，" +
@@ -963,6 +1040,8 @@ namespace Controller
                 if (snapshot.MeasuredVoltage >= supply.MinimumOutputVoltageV)
                 {
                     if (voltageSince == 0) voltageSince = now;
+                    if (Math.Abs(snapshot.MeasuredCurrent) > _config.StartupZeroCurrentA)
+                        energizedLoadSamples.Add(Math.Abs(snapshot.MeasuredCurrent));
                 }
                 else
                 {
@@ -992,12 +1071,34 @@ namespace Controller
                 }
 
                 if (elapsedMs >= _config.StartupZeroTimeoutMs)
+                {
+                    if (voltageSince != 0 && energizedLoadSamples.Count >= 3)
+                    {
+                        var minimum = energizedLoadSamples.Min();
+                        var maximum = energizedLoadSamples.Max();
+                        var average = energizedLoadSamples.Average();
+                        throw new ResidualStartupLoadException(
+                            supply.ElectricalGroupId,
+                            supply.DisplayName,
+                            energizedLoadSamples.Count,
+                            minimum,
+                            maximum,
+                            average,
+                            snapshot.MeasuredVoltage,
+                            $"{supply.DisplayName} OUTP ON 后检测到持续残余负载：" +
+                            $"Samples={energizedLoadSamples.Count} Imin={minimum:F3}A " +
+                            $"Iavg={average:F3}A Imax={maximum:F3}A " +
+                            $"Vout={snapshot.MeasuredVoltage:F3}V；" +
+                            "推断下游继电器/DO未完全释放，已回滚关电并禁止启动卡钳。");
+                    }
+
                     throw new InvalidOperationException(
                         $"{supply.DisplayName} OUTP ON 后未在 {_config.StartupZeroTimeoutMs}ms 内稳定：" +
                         $"Vout={snapshot.MeasuredVoltage:F3}V（要求≥{supply.MinimumOutputVoltageV:F3}V " +
                         $"连续 {_config.StartupVoltageStableMs}ms），" +
                         $"Iout={snapshot.MeasuredCurrent:F3}A（要求 |Iout|≤{_config.StartupZeroCurrentA:F3}A " +
                         $"连续 {_config.StartupZeroStableMs}ms）；已禁止启动卡钳。");
+                }
 
                 await Task.Delay(_config.PollIntervalMs, token).ConfigureAwait(false);
                 snapshot = await client.ReadSnapshotAsync(token).ConfigureAwait(false);

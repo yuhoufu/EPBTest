@@ -2,6 +2,8 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
+[assembly: InternalsVisibleTo("AdaptiveControlTests")]
+
 // 有关程序集的一般信息由以下
 // 控制。更改这些特性值可修改
 // 与程序集关联的信息。
@@ -29,6 +31,6 @@ using System.Runtime.InteropServices;
 //      生成号
 //      修订号
 //
-[assembly: AssemblyVersion("2.13.0.17")]
-[assembly: AssemblyFileVersion("2.13.0.17")]
-[assembly: AssemblyInformationalVersion("2.13.0.17")]
+[assembly: AssemblyVersion("2.13.0.21")]
+[assembly: AssemblyFileVersion("2.13.0.21")]
+[assembly: AssemblyInformationalVersion("2.13.0.21")]

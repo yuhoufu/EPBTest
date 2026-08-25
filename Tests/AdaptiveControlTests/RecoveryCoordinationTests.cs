@@ -49,7 +49,55 @@ namespace AdaptiveControlTests
             Run("DAQ重新使能或重入提交异常必须立即安全回滚", DaqRejoinFailureRequiresImmediateRollback, ref passed);
             Run("自动重启子进程必须确认全部授权通道已启动", UnattendedChildStartRequiresCompleteCohort, ref passed);
             Run("自动重启按耐久成功圈续跑且不得重启已完成通道", UnattendedRestartUsesDurableRemainingCycles, ref passed);
+            Run("DAQ恢复阶段完整单调序列并在SafeIdle后拒绝回退", DaqRecoveryPhaseSequenceIsMonotonic, ref passed);
             return passed;
+        }
+
+        private static void DaqRecoveryPhaseSequenceIsMonotonic()
+        {
+            var outOfOrder = new DaqRecoveryPhaseGate();
+            Assert(outOfOrder.TryAdvance(DaqRecoveryPhase.StaleDetected) &&
+                   !outOfOrder.TryAdvance(DaqRecoveryPhase.PowerOffConfirmed) &&
+                   outOfOrder.Current == DaqRecoveryPhase.StaleDetected,
+                "DAQ阶段门错误接受了跳过DO/电源提交的错序发布");
+
+            var gate = new DaqRecoveryPhaseGate();
+            var sequence = new[]
+            {
+                DaqRecoveryPhase.StaleDetected,
+                DaqRecoveryPhase.DoOffSubmitted,
+                DaqRecoveryPhase.DoOffConfirmed,
+                DaqRecoveryPhase.PowerOffSubmitted,
+                DaqRecoveryPhase.PowerOffConfirmed,
+                DaqRecoveryPhase.CutoffCompleted,
+                DaqRecoveryPhase.DaqRestartStarted,
+                DaqRecoveryPhase.FirstFreshBatch,
+                DaqRecoveryPhase.PressureRevalidated,
+                DaqRecoveryPhase.PersistenceBoundaryClosed,
+                DaqRecoveryPhase.Validating,
+                DaqRecoveryPhase.Rejoining,
+                DaqRecoveryPhase.Committed
+            };
+            foreach (var stage in sequence)
+                Assert(gate.TryAdvance(stage) && gate.Current == stage,
+                    $"DAQ阶段未按单调序列推进：Expected={stage};Actual={gate.Current}");
+            Assert(!gate.MarkSafeIdle(),
+                "已提交的恢复不应再次转入SafeIdle");
+            Assert(gate.MarkTerminal() && gate.Current == DaqRecoveryPhase.Terminal,
+                "Committed后未发布Terminal终态");
+            Assert(!gate.TryAdvance(DaqRecoveryPhase.Rejoining),
+                "Terminal后仍允许恢复阶段回退");
+
+            var safeIdle = new DaqRecoveryPhaseGate();
+            Assert(safeIdle.TryAdvance(DaqRecoveryPhase.StaleDetected) &&
+                   safeIdle.MarkSafeIdle() &&
+                   safeIdle.Current == DaqRecoveryPhase.SafeIdle,
+                "永久失联未进入SafeIdle");
+            Assert(!safeIdle.TryAdvance(DaqRecoveryPhase.Validating),
+                "SafeIdle后迟到验证仍可回退到Validating");
+            Assert(safeIdle.MarkTerminal() &&
+                   safeIdle.Current == DaqRecoveryPhase.Terminal,
+                "SafeIdle后未进入Terminal");
         }
 
         private static void RecoveryRunEpochIsNonZeroAndMonotonic()
@@ -674,12 +722,31 @@ namespace AdaptiveControlTests
                 Assert(!recoveredEvent.IsCompleted, "恢复事件越过了整组截止屏障");
                 Assert(!gate.TryBeginValidation(), "截止完成前进入了验证阶段");
 
+                Assert(!gate.CompleteCutoff(), "截止辅助方法错误跳过DO/电源确认阶段");
+                Assert(!gate.TryAdvance(DaqRecoveryPhase.DoOffConfirmed),
+                    "未提交真实DO OFF前错误进入确认阶段");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.DoOffSubmitted),
+                    "真实DO OFF提交阶段未提交");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.DoOffConfirmed),
+                    "DO OFF确认阶段未提交");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.PowerOffSubmitted),
+                    "电源OFF提交阶段未提交");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.PowerOffConfirmed),
+                    "电源OFF确认阶段未提交");
                 Assert(gate.CompleteCutoff(), "未能提交截止完成");
                 await recoveredEvent;
                 var validationReady = gate.WaitForValidationReadyAsync(CancellationToken.None);
                 await Task.Delay(20);
                 Assert(!validationReady.IsCompleted, "DAQ重建完成前进入了恢复验证");
                 Assert(!gate.TryBeginValidation(), "ValidationReady前进入了验证阶段");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.DaqRestartStarted),
+                    "DAQ重建开始阶段未提交");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.FirstFreshBatch),
+                    "首批新鲜数据阶段未提交");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.PressureRevalidated),
+                    "压力复核阶段未提交");
+                Assert(gate.TryAdvance(DaqRecoveryPhase.PersistenceBoundaryClosed),
+                    "持久化边界阶段未提交");
                 Assert(gate.EnableValidation(), "未能开放恢复验证");
                 await validationReady;
                 Assert(gate.TryBeginValidation(), "截止完成后未能进入验证");

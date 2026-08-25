@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
 using System.Threading;
@@ -10,6 +11,170 @@ using IO.NI;
 
 namespace Controller
 {
+    internal readonly struct AdaptiveDiagnosticKey : IEquatable<AdaptiveDiagnosticKey>
+    {
+        internal AdaptiveDiagnosticKey(Guid runId, long runEpoch, int channel, string diagnosticCode)
+        {
+            RunId = runId;
+            RunEpoch = runEpoch;
+            Channel = channel;
+            DiagnosticCode = diagnosticCode ?? string.Empty;
+        }
+
+        internal Guid RunId { get; }
+        internal long RunEpoch { get; }
+        internal int Channel { get; }
+        internal string DiagnosticCode { get; }
+
+        public bool Equals(AdaptiveDiagnosticKey other)
+        {
+            return RunId == other.RunId &&
+                   Channel == other.Channel &&
+                   string.Equals(DiagnosticCode, other.DiagnosticCode, StringComparison.Ordinal);
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is AdaptiveDiagnosticKey other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                var hash = RunId.GetHashCode();
+                hash = (hash * 397) ^ Channel;
+                hash = (hash * 397) ^ StringComparer.Ordinal.GetHashCode(DiagnosticCode);
+                return hash;
+            }
+        }
+    }
+
+    internal struct AdaptiveDiagnosticAggregate
+    {
+        internal int Count;
+        internal DateTime FirstUtc;
+        internal DateTime LastUtc;
+        internal string LastReason;
+    }
+
+    internal readonly struct AdaptiveDiagnosticOverlaySnapshot
+    {
+        internal AdaptiveDiagnosticOverlaySnapshot(
+            AdaptiveDiagnosticKey key,
+            int count,
+            DateTime firstUtc,
+            DateTime lastUtc,
+            string lastReason)
+        {
+            Key = key;
+            Count = count;
+            FirstUtc = firstUtc;
+            LastUtc = lastUtc;
+            LastReason = lastReason ?? string.Empty;
+        }
+
+        internal AdaptiveDiagnosticKey Key { get; }
+        internal int Count { get; }
+        internal DateTime FirstUtc { get; }
+        internal DateTime LastUtc { get; }
+        internal string LastReason { get; }
+    }
+
+    /// <summary>
+    /// 运行级 DiagnosticOnly 聚合器。身份键固定为 RunId/Channel/Code；
+    /// RunEpoch 只保留为首事件的审计元数据，不能把同一运行切成多条记录。
+    /// </summary>
+    internal sealed class AdaptiveDiagnosticRunAggregator
+    {
+        private readonly Dictionary<AdaptiveDiagnosticKey, AdaptiveDiagnosticAggregate> _entries =
+            new Dictionary<AdaptiveDiagnosticKey, AdaptiveDiagnosticAggregate>();
+        private readonly object _gate = new object();
+
+        internal bool Observe(
+            AdaptiveDiagnosticKey key,
+            DateTime occurredUtc,
+            string reason,
+            out AdaptiveDiagnosticOverlaySnapshot snapshot)
+        {
+            lock (_gate)
+            {
+                if (_entries.TryGetValue(key, out var aggregate))
+                {
+                    aggregate.Count++;
+                    aggregate.LastUtc = occurredUtc;
+                    aggregate.LastReason = reason ?? aggregate.LastReason;
+                    _entries[key] = aggregate;
+                    snapshot = new AdaptiveDiagnosticOverlaySnapshot(
+                        key,
+                        aggregate.Count,
+                        aggregate.FirstUtc,
+                        aggregate.LastUtc,
+                        aggregate.LastReason);
+                    return false;
+                }
+
+                aggregate = new AdaptiveDiagnosticAggregate
+                {
+                    Count = 1,
+                    FirstUtc = occurredUtc,
+                    LastUtc = occurredUtc,
+                    LastReason = reason ?? string.Empty
+                };
+                _entries.Add(key, aggregate);
+                snapshot = new AdaptiveDiagnosticOverlaySnapshot(
+                    key,
+                    aggregate.Count,
+                    aggregate.FirstUtc,
+                    aggregate.LastUtc,
+                    aggregate.LastReason);
+                return true;
+            }
+        }
+
+        internal int Count
+        {
+            get { lock (_gate) return _entries.Count; }
+        }
+
+        internal void Flush(Action<AdaptiveDiagnosticOverlaySnapshot> sink)
+        {
+            if (sink == null) return;
+            List<AdaptiveDiagnosticOverlaySnapshot> pending;
+            lock (_gate)
+            {
+                // Detach/stop is a control-path caller.  Copy the committed
+                // summaries and clear the live map under the short lock, then
+                // invoke logging/observers outside it.  A slow or throwing
+                // observer must not block the next Observe/Detach, and the
+                // clear-before-publish ordering makes each run's summary
+                // terminal exactly once.
+                pending = new List<AdaptiveDiagnosticOverlaySnapshot>(_entries.Count);
+                foreach (var pair in _entries)
+                {
+                    var aggregate = pair.Value;
+                    pending.Add(new AdaptiveDiagnosticOverlaySnapshot(
+                        pair.Key,
+                        aggregate.Count,
+                        aggregate.FirstUtc,
+                        aggregate.LastUtc,
+                        aggregate.LastReason));
+                }
+                _entries.Clear();
+            }
+            foreach (var snapshot in pending)
+            {
+                try { sink(snapshot); }
+                catch { /* diagnostic observers are never control-critical */ }
+            }
+        }
+
+        internal void Clear()
+        {
+            lock (_gate) _entries.Clear();
+        }
+    }
+
     internal enum AdaptiveTerminalOffResolution
     {
         Pending = 0,
@@ -68,6 +233,13 @@ namespace Controller
         private TaskCompletionSource<EpbAdaptiveDecision> _adaptiveReverseCompletion;
         private int _adaptiveFaultLatched;
         private int _adaptiveWarningLatched;
+        // DiagnosticOnly 按当前运行链、通道和稳定故障码聚合；机械圈、
+        // RunEpoch/rejoin 或 ResetTransientRunState 均不能清空该汇总。
+        private int _adaptiveRapidDiagnosticLatched;
+        private long _adaptiveRapidDiagnosticSuppressed;
+        private readonly AdaptiveDiagnosticRunAggregator _adaptiveDiagnosticOverlay =
+            new AdaptiveDiagnosticRunAggregator();
+        private Guid _adaptiveDiagnosticRunId;
         private bool _adaptiveSoftWarningSeen;
         private int _adaptiveForwardElapsedMs;
         private int _adaptiveReverseElapsedMs;
@@ -216,6 +388,8 @@ namespace Controller
                     _adaptiveStateMachine?.UpdateProfile(_adaptiveProfile);
                 Interlocked.Exchange(ref _adaptiveFaultLatched, 0);
                 Interlocked.Exchange(ref _adaptiveWarningLatched, 0);
+                Interlocked.Exchange(ref _adaptiveRapidDiagnosticLatched, 0);
+                Interlocked.Exchange(ref _adaptiveRapidDiagnosticSuppressed, 0);
                 _adaptiveSoftWarningSeen = false;
                 if (changed)
                     _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone());
@@ -280,12 +454,43 @@ namespace Controller
                 _adaptiveStateMachine?.UpdateProfile(_adaptiveProfile);
                 Interlocked.Exchange(ref _adaptiveFaultLatched, 0);
                 Interlocked.Exchange(ref _adaptiveWarningLatched, 0);
+                Interlocked.Exchange(ref _adaptiveRapidDiagnosticLatched, 0);
+                Interlocked.Exchange(ref _adaptiveRapidDiagnosticSuppressed, 0);
                 _adaptiveSoftWarningSeen = false;
                 _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone());
             }
         }
 
         internal event Action<AdaptiveDecisionTraceSample> AdaptiveDecisionObserved;
+        /// <summary>DiagnosticOnly 独立叠加层；不会进入 WarningRaised/报警停机链。</summary>
+        internal event Action<AdaptiveDiagnosticOverlaySnapshot> AdaptiveDiagnosticObserved;
+        /// <summary>
+        /// 运行终结时发布一次已经聚合的 DiagnosticOnly 摘要。明细事件与摘要
+        /// 使用同一 RunId/Channel/稳定代码键，不能按 RunEpoch/rejoin 拆分。
+        /// </summary>
+        internal event Action<AdaptiveDiagnosticOverlaySnapshot> AdaptiveDiagnosticSummaryObserved;
+
+        internal int AdaptiveDiagnosticOverlayCount => _adaptiveDiagnosticOverlay.Count;
+
+        internal void FlushAdaptiveDiagnosticOverlay()
+        {
+            _adaptiveDiagnosticOverlay.Flush(snapshot =>
+            {
+                try
+                {
+                    _log?.Info(
+                        $"EPB[{_channel}] DiagnosticOnly汇总：RunId={snapshot.Key.RunId:N} " +
+                        $"RunEpoch={snapshot.Key.RunEpoch} Channel={snapshot.Key.Channel} " +
+                        $"Code={snapshot.Key.DiagnosticCode} Count={snapshot.Count} " +
+                        $"First={snapshot.FirstUtc:O} Last={snapshot.LastUtc:O} " +
+                        $"LastReason={snapshot.LastReason}",
+                        "EPB-DIAGNOSTIC");
+                }
+                catch { }
+                try { AdaptiveDiagnosticSummaryObserved?.Invoke(snapshot); }
+                catch { /* 诊断订阅者不得影响终态清理 */ }
+            });
+        }
 
         private static int ReadAdaptiveTraceNormalRateHz()
         {
@@ -422,6 +627,8 @@ namespace Controller
         {
             if (!AdaptiveMonitoringEnabled || _adaptiveStateMachine == null) return;
 
+            BeginAdaptiveDiagnosticRunIfChanged();
+
             Interlocked.Exchange(ref _adaptiveFaultLatched, 0);
             Interlocked.Exchange(ref _adaptiveWarningLatched, 0);
             _adaptiveSoftWarningSeen = false;
@@ -455,6 +662,23 @@ namespace Controller
                 _overshootAlarmDeltaA,
                 _adaptiveSafetyLimits);
             _adaptiveDirection = "Forward";
+
+            // 必须从正向上电开始就建立全速率证据窗；等 10ms 状态机进入
+            // LoadRise 后才 Arm 会错过“谷值后再次上升”本圈证据。
+            EnsureAdaptiveClampPeakCaptureStarted();
+        }
+
+        private void BeginAdaptiveDiagnosticRunIfChanged()
+        {
+            if (_manager == null) return;
+            var runId = Guid.Empty;
+            var cycleNumber = 0;
+            _manager.GetPeakCaptureIdentity(_channel, out runId, out cycleNumber);
+            if (runId == Guid.Empty) return;
+            if (_adaptiveDiagnosticRunId != Guid.Empty &&
+                _adaptiveDiagnosticRunId != runId)
+                FlushAdaptiveDiagnosticOverlay();
+            _adaptiveDiagnosticRunId = runId;
         }
 
         private void CompleteAdaptiveForwardMonitoring(int measuredElapsedMs)
@@ -584,6 +808,7 @@ namespace Controller
                 }
 
                 var fullRatePeakA = double.NaN;
+                var fullRateLoadRiseEvidence = default(EpbLoadRiseEvidenceSnapshot);
                 var evidenceThroughUtc = DateTime.MinValue;
                 if (_acq != null &&
                     string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal) &&
@@ -591,7 +816,10 @@ namespace Controller
                 {
                     try
                     {
-                        if (_acq.TryPeekEpbCurrentPeak(peakToken, out var peak))
+                        if (_acq.TryPeekEpbCurrentPeak(
+                                peakToken,
+                                out var peak,
+                                out fullRateLoadRiseEvidence))
                         {
                             fullRatePeakA = peak.MaxAmp;
                             evidenceThroughUtc = peak.LastSampleAt.ToUniversalTime();
@@ -607,6 +835,7 @@ namespace Controller
                     tick,
                     currentAmp,
                     fullRatePeakA,
+                    fullRateLoadRiseEvidence,
                     _adaptiveSampleDecisionScratch);
                 decision.FastSignalQualityFlags = qualityFlags;
                 decision.FastRepresentativeA = BitConverter.Int64BitsToDouble(
@@ -662,6 +891,7 @@ namespace Controller
             if (decision.HardFault) action = "HardFault";
             else if (decision.ReleaseCompleted) action = "ReleaseCompleted";
             else if (decision.ClampReached) action = "ClampReached";
+            else if (decision.DiagnosticWarning) action = "DiagnosticWarning";
             else if (decision.SoftWarning) action = "SoftWarning";
             else if (decision.StateChanged) action = "StateChanged";
             else action = string.Empty;
@@ -717,6 +947,14 @@ namespace Controller
                 decision.Stage == EpbCurrentStage.LoadRise &&
                 string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal))
                 EnsureAdaptiveClampPeakCaptureStarted();
+
+            // RapidLoadRiseWithoutObservedEmpty 是证据缺失诊断，不是状态迁移、
+            // 软故障连续数或停机条件。状态机已保证每圈只产生一次，Runner 再以
+            // 当前运行链/通道/故障码为键做第二道限频，避免现场日志和快照风暴。
+            if (decision.DiagnosticWarning)
+            {
+                PublishAdaptiveDiagnosticOverlay(decision);
+            }
 
             if (decision.SoftWarning)
             {
@@ -1424,11 +1662,21 @@ namespace Controller
             {
                 var runId = Guid.Empty;
                 var cycleNumber = 0;
-                _manager?.GetPeakCaptureIdentity(_channel, out runId, out cycleNumber);
+                var runEpoch = _executionPermit.Authorized
+                    ? _executionPermit.RunEpoch
+                    : 0;
+                _manager?.GetPeakCaptureIdentity(
+                    _channel,
+                    out runId,
+                    out cycleNumber);
                 var token = _acq.BeginEpbCurrentPeak(
                     _channel,
                     runId,
-                    cycleNumber);
+                    cycleNumber,
+                    runEpoch,
+                    long.MinValue,
+                    long.MinValue,
+                    _adaptiveSafetyLimits?.ForwardMinimumRiseSlopeAperMs ?? 0.001);
                 lease.TryPublish(
                     token,
                     staleToken =>
@@ -1539,6 +1787,49 @@ namespace Controller
             }), "AdaptiveWarningNotification");
         }
 
+        private void PublishAdaptiveDiagnosticOverlay(EpbAdaptiveDecision decision)
+        {
+            if (decision == null || !decision.DiagnosticWarning) return;
+
+            var diagnostic = decision.DiagnosticEvent;
+            var runId = Guid.Empty;
+            var cycleNumber = 0;
+            var runEpoch = _executionPermit.Authorized
+                ? _executionPermit.RunEpoch
+                : 0;
+            _manager?.GetPeakCaptureIdentity(
+                _channel,
+                out runId,
+                out cycleNumber);
+            if (diagnostic != null)
+            {
+                if (diagnostic.RunId != Guid.Empty) runId = diagnostic.RunId;
+                if (diagnostic.RunEpoch != 0) runEpoch = diagnostic.RunEpoch;
+                if (diagnostic.CycleNumber > 0) cycleNumber = diagnostic.CycleNumber;
+            }
+            var code = string.IsNullOrWhiteSpace(decision.DiagnosticCode)
+                ? "DiagnosticOnly"
+                : decision.DiagnosticCode;
+            var key = new AdaptiveDiagnosticKey(runId, runEpoch, _channel, code);
+            var first = _adaptiveDiagnosticOverlay.Observe(
+                key,
+                diagnostic?.OccurredUtc ?? DateTime.UtcNow,
+                diagnostic?.Message ?? string.Empty,
+                out var snapshot);
+            if (first)
+            {
+                Interlocked.Exchange(ref _adaptiveRapidDiagnosticLatched, 1);
+                try { AdaptiveDiagnosticObserved?.Invoke(snapshot); }
+                catch { }
+            }
+            else
+            {
+                Interlocked.Increment(ref _adaptiveRapidDiagnosticSuppressed);
+            }
+            // DiagnosticOnly 只进入 trace/overlay 和运行级汇总；绝不能调用
+            // RaiseAdaptiveWarning/WarningRaised，否则会再次进入 Watchdog 报警链。
+        }
+
         private void ObserveAdaptiveBackground(Task task, string operation)
         {
             if (task == null) return;
@@ -1629,7 +1920,8 @@ namespace Controller
             try
             {
                 if (_manager != null)
-                    await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
+                    await _manager.HydraulicEnterAsync(_channel, _executionPermit, token)
+                        .ConfigureAwait(false);
 
                 CaptureAdaptivePreEnergizationCurrent();
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);

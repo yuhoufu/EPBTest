@@ -1082,14 +1082,6 @@ namespace Controller
                 "FormalPersistenceSelfHealing");
             try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "FormalPersistenceRecovery", channel); }
             catch { }
-            PublishChannelRuntimeState(
-                channel,
-                ChannelRuntimeState.Recovering,
-                "FormalPersistenceSelfHealing",
-                $"正式圈落盘软件自愈第{attempt}次；当前尝试已作废且不计数，未来完整圈自动重试。",
-                affectedChannels: new[] { channel },
-                correlationId: _activeBatchId,
-                allowTerminalReset: false);
             _log.Warn(
                 $"EPB[{channel}] 正式圈落盘软件异常；运行对象已撤销，保留圈事务并等待真实耐久收口。" +
                 $"Cycle={cycleNumber} Stage={stage} Attempt={attempt} Error={cause?.Message}",
@@ -1122,14 +1114,6 @@ namespace Controller
                 "FormalControlSelfHealing");
             try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "FormalControlRecovery", channel); }
             catch { }
-            PublishChannelRuntimeState(
-                channel,
-                ChannelRuntimeState.Recovering,
-                "FormalControlSelfHealing",
-                $"正式圈控制软件自愈第{attempt}次；当前圈已作废且不计数，未来完整圈自动重试。",
-                affectedChannels: new[] { channel },
-                correlationId: _activeBatchId,
-                allowTerminalReset: false);
             _log.Warn(
                 $"EPB[{channel}] 正式圈控制软件异常已撤销执行权并作废；" +
                 $"进入最多{SoftwareRecoveryEscalationAttempts}次的隔离恢复。" +

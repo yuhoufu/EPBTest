@@ -1163,11 +1163,139 @@ namespace Controller
         /// 单通道重新开始。旧的报警、联锁、启动受阻、系统故障或人工停止状态只作历史证据；
         /// 本次点击始终重新执行定位和2圈资格复核，仍存在的实时故障会在本次运行中再次停止。
         /// </summary>
+        /// <summary>
+        /// Manual and unattended alarm recovery entry point.  The actual
+        /// recovery body is registered and bound before the first Recovering
+        /// publication; the caller's batch/reconnect task is never used as
+        /// this channel's owner.
+        /// </summary>
         public async Task ResumeAlarmStoppedChannelAsync(
             int channel,
             bool operatorAcknowledged,
             CancellationToken token = default,
             bool unattendedRecovery = false)
+        {
+            if (!operatorAcknowledged)
+                throw new InvalidOperationException("必须由操作员确认故障原因已排除后才能恢复。");
+            if (!CanRunStandaloneAlarmRecovery(IsBatchSessionActive, IsFormalPhaseCommitted))
+                throw new InvalidOperationException(
+                    "批量启动、学习或资格复核尚未提交正式阶段；" +
+                    "单通道恢复不得越过批次协调器创建正式Timer。");
+            if (unattendedRecovery && _nonRecoverableChannelFaultLatch.ContainsKey(channel))
+                throw new InvalidOperationException("卡钳硬件故障已锁存，禁止无人值守自动拉起。");
+
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var recoveryCorrelation = Guid.NewGuid();
+            // A standalone recovery is still a run-scoped operation.  The
+            // normal UI path reaches here only after a run context exists;
+            // fail closed rather than publishing an owner that cannot be
+            // correlated with the current run.
+            if (runId == Guid.Empty || runEpoch <= 0)
+                throw new InvalidOperationException(
+                    "单通道恢复缺少当前运行身份，拒绝创建孤儿恢复事务。");
+
+            RecoveryIncidentHandle recoveryIncident = null;
+            Func<Task> BuildRecoveryWorker()
+            {
+                return () => ResumeAlarmStoppedChannelBodyAsync(
+                    channel,
+                    operatorAcknowledged,
+                    token,
+                    unattendedRecovery,
+                    recoveryCorrelation);
+            }
+
+            var started = TryBeginRecoveryIncident(
+                "AlarmChannelRecovery",
+                runId,
+                runEpoch,
+                RecoveryOwnerKind.AffectedGroupRecovery,
+                RecoveryTargetPhase.Formal,
+                recoveryCorrelation,
+                new[] { channel },
+                _ => BuildRecoveryWorker(),
+                contract =>
+                {
+                    PublishRecoveryIncidentState(
+                        channel,
+                        ChannelRuntimeState.Recovering,
+                        "AlarmResumeIncidentStarted",
+                        unattendedRecovery
+                            ? "无人值守报警恢复已建立真实执行任务，正在执行全量恢复预检。"
+                            : "人工确认报警恢复已建立真实执行任务，正在执行全量恢复预检。",
+                        affectedChannels: contract.Channels,
+                        correlationId: contract.IncidentId,
+                        recoveryOwnerKind: contract.OwnerKind,
+                        recoveryTargetPhase: contract.TargetPhase,
+                        recoveryOwnerId: contract.OwnerId,
+                        recoveryOwnerGeneration: contract.RunEpoch);
+                },
+                out recoveryIncident);
+            if (!started || recoveryIncident == null)
+                throw new InvalidOperationException(
+                    "报警恢复事务建立失败，已保持通道安全终态。");
+
+            try
+            {
+                _taskSupervisor.Observe(
+                    recoveryIncident.WorkerTask,
+                    "AlarmChannelRecovery",
+                    _activeBatchId,
+                    channel);
+            }
+            catch (Exception observeError)
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(channel, "AlarmRecoveryObserveFailed"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        contract,
+                        "AlarmRecoveryObserveFailed",
+                        $"报警恢复任务登记失败，已保持安全终态：{observeError.Message}");
+                });
+                throw;
+            }
+
+            if (!recoveryIncident.Start())
+            {
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                {
+                    try { CommandEpbOffHighPriority(channel, "AlarmRecoveryStartRejected"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        contract,
+                        "AlarmRecoveryStartRejected",
+                        "报警恢复启动许可被拒绝，已保持安全终态。 ");
+                });
+                throw new InvalidOperationException("报警恢复启动许可被拒绝。");
+            }
+
+            try
+            {
+                await recoveryIncident.WorkerTask.ConfigureAwait(false);
+            }
+            finally
+            {
+                // Terminal publication remains inside the contract gate until
+                // the worker's final state is observable.  If the body exits
+                // without a terminal state, CompleteRecoveryIncident emits
+                // exactly one OFF -> StartBlocked fallback.
+                recoveryIncident.CompleteAfterTerminal(contract =>
+                    CommitRecoveryIncidentStateForRelease(
+                        contract,
+                        "AlarmRecoveryTerminalWithoutRejoin",
+                        "报警恢复未完成重新入网，已保持安全终态。 "));
+            }
+        }
+
+        private async Task ResumeAlarmStoppedChannelBodyAsync(
+            int channel,
+            bool operatorAcknowledged,
+            CancellationToken token = default,
+            bool unattendedRecovery = false,
+            Guid recoveryCorrelation = default)
         {
             if (!operatorAcknowledged)
                 throw new InvalidOperationException("必须由操作员确认故障原因已排除后才能恢复。");
@@ -1195,7 +1323,6 @@ namespace Controller
             var resetOnHardDeadline = IsBatchSessionActive;
             var recoveryRunId = _activeBatchId;
             var recoveryRunEpoch = Interlocked.Read(ref _runEpoch);
-            var recoveryCorrelation = Guid.NewGuid();
             try
             {
                 if (!CanAcknowledgeChannelAlarm(channel, out rejection))
@@ -1327,7 +1454,7 @@ namespace Controller
                 !token.IsCancellationRequested)
             {
                 hardDeadlineReached = true;
-                PublishChannelRuntimeState(
+                PublishRecoveryIncidentState(
                     channel,
                     resetOnHardDeadline
                         ? ChannelRuntimeState.Recovering
@@ -1338,7 +1465,11 @@ namespace Controller
                         ? "转入受影响液压组Stop→Start等价清场。"
                         : "保持安全停机。"),
                     correlationId: recoveryCorrelation,
-                    allowTerminalReset: true);
+                    allowTerminalReset: true,
+                    recoveryOwnerKind: RecoveryOwnerKind.AffectedGroupRecovery,
+                    recoveryTargetPhase: RecoveryTargetPhase.Formal,
+                    recoveryOwnerId: recoveryCorrelation,
+                    recoveryOwnerGeneration: recoveryRunEpoch);
                 try { CommandEpbOffHighPriority(channel, "AlarmResumeHardDeadline"); }
                 catch { }
             }
@@ -1374,7 +1505,8 @@ namespace Controller
                         "AlarmResumeHardDeadline",
                         recoveryCorrelation,
                         recoveryRunId,
-                        recoveryRunEpoch)
+                        recoveryRunEpoch,
+                        RecoveryTargetPhase.Formal)
                     .ConfigureAwait(false);
         }
 
@@ -1488,6 +1620,14 @@ namespace Controller
                 .OrderBy(channel => channel)
                 .ToArray();
             if (selected.Length == 0) return;
+            var rejoinPermits = selected.ToDictionary(
+                channel => channel,
+                channel => _channelExecutionFence.Capture(channel));
+            if (rejoinPermits.Any(pair =>
+                    !IsChannelExecutionPermitCurrent(pair.Key, pair.Value)))
+                throw new InvalidOperationException(
+                    $"FormalRejoinRejected StaleExecutionPermit " +
+                    $"Channels=[{string.Join(",", selected)}]");
 
             await InvokeAfterCycleExecutionQuiescenceAsync(
                     selected,
@@ -1546,6 +1686,14 @@ namespace Controller
                 .OrderBy(channel => channel)
                 .ToArray();
             if (selected.Length == 0) return;
+            var rejoinPermits = selected.ToDictionary(
+                channel => channel,
+                channel => _channelExecutionFence.Capture(channel));
+            if (rejoinPermits.Any(pair =>
+                    !IsChannelExecutionPermitCurrent(pair.Key, pair.Value)))
+                throw new InvalidOperationException(
+                    $"FormalRejoinRejected StaleExecutionPermit " +
+                    $"Channels=[{string.Join(",", selected)}]");
 
             // A channel-level warning, hydraulic self-heal or power self-heal may complete while
             // the owning DAQ group is still in its device-level recovery.  Letting that path
@@ -1598,6 +1746,13 @@ namespace Controller
 
                     try
                     {
+                        if (restartMembers.Any(channel =>
+                                !IsChannelExecutionPermitCurrent(
+                                    channel,
+                                    rejoinPermits[channel])))
+                            throw new InvalidOperationException(
+                                $"FormalRejoinRejected ExecutionPermitRevoked " +
+                                $"Hydraulic={group.Key}");
                         foreach (var channel in restartMembers)
                             StartRejoinedFormalChannel(
                                 channel,

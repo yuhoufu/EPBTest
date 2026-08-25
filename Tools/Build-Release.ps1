@@ -236,7 +236,7 @@ if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
 }
 
 $solutionPath = Join-Path $repo 'TfTest.sln'
-& $MsBuild $solutionPath /t:Restore /m `
+& $MsBuild $solutionPath /t:Restore /m:1 `
     /p:Configuration=Release '/p:Platform=Any CPU' `
     /p:RestorePackagesConfig=true
 if ($LASTEXITCODE -ne 0) { throw "依赖还原失败：$LASTEXITCODE" }
@@ -259,8 +259,10 @@ else {
 $identityPath = Join-Path $output 'build-identity.json'
 $checksumPath = Join-Path $output 'SHA256SUMS.txt'
 
-& $MsBuild $solutionPath /t:Rebuild /m `
+& $MsBuild $solutionPath /t:Rebuild /m:1 `
     /p:Configuration=Release '/p:Platform=Any CPU' /p:FormalReleaseBuild=true `
+    /p:GenerateResourceUsePreserializedResources=false `
+    /p:GenerateResourceWarnOnBinaryFormatterUse=false `
     "/p:GitCommit=$commit" "/p:GitBranch=$branch" "/p:GitDirty=$gitDirtyText" `
     "/p:BuildUtc=$buildUtc" "/p:ReleaseConfigSha256=$configHash"
 if ($LASTEXITCODE -ne 0) { throw "Release 构建失败：$LASTEXITCODE" }
@@ -268,7 +270,8 @@ if ($LASTEXITCODE -ne 0) { throw "Release 构建失败：$LASTEXITCODE" }
 $exePath = Join-Path $output 'MTTFTest.exe'
 $watchdogExePath = Join-Path $output 'MTTFTest.Watchdog.exe'
 $watchdogProtocolPath = Join-Path $output 'MTTFTest.Watchdog.Protocol.dll'
-foreach ($requiredSidecar in @($watchdogExePath, $watchdogProtocolPath)) {
+$watchdogClientPath = Join-Path $output 'MTTFTest.Watchdog.Client.dll'
+foreach ($requiredSidecar in @($watchdogExePath, $watchdogProtocolPath, $watchdogClientPath)) {
     if (-not (Test-Path -LiteralPath $requiredSidecar -PathType Leaf)) {
         throw "Release 构建缺少独立看门狗文件：$requiredSidecar"
     }

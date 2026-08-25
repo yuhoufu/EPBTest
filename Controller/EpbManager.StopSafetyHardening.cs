@@ -7,15 +7,97 @@ using IO.NI;
 
 namespace Controller
 {
+    /// <summary>
+    /// A stop material event is accepted only when its source supplies a
+    /// positive monotonic sequence/boundary.  The same source/version is
+    /// deliberately idempotent: changing the prose detail cannot renew the
+    /// stop watchdog grace window.
+    /// </summary>
+    internal sealed class StopSafetyMaterialEvidenceGate
+    {
+        private readonly object _gate = new object();
+        private readonly Dictionary<string, long> _lastVersionBySource =
+            new Dictionary<string, long>(StringComparer.Ordinal);
+
+        public bool TryAccept(string source, long version)
+        {
+            if (string.IsNullOrWhiteSpace(source) || version <= 0) return false;
+            lock (_gate)
+            {
+                if (_lastVersionBySource.TryGetValue(source, out var previous) &&
+                    version <= previous)
+                    return false;
+                _lastVersionBySource[source] = version;
+                return true;
+            }
+        }
+
+        public void Reset()
+        {
+            lock (_gate) _lastVersionBySource.Clear();
+        }
+    }
+
     public partial class EpbManager
     {
-        internal const int StopAllHardDeadlineMs = 15000;
+        // StopAll has one process-wide escape deadline, but every stage exposes its
+        // own physical/safety deadline to the sidecar.  In particular, hydraulic
+        // release and persistence are allowed to exceed the old five-second
+        // watchdog heuristic without weakening the immediate OFF stages.
+        internal const int StopAllHardDeadlineMs = 45000;
+        private const int StopImmediateStageDeadlineMs = 2000;
+        private const int StopShortStageDeadlineMs = 5000;
+        private const int StopReleaseHydraulicsStageDeadlineMs = 15000;
+        private const int StopPersistenceStageDeadlineMs = 15000;
+        internal const int StopStageNoProgressGraceMs = 5000;
 
         private readonly object _stopProgressGate = new object();
+        private readonly StopSafetyMaterialEvidenceGate _stopMaterialEvidenceGate =
+            new StopSafetyMaterialEvidenceGate();
         private StopSafetyProgressSnapshot _stopSafetyProgress = new StopSafetyProgressSnapshot();
+        // Compatibility mirror only.  All live progress clocks and material
+        // evidence are owned by the active transaction runner.
+        private StopSafetyTransactionRunner _activeStopSafetyRunner;
+        // The production path uses the system clock and the existing NI/
+        // hydraulic adapters.  These fields are replaceable only before the
+        // first StopAll transaction so deterministic acceptance tests can
+        // drive the same manager entry point without duplicating the runner.
+        private IStopSafetyClock _stopSafetyClock = new SystemStopSafetyClock();
+        private IStopSafetyHydraulicAdapter _stopSafetyHydraulicAdapter;
         private long _stopSafetyGeneration;
         private int _energizationRevoked;
         private int _processRestartRequired;
+
+        /// <summary>
+        /// Real runner progress observation boundary.  The event is raised
+        /// after the immutable snapshot has been published; observers must
+        /// remain non-blocking and cannot alter the stop decision.
+        /// </summary>
+        internal event Action<StopSafetyProgressSnapshot> StopSafetyProgressObserved;
+
+        /// <summary>
+        /// Diagnostic edge emitted immediately before a rejected-channel
+        /// fallback is scheduled. It is observation-only and does not own the
+        /// physical action or alter the runner decision.
+        /// </summary>
+        internal event Action<int> StopSafetyFallbackIssued;
+
+        // Explicit production-facing names used by acceptance observers.
+        internal event Action<StopSafetyProgressSnapshot> StopSafetyProgressPublished
+        {
+            add { StopSafetyProgressObserved += value; }
+            remove { StopSafetyProgressObserved -= value; }
+        }
+
+        internal int SafeIdleIssueCount =>
+            Volatile.Read(ref _activeStopSafetyRunner)?.SafeIdleIssueCount ?? 0;
+
+        internal bool HasOrphanCore =>
+            Volatile.Read(ref _activeStopSafetyRunner)?.HasOrphanCore == true;
+
+        internal int StopSafetySafeIdleIssueCount => SafeIdleIssueCount;
+
+        internal bool StopSafetyHasOrphanCore => HasOrphanCore;
 
         public bool RequiresProcessRestart => Volatile.Read(ref _processRestartRequired) != 0;
 
@@ -56,6 +138,8 @@ namespace Controller
                     return false;
                 }
                 Interlocked.Exchange(ref _processRestartRequired, 0);
+                _recoveryAggregateStore.ClearStopSafetyStickyTerminal(
+                    Math.Max(1, Interlocked.Read(ref _stopSafetyGeneration) + 1));
             }
             rejectionReason = string.Empty;
             return true;
@@ -85,6 +169,9 @@ namespace Controller
 
         public StopSafetyProgressSnapshot CaptureStopSafetyProgress()
         {
+            var runner = Volatile.Read(ref _activeStopSafetyRunner);
+            if (runner != null)
+                return runner.CaptureProgress();
             lock (_stopProgressGate) return _stopSafetyProgress.Clone();
         }
 
@@ -95,11 +182,13 @@ namespace Controller
                     "上一次停止事务未完整清场，当前进程已永久撤销上电授权；必须由 Watchdog 重启软件。");
         }
 
-        private void AuthorizeFreshRunAfterSafetyPreflight()
-        {
-            ThrowIfProcessRestartRequired();
-            Volatile.Write(ref _energizationRevoked, 0);
-        }
+    private void AuthorizeFreshRunAfterSafetyPreflight()
+    {
+        ThrowIfProcessRestartRequired();
+        Volatile.Write(ref _energizationRevoked, 0);
+        _recoveryAggregateStore.ClearStopSafetyStickyTerminal(
+            Math.Max(1, Interlocked.Read(ref _stopSafetyGeneration) + 1));
+    }
 
         private void AdvanceStopSafetyProgress(
             long generation,
@@ -110,40 +199,78 @@ namespace Controller
             bool? powerStarted = null,
             bool? physicalSafe = null)
         {
-            if (generation != Interlocked.Read(ref _stopSafetyGeneration)) return;
-            StopSafetyStage previousStage;
-            DateTime previousStartedUtc;
-            StopSafetyProgressSnapshot snapshot;
-            lock (_stopProgressGate)
-            {
-                if (generation != Interlocked.Read(ref _stopSafetyGeneration)) return;
-                previousStage = _stopSafetyProgress.Stage;
-                previousStartedUtc = _stopSafetyProgress.StageStartedUtc;
-                _stopSafetyProgress.Stage = stage;
-                _stopSafetyProgress.StageStartedUtc = DateTime.UtcNow;
-                _stopSafetyProgress.ProgressVersion++;
-                _stopSafetyProgress.Detail = detail ?? string.Empty;
-                if (active.HasValue) _stopSafetyProgress.Active = active.Value;
-                if (offSubmitted.HasValue) _stopSafetyProgress.PhysicalOffSubmitted = offSubmitted.Value;
-                if (powerStarted.HasValue) _stopSafetyProgress.PowerDisableStarted = powerStarted.Value;
-                if (physicalSafe.HasValue) _stopSafetyProgress.PhysicalSafe = physicalSafe.Value;
-                snapshot = _stopSafetyProgress.Clone();
-            }
-            // 阶段日志从电源 Disable 已经启动后才异步发布，绝不让日志观察者占用
-            // DO OFF/电源关闭的前置安全预算。
-            if (stage >= StopSafetyStage.StartPowerDisable)
-                ObserveBackgroundTask(
-                    Task.Run(() => _log.Info(
-                        $"StopStage Exit={previousStage} " +
-                        $"ElapsedMs={(DateTime.UtcNow - previousStartedUtc).TotalMilliseconds:F0}; " +
-                        $"Enter={stage}; Transaction={snapshot.TransactionId:N}; " +
-                        $"RunId={snapshot.RunId:N}; RunEpoch={snapshot.RunEpoch}; " +
-                        $"ProgressVersion={snapshot.ProgressVersion}; Detail={snapshot.Detail}",
-                        "EPB-STOP")),
-                    "StopSafetyStageLog");
+            var runner = Volatile.Read(ref _activeStopSafetyRunner);
+            if (runner == null || generation != Interlocked.Read(ref _stopSafetyGeneration))
+                return;
+            runner.TryAdvanceProgress(
+                stage,
+                detail,
+                active,
+                offSubmitted,
+                powerStarted,
+                physicalSafe);
         }
 
-        private async Task<StopSafetyResult> RunBoundedStopSafetyAsync(
+        /// <summary>
+        /// Records a real pressure/DAQ/persistence event without changing the
+        /// current stage's start time or hard deadline.  A heartbeat/diagnostic
+        /// refresh must never count as material progress.
+        /// </summary>
+        private void RecordStopSafetyMaterialProgress(long generation, string detail)
+        {
+            // Legacy/detail-only callers are intentionally inert.  A material
+            // event must go through the overload carrying an auditable source
+            // and a monotonic sequence/boundary.
+        }
+
+        private bool RecordStopSafetyMaterialProgress(
+            long generation,
+            string source,
+            long evidenceVersion,
+            string detail)
+        {
+            var runner = Volatile.Read(ref _activeStopSafetyRunner);
+            return runner != null &&
+                   generation == Interlocked.Read(ref _stopSafetyGeneration) &&
+                   runner.TryRecordMaterialProgress(source, evidenceVersion, detail);
+        }
+
+        private static int SelectStopStageDeadlineMs(StopSafetyStage stage)
+        {
+            switch (stage)
+            {
+                case StopSafetyStage.FreezeActiveWork:
+                case StopSafetyStage.RevokeExecutionAuthorization:
+                case StopSafetyStage.SubmitPhysicalOff:
+                    return StopImmediateStageDeadlineMs;
+                case StopSafetyStage.StartPowerDisable:
+                case StopSafetyStage.ClearTimerAndRunner:
+                case StopSafetyStage.ClearRecoveryOwners:
+                case StopSafetyStage.StopAcquisition:
+                case StopSafetyStage.VerifyLogicalQuiescence:
+                    return StopShortStageDeadlineMs;
+                case StopSafetyStage.ReleaseHydraulics:
+                    // 现场完整释压约 10.4s；15s 是该阶段独立截止，不是
+                    // 全流程的统一等待时间。
+                    return StopReleaseHydraulicsStageDeadlineMs;
+                case StopSafetyStage.ClosePersistenceBoundary:
+                    return StopPersistenceStageDeadlineMs;
+                default:
+                    return StopImmediateStageDeadlineMs;
+            }
+        }
+
+        private static int SelectStopStageNoProgressGraceMs(StopSafetyStage stage)
+        {
+            return stage == StopSafetyStage.None
+                ? 0
+                : StopStageNoProgressGraceMs;
+        }
+
+        // Legacy outer implementation retained only as a diagnostic fallback
+        // while the production entry point is owned by
+        // StopSafetyTransactionRunner (see EpbManager.StopSafetyOperations).
+        private async Task<StopSafetyResult> RunBoundedStopSafetyLegacyAsync(
             StopContext context,
             CancellationToken callerToken,
             long generation)
@@ -154,26 +281,44 @@ namespace Controller
             var runEpoch = Interlocked.Read(ref _runEpoch);
             lock (_stopProgressGate)
             {
+                var previousProgressVersion = _stopSafetyProgress?.ProgressVersion ?? 0;
+                _stopMaterialEvidenceGate.Reset();
                 _stopSafetyProgress = new StopSafetyProgressSnapshot
                 {
                     TransactionId = transactionId,
                     RunId = runId,
                     RunEpoch = runEpoch,
-                    ProgressVersion = 1,
+                    Generation = generation,
+                    // Keep the Controller-owned version monotonic across repeated
+                    // StopAll transactions in the same process; the Watchdog still
+                    // uses the transaction identity/stage fields to scope evidence.
+                    ProgressVersion = Math.Max(1, previousProgressVersion + 1),
                     Stage = StopSafetyStage.FreezeActiveWork,
                     StartedUtc = startedUtc,
                     StageStartedUtc = startedUtc,
+                    HardDeadlineUtc = startedUtc.AddMilliseconds(StopAllHardDeadlineMs),
+                    StageHardDeadlineUtc = startedUtc.AddMilliseconds(
+                        SelectStopStageDeadlineMs(StopSafetyStage.FreezeActiveWork)),
+                    StageNoProgressGraceMs = SelectStopStageNoProgressGraceMs(
+                        StopSafetyStage.FreezeActiveWork),
+                    LastMaterialProgressUtc = startedUtc,
                     Active = true,
                     Detail = "已冻结停止事务身份与活动集合"
                 };
             }
+            _recoveryAggregateStore.PublishStopSource(CaptureStopSafetyProgress());
+            _recoveryAggregateStore.PublishLogicalSource(CaptureLogicalQuiescenceSnapshot());
+            lock (_recoveryContractGate)
+                PublishRecoveryOperationalSourcesLocked();
 
             // 安全方向命令使用独立 owner，不继承 UI 取消令牌。先装栅栏，再启动任何
             // 可能受 Timer、恢复 owner、日志或持久化锁影响的清场工作。
             Volatile.Write(ref _energizationRevoked, 1);
+            foreach (var channel in Enumerable.Range(1, 12))
+                RevokeChannelExecutionPermit(channel, "StopAll");
             Interlocked.Increment(ref _runEpoch);
             // 在启动通用清场前先撤销旧液压代次。该操作不等待缺员屏障，防止一个
-            // 永不到达的成员占满整个 StopAll 15 秒预算；压力安全仍在后续独立确认。
+            // 永不到达的成员不能占满整个 StopAll 45 秒总预算；压力安全仍在后续独立确认。
             var forceAbortedHydraulicObjects = _hydCoordinator?.ForceAbortRun(
                 runId,
                 $"StopAll:{context.Source}:{transactionId:N}") ?? 0;
@@ -289,7 +434,7 @@ namespace Controller
             // StartNew 把同步前段也移出调用线程；无论它卡在何处，对外 owner 都由
             // WhenAny 的硬截止终态化，后续人工停止不会复用一个永不完成的旧任务。
             var coreTask = Task.Factory.StartNew(
-                    () => RunStopSafetyAsync(context, CancellationToken.None, generation),
+                    () => RunStopSafetyLegacyCoreAsync(context, CancellationToken.None, generation),
                     CancellationToken.None,
                     TaskCreationOptions.DenyChildAttach,
                     TaskScheduler.Default)
@@ -334,7 +479,7 @@ namespace Controller
             AdvanceStopSafetyProgress(
                 generation,
                 StopSafetyStage.TimedOut,
-                $"停止事务超过 {StopAllHardDeadlineMs}ms；旧 owner 已隔离，等待 Watchdog 接管",
+                $"停止事务超过总逃逸期限 {StopAllHardDeadlineMs}ms；旧 owner 已隔离，等待 Watchdog 接管",
                 active: false);
 
             // 超时后再次走独立幂等物理安全路径。这里只观察已经发出的命令，不等待
@@ -374,7 +519,7 @@ namespace Controller
             catch { }
 
             var physicalSafe = offConfirmed && powerConfirmed;
-            var logical = CaptureLogicalQuiescenceSnapshot();
+            var logical = CaptureLogicalQuiescenceSnapshotForStop(context);
             var timeoutResult = new StopSafetyResult
             {
                 Outcome = physicalSafe
@@ -385,7 +530,7 @@ namespace Controller
                 RequiresProcessRestart = true,
                 PhysicalOffSubmitted = true,
                 PowerDisableStarted = true,
-                StageError = $"StopAll hard deadline exceeded: {StopAllHardDeadlineMs}ms",
+                StageError = $"StopAll total escape deadline exceeded: {StopAllHardDeadlineMs}ms",
                 Source = context.Source,
                 CorrelationId = context.CorrelationId ?? transactionId.ToString("N"),
                 RunId = runId,

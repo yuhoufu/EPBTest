@@ -31,9 +31,21 @@ namespace IO.NI
             _log = log ?? NLogger.Instance;
         }
 
-        internal int ActiveCount => _active.Count;
+        internal int ActiveCount
+        {
+            get
+            {
+                lock (_lifecycleGate) return _active.Count;
+            }
+        }
 
-        internal int ActiveKeyCount => _activeKeys.Count;
+        internal int ActiveKeyCount
+        {
+            get
+            {
+                lock (_lifecycleGate) return _activeKeys.Count;
+            }
+        }
 
         internal long CoalescedCount => Interlocked.Read(ref _coalesced);
 
@@ -72,24 +84,76 @@ namespace IO.NI
 
         internal bool StopAcceptingAndDrain(int timeoutMs)
         {
+            Task[] tasks;
+            var initialLifecycleError = false;
             lock (_lifecycleGate)
+            {
                 Interlocked.Exchange(ref _accepting, 0);
+                tasks = _active.Values.ToArray();
+                if (tasks.Length == 0 && !_activeKeys.IsEmpty)
+                    initialLifecycleError = true;
+                if (tasks.Length == 0 && !initialLifecycleError) return true;
+            }
+            if (initialLifecycleError)
+            {
+                ReportLifecycleError(
+                    "DAQ后台任务监督状态异常：活动任务为空但业务键仍残留。");
+                return false;
+            }
+
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000d * Stopwatch.Frequency);
             while (true)
             {
-                var tasks = _active.Values.ToArray();
-                if (tasks.Length == 0) return true;
                 var remainingMs = (int)Math.Ceiling(
                     (deadline - Stopwatch.GetTimestamp()) * 1000d / Stopwatch.Frequency);
                 if (remainingMs <= 0) return false;
                 try
                 {
-                    if (!Task.WaitAll(tasks, remainingMs)) return false;
+                    Task.WaitAll(tasks, remainingMs);
                 }
-                catch
+                catch (Exception ex)
                 {
                     // Complete 会逐个读取并记录任务异常；继续确认活动表已清空。
+                    ReportLifecycleError(
+                        "DAQ后台任务排空观察到任务异常，将继续确认活动记录。",
+                        ex);
+                }
+
+                var terminalLifecycleError = false;
+                lock (_lifecycleGate)
+                {
+                    var activeCount = _active.Count;
+                    var activeKeyCount = _activeKeys.Count;
+                    if (activeCount == 0)
+                    {
+                        if (activeKeyCount != 0)
+                            terminalLifecycleError = true;
+                        else
+                            return true;
+                    }
+
+                    if (terminalLifecycleError)
+                    {
+                        // Do not call the logger while holding the lifecycle
+                        // gate; logger implementations may perform callbacks.
+                        tasks = Array.Empty<Task>();
+                    }
+                    else
+                    {
+                        // Capture the next immutable task set while holding
+                        // the lifecycle gate, then release the gate before
+                        // waiting. Execute's finally removes the key and
+                        // task in this same gate, so no observer can see a
+                        // half-removed pair.
+                        tasks = _active.Values.ToArray();
+                    }
+                }
+                if (terminalLifecycleError)
+                {
+                    ReportLifecycleError(
+                        "DAQ后台任务监督状态异常：活动任务已清空但业务键仍残留。");
+                    return false;
                 }
             }
         }
@@ -116,8 +180,15 @@ namespace IO.NI
             }
             finally
             {
-                _active.TryRemove(id, out _);
-                RemoveKey(key, id);
+                lock (_lifecycleGate)
+                {
+                    // Keep the key/task pair atomically visible to drain and
+                    // diagnostics.  The key is logically removed first, but
+                    // no reader can observe the intermediate state because
+                    // both operations are protected by the same gate.
+                    RemoveKey(key, id);
+                    _active.TryRemove(id, out _);
+                }
             }
         }
 
@@ -129,7 +200,18 @@ namespace IO.NI
 
         public void Dispose()
         {
-            StopAcceptingAndDrain(5000);
+            if (!StopAcceptingAndDrain(5000))
+                ReportLifecycleError("DAQ后台任务监督器退出时未能在期限内排空。");
+        }
+
+        private void ReportLifecycleError(string message, Exception ex = null)
+        {
+            try { _log.Error(message, "AI", ex); }
+            catch
+            {
+                // Logging is diagnostic only; never turn a lifecycle guard
+                // failure into a second unobserved supervisor exception.
+            }
         }
     }
 }

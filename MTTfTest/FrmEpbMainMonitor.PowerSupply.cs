@@ -24,6 +24,8 @@ namespace MTEmbTest
         private readonly Dictionary<int, Label> _channelRuntimeLabels = new Dictionary<int, Label>();
         private readonly Dictionary<int, ChannelRuntimeStateChangedEvent> _channelRuntimeStates =
             new Dictionary<int, ChannelRuntimeStateChangedEvent>();
+        private readonly Dictionary<int, ChannelWarningOverlayChangedEvent> _channelWarningOverlays =
+            new Dictionary<int, ChannelWarningOverlayChangedEvent>();
         private readonly HashSet<int> _powerGroupInterlockLatches = new HashSet<int>();
         private readonly object _powerSupplyTelemetryGate = new object();
         private readonly Dictionary<int, PowerSupplyTelemetry> _latestPowerSupplyTelemetry =
@@ -34,6 +36,7 @@ namespace MTEmbTest
             base.OnShown(e);
             AttachSafetyUiEvents();
             AttachPauseResumeUi();
+            MarkWatchdogControllerReadyIfInitialized();
             if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
             InitializeChannelRuntimeStatusUi();
             AttachOwnedRawPipeline();
@@ -157,6 +160,7 @@ namespace MTEmbTest
                 manager.PowerSupplyTelemetryUpdated += UpdatePowerSupplyStatus;
                 manager.PowerSupplyFaultRaised += ShowPowerSupplyFault;
                 manager.ChannelRuntimeStateChanged += OnChannelRuntimeStateChanged;
+                manager.ChannelWarningOverlayChanged += OnChannelWarningOverlayChanged;
                 manager.ChannelDisableRequested += OnNonRecoverableChannelDisableRequested;
                 manager.ChannelDisablePersistenceFailed += OnChannelDisablePersistenceFailed;
                 for (var index = 0; index < EpbGroup.Length; index++)
@@ -167,7 +171,7 @@ namespace MTEmbTest
                             (sender, args) => PersistRuntimeChannelSelection(channelIndex);
                 }
                 manager.ChannelWarningRaised += (channel, reason) => PostSafetyStatus(
-                    $"卡钳{channel} 警告：{AlarmMessageLocalizer.ToUserMessage(reason)}",
+                    $"卡钳{channel} 警告：{AlarmMessageLocalizer.ToUserWarningMessage(reason)}",
                     false);
                 manager.ChannelWarningEvidenceRaised += warning => PostSafetyStatus(
                     $"软预警 EPB{warning.Channel:D2}【{AlarmMessageLocalizer.GetWarningName(warning.Code)}】" +
@@ -227,6 +231,8 @@ namespace MTEmbTest
                 ShowWarningSnapshotStorageWarning(initialStorage);
                 foreach (var state in manager.GetChannelRuntimeStates())
                     OnChannelRuntimeStateChanged(state);
+                foreach (var warning in manager.GetChannelWarningOverlays())
+                    OnChannelWarningOverlayChanged(warning);
             }
             catch
             {
@@ -312,6 +318,26 @@ namespace MTEmbTest
                 ApplyChannelRuntimeState(latest);
         }
 
+        private void OnChannelWarningOverlayChanged(ChannelWarningOverlayChangedEvent warning)
+        {
+            if (warning == null || warning.Channel < 1 || warning.Channel > 12) return;
+            lock (_channelWarningOverlays)
+            {
+                _channelWarningOverlays.TryGetValue(warning.Channel, out var current);
+                if (!warning.IsNewerThan(current)) return;
+                _channelWarningOverlays[warning.Channel] = warning.Clone();
+            }
+            if (IsDisposed || Disposing) return;
+            try
+            {
+                if (InvokeRequired)
+                    BeginInvoke((Action)(() => ApplyLatestChannelRuntimeState(warning.Channel)));
+                else
+                    ApplyLatestChannelRuntimeState(warning.Channel);
+            }
+            catch { }
+        }
+
         private void LogEpbChannelAlarm(int channel, string reason)
         {
             LogInfo($"卡钳{channel} 报警：{AlarmMessageLocalizer.ToUserMessage(reason)}");
@@ -330,6 +356,13 @@ namespace MTEmbTest
         private void ApplyChannelRuntimeState(ChannelRuntimeStateChangedEvent state)
         {
             if (!_channelRuntimeLabels.TryGetValue(state.Channel, out var label)) return;
+            ChannelWarningOverlayChangedEvent warning;
+            lock (_channelWarningOverlays)
+                warning = _channelWarningOverlays.TryGetValue(state.Channel, out var currentWarning)
+                    ? currentWarning.Clone()
+                    : null;
+            var warningActive = warning?.Active == true &&
+                                (warning.RunEpoch == 0 || warning.RunEpoch == state.RunEpoch);
             var record = EnsureEpbRecord(state.Channel);
             if (!record.Enabled && state.State != ChannelRuntimeState.NotEnabled)
             {
@@ -343,8 +376,12 @@ namespace MTEmbTest
                 : state.TimestampUtc.ToLocalTime();
             // 状态格宽度很小，原来的第二行时间会被截成“运行1…”或“运行0…”，
             // 容易被误解为数值状态。格内只保留状态，时间和原因放在悬浮提示中。
-            label.Text = GetRuntimeStateText(state.State);
-            label.BackColor = GetRuntimeStateColor(state.State);
+            label.Text = GetRuntimeStateText(state.State) + (warningActive ? " · 预警" : string.Empty);
+            label.BackColor = warningActive &&
+                              (state.State == ChannelRuntimeState.Running ||
+                               state.State == ChannelRuntimeState.WarningRunning)
+                ? Color.DarkOrange
+                : GetRuntimeStateColor(state.State);
             label.ForeColor = Color.White;
             label.Cursor = IsChannelRunTransitionState(state.State)
                 ? Cursors.WaitCursor
@@ -357,6 +394,9 @@ namespace MTEmbTest
                 $"故障源：{(state.SourceChannel.HasValue ? "EPB" + state.SourceChannel.Value.ToString("D2") : "-")}\r\n" +
                 $"关联号：{(state.CorrelationId == Guid.Empty ? "-" : state.CorrelationId.ToString("N"))}\r\n" +
                 $"RunEpoch：{state.RunEpoch}，Formal：{state.FormalPhaseCommitted}\r\n" +
+                $"恢复所有者：{state.RecoveryOwnerKind}/{state.RecoveryTargetPhase} " +
+                $"Gen={state.RecoveryOwnerGeneration}\r\n" +
+                $"预警：{(warningActive ? AlarmMessageLocalizer.ToUserWarningMessage(warning.WarningText ?? warning.WarningCode) : "-")}\r\n" +
                 $"资源：Timer={state.TimerActive} Runner={state.RunnerActive} Energized={state.Energized}");
 
             if (EpbGroup[state.Channel - 1]?.CtrlRunning != null)
@@ -389,10 +429,15 @@ namespace MTEmbTest
             ChannelRuntimeStateChangedEvent[] states;
             lock (_channelRuntimeStates)
                 states = _channelRuntimeStates.Values.ToArray();
+            ChannelWarningOverlayChangedEvent[] warnings;
+            lock (_channelWarningOverlays)
+                warnings = _channelWarningOverlays.Values.ToArray();
             var running = states.Count(x => x.State == ChannelRuntimeState.Starting ||
                                             x.State == ChannelRuntimeState.Learning ||
                                             x.State == ChannelRuntimeState.Running);
-            var warning = states.Count(x => x.State == ChannelRuntimeState.WarningRunning);
+            var warning = warnings.Count(x => x.Active) +
+                          states.Count(x => x.State == ChannelRuntimeState.WarningRunning &&
+                                            warnings.All(w => w.Channel != x.Channel || !w.Active));
             var alarm = states.Count(x => x.State == ChannelRuntimeState.AlarmStopped ||
                                           x.State == ChannelRuntimeState.StartBlocked);
             var interlock = states.Count(x => x.State == ChannelRuntimeState.InterlockStopped);

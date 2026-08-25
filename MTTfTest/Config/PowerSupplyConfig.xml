@@ -17,7 +17,8 @@
                    StartupZeroCurrentA="0.50"
                    StartupZeroStableMs="300"
                    StartupVoltageStableMs="300"
-                   StartupZeroTimeoutMs="5000">
+                   StartupZeroTimeoutMs="5000"
+                   ColdStartRelaySettleMs="300">
   <Supply Id="1" ElectricalGroupId="1" DisplayName="电源1"
           Host="192.168.1.101" Port="2268" Terminator="\r\n"
           ExpectedModel="" ExpectedSerial=""

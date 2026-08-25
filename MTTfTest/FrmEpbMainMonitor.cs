@@ -2547,7 +2547,13 @@ namespace MTEmbTest
                     {
                         Detail = "BatchStartCancelled"
                     });
-                    WatchdogRuntime.ShutdownLocalClient();
+                    var main = MdiParent as Main_Frm;
+                    if (main == null)
+                        throw new InvalidOperationException(
+                            "批量启动取消时缺少 Main-owned Watchdog shutdown owner。");
+                    await main.ShutdownWatchdogSessionAndReleaseUiAsync(
+                            "BatchStartCancelled")
+                        .ConfigureAwait(true);
                 }
                 catch (Exception ex)
                 {
@@ -2556,7 +2562,8 @@ namespace MTEmbTest
                         throw new InvalidOperationException("无人值守恢复批量启动失败。", ex);
                     WatchdogRuntime.NotifyBatchStartFailed(
                         "BatchStartFailed:" + ex.GetBaseException().Message);
-                    LogInfo("[自恢复] 启动授权和监控界面保持有效；独立看门狗将安全接管并退避重试。");
+                    LogInfo("[启动保护] 已安全回滚；正式运行尚未提交时独立看门狗不会杀进程，" +
+                            "请根据启动安全基线诊断处理后再次开始。");
                 }
 
                 #endregion
@@ -2772,7 +2779,7 @@ namespace MTEmbTest
             StopSafetyResult safety,
             string stopCommandId)
         {
-            var summary = ToWatchdogStopSummary(safety);
+            var summary = WinFormsWatchdogStopHandlerCore.ToWatchdogStopSummary(safety);
             var notificationTask = System.Threading.Tasks.Task.Run(() =>
             {
                 try
@@ -2797,7 +2804,18 @@ namespace MTEmbTest
                         notificationTask,
                         System.Threading.Tasks.Task.Delay(1000))
                     .ConfigureAwait(false);
-                WatchdogRuntime.ShutdownLocalClient();
+                var main = MdiParent as Main_Frm;
+                if (main == null)
+                {
+                    logger?.Warn(
+                        $"人工停止完成但缺少 Main-owned Watchdog shutdown owner；" +
+                        $"CommandId={stopCommandId}。",
+                        "Watchdog");
+                    return;
+                }
+                await main.ShutdownWatchdogSessionAndReleaseUiAsync(
+                        "ManualStopCompleted")
+                    .ConfigureAwait(false);
             });
         }
 
@@ -2901,8 +2919,9 @@ namespace MTEmbTest
                     LogInfo("[安全警告] 电机DO和程控电源均已确认关闭；仅压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
 
-                if (Volatile.Read(ref _watchdogTakeoverExit) == 0)
-                    WatchdogRuntime.NotifyApplicationClosing();
+                // Main_Frm's shutdown boundary sends ApplicationClosing as part
+                // of ShutdownRuntimeWithReceipt.  Do not publish a second
+                // protocol path here; it used to race the retention owner.
                 Interlocked.Exchange(ref _closingReentry, 2);
                 _ = BeginInvoke((Action)Close);
                 return;

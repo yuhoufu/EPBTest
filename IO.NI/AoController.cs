@@ -162,11 +162,22 @@ namespace IO.NI
         /// </summary>
         public void ResetAll()
         {
-            foreach (var name in _writers.Keys)
+            TryResetAll();
+        }
+
+        /// <summary>将所有 AO 通道复位为零，并返回每一路写入是否全部成功。</summary>
+        public bool TryResetAll()
+        {
+            var success = _cfg.Devices.Count > 0 && _writers.Count == _cfg.Devices.Count;
+            foreach (var name in _cfg.Devices.Keys)
             {
-                WritePressure(name, 0);
+                if (!WritePressure(name, 0)) success = false;
             }
-            _log.Info("AO 所有通道已复位为 0%。", "AO");
+            if (success)
+                _log.Info("AO 所有通道已复位为 0%。", "AO");
+            else
+                _log.Error("AO 冷启动安全基线写零失败；至少一路未确认归零。", "AO");
+            return success;
         }
 
         public void Dispose()

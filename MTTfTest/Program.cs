@@ -101,13 +101,28 @@ namespace MtEmbTest
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            Main_Frm mainForm = null;
             try
             {
-                Application.Run(new Main_Frm(recoveryIntent, watchdogRecoveryIntent));
+                mainForm = new Main_Frm(recoveryIntent, watchdogRecoveryIntent);
+                Application.Run(mainForm);
             }
             finally
             {
-                WatchdogRuntime.ShutdownLocalClient();
+                if (mainForm != null)
+                {
+                    try
+                    {
+                        mainForm.ShutdownWatchdogSessionAndReleaseUiAsync(
+                                "ApplicationExit")
+                            .GetAwaiter()
+                            .GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        TryWriteFatalLog("MainOwnedWatchdogShutdown", ex);
+                    }
+                }
                 ProjectLogHub.Flush(true);
                 ProjectLogHub.Shutdown();
             }

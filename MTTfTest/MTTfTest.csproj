@@ -25,7 +25,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.13.0.17</ApplicationVersion>
+    <ApplicationVersion>2.13.0.21</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -154,6 +154,10 @@
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="FrmEpbMainMonitor.WatchdogUi.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FrmEpbMainMonitor.PowerSupply.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>
@@ -190,6 +194,11 @@
       <DependentUpon>Main_Frm.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Main_Frm.WatchdogUi.cs">
+      <DependentUpon>Main_Frm.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="MainWatchdogUiLifecycleAdapter.cs" />
     <Compile Include="Main_Frm.Designer.cs">
       <DependentUpon>Main_Frm.cs</DependentUpon>
     </Compile>
@@ -200,6 +209,20 @@
     <Compile Include="Program.cs" />
     <Compile Include="UnattendedRecovery.cs" />
     <Compile Include="WatchdogRuntime.cs" />
+    <Compile Include="WatchdogRuntime.CallbackPipeline.cs" />
+    <Compile Include="WatchdogRuntime.CallbackPipeline.Testing.cs" />
+    <Compile Include="ShutdownRetention.cs" />
+    <Compile Include="WatchdogRuntime.ShutdownRetentionCoordinator.cs" />
+    <Compile Include="WatchdogRuntime.ShutdownRetention.Testing.cs" />
+    <Compile Include="WinFormsWatchdogPostTarget.cs" />
+    <Compile Include="WinFormsWatchdogUiBindingCore.cs" />
+    <Compile Include="WinFormsWatchdogUiBindingTransaction.cs" />
+    <Compile Include="WinFormsWatchdogUiCloseCoordinator.cs" />
+    <Compile Include="WinFormsWatchdogUiEntryPolicy.cs" />
+    <Compile Include="WinFormsWatchdogUiEntryCoordinator.cs" />
+    <Compile Include="WinFormsWatchdogUiProductionSession.cs" />
+    <Compile Include="WinFormsWatchdogUiResourceOwner.cs" />
+    <Compile Include="WinFormsWatchdogStopHandlerCore.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="AxisRangeDialog.resx">
       <DependentUpon>AxisRangeDialog.cs</DependentUpon>
@@ -351,6 +374,10 @@
     <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">
       <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>
       <Name>Watchdog.Protocol</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Watchdog.Client\Watchdog.Client.csproj">
+      <Project>{4E6B3F5E-7C42-4A1C-9E02-7D9A3D4C8E61}</Project>
+      <Name>Watchdog.Client</Name>
     </ProjectReference>
     <ProjectReference Include="..\MTTFTest.Watchdog\MTTFTest.Watchdog.csproj">
       <Project>{DA67689F-B6CB-4F88-A728-8C405E321AEA}</Project>

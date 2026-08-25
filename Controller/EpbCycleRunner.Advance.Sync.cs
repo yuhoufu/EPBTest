@@ -238,7 +238,8 @@ namespace Controller
         {
             // —— 进入液压建压（与正式阶段保持一致；若无需求可保持幂等）——
             if (_manager != null)
-                await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
+                await _manager.HydraulicEnterAsync(_channel, _executionPermit, token)
+                    .ConfigureAwait(false);
 
             // ===================== 正向阶段（②~④ 合并为“直接夹紧判据”） =====================
             // ② 正向上电并忽略涌流去抖
@@ -398,7 +399,8 @@ namespace Controller
         {
             // —— 进入液压建压（与正式阶段保持一致；若无需求可保持幂等）——
             if (_manager != null)
-                await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
+                await _manager.HydraulicEnterAsync(_channel, _executionPermit, token)
+                    .ConfigureAwait(false);
 
             // ===================== 正向阶段（②~④ 合并为“直接夹紧判据”） =====================
             // ② 正向上电并忽略涌流去抖
