@@ -4957,6 +4957,11 @@ namespace Controller
             }
             _watchdogLastMechanicalCompletedUtcTicks[channel] = nowTicks;
             _watchdogMechanicalCompletedCount.AddOrUpdate(channel, 1, (_, value) => value + 1);
+            _watchdogChannelProgressVersion.AddOrUpdate(channel, 1, (_, value) =>
+                value >= long.MaxValue ? 1 : value + 1);
+            _watchdogLastProgressUtcTicks[channel] = nowTicks;
+            _watchdogProgressKind[channel] = ResolveWatchdogProgressKind(kind);
+            RequestWatchdogLogicalSourcePublish();
             NonCriticalObserver.Invoke(
                 ChannelMechanicalCycleCompleted,
                 channel,
@@ -4965,6 +4970,23 @@ namespace Controller
                 ex => _log?.Warn(
                     $"EPB[{channel}] 机械完成圈观察者异常已隔离：{ex.Message}",
                     "EPB"));
+        }
+
+        private static string ResolveWatchdogProgressKind(CycleAttemptKind kind)
+        {
+            switch (kind)
+            {
+                case CycleAttemptKind.Learning:
+                    return "Learning";
+                case CycleAttemptKind.Qualification:
+                    return "Qualification";
+                case CycleAttemptKind.FormalBatch:
+                case CycleAttemptKind.FormalSingle:
+                case CycleAttemptKind.FormalRecovery:
+                    return "FormalMechanical";
+                default:
+                    return kind.ToString();
+            }
         }
 
         private long GetObservedMechanicalCycleCount(int channel)

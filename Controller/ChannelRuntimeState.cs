@@ -389,6 +389,14 @@ namespace Controller
 
     public sealed class LogicalQuiescenceSnapshot
     {
+        /// <summary>
+        /// Monotonic revision of this logical source only.  Aggregate Version
+        /// may advance when DAQ/Stop/ownership sources publish and therefore
+        /// cannot prove that channel progress itself was refreshed.
+        /// </summary>
+        public long SourceVersion { get; set; }
+        /// <summary>UTC DateTime ticks at the logical-source commit point.</summary>
+        public long CapturedUtcTicks { get; set; }
         public bool BatchLifecycleBusy { get; set; }
         public bool BatchSessionActive { get; set; }
         public Guid ActiveBatchId { get; set; }
@@ -420,6 +428,8 @@ namespace Controller
         {
             return new LogicalQuiescenceSnapshot
             {
+                SourceVersion = SourceVersion,
+                CapturedUtcTicks = CapturedUtcTicks,
                 BatchLifecycleBusy = BatchLifecycleBusy,
                 BatchSessionActive = BatchSessionActive,
                 ActiveBatchId = ActiveBatchId,
@@ -508,6 +518,11 @@ namespace Controller
         public bool TimerActive { get; set; }
         public bool RunnerActive { get; set; }
         public bool Energized { get; set; }
+        /// <summary>Per-channel logical progress revision; unrelated aggregate commits never change it.</summary>
+        public long ProgressVersion { get; set; }
+        /// <summary>UTC ticks of the last mechanically meaningful progress event.</summary>
+        public long LastProgressUtcTicks { get; set; }
+        public string ProgressKind { get; set; } = string.Empty;
         public long LastMechanicalCompletedUtcTicks { get; set; }
         public long MechanicalCompletedCount { get; set; }
         public int ConsecutiveSoftwareAbortCount { get; set; }

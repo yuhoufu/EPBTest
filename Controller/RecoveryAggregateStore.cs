@@ -55,6 +55,7 @@ namespace Controller
         private long _retainedCommittedAggregateVersion;
         private long _retainedTerminalAggregateVersion;
         private LogicalQuiescenceSnapshot _logical = new LogicalQuiescenceSnapshot();
+        private long _logicalSourceVersion;
         private StopSafetyProgressSnapshot _stop = new StopSafetyProgressSnapshot();
         private InfrastructureRecoverySource _infrastructure =
             new InfrastructureRecoverySource();
@@ -280,7 +281,12 @@ namespace Controller
         {
             lock (_gate)
             {
-                _logical = logical?.Clone() ?? new LogicalQuiescenceSnapshot();
+                var committed = logical?.Clone() ?? new LogicalQuiescenceSnapshot();
+                unchecked { _logicalSourceVersion++; }
+                if (_logicalSourceVersion <= 0) _logicalSourceVersion = 1;
+                committed.SourceVersion = _logicalSourceVersion;
+                committed.CapturedUtcTicks = DateTime.UtcNow.Ticks;
+                _logical = committed;
                 return CommitLocked();
             }
         }

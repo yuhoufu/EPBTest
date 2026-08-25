@@ -690,6 +690,10 @@ namespace MTTFTest.Watchdog.Protocol
         /// progress; the sidecar must not use it to reset a recovery deadline.
         /// </summary>
         public long RecoveryAggregateSnapshotVersion { get; set; }
+        /// <summary>Logical/channel-progress source revision, independent of aggregate revision.</summary>
+        public long LogicalSourceVersion { get; set; }
+        /// <summary>UTC DateTime ticks at the logical source commit point.</summary>
+        public long LogicalCapturedUtcTicks { get; set; }
         /// <summary>控制器恢复流水线硬截止 UTC DateTime ticks。</summary>
         public long RecoveryHardDeadlineUtc { get; set; }
         /// <summary>恢复批次真正提交后递增，并在后续心跳重复发送直到 Sidecar 观察到。</summary>
@@ -793,6 +797,9 @@ namespace MTTFTest.Watchdog.Protocol
         public bool TimerActive { get; set; }
         public bool RunnerActive { get; set; }
         public bool Energized { get; set; }
+        public long ProgressVersion { get; set; }
+        public long LastProgressUtcTicks { get; set; }
+        public string ProgressKind { get; set; }
         public long LastMechanicalCompletedUtcTicks { get; set; }
         public long MechanicalCompletedCount { get; set; }
         public int ConsecutiveSoftwareAbortCount { get; set; }

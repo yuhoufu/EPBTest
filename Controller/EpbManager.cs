@@ -216,6 +216,9 @@ namespace Controller
             Enumerable.Range(0, 12).Select(_ => new object()).ToArray();
         private readonly ConcurrentDictionary<int, long> _watchdogLastMechanicalCompletedUtcTicks = new();
         private readonly ConcurrentDictionary<int, long> _watchdogMechanicalCompletedCount = new();
+        private readonly ConcurrentDictionary<int, long> _watchdogChannelProgressVersion = new();
+        private readonly ConcurrentDictionary<int, long> _watchdogLastProgressUtcTicks = new();
+        private readonly ConcurrentDictionary<int, string> _watchdogProgressKind = new();
         private readonly ConcurrentDictionary<int, long> _mechanicalCycleBaseline = new();
         private readonly ConcurrentDictionary<int, int> _watchdogConsecutiveSoftwareAborts = new();
         private readonly ConcurrentDictionary<int, long> _watchdogDoCommandSequence = new();
@@ -11476,6 +11479,9 @@ namespace Controller
                     var state = _channelRuntimeStateStore.Get(channel);
                     var warning = _channelWarningOverlayStore.Get(channel);
                     _watchdogLastMechanicalCompletedUtcTicks.TryGetValue(channel, out var completedUtc);
+                    _watchdogChannelProgressVersion.TryGetValue(channel, out var progressVersion);
+                    _watchdogLastProgressUtcTicks.TryGetValue(channel, out var lastProgressUtc);
+                    _watchdogProgressKind.TryGetValue(channel, out var progressKind);
                     var completedCount = GetObservedMechanicalCycleCount(channel);
                     _watchdogConsecutiveSoftwareAborts.TryGetValue(channel, out var aborts);
                     _watchdogDoCommandSequence.TryGetValue(channel, out var doSequence);
@@ -11495,6 +11501,9 @@ namespace Controller
                         TimerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel),
                         RunnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel),
                         Energized = IsChannelEnergized(channel),
+                        ProgressVersion = progressVersion,
+                        LastProgressUtcTicks = lastProgressUtc,
+                        ProgressKind = progressKind ?? string.Empty,
                         LastMechanicalCompletedUtcTicks = completedUtc,
                         MechanicalCompletedCount = completedCount,
                         ConsecutiveSoftwareAbortCount = aborts,

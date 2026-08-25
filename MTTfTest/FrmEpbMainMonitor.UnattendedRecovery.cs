@@ -297,6 +297,8 @@ namespace MTEmbTest
                 RecoveryProgressVersion = recoveryEvidence.ProgressVersion,
                 RecoveryAggregateSnapshotVersion =
                     RecoveryHeartbeatAggregateSource.CaptureVersion(aggregate),
+                LogicalSourceVersion = logical?.SourceVersion ?? 0,
+                LogicalCapturedUtcTicks = logical?.CapturedUtcTicks ?? 0,
                 RecoveryHardDeadlineUtc = recoveryEvidence.RecoveryHardDeadlineUtc,
                 RecoveryBatchCommitGeneration = Interlocked.Read(
                     ref _watchdogRecoveryBatchCommitGeneration),
@@ -385,6 +387,9 @@ namespace MTEmbTest
                             TimerActive = item.TimerActive,
                             RunnerActive = item.RunnerActive,
                             Energized = item.Energized,
+                            ProgressVersion = item.ProgressVersion,
+                            LastProgressUtcTicks = item.LastProgressUtcTicks,
+                            ProgressKind = item.ProgressKind,
                             LastMechanicalCompletedUtcTicks = item.LastMechanicalCompletedUtcTicks,
                             MechanicalCompletedCount = item.MechanicalCompletedCount,
                             ConsecutiveSoftwareAbortCount = item.ConsecutiveSoftwareAbortCount,

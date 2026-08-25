@@ -35,6 +35,16 @@ namespace AdaptiveControlTests
                 PhaseAwareRuntimeContractPreventsLearningFalseTakeover, ref passed);
             Run("资源缺失先请求结构化刷新再按同一签名接管",
                 StructuredRefreshPrecedesResourceTakeover, ref passed);
+            Run("逻辑源过期先刷新且禁止伪机械停滞接管",
+                StaleLogicalSourceCannotMasqueradeAsMechanicalStall, ref passed);
+            Run("真实机械停滞不被逻辑源持续刷新掩盖",
+                FreshLogicalSourceStillDetectsMechanicalStall, ref passed);
+            Run("进程与附着身份切换重置逐通道监督期限",
+                ProcessIdentityChangeResetsChannelDeadline, ref passed);
+            Run("逻辑源提交版本独立于总聚合版本",
+                LogicalSourceCommitIsVersionedIndependently, ref passed);
+            Run("SafeIdle取消与终止授权一万次交错保持线性化",
+                SafeIdleCancellationIsLinearizable, ref passed);
             Run("运行资源不变量按Run与契约签名独立去抖",
                 RuntimeInvariantTimingUsesRunAndContractIdentity, ref passed);
             Run("恢复态使用owner与成对资源契约而非正式Timer契约",
@@ -106,7 +116,9 @@ namespace AdaptiveControlTests
                     HardwareFailureFingerprint = "PowerSafetyProbe|Group1|IDN",
                     ActiveCycleCount = 5,
                     TimerCount = 10,
-                    RunnerCount = 10
+                    RunnerCount = 10,
+                    LogicalSourceVersion = 17,
+                    LogicalCapturedUtcTicks = 7654321
                 }
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
@@ -125,10 +137,12 @@ namespace AdaptiveControlTests
                    roundTrip.Heartbeat.ManualPauseProgressVersion == 9 &&
                    roundTrip.Heartbeat.ManualPauseEnergizedChannels.Length == 2 &&
                    roundTrip.Heartbeat.HardwareUnavailable &&
-                   roundTrip.Heartbeat.HardwareFailureFingerprint.Contains("Group1") &&
-                   roundTrip.Heartbeat.TimerCount == 10 &&
-                   roundTrip.Heartbeat.ActiveCycleCount == 5,
-                "v2停止字段未能序列化往返");
+                    roundTrip.Heartbeat.HardwareFailureFingerprint.Contains("Group1") &&
+                    roundTrip.Heartbeat.TimerCount == 10 &&
+                    roundTrip.Heartbeat.ActiveCycleCount == 5 &&
+                    roundTrip.Heartbeat.LogicalSourceVersion == 17 &&
+                    roundTrip.Heartbeat.LogicalCapturedUtcTicks == 7654321,
+                 "v2停止字段未能序列化往返");
 
             var v1 = WatchdogProtocol.Deserialize(
                 "{\"ProtocolVersion\":1,\"Type\":\"Heartbeat\",\"SessionId\":\"v1\"," +
@@ -607,6 +621,221 @@ namespace AdaptiveControlTests
                 heartbeat, new[] { 4 }, false, started + 20000, frequency);
             Assert(!healthy.RefreshRequested && string.IsNullOrEmpty(healthy.TakeoverReason),
                 "Running Timer/Runner均健康仍触发刷新或接管");
+        }
+
+        private static void StaleLogicalSourceCannotMasqueradeAsMechanicalStall()
+        {
+            const long frequency = 1000;
+            const long started = 500000;
+            var utc = new DateTime(2026, 8, 25, 1, 0, 0, DateTimeKind.Utc).Ticks;
+            var tracker = new WatchdogChannelProgressTracker();
+            var progress = ContractProgress("Running", timer: true, runner: true);
+            progress.ProgressVersion = 1;
+            progress.MechanicalCompletedCount = 3;
+            progress.LastMechanicalCompletedUtcTicks = utc - TimeSpan.TicksPerSecond * 60;
+            var heartbeat = new WatchdogHeartbeat
+            {
+                SessionId = "logical-stale",
+                ProcessId = 12004,
+                ProcessStartUtcTicks = utc - TimeSpan.TicksPerHour,
+                AttachEpoch = 7,
+                RunActive = true,
+                RunId = "field-v21",
+                RunEpoch = 21,
+                ExpectedCyclePeriodMs = 15000,
+                LogicalSourceVersion = 1,
+                LogicalCapturedUtcTicks = utc - TimeSpan.TicksPerSecond * 4,
+                ChannelProgress = new[] { progress }
+            };
+
+            var first = tracker.EvaluateDetailed(
+                heartbeat, new[] { 4 }, false, started, frequency, utc);
+            Assert(first.RefreshRequested &&
+                   first.RefreshReason.Contains("WatchdogLogicalSourceStale") &&
+                   string.IsNullOrEmpty(first.TakeoverReason),
+                "过期逻辑源首次观察没有先请求Ping刷新");
+
+            var persisted = tracker.EvaluateDetailed(
+                heartbeat,
+                new[] { 4 },
+                false,
+                started + 5000,
+                frequency,
+                utc + TimeSpan.TicksPerSecond * 5);
+            Assert(persisted.TakeoverReason.Contains("WatchdogLogicalSourceStale") &&
+                   !persisted.TakeoverReason.Contains("ChannelProgressStalled"),
+                "旧逻辑源被错误解释成通道机械停滞");
+
+            heartbeat.LogicalSourceVersion = 2;
+            heartbeat.LogicalCapturedUtcTicks = utc + TimeSpan.TicksPerSecond * 6;
+            progress.ProgressVersion = 2;
+            progress.MechanicalCompletedCount = 4;
+            progress.LastMechanicalCompletedUtcTicks = utc + TimeSpan.TicksPerSecond * 6;
+            var refreshed = tracker.EvaluateDetailed(
+                heartbeat,
+                new[] { 4 },
+                false,
+                started + 6000,
+                frequency,
+                utc + TimeSpan.TicksPerSecond * 6);
+            Assert(!refreshed.RefreshRequested && string.IsNullOrEmpty(refreshed.TakeoverReason),
+                "Ping后的新逻辑源未能解除旧源冻结状态");
+
+            var rollbackClock = tracker.EvaluateDetailed(
+                heartbeat,
+                new[] { 4 },
+                false,
+                started + 10001,
+                frequency,
+                utc - TimeSpan.TicksPerMinute);
+            Assert(rollbackClock.RefreshRequested &&
+                   rollbackClock.RefreshReason.Contains("WatchdogLogicalSourceStale"),
+                "墙钟回拨时未用单调观察时长发现逻辑源停止发布");
+        }
+
+        private static void FreshLogicalSourceStillDetectsMechanicalStall()
+        {
+            const long frequency = 1000;
+            const long started = 600000;
+            var utc = new DateTime(2026, 8, 25, 2, 0, 0, DateTimeKind.Utc).Ticks;
+            var tracker = new WatchdogChannelProgressTracker();
+            var progress = ContractProgress("Running", timer: true, runner: true);
+            progress.ProgressVersion = 10;
+            progress.MechanicalCompletedCount = 10;
+            progress.LastMechanicalCompletedUtcTicks = utc;
+            var heartbeat = new WatchdogHeartbeat
+            {
+                SessionId = "real-stall",
+                ProcessId = 13000,
+                ProcessStartUtcTicks = utc - TimeSpan.TicksPerHour,
+                AttachEpoch = 2,
+                RunActive = true,
+                RunId = "real-stall-run",
+                RunEpoch = 1,
+                ExpectedCyclePeriodMs = 15000,
+                LogicalSourceVersion = 10,
+                LogicalCapturedUtcTicks = utc,
+                ChannelProgress = new[] { progress }
+            };
+            Assert(string.IsNullOrEmpty(tracker.Evaluate(
+                       heartbeat, new[] { 4 }, false, started, frequency, utc)),
+                "真实停滞首样本不应立即接管");
+
+            // Logical source continues to publish, but the mechanically
+            // meaningful per-channel signature does not change.
+            heartbeat.LogicalSourceVersion = 130;
+            heartbeat.LogicalCapturedUtcTicks = utc + TimeSpan.TicksPerSecond * 60;
+            var stalled = tracker.Evaluate(
+                heartbeat,
+                new[] { 4 },
+                false,
+                started + 60000,
+                frequency,
+                utc + TimeSpan.TicksPerSecond * 60);
+            Assert(stalled?.Contains("ChannelProgressStalled:EPB=4") == true,
+                "持续刷新逻辑源错误掩盖了真实机械停滞");
+        }
+
+        private static void ProcessIdentityChangeResetsChannelDeadline()
+        {
+            const long frequency = 1000;
+            const long started = 700000;
+            var utc = new DateTime(2026, 8, 25, 3, 0, 0, DateTimeKind.Utc).Ticks;
+            var tracker = new WatchdogChannelProgressTracker();
+            var progress = ContractProgress("Running", timer: true, runner: true);
+            progress.ProgressVersion = 1;
+            var heartbeat = new WatchdogHeartbeat
+            {
+                SessionId = "identity-reset",
+                ProcessId = 1,
+                ProcessStartUtcTicks = utc - TimeSpan.TicksPerHour,
+                AttachEpoch = 1,
+                RunActive = true,
+                RunId = "same-run-text",
+                RunEpoch = 9,
+                ExpectedCyclePeriodMs = 15000,
+                LogicalSourceVersion = 1,
+                LogicalCapturedUtcTicks = utc,
+                ChannelProgress = new[] { progress }
+            };
+            tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency, utc);
+
+            heartbeat.ProcessId = 2;
+            heartbeat.ProcessStartUtcTicks = utc + TimeSpan.TicksPerSecond * 30;
+            heartbeat.AttachEpoch = 2;
+            heartbeat.LogicalSourceVersion = 2;
+            heartbeat.LogicalCapturedUtcTicks = utc + TimeSpan.TicksPerSecond * 60;
+            Assert(string.IsNullOrEmpty(tracker.Evaluate(
+                       heartbeat,
+                       new[] { 4 },
+                       false,
+                       started + 60000,
+                       frequency,
+                       utc + TimeSpan.TicksPerSecond * 60)),
+                "新PID/start/attach继承了旧进程的机械停滞期限");
+        }
+
+        private static void LogicalSourceCommitIsVersionedIndependently()
+        {
+            var store = new RecoveryAggregateStore();
+            var first = store.PublishLogicalSource(new LogicalQuiescenceSnapshot());
+            var second = store.PublishLogicalSource(new LogicalQuiescenceSnapshot());
+            var unrelated = store.PublishOperationalSources(
+                new InfrastructureRecoverySource(),
+                new PowerRecoverySource(),
+                new TimerRecoverySource());
+            Assert(first.Logical.SourceVersion == 1 &&
+                   second.Logical.SourceVersion == 2 &&
+                   second.Logical.CapturedUtcTicks > 0 &&
+                   unrelated.Version > second.Version &&
+                   unrelated.Logical.SourceVersion == second.Logical.SourceVersion &&
+                   unrelated.Logical.CapturedUtcTicks == second.Logical.CapturedUtcTicks,
+                "DAQ/Stop/ownership以外的聚合提交错误伪造了逻辑源刷新");
+        }
+
+        private static void SafeIdleCancellationIsLinearizable()
+        {
+            var coordinator = new TakeoverTransactionCoordinator();
+            long previousGeneration = 0;
+            for (var iteration = 0; iteration < 10000; iteration++)
+            {
+                Assert(coordinator.TryBegin(
+                           "corr-" + iteration,
+                           "authority-" + iteration,
+                           out var lease),
+                    "接管事务代次未能创建");
+                Assert(lease.Generation > previousGeneration &&
+                       coordinator.TryAdvance(lease, TakeoverTransactionStage.DumpCapture),
+                    "接管代次未单调递增或未进入dump前检查点");
+                previousGeneration = lease.Generation;
+
+                var terminationExecuted = false;
+                bool cancelled;
+                bool terminationAuthorized;
+                if ((iteration & 1) == 0)
+                {
+                    cancelled = coordinator.TryCancel("SafeIdle", out _);
+                    terminationAuthorized = coordinator.TryExecute(
+                        lease,
+                        TakeoverTransactionStage.ProcessTermination,
+                        () => terminationExecuted = true,
+                        out _);
+                }
+                else
+                {
+                    terminationAuthorized = coordinator.TryExecute(
+                        lease,
+                        TakeoverTransactionStage.ProcessTermination,
+                        () => terminationExecuted = true,
+                        out _);
+                    cancelled = coordinator.TryCancel("SafeIdle", out _);
+                }
+
+                Assert(cancelled != terminationAuthorized &&
+                       terminationExecuted == terminationAuthorized,
+                    "SafeIdle取消与kill授权同时获胜，违反线性化不变量");
+                coordinator.Complete(lease);
+            }
         }
 
         private static void RuntimeInvariantTimingUsesRunAndContractIdentity()
@@ -1240,6 +1469,9 @@ namespace AdaptiveControlTests
                         DoCommandSequence = 456,
                         PeakCutoffGeneration = 12,
                         PeakCutoffSequence = 455,
+                        ProgressVersion = 88,
+                        LastProgressUtcTicks = 876543,
+                        ProgressKind = "Learning",
                         LifecyclePhase = "Learning",
                         RuntimeContractRevision = WatchdogRuntimeContractPolicy.CurrentRevision,
                         MechanicalProgressExpected = true,
@@ -1271,9 +1503,12 @@ namespace AdaptiveControlTests
             Assert(roundTrip.Heartbeat.ManualPausePending &&
                    roundTrip.Heartbeat.ChannelProgress.Length == 1 &&
                    roundTrip.Heartbeat.ChannelProgress[0].MechanicalCompletedCount == 123 &&
-                   roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffGeneration == 12 &&
-                   roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffSequence == 455 &&
-                   roundTrip.Heartbeat.ChannelProgress[0].LifecyclePhase == "Learning" &&
+                    roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffGeneration == 12 &&
+                    roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffSequence == 455 &&
+                    roundTrip.Heartbeat.ChannelProgress[0].ProgressVersion == 88 &&
+                    roundTrip.Heartbeat.ChannelProgress[0].LastProgressUtcTicks == 876543 &&
+                    roundTrip.Heartbeat.ChannelProgress[0].ProgressKind == "Learning" &&
+                    roundTrip.Heartbeat.ChannelProgress[0].LifecyclePhase == "Learning" &&
                    roundTrip.Heartbeat.ChannelProgress[0].RuntimeContractRevision ==
                        WatchdogRuntimeContractPolicy.CurrentRevision &&
                    roundTrip.Heartbeat.ChannelProgress[0].RunnerRequired &&

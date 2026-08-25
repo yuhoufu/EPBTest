@@ -156,6 +156,8 @@ namespace MTTFTest.Watchdog
         private readonly object _journalGate = new object();
         private readonly WatchdogChannelProgressTracker _channelProgressTracker =
             new WatchdogChannelProgressTracker();
+        private readonly TakeoverTransactionCoordinator _automaticTakeover =
+            new TakeoverTransactionCoordinator();
         private readonly WatchdogJournalStore _journalStore;
         // Strict V4 is the sole relaunch authority for production Host.
         // Legacy adapters remain in the project only for isolated migration
@@ -570,6 +572,7 @@ namespace MTTFTest.Watchdog
                     }
                     if (!sameAuthorityReconnect)
                     {
+                        CancelAutomaticTakeover("ValidatedNewProcessAttached");
                         _takeoverStarted = 0;
                         _activeTakeoverCorrelationId = string.Empty;
                         _relaunchStarted = 0;
@@ -660,6 +663,8 @@ namespace MTTFTest.Watchdog
                     }
                     _attached = true;
                     Interlocked.Exchange(ref _heartbeatSuspectLogged, 0);
+                    message.Heartbeat.AttachEpoch = Volatile.Read(
+                        ref _validatedAttachEpoch);
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
                     _journal.CurrentProcessStartUtcTicks = message.Heartbeat.ProcessStartUtcTicks;
                     _journal.LastHeartbeat = message.Heartbeat;
@@ -776,6 +781,9 @@ namespace MTTFTest.Watchdog
                     }
                     else
                     {
+                        CancelAutomaticTakeover(
+                            "BatchStartFailedSafeIdle:" +
+                            BatchStartTakeoverPolicy.DescribeRejection(message.BatchStartFailure));
                         Record(
                             "BatchStartFailedSafeIdle",
                             $"TakeoverRejected={BatchStartTakeoverPolicy.DescribeRejection(message.BatchStartFailure)};" +
@@ -873,6 +881,7 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.ManualStopIntent:
                 case WatchdogMessageType.ManualStopRequested:
                     _journal.ManualStopRequested = true;
+                    CancelAutomaticTakeover("ManualStopIntent");
                     Interlocked.CompareExchange(
                         ref _manualStopIntentTimestamp,
                         Stopwatch.GetTimestamp(),
@@ -1106,12 +1115,20 @@ namespace MTTFTest.Watchdog
                         eligibleChannels);
                     if (channelSupervision.RefreshRequested)
                     {
+                        var logicalSourceRefresh =
+                            channelSupervision.RefreshReason?.StartsWith(
+                                "WatchdogLogicalSourceStale",
+                                StringComparison.Ordinal) == true;
                         RecordEvent(
-                            "ChannelRuntimeContractRefreshRequested",
+                            logicalSourceRefresh
+                                ? "WatchdogLogicalSourceRefreshRequested"
+                                : "ChannelRuntimeContractRefreshRequested",
                             channelSupervision.RefreshReason);
                         Send(
                             WatchdogMessageType.Ping,
-                            "ChannelRuntimeContractRefreshRequested:" +
+                            (logicalSourceRefresh
+                                ? "WatchdogLogicalSourceRefreshRequested:"
+                                : "ChannelRuntimeContractRefreshRequested:") +
                             channelSupervision.RefreshReason,
                             null);
                     }
@@ -1225,8 +1242,26 @@ namespace MTTFTest.Watchdog
         {
             if (_journal.RecoveryBlocked || _journal.ManualStopRequested || IsSessionRevoked() ||
                 Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0) return;
-            Record("TakeoverRequested", reason);
             var correlationId = Guid.NewGuid().ToString("N");
+            var authorityIdentity = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}:{1}:{2}:{3}:{4}",
+                _args.SessionId ?? string.Empty,
+                _journal.CurrentPid,
+                _journal.CurrentProcessStartUtcTicks,
+                Volatile.Read(ref _validatedAttachEpoch),
+                _journal.RunId ?? string.Empty);
+            if (!_automaticTakeover.TryBegin(
+                    correlationId,
+                    authorityIdentity,
+                    out var transaction))
+            {
+                Interlocked.Exchange(ref _takeoverStarted, 0);
+                return;
+            }
+            Record(
+                "TakeoverRequested",
+                $"{reason};Generation={transaction.Generation};Authority={authorityIdentity}");
             _activeTakeoverCorrelationId = correlationId;
             Interlocked.Exchange(ref _transitionActive, 1);
             _transitionWindow.Show(
@@ -1235,7 +1270,26 @@ namespace MTTFTest.Watchdog
                 0,
                 _journal.RecoveryAttempt + 1);
             Send(WatchdogMessageType.RequestStopAll, reason, correlationId);
-            _ = Task.Run(() => TakeoverAsync(reason));
+            _ = Task.Run(() => TakeoverAsync(reason, transaction));
+        }
+
+        private void CancelAutomaticTakeover(string reason)
+        {
+            if (!_automaticTakeover.TryCancel(reason, out var cancelled)) return;
+            Record(
+                "TakeoverCancelled",
+                $"Reason={reason};Generation={cancelled.Generation};" +
+                $"CorrelationId={cancelled.CorrelationId};" +
+                $"Stage={cancelled.CancelledFromStage}");
+            if (string.Equals(
+                    _activeTakeoverCorrelationId,
+                    cancelled.CorrelationId,
+                    StringComparison.Ordinal))
+                _activeTakeoverCorrelationId = string.Empty;
+            Interlocked.Exchange(ref _takeoverStarted, 0);
+            Interlocked.Exchange(ref _transitionActive, 0);
+            _channelProgressTracker.Reset();
+            _transitionWindow.Hide();
         }
 
         private void DispatchStopSafetySupervisorTakeover(string reason)
@@ -1257,7 +1311,8 @@ namespace MTTFTest.Watchdog
                 eligibleChannels,
                 manualPauseCommanded,
                 Stopwatch.GetTimestamp(),
-                Stopwatch.Frequency);
+                Stopwatch.Frequency,
+                DateTime.UtcNow.Ticks);
         }
 
         private void BeginManualStopTakeover(string reason)
@@ -1409,44 +1464,100 @@ namespace MTTFTest.Watchdog
             return true;
         }
 
-        private async Task TakeoverAsync(string reason)
+        private async Task TakeoverAsync(
+            string reason,
+            TakeoverTransactionLease transaction)
         {
-            _transitionWindow.Show(
-                "正在确认设备安全状态",
-                "等待原程序完成全断能并退出。原因：" + DescribeRecoveryReason(reason),
-                0,
-                _journal.RecoveryAttempt + 1);
-            var deadline = DateTime.UtcNow.AddSeconds(15);
-            while (!_journal.ManualStopRequested && !IsSessionRevoked() && DateTime.UtcNow < deadline)
+            try
             {
-                if (!IsCurrentProcessAlive()) break;
-                await Task.Delay(250).ConfigureAwait(false);
-            }
-            if (_journal.ManualStopRequested || IsSessionRevoked()) return;
-            if (!IsSessionRevoked() && !_journal.ManualStopRequested && IsCurrentProcessAlive())
-            {
-                try
+                _transitionWindow.Show(
+                    "正在确认设备安全状态",
+                    "等待原程序完成全断能并退出。原因：" + DescribeRecoveryReason(reason),
+                    0,
+                    _journal.RecoveryAttempt + 1);
+                var deadline = DateTime.UtcNow.AddSeconds(15);
+                while (!_journal.ManualStopRequested &&
+                       !IsSessionRevoked() &&
+                       DateTime.UtcNow < deadline)
                 {
-                    using (var process = Process.GetProcessById(_journal.CurrentPid))
+                    if (!IsCurrentProcessAlive()) break;
+                    await Task.Delay(250, transaction.CancellationToken).ConfigureAwait(false);
+                }
+                if (_journal.ManualStopRequested ||
+                    IsSessionRevoked() ||
+                    !_automaticTakeover.IsAuthorized(transaction))
+                    return;
+
+                if (!IsSessionRevoked() && !_journal.ManualStopRequested && IsCurrentProcessAlive())
+                {
+                    try
                     {
-                        if (WatchdogProcessIdentityPolicy.CanKillOldProcess(
-                                IsSessionRevoked(),
-                                _journal.ManualStopRequested,
-                                MatchesCurrentProcess(process)))
+                        using (var process = Process.GetProcessById(_journal.CurrentPid))
                         {
+                            if (!WatchdogProcessIdentityPolicy.CanKillOldProcess(
+                                    IsSessionRevoked(),
+                                    _journal.ManualStopRequested,
+                                    MatchesCurrentProcess(process)) ||
+                                !_automaticTakeover.TryAdvance(
+                                    transaction,
+                                    TakeoverTransactionStage.DumpCapture))
+                                return;
                             await CaptureMiniDumpBeforeTerminationAsync(process, "AutomaticTakeover:" + reason)
                                 .ConfigureAwait(false);
-                            process.Kill();
-                            process.WaitForExit(5000);
+                            if (!_automaticTakeover.IsAuthorized(transaction)) return;
+                            if (!_automaticTakeover.TryExecute(
+                                    transaction,
+                                    TakeoverTransactionStage.ProcessTermination,
+                                    () =>
+                                    {
+                                        process.Kill();
+                                        process.WaitForExit(5000);
+                                        return true;
+                                    },
+                                    out var terminated) ||
+                                !terminated)
+                                return;
                             Record("OldProcessTerminated", reason);
                         }
                     }
+                    catch (OperationCanceledException) { return; }
+                    catch (Exception ex)
+                    {
+                        Record("OldProcessTerminationFailed", ex.Message);
+                        return;
+                    }
                 }
-                catch (Exception ex) { Record("OldProcessTerminationFailed", ex.Message); }
-            }
-            var permitGeneration = ApproveRelaunchPermit(reason);
-            if (permitGeneration > 0)
+
+                if (_journal.ManualStopRequested ||
+                    IsSessionRevoked() ||
+                    !_automaticTakeover.IsAuthorized(transaction))
+                    return;
+                if (!_automaticTakeover.TryExecute(
+                        transaction,
+                        TakeoverTransactionStage.RelaunchPermit,
+                        () => ApproveRelaunchPermit(reason),
+                        out var permitGeneration) ||
+                    permitGeneration <= 0)
+                    return;
+                if (!_automaticTakeover.TryAdvance(
+                        transaction,
+                        TakeoverTransactionStage.Relaunching))
+                    return;
                 await RelaunchLoopAsync(reason, permitGeneration).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // SafeIdle/manual-stop cancellation is an expected terminal
+                // outcome for this generation, not a takeover failure.
+            }
+            catch (Exception ex)
+            {
+                Record("TakeoverTransactionFailed", ex.GetBaseException().Message);
+            }
+            finally
+            {
+                _automaticTakeover.Complete(transaction);
+            }
         }
 
         private void BeginRelaunchAfterExit(long approvedPermitGeneration = 0)

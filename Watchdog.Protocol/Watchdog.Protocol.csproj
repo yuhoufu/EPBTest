@@ -29,6 +29,7 @@
     <Compile Include="WatchdogProtocol.cs" />
     <Compile Include="StopSafetyHeartbeatProjection.cs" />
     <Compile Include="WatchdogPolicy.cs" />
+    <Compile Include="TakeoverTransactionCoordinator.cs" />
     <Compile Include="SidecarIdentityStateMachine.cs" />
     <Compile Include="SidecarProcessHandleOwner.cs" />
     <Compile Include="DurableRelaunchPermit.cs" />

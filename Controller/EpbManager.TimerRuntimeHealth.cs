@@ -310,11 +310,16 @@ namespace Controller
 
         private void InspectTimerRuntimeHealth(object state)
         {
-            if (!IsBatchSessionActive ||
-                Interlocked.Exchange(ref _timerRuntimeWatchdogBusy, 1) != 0)
+            if (Interlocked.Exchange(ref _timerRuntimeWatchdogBusy, 1) != 0)
                 return;
             try
             {
+                // The immutable watchdog aggregate must have its own current
+                // logical source.  Heartbeat capture intentionally never scans
+                // live controller dictionaries, so publish here as the bounded
+                // periodic backstop for event-driven progress publications.
+                PublishWatchdogLogicalSourceBestEffort("TimerRuntimeHealth");
+                if (!IsBatchSessionActive) return;
                 TryLogFieldRuntimeMetrics();
                 var nowUtc = DateTime.UtcNow;
                 InspectRecoveringRuntimeInvariants();
@@ -367,6 +372,41 @@ namespace Controller
             finally
             {
                 Volatile.Write(ref _timerRuntimeWatchdogBusy, 0);
+            }
+        }
+
+        private int _watchdogLogicalPublishQueued;
+
+        private void RequestWatchdogLogicalSourcePublish()
+        {
+            if (Interlocked.CompareExchange(ref _watchdogLogicalPublishQueued, 1, 0) != 0)
+                return;
+            var queued = ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    PublishWatchdogLogicalSourceBestEffort("MechanicalCycleCompleted");
+                }
+                finally
+                {
+                    Volatile.Write(ref _watchdogLogicalPublishQueued, 0);
+                }
+            });
+            if (!queued)
+                Volatile.Write(ref _watchdogLogicalPublishQueued, 0);
+        }
+
+        private void PublishWatchdogLogicalSourceBestEffort(string source)
+        {
+            try
+            {
+                CaptureLogicalQuiescenceSnapshot();
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn(
+                    $"Watchdog逻辑源发布异常已隔离：Source={source};Error={ex.Message}",
+                    "Watchdog");
             }
         }
 

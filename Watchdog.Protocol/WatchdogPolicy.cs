@@ -1010,6 +1010,13 @@ namespace MTTFTest.Watchdog.Protocol
         private readonly Dictionary<int, string> _refreshRequestedSignatures =
             new Dictionary<int, string>();
         private string _runIdentity = string.Empty;
+        private string _logicalSourceIdentity = string.Empty;
+        private long _logicalSourceObservedTimestamp;
+        private string _staleLogicalSourceIdentity = string.Empty;
+        private long _staleLogicalSourceObservedTimestamp;
+
+        public const double LogicalSourceFreshnessSeconds = 3d;
+        public const double LogicalSourceRefreshGraceSeconds = 5d;
 
         public void Reset()
         {
@@ -1021,6 +1028,10 @@ namespace MTTFTest.Watchdog.Protocol
                 _invariantSignatures.Clear();
                 _refreshRequestedSignatures.Clear();
                 _runIdentity = string.Empty;
+                _logicalSourceIdentity = string.Empty;
+                _logicalSourceObservedTimestamp = 0;
+                _staleLogicalSourceIdentity = string.Empty;
+                _staleLogicalSourceObservedTimestamp = 0;
             }
         }
 
@@ -1029,14 +1040,16 @@ namespace MTTFTest.Watchdog.Protocol
             IEnumerable<int> eligibleChannels,
             bool manualPauseCommanded,
             long nowTimestamp,
-            long timestampFrequency)
+            long timestampFrequency,
+            long nowUtcTicks = 0)
         {
             return EvaluateDetailed(
                 heartbeat,
                 eligibleChannels,
                 manualPauseCommanded,
                 nowTimestamp,
-                timestampFrequency).TakeoverReason;
+                timestampFrequency,
+                nowUtcTicks).TakeoverReason;
         }
 
         public WatchdogChannelSupervisionEvaluation EvaluateDetailed(
@@ -1044,7 +1057,8 @@ namespace MTTFTest.Watchdog.Protocol
             IEnumerable<int> eligibleChannels,
             bool manualPauseCommanded,
             long nowTimestamp,
-            long timestampFrequency)
+            long timestampFrequency,
+            long nowUtcTicks = 0)
         {
             if (heartbeat == null || manualPauseCommanded)
                 return new WatchdogChannelSupervisionEvaluation();
@@ -1055,7 +1069,11 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 var runIdentity = string.Format(
                     CultureInfo.InvariantCulture,
-                    "{0}:{1}",
+                    "{0}:{1}:{2}:{3}:{4}:{5}",
+                    heartbeat.SessionId ?? string.Empty,
+                    heartbeat.ProcessId,
+                    heartbeat.ProcessStartUtcTicks,
+                    heartbeat.AttachEpoch,
                     heartbeat.RunId ?? string.Empty,
                     heartbeat.RunEpoch);
                 if (!string.Equals(_runIdentity, runIdentity, StringComparison.Ordinal))
@@ -1065,7 +1083,86 @@ namespace MTTFTest.Watchdog.Protocol
                     _invariantTimestamps.Clear();
                     _invariantSignatures.Clear();
                     _refreshRequestedSignatures.Clear();
+                    _logicalSourceIdentity = string.Empty;
+                    _logicalSourceObservedTimestamp = 0;
+                    _staleLogicalSourceIdentity = string.Empty;
+                    _staleLogicalSourceObservedTimestamp = 0;
                     _runIdentity = runIdentity;
+                }
+
+                // v4 fields are additive: legacy peers leave both values at 0
+                // and retain the old supervision behavior.  A current peer
+                // must prove that the logical/channel-progress source itself
+                // was committed recently; aggregate traffic from DAQ or Stop
+                // is not accepted as a substitute.
+                if (heartbeat.LogicalSourceVersion > 0 &&
+                    heartbeat.LogicalCapturedUtcTicks > 0 &&
+                    nowUtcTicks > 0)
+                {
+                    var logicalSourceIdentity = string.Format(
+                        CultureInfo.InvariantCulture,
+                        "{0}:{1}",
+                        heartbeat.LogicalSourceVersion,
+                        heartbeat.LogicalCapturedUtcTicks);
+                    if (!string.Equals(
+                            _logicalSourceIdentity,
+                            logicalSourceIdentity,
+                            StringComparison.Ordinal))
+                    {
+                        _logicalSourceIdentity = logicalSourceIdentity;
+                        _logicalSourceObservedTimestamp = nowTimestamp;
+                    }
+                    var sourceWallClockAgeSeconds = Math.Max(
+                        0d,
+                        (nowUtcTicks - heartbeat.LogicalCapturedUtcTicks) /
+                        (double)TimeSpan.TicksPerSecond);
+                    var sourceMonotonicAgeSeconds = Math.Max(
+                        0d,
+                        (nowTimestamp - _logicalSourceObservedTimestamp) /
+                        (double)frequency);
+                    if (sourceWallClockAgeSeconds > LogicalSourceFreshnessSeconds ||
+                        sourceMonotonicAgeSeconds > LogicalSourceFreshnessSeconds)
+                    {
+                        var staleIdentity = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0}:{1}:{2}",
+                            runIdentity,
+                            heartbeat.LogicalSourceVersion,
+                            heartbeat.LogicalCapturedUtcTicks);
+                        var staleReason = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "WatchdogLogicalSourceStale:Version={0};CapturedUtcTicks={1};" +
+                            "WallClockAgeSeconds={2:F1};MonotonicAgeSeconds={3:F1}",
+                            heartbeat.LogicalSourceVersion,
+                            heartbeat.LogicalCapturedUtcTicks,
+                            sourceWallClockAgeSeconds,
+                            sourceMonotonicAgeSeconds);
+                        if (!string.Equals(
+                                _staleLogicalSourceIdentity,
+                                staleIdentity,
+                                StringComparison.Ordinal))
+                        {
+                            _staleLogicalSourceIdentity = staleIdentity;
+                            _staleLogicalSourceObservedTimestamp = nowTimestamp;
+                            return Refresh(staleReason);
+                        }
+
+                        var staleObservedAge =
+                            (nowTimestamp - _staleLogicalSourceObservedTimestamp) /
+                            (double)frequency;
+                        if (staleObservedAge >= LogicalSourceRefreshGraceSeconds)
+                            return Takeover(staleReason + string.Format(
+                                CultureInfo.InvariantCulture,
+                                ";RefreshGraceSeconds={0:F1}",
+                                staleObservedAge));
+
+                        // While the source is stale, never charge a channel
+                        // mechanical deadline from the obsolete snapshot.
+                        return new WatchdogChannelSupervisionEvaluation();
+                    }
+
+                    _staleLogicalSourceIdentity = string.Empty;
+                    _staleLogicalSourceObservedTimestamp = 0;
                 }
 
                 foreach (var item in heartbeat.ChannelProgress ?? Array.Empty<WatchdogChannelProgress>())
@@ -1101,7 +1198,11 @@ namespace MTTFTest.Watchdog.Protocol
                         // failure this supervisor is required to catch.
                         var mechanicalSignature = string.Format(
                             CultureInfo.InvariantCulture,
-                            "{0}:{1}",
+                            "{0}:{1}:{2}:{3}:{4}:{5}",
+                            item.LifecyclePhase ?? item.State ?? string.Empty,
+                            item.RuntimeContractRevision,
+                            item.ProgressKind ?? string.Empty,
+                            item.ProgressVersion,
                             item.MechanicalCompletedCount,
                             item.LastMechanicalCompletedUtcTicks);
                         if (!_mechanicalSignatures.TryGetValue(item.Channel, out var previous) ||
