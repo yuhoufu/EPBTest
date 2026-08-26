@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +13,55 @@ namespace Controller
     /// </summary>
     internal sealed class RecoveryTaskRegistry
     {
+        internal enum DrainResidueKind
+        {
+            ReservationOnly = 0,
+            WorkerRunning = 1,
+            WorkerCompletedWithoutTerminal = 2
+        }
+
+        internal sealed class DrainResidue
+        {
+            internal DrainResidue(
+                long id,
+                string operation,
+                long runEpoch,
+                IEnumerable<int> channels,
+                DrainResidueKind kind)
+            {
+                Id = id;
+                Operation = operation ?? string.Empty;
+                RunEpoch = runEpoch;
+                Channels = (channels ?? Array.Empty<int>()).ToArray();
+                Kind = kind;
+            }
+
+            internal long Id { get; }
+            internal string Operation { get; }
+            internal long RunEpoch { get; }
+            internal IReadOnlyList<int> Channels { get; }
+            internal DrainResidueKind Kind { get; }
+        }
+
+        internal sealed class DrainResult
+        {
+            internal DrainResult(bool drained, bool cancelled, IEnumerable<DrainResidue> residues)
+            {
+                Drained = drained;
+                Cancelled = cancelled;
+                Residues = (residues ?? Array.Empty<DrainResidue>()).ToArray();
+            }
+
+            internal bool Drained { get; }
+            internal bool Cancelled { get; }
+            internal IReadOnlyList<DrainResidue> Residues { get; }
+            internal string[] Operations => Residues
+                .Select(item => item.Operation)
+                .Distinct()
+                .OrderBy(item => item)
+                .ToArray();
+        }
+
         /// <summary>
         /// Immutable evidence of one lease at the instant an aggregate
         /// watchdog snapshot was captured.  The registry deliberately exposes
@@ -121,6 +169,8 @@ namespace Controller
         }
 
         private readonly ConcurrentDictionary<long, Entry> _active = new();
+        private readonly object _changeGate = new object();
+        private TaskCompletionSource<bool> _changeSignal = CreateChangeSignal();
         private long _sequence;
 
         internal int ActiveCount => _active.Count;
@@ -248,6 +298,7 @@ namespace Controller
                 AutoRelease = false
             };
             _active[entry.Id] = entry;
+            SignalChanged();
             return new RecoveryTaskLease(
                 this,
                 entry.Id,
@@ -265,8 +316,9 @@ namespace Controller
             {
                 if (entry.Terminal || entry.WorkerTask != null) return false;
                 entry.WorkerTask = workerTask;
-                return true;
             }
+            SignalChanged();
+            return true;
         }
 
         private bool IsLeaseActive(long id)
@@ -289,6 +341,7 @@ namespace Controller
                 entry.Terminal = true;
             }
             if (!_active.TryRemove(id, out _)) return false;
+            SignalChanged();
             return true;
         }
 
@@ -314,28 +367,155 @@ namespace Controller
 
         internal async Task<string[]> DrainThroughEpochAsync(long revokedRunEpoch, int timeoutMs)
         {
-            var deadline = Stopwatch.GetTimestamp() +
-                           (long)(Math.Max(1, timeoutMs) / 1000d * Stopwatch.Frequency);
-            while (true)
+            var result = await DrainThroughEpochAsync(
+                    revokedRunEpoch,
+                    timeoutMs,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            return result.Operations;
+        }
+
+        /// <summary>
+        /// Waits for recovery leases through the revoked run epoch without
+        /// polling completed Task objects.  A worker that has completed but
+        /// has not published its terminal state is returned immediately as a
+        /// protocol residue: waiting for that same completed Task again would
+        /// otherwise create an allocation-only hot loop.
+        /// </summary>
+        internal async Task<DrainResult> DrainThroughEpochAsync(
+            long revokedRunEpoch,
+            int timeoutMs,
+            CancellationToken cancellationToken)
+        {
+            var boundedTimeoutMs = Math.Max(1, Math.Min(60000, timeoutMs));
+            using (var deadlineCancellation = new CancellationTokenSource())
             {
-                var pending = _active.Values
-                    .Where(entry => entry.RunEpoch <= revokedRunEpoch && !entry.Terminal)
-                    .ToArray();
-                if (pending.Length == 0) return Array.Empty<string>();
-                var remaining = (int)Math.Ceiling(
-                    (deadline - Stopwatch.GetTimestamp()) * 1000d / Stopwatch.Frequency);
-                if (remaining <= 0)
-                    return pending.Select(entry => entry.Operation).Distinct().OrderBy(x => x).ToArray();
-                // A reservation with no worker is intentionally not considered
-                // drained; this forces the owner to publish a terminal state and
-                // close the lease explicitly rather than silently disappearing.
-                var all = Task.WhenAll(pending.Select(entry =>
-                    entry.WorkerTask ?? entry.ReservationTask));
-                if (await Task.WhenAny(all, Task.Delay(remaining)).ConfigureAwait(false) != all)
-                    return pending.Where(entry => !entry.Terminal)
-                        .Select(entry => entry.Operation).Distinct().OrderBy(x => x).ToArray();
-                try { await all.ConfigureAwait(false); } catch { }
+                var deadlineTask = Task.Delay(
+                    boundedTimeoutMs,
+                    deadlineCancellation.Token);
+                CancellationTokenRegistration cancellationRegistration;
+                var cancellationTask = CreateCancellationTask(
+                    cancellationToken,
+                    out cancellationRegistration);
+                try
+                {
+                    while (true)
+                    {
+                        if (cancellationToken.IsCancellationRequested)
+                            return new DrainResult(false, true, CaptureDrainResidues(revokedRunEpoch));
+
+                        // Capture the signal before the state snapshot.  A mutation
+                        // between these two reads completes the captured signal, so a
+                        // terminal publication cannot be missed.
+                        var changed = CaptureChangeSignal();
+                        var residues = CaptureDrainResidues(revokedRunEpoch);
+                        if (residues.Length == 0)
+                            return new DrainResult(true, false, residues);
+                        if (residues.Any(item =>
+                                item.Kind == DrainResidueKind.WorkerCompletedWithoutTerminal))
+                            return new DrainResult(false, false, residues);
+
+                        var runningWorkers = CaptureRunningWorkers(revokedRunEpoch);
+                        var waiters = new List<Task>(runningWorkers.Length + 3)
+                        {
+                            changed,
+                            deadlineTask
+                        };
+                        if (cancellationTask != null) waiters.Add(cancellationTask);
+                        waiters.AddRange(runningWorkers);
+                        var completed = await Task.WhenAny(waiters).ConfigureAwait(false);
+                        if (ReferenceEquals(completed, deadlineTask))
+                            return new DrainResult(false, false, CaptureDrainResidues(revokedRunEpoch));
+                        if (cancellationTask != null && ReferenceEquals(completed, cancellationTask))
+                            return new DrainResult(false, true, CaptureDrainResidues(revokedRunEpoch));
+                    }
+                }
+                finally
+                {
+                    cancellationRegistration.Dispose();
+                    deadlineCancellation.Cancel();
+                }
             }
+        }
+
+        private DrainResidue[] CaptureDrainResidues(long revokedRunEpoch)
+        {
+            return _active.Values
+                .Where(entry => entry != null && entry.RunEpoch <= revokedRunEpoch)
+                .Select(entry =>
+                {
+                    lock (entry.Gate)
+                    {
+                        if (entry.Terminal) return null;
+                        var kind = entry.WorkerTask == null
+                            ? DrainResidueKind.ReservationOnly
+                            : entry.WorkerTask.IsCompleted
+                                ? DrainResidueKind.WorkerCompletedWithoutTerminal
+                                : DrainResidueKind.WorkerRunning;
+                        return new DrainResidue(
+                            entry.Id,
+                            entry.Operation,
+                            entry.RunEpoch,
+                            entry.Channels,
+                            kind);
+                    }
+                })
+                .Where(item => item != null)
+                .OrderBy(item => item.Id)
+                .ToArray();
+        }
+
+        private Task[] CaptureRunningWorkers(long revokedRunEpoch)
+        {
+            return _active.Values
+                .Where(entry => entry != null && entry.RunEpoch <= revokedRunEpoch)
+                .Select(entry =>
+                {
+                    lock (entry.Gate)
+                    {
+                        return entry.Terminal || entry.WorkerTask == null || entry.WorkerTask.IsCompleted
+                            ? null
+                            : entry.WorkerTask;
+                    }
+                })
+                .Where(task => task != null)
+                .Distinct()
+                .ToArray();
+        }
+
+        private Task CaptureChangeSignal()
+        {
+            lock (_changeGate) return _changeSignal.Task;
+        }
+
+        private void SignalChanged()
+        {
+            TaskCompletionSource<bool> completed;
+            lock (_changeGate)
+            {
+                completed = _changeSignal;
+                _changeSignal = CreateChangeSignal();
+            }
+            completed.TrySetResult(true);
+        }
+
+        private static TaskCompletionSource<bool> CreateChangeSignal() =>
+            new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private static Task CreateCancellationTask(
+            CancellationToken cancellationToken,
+            out CancellationTokenRegistration registration)
+        {
+            registration = default(CancellationTokenRegistration);
+            if (!cancellationToken.CanBeCanceled) return null;
+            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+            var completion = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            registration = cancellationToken.Register(
+                state => ((TaskCompletionSource<bool>)state).TrySetResult(true),
+                completion);
+            return completion.Task;
         }
 
         internal static bool IsRecoveryOperation(string operation)

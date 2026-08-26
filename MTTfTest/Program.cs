@@ -113,7 +113,7 @@ namespace MtEmbTest
                 {
                     try
                     {
-                        mainForm.ShutdownWatchdogSessionAndReleaseUiAsync(
+                        mainForm.ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
                                 "ApplicationExit")
                             .GetAwaiter()
                             .GetResult();

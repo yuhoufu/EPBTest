@@ -113,7 +113,13 @@ namespace MtEmbTest
         {
             if (HandleWatchdogMainFormClosing(e))
                 return;
-            if (MdiChildren.Length > 0)
+            // A terminal watchdog shutdown receipt authorizes the main form
+            // to close after its child-window coordinator has completed.  The
+            // legacy operator guard must not veto that already-authorized
+            // lifecycle; doing so leaves an empty MDI shell with no monitor.
+            if (WinFormsWatchdogUiCloseCoordinator.ShouldApplyLegacyMdiGuard(
+                    IsWatchdogMainCloseAuthorized,
+                    MdiChildren.Length))
             {
                 ShowMainOperatorMessage("可能存在正在运行的试验，请先停止试验，关闭子窗口，再退出程序！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 e.Cancel = true;

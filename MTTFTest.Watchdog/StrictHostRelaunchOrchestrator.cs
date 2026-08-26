@@ -282,6 +282,23 @@ namespace MTTFTest.Watchdog
                 transition?.Status ?? DurableAuthorityTransitionStatus.Unproven);
         }
 
+        internal DurableRelaunchResult Revoke(string reason)
+        {
+            var transition = _authority.RevokeCurrent(reason);
+            if (transition?.Succeeded == true)
+            {
+                _capabilities.Clear();
+                _arguments.Clear();
+            }
+            return Result(
+                transition?.Succeeded == true,
+                false,
+                false,
+                transition?.Reason ?? "AuthorityRevokeFailed",
+                transition?.Record ?? _authority.Snapshot,
+                transition?.Status ?? DurableAuthorityTransitionStatus.Unproven);
+        }
+
         private RecoveryFailureOperation MakeOperation(string operationSeed, string failureCode, string fingerprint,
             string progress, string source, string runId, long runEpoch, string stage, int budget)
         {
@@ -376,7 +393,9 @@ namespace MTTFTest.Watchdog
                 LastFailureDisposition = value.LastFailureDisposition,
                 LastFailureDecisionSequence = value.LastFailureDecisionSequence,
                 LastFailureDecisionUtcTicks = value.LastFailureDecisionUtcTicks,
-                LastFailurePermanent = value.LastFailurePermanent, CircuitOpen = value.CircuitOpen
+                LastFailurePermanent = value.LastFailurePermanent,
+                LastTransitionUtcTicks = value.LastTransitionUtcTicks,
+                CircuitOpen = value.CircuitOpen
             };
         }
 

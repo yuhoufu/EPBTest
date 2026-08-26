@@ -464,7 +464,11 @@ namespace Controller
         public bool BatchLifecycleBusy { get; set; }
         public bool BatchSessionActive { get; set; }
         public Guid ActiveBatchId { get; set; }
+        public int TimerActiveCount { get; set; }
+        public int TimerCacheCount { get; set; }
         public int TimerCount { get; set; }
+        public int RunnerActiveCount { get; set; }
+        public int RunnerCacheCount { get; set; }
         public int RunnerCount { get; set; }
         public int EnergizedChannelCount { get; set; }
         public int StopCtsCount { get; set; }
@@ -497,7 +501,11 @@ namespace Controller
                 BatchLifecycleBusy = BatchLifecycleBusy,
                 BatchSessionActive = BatchSessionActive,
                 ActiveBatchId = ActiveBatchId,
+                TimerActiveCount = TimerActiveCount,
+                TimerCacheCount = TimerCacheCount,
                 TimerCount = TimerCount,
+                RunnerActiveCount = RunnerActiveCount,
+                RunnerCacheCount = RunnerCacheCount,
                 RunnerCount = RunnerCount,
                 EnergizedChannelCount = EnergizedChannelCount,
                 StopCtsCount = StopCtsCount,
@@ -554,7 +562,9 @@ namespace Controller
         public override string ToString()
         {
             return $"LifecycleBusy={BatchLifecycleBusy} Session={BatchSessionActive} " +
-                   $"Batch={ActiveBatchId:N} Timers={TimerCount} Runners={RunnerCount} " +
+                   $"Batch={ActiveBatchId:N} " +
+                   $"Timers={TimerCount}(Active={TimerActiveCount},Cache={TimerCacheCount}) " +
+                   $"Runners={RunnerCount}(Active={RunnerActiveCount},Cache={RunnerCacheCount}) " +
                    $"Energized={EnergizedChannelCount} " +
                    $"StopCts={StopCtsCount} CycleCts={CycleCtsCount} " +
                    $"Participants={HydraulicParticipantCount} Leases={HydraulicLeaseCount} " +
@@ -981,6 +991,33 @@ namespace Controller
             DateTime startedUtc,
             DateTime hardDeadlineUtc,
             IEnumerable<int> channels)
+            : this(
+                incidentId,
+                runId,
+                runEpoch,
+                ownerId,
+                ownerKind,
+                targetPhase,
+                operation,
+                startedUtc,
+                hardDeadlineUtc,
+                channels,
+                channels)
+        {
+        }
+
+        internal RecoveryContractSnapshot(
+            Guid incidentId,
+            Guid runId,
+            long runEpoch,
+            Guid ownerId,
+            RecoveryOwnerKind ownerKind,
+            RecoveryTargetPhase targetPhase,
+            string operation,
+            DateTime startedUtc,
+            DateTime hardDeadlineUtc,
+            IEnumerable<int> ownedChannels,
+            IEnumerable<int> safetyAffectedChannels)
         {
             IncidentId = incidentId;
             RunId = runId;
@@ -991,8 +1028,14 @@ namespace Controller
             Operation = operation ?? string.Empty;
             StartedUtc = startedUtc;
             HardDeadlineUtc = hardDeadlineUtc;
-            Channels = Array.AsReadOnly(
-                (channels ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray());
+            OwnedChannels = Array.AsReadOnly(
+                (ownedChannels ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray());
+            SafetyAffectedChannels = Array.AsReadOnly(
+                (safetyAffectedChannels ?? Array.Empty<int>())
+                .Concat(OwnedChannels)
+                .Distinct()
+                .OrderBy(x => x)
+                .ToArray());
         }
 
         public Guid IncidentId { get; }
@@ -1004,7 +1047,14 @@ namespace Controller
         public string Operation { get; }
         public DateTime StartedUtc { get; }
         public DateTime HardDeadlineUtc { get; }
-        public IReadOnlyList<int> Channels { get; }
+        /// <summary>
+        /// Logical channels that own Recovering/terminal lifecycle state.
+        /// Kept as Channels for compatibility with existing observers.
+        /// </summary>
+        public IReadOnlyList<int> Channels => OwnedChannels;
+        public IReadOnlyList<int> OwnedChannels { get; }
+        /// <summary>Physical cohort that must be commanded OFF as one safety unit.</summary>
+        public IReadOnlyList<int> SafetyAffectedChannels { get; }
 
         public RecoveryContractSnapshot Clone() => new RecoveryContractSnapshot(
             IncidentId,
@@ -1016,7 +1066,8 @@ namespace Controller
             Operation,
             StartedUtc,
             HardDeadlineUtc,
-            Channels);
+            OwnedChannels,
+            SafetyAffectedChannels);
     }
 
     public enum StopSafetyStage

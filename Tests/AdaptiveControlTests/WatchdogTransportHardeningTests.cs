@@ -16,6 +16,8 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("Attached返回冻结Sidecar身份并保持协议v3往返", AttachedIdentityRoundTrips, ref passed);
             Run("协议版本严格限制为v3", ProtocolVersionMustBeExactV3, ref passed);
+            Run("Watchdog超过20KiB长帧完整性往返", LongIntegrityFrameRoundTrips, ref passed);
+            Run("Watchdog半帧与校验篡改明确拒绝", PartialOrCorruptFrameIsRejected, ref passed);
             Run("真实Sidecar进程拒绝v2/0/v4并接受v3", RealSidecarRejectsInvalidProtocolVersions, ref passed);
             Run("真实Sidecar缺失或非法challenge nonce时启动失败",
                 RealSidecarRejectsMissingOrInvalidLaunchNonce, ref passed);
@@ -73,6 +75,57 @@ namespace AdaptiveControlTests
             Assert(WatchdogTransportPolicy.ReconnectBackoffBudgetMs ==
                    250 + 500 + 1000 + 2000 + (5000 * 4),
                 "重连退避总预算与8次退避表不一致");
+        }
+
+        private static void LongIntegrityFrameRoundTrips()
+        {
+            var message = new WatchdogMessage
+            {
+                ProtocolVersion = WatchdogProtocol.Version,
+                Type = WatchdogMessageType.Heartbeat,
+                SessionId = "long-frame-session",
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                Reason = new string('安', 25000)
+            };
+            var payload = WatchdogProtocol.Serialize(message);
+            var frame = WatchdogWireFrame.Encode(payload);
+            string decoded;
+            string failure;
+            var decodedSuccessfully = WatchdogWireFrame.TryDecode(frame, out decoded, out failure);
+            Assert(Encoding.UTF8.GetByteCount(payload) > 20 * 1024 &&
+                   decodedSuccessfully &&
+                   string.Equals(decoded, payload, StringComparison.Ordinal),
+                "长帧没有按长度与SHA-256完整解码：" + failure);
+            var roundTrip = WatchdogProtocol.Deserialize(frame);
+            Assert(roundTrip != null && roundTrip.Reason == message.Reason &&
+                   roundTrip.CorrelationId == message.CorrelationId,
+                "长帧协议往返丢失字段");
+        }
+
+        private static void PartialOrCorruptFrameIsRejected()
+        {
+            var payload = WatchdogProtocol.Serialize(new WatchdogMessage
+            {
+                ProtocolVersion = WatchdogProtocol.Version,
+                Type = WatchdogMessageType.Heartbeat,
+                SessionId = "partial-frame-session",
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                Reason = new string('x', 4096)
+            });
+            var frame = WatchdogWireFrame.Encode(payload);
+            var truncated = frame.Substring(0, frame.Length - 17);
+            Assert(!WatchdogWireFrame.TryDecode(truncated, out _, out var partialFailure) &&
+                   (partialFailure == "FramePayloadIncomplete" ||
+                    partialFailure == "FrameLengthMismatch"),
+                "EOF半帧未被分类为传输完整性失败：" + partialFailure);
+
+            var chars = frame.ToCharArray();
+            var payloadIndex = frame.LastIndexOf('|') + 1;
+            chars[payloadIndex + 8] = chars[payloadIndex + 8] == 'A' ? 'B' : 'A';
+            var corrupt = new string(chars);
+            Assert(!WatchdogWireFrame.TryDecode(corrupt, out _, out var checksumFailure) &&
+                   checksumFailure == "FrameChecksumMismatch",
+                "已篡改完整帧未被SHA-256拒绝：" + checksumFailure);
         }
 
         private static void AttachedIdentityRoundTrips()

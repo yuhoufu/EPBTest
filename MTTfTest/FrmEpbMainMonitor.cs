@@ -2871,17 +2871,38 @@ namespace MTEmbTest
         /// <summary>
         ///     窗体关闭：标记关闭状态，解绑事件，停止 UI 定时器与采集，避免回调打到已销毁的 UI。
         /// </summary>
-        private async void FrmEpbMainMonitor_FormClosing(object sender, FormClosingEventArgs e)
+        private void FrmEpbMainMonitor_FormClosing(object sender, FormClosingEventArgs e)
         {
-            // 首次关闭只启动一次安全收尾；确认后重入本处理器，再释放DAQ及其它资源。
-            if (Volatile.Read(ref _closingReentry) != 2)
+            // 第一次关闭只负责取消框架本轮关闭并启动一个可等待的收尾任务。
+            // 最后一轮关闭必须等所有异步停机、写盘和资源释放均已完成后才放行。
+            if (Volatile.Read(ref _closingReentry) == 3) return;
+
+            e.Cancel = true;
+            if (Interlocked.CompareExchange(ref _closingReentry, 1, 0) != 0) return;
+            _isClosing = true;
+            BeginMonitorCloseSequence();
+        }
+
+        private async void BeginMonitorCloseSequence()
+        {
+            try
             {
+                await PrepareAndFinalizeMonitorCloseAsync();
+            }
+            catch (Exception ex)
+            {
+                logger?.Error("实时监控窗口关闭收尾异常，窗口保持打开并允许重试：" + ex, "EPB");
+                _isClosing = false;
+                Interlocked.Exchange(ref _formClosedFlag, 0);
+                Interlocked.Exchange(ref _closingReentry, 0);
+            }
+        }
+
+        private async System.Threading.Tasks.Task PrepareAndFinalizeMonitorCloseAsync()
+        {
                 var wasExplicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0 ||
                                            Volatile.Read(ref _watchdogTakeoverExit) != 0 ||
                                            !(_epb?.IsBatchSessionActive ?? false);
-                e.Cancel = true;
-                if (Interlocked.CompareExchange(ref _closingReentry, 1, 0) != 0) return;
-                _isClosing = true;
                 StopSafetyResult safety;
                 var reusableManualStop = _manualStopExitReceipt.TryCapture(
                     _epb?.IsBatchSessionActive ?? false);
@@ -2978,13 +2999,9 @@ namespace MTEmbTest
                     LogInfo("[安全警告] 电机DO和程控电源均已确认关闭；仅压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
 
-                // Main_Frm's shutdown boundary sends ApplicationClosing as part
-                // of ShutdownRuntimeWithReceipt.  Do not publish a second
-                // protocol path here; it used to race the retention owner.
-                Interlocked.Exchange(ref _closingReentry, 2);
-                _ = BeginInvoke((Action)Close);
-                return;
-            }
+            // Main_Frm's shutdown boundary sends ApplicationClosing as part
+            // of ShutdownRuntimeWithReceipt.  Do not publish a second
+            // protocol path here; it used to race the retention owner.
 
             // 只执行一次
             if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0) return;
@@ -3246,7 +3263,11 @@ namespace MTEmbTest
                 /* UI log flush failure must not block closing. */
             }
 
-            base.OnFormClosing(e);
+            // 所有异步收尾和资源释放均已完成。下一轮 FormClosing 由状态 3 放行，
+            // 不再在事件处理器内部调用 base.OnFormClosing，避免递归触发。
+            Interlocked.Exchange(ref _closingReentry, 3);
+            if (!IsDisposed && !Disposing && IsHandleCreated)
+                BeginInvoke((Action)Close);
         }
 
         #endregion

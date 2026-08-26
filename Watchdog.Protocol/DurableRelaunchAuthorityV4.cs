@@ -125,6 +125,10 @@ namespace MTTFTest.Watchdog.Protocol
         public long LastFailureDecisionUtcTicks { get; set; }
         public bool LastFailurePermanent { get; set; }
         public bool CircuitOpen { get; set; }
+        // Monotonic wall-clock evidence for the latest durable authority
+        // mutation.  The sidecar uses this to detect a permit which was
+        // approved but never progressed to launch/attach.
+        public long LastTransitionUtcTicks { get; set; }
         public string DetailCode { get; set; }
         public string BootstrapMarker { get; set; }
         public string BootstrapPrimaryPath { get; set; }
@@ -789,6 +793,64 @@ namespace MTTFTest.Watchdog.Protocol
             }
         }
 
+        /// <summary>
+        /// Durably supersedes an approved-but-not-consumed automatic takeover
+        /// when SafeIdle, an operator stop, or a newer authority wins before
+        /// process termination.  This is a terminal circuit state: a stale
+        /// in-memory permit cannot become consumable again after host restart.
+        /// </summary>
+        public DurableAuthorityTransitionResult RevokeCurrent(string reason)
+        {
+            lock (_gate)
+            {
+                var fresh = _store.Load(_sessionId);
+                if (fresh != null && fresh.FailureKind == DurableAuthorityFailureKind.Busy)
+                    return TransitionBusy(fresh.Reason ?? "AuthorityMutexBusy");
+                if (fresh == null || fresh.Record == null || fresh.Blocked || fresh.Unproven)
+                    return TransitionUnproven(fresh?.Reason ?? "AuthorityReloadBlocked");
+                _record = fresh.Record.Clone();
+                _sha256 = fresh.Sha256;
+                if (_record.State == DurableRelaunchPermitState.Revoked)
+                    return new DurableAuthorityTransitionResult
+                    {
+                        Status = DurableAuthorityTransitionStatus.Committed,
+                        Reason = "AlreadyRevoked",
+                        Record = _record.Clone(),
+                        Sha256 = _sha256
+                    };
+                if (_record.State != DurableRelaunchPermitState.Approved &&
+                    _record.State != DurableRelaunchPermitState.LaunchIntent &&
+                    _record.State != DurableRelaunchPermitState.Started &&
+                    _record.State != DurableRelaunchPermitState.Attached)
+                    return TransitionInvalid("NoActivePermit");
+
+                var candidate = _record.Clone();
+                candidate.State = DurableRelaunchPermitState.Revoked;
+                candidate.CircuitOpen = true;
+                candidate.DetailCode = string.IsNullOrWhiteSpace(reason)
+                    ? "PermitSuperseded"
+                    : reason;
+                if (!string.IsNullOrEmpty(candidate.LastFailureCanonicalSha256))
+                    candidate.LastFailureDisposition = RecoveryFailureDispositions.Superseded;
+                var commit = TryCommitCandidateLocked(candidate, null, true);
+                if (commit == null) return TransitionWriteFailed("NullCommit");
+                if (commit.Status == DurableAuthorityCommitStatus.Busy ||
+                    commit.FailureKind == DurableAuthorityFailureKind.Busy)
+                    return TransitionBusy(commit.Reason ?? "AuthorityMutexBusy");
+                if (!IsBlockedApplied(commit))
+                    return TransitionWriteFailed(commit.Reason ?? "PermitRevokeFailed");
+                _record = commit.Record.Clone();
+                _sha256 = commit.Sha256;
+                return new DurableAuthorityTransitionResult
+                {
+                    Status = DurableAuthorityTransitionStatus.Committed,
+                    Reason = candidate.DetailCode,
+                    Record = _record.Clone(),
+                    Sha256 = _sha256
+                };
+            }
+        }
+
         public DurableAuthorityTransitionResult CloseCurrentAsFailed(string reason)
         {
             lock (_gate)
@@ -1334,6 +1396,7 @@ namespace MTTFTest.Watchdog.Protocol
             candidate.SchemaVersion = 4;
             candidate.RecordKind = "DurableRelaunchAuthority";
             candidate.RecordFormatRevision = DurableRelaunchAuthorityV4Validator.RequiredFormatRevision;
+            candidate.LastTransitionUtcTicks = DateTime.UtcNow.Ticks;
             var result = _store.TryCommit(candidate, expected, expectedSha, blockedMarker);
             if (result == null) return new DurableAuthorityStoreCommitResult { Status = DurableAuthorityCommitStatus.ReadFailed, Reason = "NullCommit" };
             if (IsDurableApplied(result) && !IsDurableRecordPair(result.Record, result.Sha256))

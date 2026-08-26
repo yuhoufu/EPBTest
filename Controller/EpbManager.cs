@@ -198,6 +198,10 @@ namespace Controller
         // cleanup.  This closes the small race in which a Timer/DAQ callback
         // could expose Recovering before its worker had an identity.
         private readonly object _recoveryContractGate = new object();
+        // Linearizes recovery publication/start against StopAll admission.
+        // StopAll closes this gate before revoking execution permits, so no
+        // new Recovering owner can appear after the stop boundary.
+        private readonly object _recoveryAdmissionGate = new object();
         private readonly Dictionary<Guid, RecoveryIncidentHandle> _activeRecoveryContracts =
             new Dictionary<Guid, RecoveryIncidentHandle>();
         private readonly RecoveryIncidentCoordinator _recoveryIncidentCoordinator;
@@ -1157,7 +1161,7 @@ namespace Controller
             internal int TerminalPublished => _inner.TerminalPublished;
             internal int TerminalPublishing => _inner.TerminalPublishing;
 
-            internal bool Start() => _inner.Start();
+            internal bool Start() => _manager.StartRecoveryIncident(_inner);
 
             internal bool CompleteAfterTerminal(
                 Action<RecoveryContractSnapshot> publishTerminal)
@@ -2861,7 +2865,7 @@ namespace Controller
                     },
                     CommandOff = (contract, reason) =>
                     {
-                        foreach (var channel in contract.Channels ?? Array.Empty<int>())
+                        foreach (var channel in contract.SafetyAffectedChannels ?? Array.Empty<int>())
                             CommandEpbOffHighPriority(channel, reason);
                     },
                     PublishSafeTerminal = (contract, reasonCode, reasonText) =>
@@ -2923,29 +2927,58 @@ namespace Controller
             out RecoveryIncidentHandle incident)
         {
             incident = null;
-            if (runId != _activeBatchId ||
-                runEpoch != Interlocked.Read(ref _runEpoch))
-                return false;
+            var safetyAffected = (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var ownedChannels = safetyAffected
+                .Where(IsChannelEnabled)
+                .ToArray();
+            if (ownedChannels.Length == 0) return false;
 
-            var result = _recoveryIncidentCoordinator.TryBegin(
-                operation,
-                runId,
-                runEpoch,
-                ownerKind,
-                targetPhase,
-                ownerId,
-                channels,
-                workerFactory,
-                publishRecovering,
-                out var createdIncident);
-            if (result != RecoveryIncidentCoordinator.BeginResult.Created ||
-                createdIncident == null)
-                return false;
+            lock (_recoveryAdmissionGate)
+            {
+                if (!IsRecoveryMemoryAdmissionAllowed() ||
+                    IsEnergizationRevoked || runId != _activeBatchId ||
+                    runEpoch != Interlocked.Read(ref _runEpoch))
+                    return false;
 
-            lock (_recoveryContractGate)
-                return _activeRecoveryContracts.TryGetValue(
-                           createdIncident.Contract.IncidentId,
-                           out incident);
+                var result = _recoveryIncidentCoordinator.TryBegin(
+                    operation,
+                    runId,
+                    runEpoch,
+                    ownerKind,
+                    targetPhase,
+                    ownerId,
+                    ownedChannels,
+                    safetyAffected,
+                    workerFactory,
+                    publishRecovering,
+                    out var createdIncident);
+                if (result != RecoveryIncidentCoordinator.BeginResult.Created ||
+                    createdIncident == null)
+                    return false;
+
+                lock (_recoveryContractGate)
+                    return _activeRecoveryContracts.TryGetValue(
+                               createdIncident.Contract.IncidentId,
+                               out incident);
+            }
+        }
+
+        private bool StartRecoveryIncident(RecoveryIncidentCoordinator.Incident incident)
+        {
+            if (incident == null) return false;
+            lock (_recoveryAdmissionGate)
+            {
+                var contract = incident.Contract;
+                if (IsEnergizationRevoked || contract == null ||
+                    contract.RunId != _activeBatchId ||
+                    contract.RunEpoch != Interlocked.Read(ref _runEpoch))
+                    return false;
+                return incident.Start();
+            }
         }
 
         private RecoveryIncidentHandle FindActiveRecoveryContractLocked(
@@ -3004,6 +3037,16 @@ namespace Controller
             if (contract == null) return;
             foreach (var channel in contract.Channels ?? Array.Empty<int>())
             {
+                // A safety terminal is also the ownership/resource terminal.
+                // Leaving a cached Timer or Runner behind makes the watchdog
+                // observe StartBlocked together with active runtime resources
+                // and can keep the process in an unrecoverable confirmation
+                // loop.
+                try { CancelCyclePauseCts(channel); } catch { }
+                try { CancelStopCts(channel); } catch { }
+                try { RemoveTimerRuntime(channel, "RecoverySafeTerminal"); } catch { }
+                try { RemoveRunnerRuntime(channel, "RecoverySafeTerminal"); } catch { }
+                try { UnmarkHydraulicParticipant(channel); } catch { }
                 var current = _channelRuntimeStateStore.Get(channel);
                 if (current != null &&
                     current.CorrelationId == contract.IncidentId &&
@@ -10311,7 +10354,8 @@ namespace Controller
             // stage worker can wait on a recovery/channel gate.  Existing
             // cycle/power-enable linked tokens are cancelled immediately;
             // physical OFF remains owned by the ordered stop transaction.
-            Volatile.Write(ref _energizationRevoked, 1);
+            lock (_recoveryAdmissionGate)
+                Volatile.Write(ref _energizationRevoked, 1);
             foreach (var channel in Enumerable.Range(1, 12))
             {
                 try
@@ -11637,8 +11681,12 @@ namespace Controller
                 BatchLifecycleBusy = _batchLifecycleGate.IsBusy,
                 BatchSessionActive = IsBatchSessionActive,
                 ActiveBatchId = _activeBatchId,
-                TimerCount = _timers.Count + _timerCache.Count,
-                RunnerCount = _runners.Count + _runnerCache.Count,
+                TimerActiveCount = _timers.Count,
+                TimerCacheCount = _timerCache.Count,
+                TimerCount = CountDistinctRuntimeChannels(_timers.Keys, _timerCache.Keys),
+                RunnerActiveCount = _runners.Count,
+                RunnerCacheCount = _runnerCache.Count,
+                RunnerCount = CountDistinctRuntimeChannels(_runners.Keys, _runnerCache.Keys),
                 EnergizedChannelCount = Enumerable.Range(1, 12).Count(IsChannelEnergized),
                 StopCtsCount = _stopCtsByChannel.Count,
                 CycleCtsCount = _cyclePauseCtsByChannel.Count,
@@ -11701,6 +11749,17 @@ namespace Controller
             _recoveryAggregateStore.PublishLogicalSource(snapshot);
             PublishRecoveryOperationalSourcesLocked();
             return snapshot;
+        }
+
+        internal static int CountDistinctRuntimeChannels(
+            IEnumerable<int> activeChannels,
+            IEnumerable<int> cachedChannels)
+        {
+            return (activeChannels ?? Array.Empty<int>())
+                .Concat(cachedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .Count();
         }
 
         private LogicalQuiescenceSnapshot CaptureLogicalQuiescenceSnapshotForStop(StopContext context)

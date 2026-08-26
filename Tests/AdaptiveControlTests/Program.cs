@@ -4074,6 +4074,27 @@ namespace AdaptiveControlTests
                     false,
                     false),
                 "项目已禁用卡钳被错误自动拉起");
+            Assert(!EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.Running,
+                    HighPrecisionTimerRuntimeState.Paused,
+                    "StopAll:SystemFault",
+                    true,
+                    BatchPauseState.Running,
+                    false,
+                    false,
+                    true),
+                "StopAll受控暂停仍被错误识别为Timer故障");
+            Assert(!EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.Running,
+                    HighPrecisionTimerRuntimeState.Faulted,
+                    "TimeoutException",
+                    true,
+                    BatchPauseState.Running,
+                    false,
+                    false,
+                    true,
+                    stopInProgress: true),
+                "停止准入关闭后仍允许创建Timer自愈");
         }
 
         private static void TimerRecoveryRetryAndCircuitBreaker()

@@ -31,6 +31,13 @@ namespace MTEmbTest
 
     internal static class WinFormsWatchdogUiCloseCoordinator
     {
+        internal static bool ShouldApplyLegacyMdiGuard(
+            bool watchdogCloseAuthorized,
+            int mdiChildCount)
+        {
+            return !watchdogCloseAuthorized && mdiChildCount > 0;
+        }
+
         internal static WinFormsWatchdogUiCloseDecision Evaluate(
             RuntimeTransportSnapshot composite,
             RuntimeShutdownRetentionOwner retained,

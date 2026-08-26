@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,6 +8,114 @@ using System.Web.Script.Serialization;
 
 namespace MTTFTest.Watchdog.Protocol
 {
+    /// <summary>
+    /// Integrity envelope for the newline-delimited named-pipe transport.
+    /// New peers emit a length + SHA-256 frame; legacy JSON lines remain
+    /// readable during a rolling upgrade.  A partial EOF or checksum mismatch
+    /// is never passed to the JSON parser as if it were a complete message.
+    /// </summary>
+    public static class WatchdogWireFrame
+    {
+        private const string Prefix = "WDG4|";
+        public const int MaximumPayloadBytes = 4 * 1024 * 1024;
+
+        public static string Encode(string payload)
+        {
+            if (payload == null) throw new ArgumentNullException(nameof(payload));
+            var bytes = new UTF8Encoding(false).GetBytes(payload);
+            if (bytes.Length <= 0 || bytes.Length > MaximumPayloadBytes)
+                throw new InvalidOperationException("WatchdogFramePayloadLengthInvalid");
+            return Prefix + bytes.Length.ToString(CultureInfo.InvariantCulture) + "|" +
+                   ComputeSha256(bytes) + "|" + Convert.ToBase64String(bytes);
+        }
+
+        public static bool TryDecode(
+            string wire,
+            out string payload,
+            out string failure)
+        {
+            payload = null;
+            failure = null;
+            if (string.IsNullOrWhiteSpace(wire))
+            {
+                failure = "FrameEmpty";
+                return false;
+            }
+            if (!wire.StartsWith(Prefix, StringComparison.Ordinal))
+            {
+                // Backward-compatible v3 JSON line.  Non-JSON text is rejected
+                // here rather than being ambiguously classified downstream.
+                if (wire.TrimStart().StartsWith("{", StringComparison.Ordinal))
+                {
+                    payload = wire;
+                    return true;
+                }
+                failure = "FramePrefixMissing";
+                return false;
+            }
+
+            var lengthEnd = wire.IndexOf('|', Prefix.Length);
+            var hashEnd = lengthEnd < 0 ? -1 : wire.IndexOf('|', lengthEnd + 1);
+            if (lengthEnd < 0 || hashEnd < 0)
+            {
+                failure = "FrameHeaderIncomplete";
+                return false;
+            }
+            if (!int.TryParse(
+                    wire.Substring(Prefix.Length, lengthEnd - Prefix.Length),
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out var expectedLength) ||
+                expectedLength <= 0 || expectedLength > MaximumPayloadBytes)
+            {
+                failure = "FrameLengthInvalid";
+                return false;
+            }
+            var expectedHash = wire.Substring(lengthEnd + 1, hashEnd - lengthEnd - 1);
+            if (expectedHash.Length != 64)
+            {
+                failure = "FrameHashInvalid";
+                return false;
+            }
+            byte[] bytes;
+            try { bytes = Convert.FromBase64String(wire.Substring(hashEnd + 1)); }
+            catch (FormatException)
+            {
+                failure = "FramePayloadIncomplete";
+                return false;
+            }
+            if (bytes.Length != expectedLength)
+            {
+                failure = "FrameLengthMismatch";
+                return false;
+            }
+            if (!FixedTimeEquals(expectedHash, ComputeSha256(bytes)))
+            {
+                failure = "FrameChecksumMismatch";
+                return false;
+            }
+            payload = new UTF8Encoding(false, true).GetString(bytes);
+            return true;
+        }
+
+        private static string ComputeSha256(byte[] bytes)
+        {
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(bytes))
+                    .Replace("-", string.Empty)
+                    .ToUpperInvariant();
+        }
+
+        private static bool FixedTimeEquals(string left, string right)
+        {
+            if (left == null || right == null || left.Length != right.Length) return false;
+            var difference = 0;
+            for (var index = 0; index < left.Length; index++)
+                difference |= left[index] ^ right[index];
+            return difference == 0;
+        }
+    }
+
     public static class WatchdogProtocol
     {
         // V3 is the first contract that carries authoritative sidecar identity,
@@ -63,7 +172,12 @@ namespace MTTFTest.Watchdog.Protocol
             }
             return json.Serialize(message);
         }
-        public static WatchdogMessage Deserialize(string value) => new JavaScriptSerializer().Deserialize<WatchdogMessage>(value);
+        public static WatchdogMessage Deserialize(string value)
+        {
+            if (!WatchdogWireFrame.TryDecode(value, out var payload, out var failure))
+                throw new InvalidOperationException("WatchdogFrameRejected:" + failure);
+            return new JavaScriptSerializer().Deserialize<WatchdogMessage>(payload);
+        }
 
         public static string ComputeWireSha256(string value)
         {
@@ -79,6 +193,7 @@ namespace MTTFTest.Watchdog.Protocol
         {
             messageType = null;
             if (string.IsNullOrWhiteSpace(json)) return false;
+            if (!WatchdogWireFrame.TryDecode(json, out json, out _)) return false;
             try
             {
                 var serializer = new JavaScriptSerializer

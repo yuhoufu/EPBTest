@@ -311,13 +311,46 @@ namespace Controller
             Action<RecoveryContractSnapshot> publishRecovering,
             out Incident incident)
         {
+            return TryBegin(
+                operation,
+                runId,
+                runEpoch,
+                ownerKind,
+                targetPhase,
+                ownerId,
+                channels,
+                channels,
+                workerFactory,
+                publishRecovering,
+                out incident);
+        }
+
+        internal BeginResult TryBegin(
+            string operation,
+            Guid runId,
+            long runEpoch,
+            RecoveryOwnerKind ownerKind,
+            RecoveryTargetPhase targetPhase,
+            Guid ownerId,
+            IEnumerable<int> ownedChannels,
+            IEnumerable<int> safetyAffectedChannels,
+            Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
+            Action<RecoveryContractSnapshot> publishRecovering,
+            out Incident incident)
+        {
             incident = null;
-            var affected = NormalizeChannels(channels);
+            var owned = NormalizeChannels(ownedChannels);
+            var safetyAffected = NormalizeChannels(safetyAffectedChannels)
+                .Concat(owned)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
             if (string.IsNullOrWhiteSpace(operation) ||
                 !RecoveryTaskRegistry.IsRecoveryOperation(operation) ||
                 runId == Guid.Empty || runEpoch <= 0 || ownerId == Guid.Empty ||
                 ownerKind == RecoveryOwnerKind.None || ownerKind == RecoveryOwnerKind.Unknown ||
-                targetPhase == RecoveryTargetPhase.None || affected.Length == 0 ||
+                targetPhase == RecoveryTargetPhase.None || owned.Length == 0 ||
+                safetyAffected.Length == 0 ||
                 workerFactory == null || publishRecovering == null)
                 return BeginResult.Rejected;
 
@@ -326,7 +359,7 @@ namespace Controller
                 runEpoch,
                 ownerKind,
                 targetPhase,
-                BuildResourceScope(affected));
+                BuildResourceScope(safetyAffected));
             var startedUtc = DateTime.UtcNow;
             var contract = new RecoveryContractSnapshot(
                 Guid.NewGuid(),
@@ -338,7 +371,8 @@ namespace Controller
                 operation,
                 startedUtc,
                 startedUtc.AddMilliseconds(Math.Max(1, RecoveryGroupHardDeadlineMs)),
-                affected);
+                owned,
+                safetyAffected);
 
             BeginEntry entry = null;
             BeginEntry existing = null;
@@ -395,7 +429,7 @@ namespace Controller
             return ExecuteBegin(
                 entry,
                 operation,
-                affected,
+                owned,
                 workerFactory,
                 publishRecovering,
                 out incident);
@@ -404,7 +438,7 @@ namespace Controller
         private BeginResult ExecuteBegin(
             BeginEntry entry,
             string operation,
-            int[] affected,
+            int[] owned,
             Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
             Action<RecoveryContractSnapshot> publishRecovering,
             out Incident incident)
@@ -417,7 +451,7 @@ namespace Controller
                 var lease = _port.Reserve(
                     operation,
                     entry.Scope.RunEpoch,
-                    affected);
+                    owned);
                 if (lease == null)
                     throw new InvalidOperationException("Recovery lease reserve returned null.");
 

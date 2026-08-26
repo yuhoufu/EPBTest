@@ -146,6 +146,91 @@ namespace MTTFTest.Watchdog
                 ? parsed : fallback;
     }
 
+    internal sealed class AutomaticTakeoverPipelineResult
+    {
+        internal bool Succeeded { get; set; }
+        internal long PermitGeneration { get; set; }
+        internal TakeoverTransactionStage Stage { get; set; }
+        internal string Failure { get; set; }
+    }
+
+    /// <summary>
+    /// The production automatic-takeover stage driver.  Hardware/process
+    /// actions are injected, but ordering and coordinator transitions are not;
+    /// tests therefore exercise the same Dump→Permit→Terminate→Relaunch path
+    /// used by WatchdogHost.TakeoverAsync.
+    /// </summary>
+    internal static class AutomaticTakeoverStageExecutor
+    {
+        internal static async Task<AutomaticTakeoverPipelineResult> ExecuteAsync(
+            TakeoverTransactionCoordinator coordinator,
+            TakeoverTransactionLease lease,
+            Func<bool> isAuthorized,
+            Func<Task> captureDump,
+            Func<long> approvePermit,
+            Func<bool> terminateOldProcess,
+            Func<long, Task> relaunch,
+            Action<TakeoverTransactionStage, TakeoverTransactionStage, string> rejected)
+        {
+            if (coordinator == null || lease == null || isAuthorized == null ||
+                captureDump == null || approvePermit == null || relaunch == null)
+                throw new ArgumentNullException("AutomaticTakeoverPipelinePort");
+
+            AutomaticTakeoverPipelineResult Fail(
+                TakeoverTransactionStage requested,
+                string failure)
+            {
+                rejected?.Invoke(lease.Stage, requested, failure);
+                return new AutomaticTakeoverPipelineResult
+                {
+                    Succeeded = false,
+                    Stage = lease.Stage,
+                    Failure = failure ?? string.Empty
+                };
+            }
+
+            if (!isAuthorized())
+                return Fail(TakeoverTransactionStage.DumpCapture, "AuthorityRevokedBeforeDump");
+            if (!coordinator.TryAdvance(lease, TakeoverTransactionStage.DumpCapture))
+                return Fail(TakeoverTransactionStage.DumpCapture, "StageRejected");
+            await captureDump().ConfigureAwait(false);
+
+            if (!isAuthorized())
+                return Fail(TakeoverTransactionStage.RelaunchPermit, "AuthorityRevokedAfterDump");
+            if (!coordinator.TryExecute(
+                    lease,
+                    TakeoverTransactionStage.RelaunchPermit,
+                    approvePermit,
+                    out var permitGeneration) ||
+                permitGeneration <= 0)
+                return Fail(TakeoverTransactionStage.RelaunchPermit, "PermitNotConsumable");
+
+            if (!isAuthorized())
+                return Fail(TakeoverTransactionStage.ProcessTermination, "AuthorityRevokedBeforeTermination");
+            if (terminateOldProcess != null &&
+                (!coordinator.TryExecute(
+                     lease,
+                     TakeoverTransactionStage.ProcessTermination,
+                     terminateOldProcess,
+                     out var terminated) ||
+                 !terminated))
+                return Fail(TakeoverTransactionStage.ProcessTermination, "TerminationRejected");
+
+            if (!isAuthorized())
+                return Fail(TakeoverTransactionStage.Relaunching, "AuthorityRevokedBeforeRelaunch");
+            if (!coordinator.TryAdvance(lease, TakeoverTransactionStage.Relaunching))
+                return Fail(TakeoverTransactionStage.Relaunching, "StageRejected");
+            await relaunch(permitGeneration).ConfigureAwait(false);
+            return new AutomaticTakeoverPipelineResult
+            {
+                Succeeded = true,
+                PermitGeneration = permitGeneration,
+                Stage = lease.Stage,
+                Failure = string.Empty
+            };
+        }
+    }
+
     internal sealed class WatchdogHost : IDisposable
     {
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
@@ -187,6 +272,8 @@ namespace MTTFTest.Watchdog
         private long _lastFormalProgressTimestamp = Stopwatch.GetTimestamp();
         private long _lastHeartbeatSequence;
         private long _lastHeartbeatAckSequence;
+        private int _permitStalledLogged;
+        private int _expectedExitObserverStarted;
         private long _eventSequence;
         private long _lastHeartbeatCheckpointTimestamp;
         private long _pendingCommitGenerationAwaitingRunIdentity;
@@ -417,6 +504,16 @@ namespace MTTFTest.Watchdog
                     {
                         var line = await reader.ReadLineAsync().ConfigureAwait(false);
                         if (line == null) break;
+                        if (!WatchdogWireFrame.TryDecode(
+                                line,
+                                out line,
+                                out var frameFailure))
+                        {
+                            Record(
+                                "TransportInterruptedPartialFrame",
+                                frameFailure ?? "FrameRejected");
+                            break;
+                        }
                         WatchdogMessage message;
                         string failurePayloadSha256 = null;
                         if (WatchdogProtocol.TryPeekWireMessageType(line, out var wireType) &&
@@ -881,8 +978,6 @@ namespace MTTFTest.Watchdog
                     break;
                 case WatchdogMessageType.RunStopped:
                 case WatchdogMessageType.RunCompleted:
-                case WatchdogMessageType.ApplicationClosing:
-                case WatchdogMessageType.ShutdownExpected:
                     _journal.ManualStopRequested = true;
                     Record(message.Type, message.Reason);
                     if (Interlocked.CompareExchange(ref _operatorTransitionStopStarted, 0, 0) != 0)
@@ -893,8 +988,76 @@ namespace MTTFTest.Watchdog
                     PublishTerminal(message.Type, message.Reason);
                     _stop.Cancel();
                     break;
+                case WatchdogMessageType.ApplicationClosing:
+                    _journal.ManualStopRequested = true;
+                    CancelAutomaticTakeover("ApplicationClosing");
+                    Record(message.Type, message.Reason);
+                    PublishTerminal(message.Type, message.Reason);
+                    _stop.Cancel();
+                    break;
+                case WatchdogMessageType.ShutdownExpected:
+                    _journal.ManualStopRequested = true;
+                    CancelAutomaticTakeover("ShutdownExpected");
+                    Record(message.Type, message.Reason);
+                    PublishTerminal(message.Type, message.Reason);
+                    if (Interlocked.CompareExchange(
+                            ref _expectedExitObserverStarted,
+                            1,
+                            0) == 0)
+                        _ = Task.Run(() => ObserveExpectedMainExitAsync(
+                            message.Type,
+                            message.Reason));
+                    break;
             }
             return Task.CompletedTask;
+        }
+
+        private async Task ObserveExpectedMainExitAsync(string messageType, string reason)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline && IsCurrentProcessAlive())
+                await Task.Delay(100).ConfigureAwait(false);
+            if (!IsCurrentProcessAlive())
+            {
+                Record("MainProcessExited", messageType + ":" + reason);
+                _stop.Cancel();
+                return;
+            }
+
+            Record(
+                "MainProcessExitStalled",
+                $"PID={_journal.CurrentPid};Message={messageType};Reason={reason}");
+            _transitionWindow.Show(
+                "安全停止已完成，正在释放旧程序",
+                "主程序在退出回执后超过5秒仍未结束，正在执行有界回收。",
+                0,
+                0);
+            try
+            {
+                using (var process = Process.GetProcessById(_journal.CurrentPid))
+                {
+                    if (!MatchesCurrentProcess(process))
+                    {
+                        Record("MainProcessExitStalledIdentityMismatch", _journal.CurrentPid.ToString());
+                        return;
+                    }
+                    await CaptureMiniDumpBeforeTerminationAsync(
+                            process,
+                            "MainProcessExitStalled:" + messageType)
+                        .ConfigureAwait(false);
+                    process.Kill();
+                    process.WaitForExit(5000);
+                    Record("MainProcessExitStalledTerminated", $"PID={_journal.CurrentPid}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Record("MainProcessExitStalledTerminationFailed", ex.Message);
+            }
+            finally
+            {
+                _stop.Cancel();
+            }
         }
 
         private bool IsValidatedHeartbeatIdentity(WatchdogHeartbeat heartbeat)
@@ -1031,6 +1194,32 @@ namespace MTTFTest.Watchdog
                     if (_journal.RecoveryBlocked)
                     {
                         continue;
+                    }
+                    var permit = _relaunchCoordinator.Snapshot;
+                    if (permit?.State == DurableRelaunchPermitState.Approved &&
+                        _automaticTakeover.ActiveStage ==
+                            TakeoverTransactionStage.RelaunchPermit &&
+                        permit.LastTransitionUtcTicks > 0)
+                    {
+                        var permitAgeSeconds = Math.Max(
+                            0,
+                            (DateTime.UtcNow.Ticks - permit.LastTransitionUtcTicks) /
+                            (double)TimeSpan.TicksPerSecond);
+                        if (permitAgeSeconds >= 2 &&
+                            Interlocked.CompareExchange(ref _permitStalledLogged, 1, 0) == 0)
+                            Record(
+                                "PermitStalled",
+                                $"Generation={permit.Generation};AgeSeconds={permitAgeSeconds:F3};" +
+                                $"Stage={_automaticTakeover.ActiveStage}");
+                        if (permitAgeSeconds >= 5)
+                        {
+                            CancelAutomaticTakeover("PermitStalledHardDeadline");
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref _permitStalledLogged, 0);
                     }
                     var heartbeatAge = ElapsedSeconds(Interlocked.Read(ref _lastHeartbeatTimestamp));
                     if (heartbeatAge >= 3 && heartbeatAge < 5)
@@ -1276,6 +1465,28 @@ namespace MTTFTest.Watchdog
         private void CancelAutomaticTakeover(string reason)
         {
             if (!_automaticTakeover.TryCancel(reason, out var cancelled)) return;
+            if (cancelled.CancelledFromStage >= TakeoverTransactionStage.RelaunchPermit &&
+                cancelled.CancelledFromStage < TakeoverTransactionStage.ProcessTermination)
+            {
+                var revoked = _relaunchCoordinator.Revoke(
+                    "AutomaticTakeoverSuperseded:" + (reason ?? "Unknown"));
+                if (revoked?.Succeeded != true)
+                {
+                    Record(
+                        "RelaunchPermitRevocationFailed",
+                        $"Reason={reason};Generation={cancelled.Generation};" +
+                        $"Status={revoked?.TransitionStatus};Detail={revoked?.Reason}");
+                    BlockLaunchOutcomeUnknown("PermitRevocationUnproven:" + reason);
+                }
+                else
+                {
+                    lock (_journalGate)
+                        ApplyDurablePermitLocked(revoked.Record);
+                    Record(
+                        "RelaunchPermitRevoked",
+                        $"Reason={reason};Generation={revoked.Record?.Generation}");
+                }
+            }
             Record(
                 "TakeoverCancelled",
                 $"Reason={reason};Generation={cancelled.Generation};" +
@@ -1488,70 +1699,62 @@ namespace MTTFTest.Watchdog
                     !_automaticTakeover.IsAuthorized(transaction))
                     return;
 
-                // Persist and read back an immediately consumable permit before
-                // crossing the irreversible process-termination boundary.  A
-                // stale Attached/Started authority is not a permit and must leave
-                // the old process untouched.
-                if (!_automaticTakeover.TryExecute(
-                        transaction,
-                        TakeoverTransactionStage.RelaunchPermit,
-                        () => ApproveRelaunchPermit(reason),
-                        out var permitGeneration) ||
-                    permitGeneration <= 0)
+                Process oldProcess = null;
+                try
                 {
-                    Record("TakeoverAbortedNoConsumablePermit", reason);
+                    if (IsCurrentProcessAlive())
+                    {
+                        oldProcess = Process.GetProcessById(_journal.CurrentPid);
+                        if (!WatchdogProcessIdentityPolicy.CanKillOldProcess(
+                                IsSessionRevoked(),
+                                _journal.ManualStopRequested,
+                                MatchesCurrentProcess(oldProcess)))
+                            return;
+                    }
+
+                    var pipeline = await AutomaticTakeoverStageExecutor.ExecuteAsync(
+                            _automaticTakeover,
+                            transaction,
+                            () => !_journal.ManualStopRequested &&
+                                  !IsSessionRevoked() &&
+                                  _automaticTakeover.IsAuthorized(transaction),
+                            () => oldProcess == null
+                                ? Task.CompletedTask
+                                : CaptureMiniDumpBeforeTerminationAsync(
+                                    oldProcess,
+                                    "AutomaticTakeover:" + reason),
+                            () => ApproveRelaunchPermit(reason),
+                            oldProcess == null || oldProcess.HasExited
+                                ? (Func<bool>)null
+                                : () =>
+                                {
+                                    oldProcess.Kill();
+                                    oldProcess.WaitForExit(5000);
+                                    if (oldProcess.HasExited)
+                                        Record("OldProcessTerminated", reason);
+                                    return oldProcess.HasExited;
+                                },
+                            permit => RelaunchLoopAsync(reason, permit),
+                            (current, requested, failure) => Record(
+                                requested == TakeoverTransactionStage.RelaunchPermit &&
+                                string.Equals(failure, "PermitNotConsumable", StringComparison.Ordinal)
+                                    ? "TakeoverAbortedNoConsumablePermit"
+                                    : "TakeoverStageRegression",
+                                $"Current={current};Requested={requested};" +
+                                $"Failure={failure};Reason={reason}"))
+                        .ConfigureAwait(false);
+                    if (!pipeline.Succeeded) return;
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex)
+                {
+                    Record("OldProcessTerminationFailed", ex.Message);
                     return;
                 }
-
-                if (!IsSessionRevoked() && !_journal.ManualStopRequested && IsCurrentProcessAlive())
+                finally
                 {
-                    try
-                    {
-                        using (var process = Process.GetProcessById(_journal.CurrentPid))
-                        {
-                            if (!WatchdogProcessIdentityPolicy.CanKillOldProcess(
-                                    IsSessionRevoked(),
-                                    _journal.ManualStopRequested,
-                                    MatchesCurrentProcess(process)) ||
-                                !_automaticTakeover.TryAdvance(
-                                    transaction,
-                                    TakeoverTransactionStage.DumpCapture))
-                                return;
-                            await CaptureMiniDumpBeforeTerminationAsync(process, "AutomaticTakeover:" + reason)
-                                .ConfigureAwait(false);
-                            if (!_automaticTakeover.IsAuthorized(transaction)) return;
-                            if (!_automaticTakeover.TryExecute(
-                                    transaction,
-                                    TakeoverTransactionStage.ProcessTermination,
-                                    () =>
-                                    {
-                                        process.Kill();
-                                        process.WaitForExit(5000);
-                                        return true;
-                                    },
-                                    out var terminated) ||
-                                !terminated)
-                                return;
-                            Record("OldProcessTerminated", reason);
-                        }
-                    }
-                    catch (OperationCanceledException) { return; }
-                    catch (Exception ex)
-                    {
-                        Record("OldProcessTerminationFailed", ex.Message);
-                        return;
-                    }
+                    try { oldProcess?.Dispose(); } catch { }
                 }
-
-                if (_journal.ManualStopRequested ||
-                    IsSessionRevoked() ||
-                    !_automaticTakeover.IsAuthorized(transaction))
-                    return;
-                if (!_automaticTakeover.TryAdvance(
-                        transaction,
-                        TakeoverTransactionStage.Relaunching))
-                    return;
-                await RelaunchLoopAsync(reason, permitGeneration).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -2859,7 +3062,7 @@ namespace MTTFTest.Watchdog
                     {
                         if (!ReferenceEquals(_writer, writer)) return;
                     }
-                    var writeTask = writer.WriteLineAsync(payload);
+                    var writeTask = writer.WriteLineAsync(WatchdogWireFrame.Encode(payload));
                     var completed = Task.WhenAny(
                             writeTask,
                             Task.Delay(SendWriteTimeoutMs))

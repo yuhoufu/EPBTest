@@ -227,7 +227,8 @@ namespace Controller
                     _channelPausedUtc.ContainsKey(channel) ||
                     _manualStopRequestedChannels.ContainsKey(channel),
                     IsAlarmStopRequested(channel),
-                    IsChannelEnabled(channel)))
+                    IsChannelEnabled(channel),
+                    IsEnergizationRevoked))
             {
                 BeginTimerRuntimeSelfHealing(
                     channel,
@@ -319,6 +320,7 @@ namespace Controller
                 // live controller dictionaries, so publish here as the bounded
                 // periodic backstop for event-driven progress publications.
                 PublishWatchdogLogicalSourceBestEffort("TimerRuntimeHealth");
+                if (!IsRecoveryMemoryAdmissionAllowed()) return;
                 if (!IsBatchSessionActive) return;
                 TryLogFieldRuntimeMetrics();
                 var nowUtc = DateTime.UtcNow;
@@ -852,7 +854,10 @@ namespace Controller
                 "ActiveCycle",
                 "ElectricalGroup",
                 "TimerSelfHealing",
-                "Watchdog"
+                "Watchdog",
+                "StopAll",
+                "StopSafety",
+                "ApplicationClosing"
             };
             return ownedPrefixes.Any(prefix =>
                 reason.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
@@ -866,9 +871,11 @@ namespace Controller
             BatchPauseState batchPauseState,
             bool channelPaused,
             bool alarmStopRequested,
-            bool channelEnabled)
+            bool channelEnabled,
+            bool stopInProgress = false)
         {
-            if (!batchActive || !channelEnabled || channelPaused || alarmStopRequested)
+            if (stopInProgress || !batchActive || !channelEnabled ||
+                channelPaused || alarmStopRequested)
                 return false;
             if (batchPauseState != BatchPauseState.Running)
                 return false;
@@ -886,7 +893,8 @@ namespace Controller
 
         private bool CanContinueTimerRuntimeSelfHealing(int channel, Guid runId)
         {
-            if (!IsBatchSessionActive || runId == Guid.Empty || runId != _activeBatchId)
+            if (IsEnergizationRevoked || !IsBatchSessionActive ||
+                runId == Guid.Empty || runId != _activeBatchId)
                 return false;
             if (CurrentBatchPauseState != BatchPauseState.Running ||
                 _channelPausedUtc.ContainsKey(channel) ||
@@ -904,7 +912,14 @@ namespace Controller
             string reasonCode,
             string reasonText)
         {
+            if (IsEnergizationRevoked) return;
             if (!_timerRuntimeRecoveries.TryAdd(channel, 0)) return;
+
+            if (IsEnergizationRevoked)
+            {
+                _timerRuntimeRecoveries.TryRemove(channel, out _);
+                return;
+            }
 
             var runId = _activeBatchId;
             var runEpoch = Interlocked.Read(ref _runEpoch);

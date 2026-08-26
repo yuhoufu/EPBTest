@@ -48,6 +48,15 @@ namespace MTTFTest.Watchdog.Protocol
                 return IsCurrentCancelableLocked(lease);
         }
 
+        public TakeoverTransactionStage ActiveStage
+        {
+            get
+            {
+                lock (_gate)
+                    return _active?.Stage ?? TakeoverTransactionStage.Completed;
+            }
+        }
+
         public bool TryAdvance(
             TakeoverTransactionLease lease,
             TakeoverTransactionStage stage)

@@ -29,6 +29,8 @@ namespace AdaptiveControlTests
             var tests = new Action[]
             {
                 RuntimeDependencyClosureIsComplete,
+                WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
+                ApplicationExitUsesDedicatedShutdownExpectedMessage,
                 WinFormsTargetPostsOnStaMessagePump,
                 AcceptedPostSurvivesDispose,
                 BeginInvokeFaultIsReturned,
@@ -59,8 +61,10 @@ namespace AdaptiveControlTests
             {
                 try
                 {
+                    Console.WriteLine("RUN Watchdog WinForms UI: " + test.Method.Name);
                     test();
                     passed++;
+                    Console.WriteLine("PASS Watchdog WinForms UI: " + test.Method.Name);
                 }
                 catch (Exception ex)
                 {
@@ -97,6 +101,31 @@ namespace AdaptiveControlTests
             Assert(missing.Length == 0,
                 "CopyMttfTestRuntimeClosure produced an incomplete Release dependency closure: " +
                 string.Join(", ", missing));
+        }
+
+        private static void WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard()
+        {
+            Assert(!WinFormsWatchdogUiCloseCoordinator.ShouldApplyLegacyMdiGuard(
+                       watchdogCloseAuthorized: true,
+                       mdiChildCount: 1),
+                "Watchdog终态退出授权仍被旧MDI子窗保护否决");
+            Assert(WinFormsWatchdogUiCloseCoordinator.ShouldApplyLegacyMdiGuard(
+                       watchdogCloseAuthorized: false,
+                       mdiChildCount: 1) &&
+                   !WinFormsWatchdogUiCloseCoordinator.ShouldApplyLegacyMdiGuard(
+                       watchdogCloseAuthorized: false,
+                       mdiChildCount: 0),
+                "普通操作员误关保护被放宽，或无子窗仍错误阻止退出");
+        }
+
+        private static void ApplicationExitUsesDedicatedShutdownExpectedMessage()
+        {
+            Assert(WatchdogRuntime.SelectShutdownMessageTypeForRetention(false) ==
+                   WatchdogMessageType.ApplicationClosing,
+                "普通会话关闭被错误升级为主进程退出监督");
+            Assert(WatchdogRuntime.SelectShutdownMessageTypeForRetention(true) ==
+                   WatchdogMessageType.ShutdownExpected,
+                "正式应用退出没有启用Sidecar主PID退出监督");
         }
 
         private static void WinFormsTargetPostsOnStaMessagePump()

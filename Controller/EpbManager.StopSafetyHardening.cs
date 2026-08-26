@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -7,6 +8,48 @@ using IO.NI;
 
 namespace Controller
 {
+    internal sealed class RecoveryMemoryCircuitBreaker
+    {
+        internal const long WarningBytes = 600L * 1024 * 1024;
+        internal const long RejectBytes = 800L * 1024 * 1024;
+        private readonly object _gate = new object();
+        private readonly Queue<(long ticks, long bytes)> _samples =
+            new Queue<(long ticks, long bytes)>();
+
+        internal RecoveryMemoryDecision Evaluate(long privateBytes, long timestamp)
+        {
+            lock (_gate)
+            {
+                var horizon = timestamp - 30L * Stopwatch.Frequency;
+                while (_samples.Count > 0 && _samples.Peek().ticks < horizon)
+                    _samples.Dequeue();
+                var oldest = _samples.Count == 0
+                    ? (ticks: timestamp, bytes: privateBytes)
+                    : _samples.Peek();
+                _samples.Enqueue((timestamp, Math.Max(0, privateBytes)));
+                while (_samples.Count > 64) _samples.Dequeue();
+                return new RecoveryMemoryDecision(
+                    privateBytes >= WarningBytes,
+                    privateBytes >= RejectBytes,
+                    Math.Max(0, privateBytes - oldest.bytes));
+            }
+        }
+    }
+
+    internal sealed class RecoveryMemoryDecision
+    {
+        internal RecoveryMemoryDecision(bool warning, bool reject, long growthBytes30Seconds)
+        {
+            Warning = warning;
+            Reject = reject;
+            GrowthBytes30Seconds = growthBytes30Seconds;
+        }
+
+        internal bool Warning { get; }
+        internal bool Reject { get; }
+        internal long GrowthBytes30Seconds { get; }
+    }
+
     /// <summary>
     /// A stop material event is accepted only when its source supplies a
     /// positive monotonic sequence/boundary.  The same source/version is
@@ -67,6 +110,10 @@ namespace Controller
         private long _stopSafetyGeneration;
         private int _energizationRevoked;
         private int _processRestartRequired;
+        private readonly RecoveryMemoryCircuitBreaker _recoveryMemoryCircuitBreaker =
+            new RecoveryMemoryCircuitBreaker();
+        private int _recoveryMemoryWarningLogged;
+        private int _recoveryMemoryCircuitOpened;
 
         /// <summary>
         /// Real runner progress observation boundary.  The event is raised
@@ -101,6 +148,29 @@ namespace Controller
 
         public bool RequiresProcessRestart => Volatile.Read(ref _processRestartRequired) != 0;
         internal bool IsEnergizationRevoked => Volatile.Read(ref _energizationRevoked) != 0;
+
+        private bool IsRecoveryMemoryAdmissionAllowed()
+        {
+            if (Environment.Is64BitProcess) return true;
+            long privateBytes;
+            using (var process = Process.GetCurrentProcess())
+                privateBytes = process.PrivateMemorySize64;
+            var decision = _recoveryMemoryCircuitBreaker.Evaluate(
+                privateBytes,
+                Stopwatch.GetTimestamp());
+            if (decision.Warning &&
+                Interlocked.CompareExchange(ref _recoveryMemoryWarningLogged, 1, 0) == 0)
+                _log?.Warn(
+                    $"RecoveryMemoryWarning PrivateMiB={privateBytes / 1048576d:F1};" +
+                    $"Growth30sMiB={decision.GrowthBytes30Seconds / 1048576d:F1}",
+                    "独立看门狗");
+            if (!decision.Reject) return true;
+            if (Interlocked.CompareExchange(ref _recoveryMemoryCircuitOpened, 1, 0) == 0)
+                RevokeExecutionForExternalRecovery(
+                    $"RecoveryMemoryCircuitOpen PrivateMiB={privateBytes / 1048576d:F1};" +
+                    $"Growth30sMiB={decision.GrowthBytes30Seconds / 1048576d:F1}");
+            return false;
+        }
 
         /// <summary>
         /// 仅供全新 Watchdog 恢复进程使用：硬件暂不可用期间本进程从未获得过上电授权；
@@ -148,9 +218,12 @@ namespace Controller
 
         public void RevokeExecutionForExternalRecovery(string reason)
         {
-            Interlocked.Exchange(ref _processRestartRequired, 1);
-            Volatile.Write(ref _energizationRevoked, 1);
-            Interlocked.Increment(ref _runEpoch);
+            lock (_recoveryAdmissionGate)
+            {
+                Interlocked.Exchange(ref _processRestartRequired, 1);
+                Volatile.Write(ref _energizationRevoked, 1);
+                Interlocked.Increment(ref _runEpoch);
+            }
             foreach (var channel in Enumerable.Range(1, 12))
             {
                 try { TrySubmitEpbOffHighPriority(channel, null, out _); }
@@ -186,7 +259,8 @@ namespace Controller
     private void AuthorizeFreshRunAfterSafetyPreflight()
     {
         ThrowIfProcessRestartRequired();
-        Volatile.Write(ref _energizationRevoked, 0);
+        lock (_recoveryAdmissionGate)
+            Volatile.Write(ref _energizationRevoked, 0);
         _recoveryAggregateStore.ClearStopSafetyStickyTerminal(
             Math.Max(1, Interlocked.Read(ref _stopSafetyGeneration) + 1));
     }

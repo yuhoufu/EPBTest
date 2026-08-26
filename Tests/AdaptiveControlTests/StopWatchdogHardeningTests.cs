@@ -66,6 +66,7 @@ namespace AdaptiveControlTests
             Run("检查点并发轮询与原子替换无共享冲突", DurableCheckpointConcurrentReadWriteIsShareSafe, ref passed);
             Run("过渡窗公开人工停止按钮语义", TransitionWindowExposesOperatorStop, ref passed);
             Run("双端Watchdog发送使用统一有界截止", WatchdogTransportWritesAreBounded, ref passed);
+            Run("Timer与Runner活动缓存引用按通道去重", RuntimeResourceCountsAreDistinct, ref passed);
             Run("逐通道心跳字段可往返", PerChannelProgressIsSerializable, ref passed);
             Run("墙钟前后跳变均可检测", WallClockStepsAreDetected, ref passed);
             Run("机械圈与正式证据圈独立计数", MechanicalCyclesAreIndependent, ref passed);
@@ -85,6 +86,17 @@ namespace AdaptiveControlTests
                    WatchdogTransportPolicy.SendGateWaitMs &&
                    WatchdogTransportPolicy.SendWriteTimeoutMs <= 1000,
                 "实际管道写必须有不超过1秒的统一硬截止。");
+        }
+
+        private static void RuntimeResourceCountsAreDistinct()
+        {
+            Assert(EpbManager.CountDistinctRuntimeChannels(
+                       new[] { 4, 5, 11, 12 },
+                       new[] { 4, 5, 11, 12 }) == 4 &&
+                   EpbManager.CountDistinctRuntimeChannels(
+                       new[] { 4, 5 },
+                       new[] { 5, 11, 12, 99 }) == 4,
+                "活动表与缓存表仍被直接相加，或非法通道进入逻辑快照");
         }
 
         private static void ProtocolV2IsAdditive()

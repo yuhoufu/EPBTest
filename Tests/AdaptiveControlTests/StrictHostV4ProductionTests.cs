@@ -21,9 +21,10 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V2.13.0.25 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
+            Run("V2.13.0.26 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
             Run("strict bootstrap format2", StrictBootstrapFormat2, ref passed);
             Run("approved intent durable", ApprovedToIntent, ref passed);
+            Run("approved permit取消后耐久Superseded且重启不可消费", ApprovedPermitRevocationIsDurable, ref passed);
             Run("started requires durable consume", StartedRequiresDurableConsume, ref passed);
             Run("started attached committed", StartedAttachedCommitted, ref passed);
             Run("recovery commit replaces failed context and second takeover gets fresh permit",
@@ -45,13 +46,13 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(2, 13, 0, 25);
+            var expected = new Version(2, 13, 0, 26);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
-                "Protocol assembly version is not V2.13.0.25");
+                "Protocol assembly version is not V2.13.0.26");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,
-                "Client assembly version is not V2.13.0.25");
+                "Client assembly version is not V2.13.0.26");
             Require(typeof(StrictHostV4AuthorityAdapter).Assembly.GetName().Version == expected,
-                "Host assembly version is not V2.13.0.25");
+                "Host assembly version is not V2.13.0.26");
             Require(WatchdogProtocol.Version == 3 &&
                     WatchdogJournalPolicy.CurrentSchemaVersion == 4 &&
                     DurableRelaunchAuthorityV4Validator.RequiredFormatRevision == 2,
@@ -110,6 +111,32 @@ namespace AdaptiveControlTests
                 var transition = authority.PrepareLaunchIntent(Intent(authority.Snapshot, session));
                 Require(transition.Succeeded && transition.Capability != null && transition.Record.State == DurableRelaunchPermitState.LaunchIntent, "intent not durable");
                 Require(transition.Record.LaunchIntentId == transition.Capability.IntentId, "intent identity mismatch");
+            });
+        }
+
+        private static void ApprovedPermitRevocationIsDurable()
+        {
+            WithAuthority((dir, session, authority) =>
+            {
+                var decision = authority.RegisterFailureAndDecide(
+                    Operation(session, "12121212121212121212121212121212"));
+                Require(decision.ActionAllowed &&
+                        decision.Record.State == DurableRelaunchPermitState.Approved,
+                    "撤销测试未取得Approved permit");
+                var revoked = authority.RevokeCurrent("SafeIdleSuperseded");
+                Require(revoked.Succeeded &&
+                        revoked.Record.State == DurableRelaunchPermitState.Revoked &&
+                        revoked.Record.CircuitOpen &&
+                        string.Equals(
+                            revoked.Record.LastFailureDisposition,
+                            RecoveryFailureDispositions.Superseded,
+                            StringComparison.Ordinal),
+                    "取消后的permit没有耐久提交Revoked/Superseded");
+                var reopened = DurableRelaunchAuthorityV4Factory.TryOpenExisting(dir, session);
+                Require(reopened.Succeeded &&
+                        reopened.Authority.Snapshot.State == DurableRelaunchPermitState.Revoked &&
+                        !reopened.Authority.ResumeLaunchIntent().Succeeded,
+                    "重启后已撤销permit仍可恢复为LaunchIntent");
             });
         }
 

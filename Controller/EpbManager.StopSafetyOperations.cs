@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -228,7 +229,7 @@ namespace Controller
                 case StopSafetyStage.ClearTimerAndRunner:
                     return ExecuteStopTimerRunnerStage(state);
                 case StopSafetyStage.ClearRecoveryOwners:
-                    return await ExecuteStopRecoveryOwnerStageAsync(state).ConfigureAwait(false);
+                    return await ExecuteStopRecoveryOwnerStageAsync(state, safetyToken).ConfigureAwait(false);
                 case StopSafetyStage.ReleaseHydraulics:
                     return await ExecuteStopHydraulicReleaseStageAsync(state).ConfigureAwait(false);
                 case StopSafetyStage.StopAcquisition:
@@ -527,25 +528,44 @@ namespace Controller
         }
 
         private async Task<StopSafetyPortResult> ExecuteStopRecoveryOwnerStageAsync(
-            StopSafetyProductionState state)
+            StopSafetyProductionState state,
+            CancellationToken safetyToken)
         {
             try
             {
+                var stageStarted = Stopwatch.GetTimestamp();
                 var cancelDaq = CancelAllDaqRecoveriesAsync(
                     $"StopAll:{state.Context.Source}:{state.Context.CorrelationId}");
                 await cancelDaq.ConfigureAwait(false);
+
+                safetyToken.ThrowIfCancellationRequested();
+                var elapsedMs = (int)Math.Ceiling(
+                    (Stopwatch.GetTimestamp() - stageStarted) * 1000d / Stopwatch.Frequency);
+                // Leave margin for the transaction runner to publish its stage
+                // outcome before the five-second watchdog deadline.
+                var remainingMs = Math.Max(1, 4400 - elapsedMs);
                 var ownersTask = _recoveryOwnership.CancelAllAsync(
-                    int.MaxValue,
-                    CancellationToken.None);
-                var ownersExited = await ownersTask.ConfigureAwait(false);
+                    remainingMs,
+                    safetyToken);
                 var pendingTask = _recoveryTaskRegistry.DrainThroughEpochAsync(
                     state.RunEpoch,
-                    int.MaxValue);
-                var pending = await pendingTask.ConfigureAwait(false);
-                if (ownersExited != true || pending.Length != 0)
+                    remainingMs,
+                    safetyToken);
+                await Task.WhenAll(ownersTask, pendingTask).ConfigureAwait(false);
+                var ownersExited = ownersTask.Result;
+                var drain = pendingTask.Result;
+                if (ownersExited != true || !drain.Drained)
+                {
+                    var residue = string.Join(",", drain.Residues.Select(item =>
+                        $"{item.Operation}[{item.Kind};EPB={string.Join("/", item.Channels)}]"));
                     return StopSafetyPortResult.Failure(
-                        "恢复owner未能在截止内退出: " + string.Join(",", pending));
+                        "恢复owner未能在截止内退出: " + residue);
+                }
                 return StopSafetyPortResult.Success("DAQ与软件恢复owner已退出。", true, "StopRecoveryOwners", 1);
+            }
+            catch (OperationCanceledException)
+            {
+                return StopSafetyPortResult.Failure("恢复owner清理已到达事务截止。 ");
             }
             catch (Exception ex)
             {

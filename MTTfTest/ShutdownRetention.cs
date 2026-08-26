@@ -78,7 +78,12 @@ namespace MTEmbTest
             // loop and terminate deterministically.  The marker is best
             // effort: the Engine receipt remains the authoritative shutdown
             // result and must still be collected if the pipe is already gone.
-            try { WatchdogRuntime.SendApplicationClosingForShutdown(_engine); }
+            try
+            {
+                WatchdogRuntime.SendApplicationClosingForShutdown(
+                    _engine,
+                    WatchdogRuntime.IsProcessExitExpectedForCurrentShutdown);
+            }
             catch { }
             return _engine.ShutdownWithReceipt();
         }
@@ -235,6 +240,11 @@ namespace MTEmbTest
 
     internal static partial class WatchdogRuntime
     {
+        private static int _processExitExpectedForCurrentShutdown;
+
+        internal static bool IsProcessExitExpectedForCurrentShutdown =>
+            Volatile.Read(ref _processExitExpectedForCurrentShutdown) != 0;
+
         private static readonly Lazy<RuntimeShutdownRetentionCoordinator> ShutdownRetentionCoordinatorHolder =
             new Lazy<RuntimeShutdownRetentionCoordinator>(
                 () => new RuntimeShutdownRetentionCoordinator(
@@ -255,9 +265,22 @@ namespace MTEmbTest
 
         internal static RuntimeShutdownReceipt ShutdownRuntimeWithReceipt()
         {
+            return ShutdownRuntimeWithReceipt(false);
+        }
+
+        internal static RuntimeShutdownReceipt ShutdownRuntimeWithReceipt(
+            bool processExitExpected)
+        {
             SessionLifecycleGate.Wait();
+            var previous = Interlocked.Exchange(
+                ref _processExitExpectedForCurrentShutdown,
+                processExitExpected ? 1 : 0);
             try { return ShutdownRuntimeWithReceiptNoGate(); }
-            finally { SessionLifecycleGate.Release(); }
+            finally
+            {
+                Interlocked.Exchange(ref _processExitExpectedForCurrentShutdown, previous);
+                SessionLifecycleGate.Release();
+            }
         }
 
         private static RuntimeShutdownReceipt ShutdownRuntimeWithReceiptNoGate()

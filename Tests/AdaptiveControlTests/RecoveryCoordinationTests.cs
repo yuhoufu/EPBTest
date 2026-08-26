@@ -22,6 +22,9 @@ namespace AdaptiveControlTests
             Run("同优先级不同电源恢复排队且不得互相取消", SamePriorityOwnersQueueWithoutCancellation, ref passed);
             Run("硬件确认同步取消当前恢复所有者", ConfirmedHardwareCancelsRecoveryOwner, ref passed);
             Run("恢复任务登记覆盖全部受影响通道并在终态清除", RecoveryTaskRegistryTracksAffectedChannels, ref passed);
+            Run("已完成未终态恢复任务有界返回且绝不热循环", CompletedWorkerWithoutTerminalReturnsImmediately, ref passed);
+            Run("恢复任务清退取消令牌可到达内部等待", RecoveryDrainCancellationIsBounded, ref passed);
+            Run("x86恢复内存熔断按600与800MiB分级", RecoveryMemoryCircuitBreakerIsDeterministic, ref passed);
             Run("液压硬件确认仅永久禁用故障组所选卡钳", ConfirmedHydraulicDisableIsScoped, ref passed);
             Run("PSU4硬件确认仅永久禁用EPB10/11且EPB9继续", ConfirmedPowerDisableIsScoped, ref passed);
             Run("硬件锁存到达后旧软件恢复不得再次使能", HardwareLatchTerminatesSoftwareRecovery, ref passed);
@@ -553,6 +556,72 @@ namespace AdaptiveControlTests
             SpinWait.SpinUntil(() => registry.ActiveCount == 0, 1000);
             Assert(!registry.HasActiveTaskForChannel(10, 17) && registry.ActiveCount == 0,
                 "恢复任务终态后通道登记未原子清除");
+        }
+
+        private static void CompletedWorkerWithoutTerminalReturnsImmediately()
+        {
+            var registry = new RecoveryTaskRegistry();
+            var lease = registry.Reserve("TimerRuntimeSelfHealing", 21, 4, 5);
+            Assert(lease.TryBind(Task.CompletedTask), "无法绑定已完成恢复worker");
+            var started = Stopwatch.StartNew();
+            var result = registry.DrainThroughEpochAsync(
+                    21,
+                    5000,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            started.Stop();
+            Assert(!result.Drained && !result.Cancelled &&
+                   result.Residues.Count == 1 &&
+                   result.Residues[0].Kind ==
+                       RecoveryTaskRegistry.DrainResidueKind.WorkerCompletedWithoutTerminal &&
+                   started.ElapsedMilliseconds < 500,
+                "已完成未终态worker没有立即作为结构化残留返回");
+            Assert(lease.CompleteAfterTerminal(), "测试终态租约未释放");
+            Assert(registry.DrainThroughEpochAsync(21, 100, CancellationToken.None)
+                       .GetAwaiter().GetResult().Drained,
+                "终态释放后registry仍有残留");
+        }
+
+        private static void RecoveryDrainCancellationIsBounded()
+        {
+            var registry = new RecoveryTaskRegistry();
+            var lease = registry.Reserve("PowerSupplySoftwareRecovery", 22, 11, 12);
+            using (var cancellation = new CancellationTokenSource(40))
+            {
+                var started = Stopwatch.StartNew();
+                var result = registry.DrainThroughEpochAsync(
+                        22,
+                        5000,
+                        cancellation.Token)
+                    .GetAwaiter()
+                    .GetResult();
+                started.Stop();
+                Assert(!result.Drained && result.Cancelled &&
+                       result.Residues.Single().Kind ==
+                           RecoveryTaskRegistry.DrainResidueKind.ReservationOnly &&
+                       started.ElapsedMilliseconds < 1000,
+                    "外层取消没有到达registry reservation等待");
+            }
+            lease.CompleteAfterTerminal();
+        }
+
+        private static void RecoveryMemoryCircuitBreakerIsDeterministic()
+        {
+            var breaker = new RecoveryMemoryCircuitBreaker();
+            var origin = Stopwatch.GetTimestamp();
+            var normal = breaker.Evaluate(400L * 1024 * 1024, origin);
+            var warning = breaker.Evaluate(
+                RecoveryMemoryCircuitBreaker.WarningBytes,
+                origin + 15L * Stopwatch.Frequency);
+            var rejected = breaker.Evaluate(
+                RecoveryMemoryCircuitBreaker.RejectBytes,
+                origin + 30L * Stopwatch.Frequency);
+            Assert(!normal.Warning && !normal.Reject &&
+                   warning.Warning && !warning.Reject &&
+                   rejected.Warning && rejected.Reject &&
+                   rejected.GrowthBytes30Seconds >= 400L * 1024 * 1024,
+                "32位恢复内存分级或30秒增长证据错误");
         }
 
         private static void ConfirmedHydraulicDisableIsScoped()

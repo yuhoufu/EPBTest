@@ -46,6 +46,9 @@ namespace AdaptiveControlTests
             Run("Recovery重叠通道拒绝且不影响首incident，非重叠可并行",
                 RecoveryChannelOverlapIsAtomic,
                 ref passed);
+            Run("Recovery物理安全组与逻辑owner集合严格分离",
+                RecoveryPhysicalAndLogicalScopesAreSeparated,
+                ref passed);
             Run("Recovery 1.2秒窗口64并发不同correlation只创建一个incident",
                 ScopeBarrierDeduplicatesConcurrentSignals,
                 ref passed);
@@ -1451,6 +1454,55 @@ namespace AdaptiveControlTests
                 "重叠门禁测试终态后仍残留contract/lease。");
         }
 
+        private static void RecoveryPhysicalAndLogicalScopesAreSeparated()
+        {
+            var seam = new FakeSeam();
+            var coordinator = seam.CreateCoordinator();
+            var result = coordinator.TryBegin(
+                "PowerSupplySoftwareRecovery",
+                Guid.NewGuid(),
+                1,
+                RecoveryOwnerKind.PowerRecovery,
+                RecoveryTargetPhase.Formal,
+                Guid.NewGuid(),
+                new[] { 11, 12 },
+                new[] { 10, 11, 12 },
+                _ => () => Task.CompletedTask,
+                seam.PublishRecovering,
+                out var incident);
+            Assert(result == RecoveryIncidentCoordinator.BeginResult.Created &&
+                   incident != null &&
+                   incident.Contract.OwnedChannels.SequenceEqual(new[] { 11, 12 }) &&
+                   incident.Contract.SafetyAffectedChannels.SequenceEqual(new[] { 10, 11, 12 }) &&
+                   incident.TaskLease.Channels.SequenceEqual(new[] { 11, 12 }),
+                "禁用EPB10仍被登记为逻辑恢复owner，或物理整组范围丢失");
+            Assert(incident.Start(), "拆分集合incident无法启动");
+            AwaitWorker(incident.WorkerTask);
+            Assert(incident.CompleteAfterTerminal(seam.PublishTerminal) &&
+                   coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
+                "拆分集合incident终态后仍残留合同或租约");
+
+            var failing = new FakeSeam { Failure = "publish" };
+            var failingCoordinator = failing.CreateCoordinator();
+            var rejected = failingCoordinator.TryBegin(
+                "PowerSupplySoftwareRecovery",
+                Guid.NewGuid(),
+                1,
+                RecoveryOwnerKind.PowerRecovery,
+                RecoveryTargetPhase.Formal,
+                Guid.NewGuid(),
+                new[] { 11, 12 },
+                new[] { 10, 11, 12 },
+                _ => () => Task.CompletedTask,
+                failing.PublishRecovering,
+                out _);
+            Assert(rejected == RecoveryIncidentCoordinator.BeginResult.Rejected &&
+                   failing.LastOffContract != null &&
+                   failing.LastOffContract.SafetyAffectedChannels.SequenceEqual(new[] { 10, 11, 12 }) &&
+                   failing.Terminal.OrderBy(channel => channel).SequenceEqual(new[] { 11, 12 }),
+                "合约补偿未对物理整组OFF并仅对启用owner发布终态");
+        }
+
         private static void ScopeBarrierDeduplicatesConcurrentSignals()
         {
             var seam = new FakeSeam();
@@ -1560,6 +1612,7 @@ namespace AdaptiveControlTests
             internal RecoveryIncidentCoordinator.Incident RegisteredIncident;
             internal RecoveryIncidentCoordinator Coordinator;
             internal RecoveryIncidentCoordinator.Incident LastIncident;
+            internal RecoveryContractSnapshot LastOffContract;
 
             internal int ChannelCount => Channels.Length;
             internal int TerminalCount
@@ -1622,6 +1675,7 @@ namespace AdaptiveControlTests
                         {
                             ProbeGate("off");
                             Events.Enqueue("off");
+                            LastOffContract = contract?.Clone();
                             Interlocked.Increment(ref OffCount);
                         },
                         PublishSafeTerminal = (contract, reason, detail) =>

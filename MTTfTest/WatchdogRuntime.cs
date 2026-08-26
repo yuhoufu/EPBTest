@@ -2280,7 +2280,8 @@ namespace MTEmbTest
         /// normal shutdown receipt.
         /// </summary>
         internal static bool SendApplicationClosingForShutdown(
-            WatchdogClientTransportEngine engine)
+            WatchdogClientTransportEngine engine,
+            bool processExitExpected = false)
         {
             if (engine == null) return false;
             var snapshot = engine.CaptureSnapshot();
@@ -2294,13 +2295,26 @@ namespace MTEmbTest
                 new WatchdogMessage
                 {
                     ProtocolVersion = WatchdogProtocol.Version,
-                    Type = WatchdogMessageType.ApplicationClosing,
+                    // Only the final application-exit owner asks the sidecar
+                    // to prove that the main PID really disappears.  Ordinary
+                    // session shutdown/rebind retains the compatible immediate
+                    // ApplicationClosing semantics.
+                    Type = SelectShutdownMessageTypeForRetention(
+                        processExitExpected),
                     SessionId = snapshot.SessionId,
                     Reason = "RuntimeShutdown"
                 },
                 snapshot.SessionId,
                 snapshot.SessionGeneration,
                 snapshot.ActiveSessionLease);
+        }
+
+        internal static string SelectShutdownMessageTypeForRetention(
+            bool processExitExpected)
+        {
+            return processExitExpected
+                ? WatchdogMessageType.ShutdownExpected
+                : WatchdogMessageType.ApplicationClosing;
         }
 
         private static RuntimeTransportSessionContext MarkSessionClosing(string reason)

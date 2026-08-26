@@ -964,7 +964,7 @@ namespace MTTFTest.Watchdog.Client
                                 expectedConnectionIdentity)))
                             return SendDisposition.ScopeStale;
                     }
-                    var writeTask = writer.WriteLineAsync(payload);
+                    var writeTask = writer.WriteLineAsync(WatchdogWireFrame.Encode(payload));
                     var completed = Task.WhenAny(
                             writeTask,
                             Task.Delay(WatchdogTransportPolicy.SendWriteTimeoutMs))
@@ -2345,6 +2345,33 @@ namespace MTTFTest.Watchdog.Client
                         unexpectedExit = true;
                         unexpectedDetail = "Reader返回EOF。";
                         break;
+                    }
+                    if (!WatchdogWireFrame.TryDecode(
+                            line,
+                            out line,
+                            out var frameFailure))
+                    {
+                        var frameError = new WatchdogConnectException(
+                            WatchdogConnectFailureKind.ProtocolRejected,
+                            "Watchdog传输帧不完整或校验失败：" + frameFailure);
+                        var callbacks = CaptureConnectionCallbacks(
+                            connectionGeneration,
+                            sessionGeneration,
+                            sessionLease,
+                            connectionIdentity);
+                        try { callbacks?.RecordEvent?.Invoke(
+                            "TransportInterruptedPartialFrame", frameError.Message); } catch { }
+                        FailAttached(
+                            frameError,
+                            connectionGeneration,
+                            sessionGeneration,
+                            sessionLease,
+                            connectionIdentity);
+                        EnterTransportFailClosed(
+                            sessionLease,
+                            frameError.Kind,
+                            frameError.Message);
+                        return;
                     }
                     var connectionCallbacks = CaptureConnectionCallbacks(
                         connectionGeneration,

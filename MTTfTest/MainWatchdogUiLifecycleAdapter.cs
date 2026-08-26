@@ -293,10 +293,11 @@ namespace MtEmbTest
         }
 
         internal async Task<RuntimeShutdownReceipt> ShutdownAndReleaseAsync(
-            string reason)
+            string reason,
+            bool processExitExpected = false)
         {
             Task<RuntimeShutdownReceipt> shutdown;
-            lock (_gate) shutdown = EnsureShutdownTaskLocked();
+            lock (_gate) shutdown = EnsureShutdownTaskLocked(processExitExpected);
 
             RuntimeShutdownReceipt receipt;
             try
@@ -320,12 +321,17 @@ namespace MtEmbTest
             return receipt;
         }
 
-        private Task<RuntimeShutdownReceipt> EnsureShutdownTaskLocked()
+        private Task<RuntimeShutdownReceipt> EnsureShutdownTaskLocked(
+            bool processExitExpected)
         {
             if (_closeTask != null && !_closeTask.IsCompleted) return _closeTask;
             _closeTask = Task.Run(() =>
             {
-                try { return WatchdogRuntime.ShutdownRuntimeWithReceipt(); }
+                try
+                {
+                    return WatchdogRuntime.ShutdownRuntimeWithReceipt(
+                        processExitExpected);
+                }
                 catch (Exception ex)
                 {
                     ProjectLogHub.Write(ProjectLogLevel.Error,

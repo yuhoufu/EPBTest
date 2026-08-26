@@ -273,7 +273,8 @@ namespace AdaptiveControlTests
 
         private static void RecoveryContractSnapshotIsImmutable()
         {
-            var channels = new[] { 4, 10 };
+            var ownedChannels = new[] { 11, 12 };
+            var safetyAffectedChannels = new[] { 10, 11, 12 };
             var run = Guid.NewGuid();
             var owner = Guid.NewGuid();
             var started = DateTime.UtcNow;
@@ -287,11 +288,16 @@ namespace AdaptiveControlTests
                 "TimerRuntimeSelfHealing",
                 started,
                 started.AddSeconds(45),
-                channels);
-            channels[0] = 99;
+                ownedChannels,
+                safetyAffectedChannels);
+            ownedChannels[0] = 99;
+            safetyAffectedChannels[0] = 99;
             var clone = contract.Clone();
-            Assert(contract.Channels.SequenceEqual(new[] { 4, 10 }) &&
-                   clone.Channels.SequenceEqual(new[] { 4, 10 }) &&
+            Assert(contract.Channels.SequenceEqual(new[] { 11, 12 }) &&
+                   contract.OwnedChannels.SequenceEqual(new[] { 11, 12 }) &&
+                   contract.SafetyAffectedChannels.SequenceEqual(new[] { 10, 11, 12 }) &&
+                   clone.OwnedChannels.SequenceEqual(new[] { 11, 12 }) &&
+                   clone.SafetyAffectedChannels.SequenceEqual(new[] { 10, 11, 12 }) &&
                    contract.IncidentId == clone.IncidentId &&
                    contract.OwnerId == owner &&
                    contract.RunEpoch == 3,
