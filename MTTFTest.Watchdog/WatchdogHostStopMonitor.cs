@@ -69,6 +69,7 @@ namespace MTTFTest.Watchdog
             bool hasRecoveryEligibleChannels = false,
             bool manualPauseActive = false,
             bool manualPauseUnsafe = false,
+            bool hardwareSafeIdle = false,
             Action<string> sink = null)
         {
             var projection = Snapshot;
@@ -117,7 +118,8 @@ namespace MTTFTest.Watchdog
             // this branch only carries the already-published authoritative
             // terminal fact through the same once gate.
             if ((projection.TakeoverRequired || projection.TimedOut) &&
-                !sessionRevoked && !alreadyTakingOver)
+                !sessionRevoked && !alreadyTakingOver &&
+                !(hardwareSafeIdle && !projection.Active))
                 shouldTakeover = true;
             if (!shouldTakeover || sink == null)
                 return false;

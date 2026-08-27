@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Web.Script.Serialization;
 using MTTFTest.Watchdog.Protocol;
 using MTTFTest.Watchdog;
 
@@ -28,7 +29,116 @@ namespace AdaptiveControlTests
             Run("Host生产接管阶段回退明确拒绝且无副作用",
                 ProductionTakeoverRegressionIsObservable,
                 ref passed);
+            Run("Host恢复通道意图从初始进程冻结并跨Sidecar重载保持",
+                RecoveryChannelIntentIsFrozenAndDurable,
+                ref passed);
+            Run("有效活动Run快照不被空RunId或恢复子进程心跳覆盖",
+                LastVerifiedActiveRunSurvivesCleanupHeartbeat,
+                ref passed);
             return passed;
+        }
+
+        private static void LastVerifiedActiveRunSurvivesCleanupHeartbeat()
+        {
+            var runId = Guid.NewGuid().ToString("N");
+            var journal = new WatchdogJournal
+            {
+                SessionId = "verified-active-run",
+                CurrentPid = 701,
+                CurrentProcessStartUtcTicks = 7001,
+                LastCheckpointMirror = new WatchdogCheckpointMirror
+                {
+                    Armed = true,
+                    SessionId = "verified-active-run",
+                    RunId = runId,
+                    RunEpoch = 17,
+                    Revision = 9,
+                    Sha256 = "checkpoint-sha",
+                    SelectedChannels = new[] { 4, 5, 11, 12 }
+                }
+            };
+            var active = new WatchdogHeartbeat
+            {
+                Sequence = 88,
+                ProcessId = 701,
+                ProcessStartUtcTicks = 7001,
+                RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource,
+                RunId = runId,
+                RunEpoch = 17,
+                RunActive = true,
+                EnabledChannels = new[] { 4, 5, 11, 12 },
+                RecoveryEligibleChannels = new[] { 4, 5, 11 },
+                CompletedChannels = new[] { 12 },
+                ManuallyDisabledChannels = new[] { 5 },
+                PermanentAlarmedChannels = new[] { 11 }
+            };
+            Assert(WatchdogRecoveryChannelIntentPolicy.TryCaptureLastVerifiedActiveRun(
+                       journal,
+                       active,
+                       identityValidated: true) &&
+                   journal.LastVerifiedActiveRun.SelectedChannels.SequenceEqual(
+                       new[] { 4, 5, 11, 12 }) &&
+                   journal.LastVerifiedActiveRun.CheckpointRevision == 9,
+                "有效InitialProcess活动运行没有保存匹配checkpoint身份");
+
+            var cleanup = new WatchdogHeartbeat
+            {
+                Sequence = 89,
+                ProcessId = 701,
+                ProcessStartUtcTicks = 7001,
+                RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource,
+                RunId = string.Empty,
+                RunEpoch = 0,
+                RunActive = false
+            };
+            journal.LastHeartbeat = cleanup;
+            Assert(!WatchdogRecoveryChannelIntentPolicy.TryCaptureLastVerifiedActiveRun(
+                       journal,
+                       cleanup,
+                       identityValidated: true),
+                "StopAll空RunId心跳覆盖了最后有效活动运行");
+            var recoveryChild = new WatchdogHeartbeat
+            {
+                Sequence = 90,
+                ProcessId = 702,
+                ProcessStartUtcTicks = 7002,
+                RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource,
+                RunId = runId,
+                RunEpoch = 18,
+                RunActive = true,
+                ManuallyDisabledChannels = Enumerable.Range(1, 12).ToArray()
+            };
+            Assert(!WatchdogRecoveryChannelIntentPolicy.TryCaptureLastVerifiedActiveRun(
+                       journal,
+                       recoveryChild,
+                       identityValidated: true),
+                "Recovery child污染了InitialProcess活动运行快照");
+            journal.CurrentPid = 702;
+            journal.CurrentProcessStartUtcTicks = 7002;
+            journal.LastHeartbeat = recoveryChild;
+            var resolution = WatchdogRecoveryChannelIntentPolicy.Resolve(journal);
+            Assert(resolution.Succeeded &&
+                   resolution.ExcludedChannels.SequenceEqual(new[] { 5, 11, 12 }) &&
+                   journal.FrozenExcludedSourceRunId == runId &&
+                   journal.FrozenExcludedSourceRunEpoch == 17,
+                "清场空RunId后首次拉起未优先使用LastVerifiedActiveRun");
+
+            var fallback = new WatchdogJournal
+            {
+                SessionId = "checkpoint-fallback",
+                CurrentPid = 801,
+                CurrentProcessStartUtcTicks = 8001,
+                LastCheckpointMirror = new WatchdogCheckpointMirror
+                {
+                    Armed = true,
+                    SessionId = "checkpoint-fallback",
+                    RunId = Guid.NewGuid().ToString("N"),
+                    RunEpoch = 3,
+                    SelectedChannels = new[] { 4, 5 }
+                }
+            };
+            Assert(WatchdogRecoveryChannelIntentPolicy.Resolve(fallback).Succeeded,
+                "无活动快照时未使用身份匹配且Armed的checkpoint mirror回退");
         }
 
         private static void ProductionOrchestratorUsesInjectedPorts()
@@ -78,6 +188,150 @@ namespace AdaptiveControlTests
                        2).ActionAllowed &&
                    orchestrator.Snapshot.State == DurableRelaunchPermitState.Committed,
                 "Host生产编排没有以RecoveryBatch提交Committed");
+        }
+
+        private static void RecoveryChannelIntentIsFrozenAndDurable()
+        {
+            var journal = new WatchdogJournal
+            {
+                CurrentPid = 101,
+                CurrentProcessStartUtcTicks = 1001,
+                RelaunchState = DurableRelaunchPermitState.Approved.ToString(),
+                LastHeartbeat = new WatchdogHeartbeat
+                {
+                    ProcessId = 101,
+                    ProcessStartUtcTicks = 1001,
+                    RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource,
+                    RunId = Guid.NewGuid().ToString("N"),
+                    RunEpoch = 7,
+                    RunActive = true,
+                    ManuallyDisabledChannels = new[] { 4, 2, 4 },
+                    CompletedChannels = new[] { 1 },
+                    PermanentAlarmedChannels = new[] { 12, 2 }
+                }
+            };
+            var persistenceCalls = 0;
+            var first = WatchdogRecoveryChannelIntentPolicy.ResolveAndPersist(
+                journal,
+                () =>
+                {
+                    persistenceCalls++;
+                    return true;
+                });
+            Assert(first.Succeeded && first.NewlyFrozen &&
+                   first.ExcludedChannels.SequenceEqual(new[] { 1, 2, 4, 12 }) &&
+                   journal.RecoveryChannelIntentFrozen &&
+                   journal.FrozenExcludedSourceProcessId == 101 &&
+                   journal.FrozenExcludedSourceProcessStartUtcTicks == 1001 &&
+                   journal.FrozenExcludedSourceRunEpoch == 7 &&
+                   persistenceCalls == 1,
+                "初始进程恢复通道意图未排序去重并冻结完整身份。");
+
+            var serializer = new JavaScriptSerializer();
+            var reloaded = serializer.Deserialize<WatchdogJournal>(
+                serializer.Serialize(journal));
+            reloaded.CurrentPid = 202;
+            reloaded.CurrentProcessStartUtcTicks = 2002;
+            reloaded.LastHeartbeat = new WatchdogHeartbeat
+            {
+                ProcessId = 202,
+                ProcessStartUtcTicks = 2002,
+                RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource,
+                RunId = journal.LastHeartbeat.RunId,
+                RunEpoch = 8,
+                ManuallyDisabledChannels = Enumerable.Range(1, 12).ToArray(),
+                CompletedChannels = Enumerable.Range(1, 12).ToArray(),
+                PermanentAlarmedChannels = Enumerable.Range(1, 12).ToArray()
+            };
+            var child = WatchdogRecoveryChannelIntentPolicy.Resolve(reloaded);
+            Assert(child.Succeeded && !child.NewlyFrozen &&
+                   child.ExcludedChannels.SequenceEqual(new[] { 1, 2, 4, 12 }),
+                "恢复子进程全禁用心跳污染了冻结通道集合，或Sidecar重载丢失集合。");
+
+            var empty = new WatchdogJournal
+            {
+                CurrentPid = 303,
+                CurrentProcessStartUtcTicks = 3003,
+                LastHeartbeat = new WatchdogHeartbeat
+                {
+                    ProcessId = 303,
+                    ProcessStartUtcTicks = 3003,
+                    RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource,
+                    RunId = Guid.NewGuid().ToString("N"),
+                    RunEpoch = 1,
+                    RunActive = true
+                }
+            };
+            var emptyResult = WatchdogRecoveryChannelIntentPolicy.ResolveAndPersist(
+                empty,
+                () => true);
+            Assert(emptyResult.Succeeded && emptyResult.NewlyFrozen &&
+                   empty.RecoveryChannelIntentFrozen &&
+                   emptyResult.ExcludedChannels.Length == 0,
+                "空排除集合没有用冻结标志持久区分。");
+
+            var persistenceFailure = new WatchdogJournal
+            {
+                CurrentPid = 505,
+                CurrentProcessStartUtcTicks = 5005,
+                LastHeartbeat = new WatchdogHeartbeat
+                {
+                    ProcessId = 505,
+                    ProcessStartUtcTicks = 5005,
+                    RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource,
+                    RunId = Guid.NewGuid().ToString("N"),
+                    RunEpoch = 3,
+                    RunActive = true
+                }
+            };
+            var failedPersistenceCalls = 0;
+            var failedPersistence =
+                WatchdogRecoveryChannelIntentPolicy.ResolveAndPersist(
+                    persistenceFailure,
+                    () =>
+                    {
+                        failedPersistenceCalls++;
+                        return false;
+                    });
+            Assert(!failedPersistence.Succeeded &&
+                   failedPersistence.FailureReason ==
+                   "FrozenExcludedChannelsPersistenceFailed" &&
+                   failedPersistenceCalls == 1,
+                "冻结集合同步持久化失败未阻断首个launch intent。");
+
+            reloaded.FrozenExcludedChannels = new[] { 1, 1, 13 };
+            Assert(!WatchdogRecoveryChannelIntentPolicy.Resolve(reloaded).Succeeded,
+                "非法、重复或越界的冻结集合未fail closed。");
+
+            var missing = new WatchdogJournal
+            {
+                CurrentPid = 404,
+                CurrentProcessStartUtcTicks = 4004,
+                LastHeartbeat = new WatchdogHeartbeat
+                {
+                    ProcessId = 404,
+                    ProcessStartUtcTicks = 4004,
+                    RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource,
+                    RunId = Guid.NewGuid().ToString("N"),
+                    RunEpoch = 2,
+                    RunActive = true
+                }
+            };
+            var missingResult = WatchdogRecoveryChannelIntentPolicy.Resolve(missing);
+            Assert(!missingResult.Succeeded &&
+                   missingResult.FailureReason ==
+                   "FrozenExcludedChannelsInitialSourceInvalid",
+                "恢复代次缺失冻结证据时未fail closed。");
+
+            missing.LastHeartbeat.RecoveryProcessSource =
+                RecoveryFailurePolicy.InitialProcessSource;
+            missing.RelaunchState = DurableRelaunchPermitState.Started.ToString();
+            var startedWithoutFreeze =
+                WatchdogRecoveryChannelIntentPolicy.Resolve(missing);
+            Assert(!startedWithoutFreeze.Succeeded &&
+                   startedWithoutFreeze.FailureReason ==
+                   "FrozenExcludedChannelsMissingAfterRecoveryStarted",
+                "已进入Started代次但缺失冻结证据时未fail closed。");
         }
 
         private static void ProductionTakeoverPipelineIsMonotonic()

@@ -13,6 +13,25 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTTFTest.Watchdog
 {
+    internal sealed class WatchdogVerifiedActiveRun
+    {
+        public string RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public int ProcessId { get; set; }
+        public long ProcessStartUtcTicks { get; set; }
+        public int[] SelectedChannels { get; set; } = Array.Empty<int>();
+        public int[] RecoveryEligibleChannels { get; set; } = Array.Empty<int>();
+        public int[] CompletedChannels { get; set; } = Array.Empty<int>();
+        public int[] ManuallyDisabledChannels { get; set; } = Array.Empty<int>();
+        public int[] PermanentAlarmedChannels { get; set; } = Array.Empty<int>();
+        public long HeartbeatSequence { get; set; }
+        public string CheckpointRunId { get; set; }
+        public long CheckpointRunEpoch { get; set; }
+        public long CheckpointRevision { get; set; }
+        public string CheckpointSha256 { get; set; }
+        public string CapturedUtc { get; set; }
+    }
+
     internal sealed class WatchdogJournal
     {
         public int SchemaVersion { get; set; } = WatchdogJournalPolicy.CurrentSchemaVersion;
@@ -68,12 +87,288 @@ namespace MTTFTest.Watchdog
         public long LastHeartbeatUtcTicks { get; set; }
         public bool OrphanPauseTriggered { get; set; }
         public bool PowerDisableTriggered { get; set; }
+        public bool RecoveryChannelIntentFrozen { get; set; }
+        public int[] FrozenExcludedChannels { get; set; } = Array.Empty<int>();
+        public int FrozenExcludedSourceProcessId { get; set; }
+        public long FrozenExcludedSourceProcessStartUtcTicks { get; set; }
+        public string FrozenExcludedSourceRunId { get; set; }
+        public long FrozenExcludedSourceRunEpoch { get; set; }
         public string UpdatedUtc { get; set; }
         public string StartedUtc { get; set; }
         public long EventSequence { get; set; }
         public long DroppedEventCount { get; set; }
         public WatchdogHeartbeat LastHeartbeat { get; set; }
+        public WatchdogVerifiedActiveRun LastVerifiedActiveRun { get; set; }
         public WatchdogCheckpointMirror LastCheckpointMirror { get; set; }
+    }
+
+    internal sealed class FrozenChannelIntentResolution
+    {
+        internal bool Succeeded { get; set; }
+        internal bool NewlyFrozen { get; set; }
+        internal int[] ExcludedChannels { get; set; } = Array.Empty<int>();
+        internal string FailureReason { get; set; }
+    }
+
+    /// <summary>
+    /// Freezes the recovery channel intent from the last verified initial
+    /// process heartbeat. Recovery children can consume this evidence but can
+    /// never redefine it, including by reporting every channel disabled.
+    /// </summary>
+    internal static class WatchdogRecoveryChannelIntentPolicy
+    {
+        internal static bool TryCaptureLastVerifiedActiveRun(
+            WatchdogJournal journal,
+            WatchdogHeartbeat heartbeat,
+            bool identityValidated)
+        {
+            if (journal == null || heartbeat == null || !identityValidated ||
+                !heartbeat.RunActive || string.IsNullOrWhiteSpace(heartbeat.RunId) ||
+                heartbeat.RunEpoch <= 0 ||
+                !string.Equals(
+                    heartbeat.RecoveryProcessSource,
+                    RecoveryFailurePolicy.InitialProcessSource,
+                    StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var checkpoint = journal.LastCheckpointMirror;
+            var checkpointMatches = checkpoint != null && checkpoint.Armed &&
+                                    string.Equals(
+                                        checkpoint.RunId,
+                                        heartbeat.RunId,
+                                        StringComparison.OrdinalIgnoreCase) &&
+                                    checkpoint.RunEpoch == heartbeat.RunEpoch &&
+                                    (string.IsNullOrWhiteSpace(checkpoint.SessionId) ||
+                                     string.Equals(
+                                         checkpoint.SessionId,
+                                         journal.SessionId,
+                                         StringComparison.Ordinal));
+            var selected = checkpointMatches
+                ? NormalizeChannels(checkpoint.SelectedChannels)
+                : NormalizeChannels(
+                    (heartbeat.EnabledChannels ?? Array.Empty<int>())
+                    .Concat(heartbeat.RecoveryEligibleChannels ?? Array.Empty<int>())
+                    .Concat(heartbeat.CompletedChannels ?? Array.Empty<int>())
+                    .Concat(heartbeat.ManuallyDisabledChannels ?? Array.Empty<int>())
+                    .Concat(heartbeat.PermanentAlarmedChannels ?? Array.Empty<int>()));
+            var previous = journal.LastVerifiedActiveRun;
+            var changed = previous == null ||
+                          !string.Equals(previous.RunId, heartbeat.RunId, StringComparison.OrdinalIgnoreCase) ||
+                          previous.RunEpoch != heartbeat.RunEpoch ||
+                          previous.ProcessId != heartbeat.ProcessId ||
+                          previous.ProcessStartUtcTicks != heartbeat.ProcessStartUtcTicks ||
+                          !NormalizeChannels(previous.SelectedChannels).SequenceEqual(selected) ||
+                          !NormalizeChannels(previous.RecoveryEligibleChannels).SequenceEqual(
+                              NormalizeChannels(heartbeat.RecoveryEligibleChannels)) ||
+                          !NormalizeChannels(previous.CompletedChannels).SequenceEqual(
+                              NormalizeChannels(heartbeat.CompletedChannels)) ||
+                          !NormalizeChannels(previous.ManuallyDisabledChannels).SequenceEqual(
+                              NormalizeChannels(heartbeat.ManuallyDisabledChannels)) ||
+                          !NormalizeChannels(previous.PermanentAlarmedChannels).SequenceEqual(
+                              NormalizeChannels(heartbeat.PermanentAlarmedChannels)) ||
+                          !string.Equals(
+                              previous.CheckpointSha256,
+                              checkpointMatches ? checkpoint.Sha256 : string.Empty,
+                              StringComparison.OrdinalIgnoreCase);
+            journal.LastVerifiedActiveRun = new WatchdogVerifiedActiveRun
+            {
+                RunId = heartbeat.RunId,
+                RunEpoch = heartbeat.RunEpoch,
+                ProcessId = heartbeat.ProcessId,
+                ProcessStartUtcTicks = heartbeat.ProcessStartUtcTicks,
+                SelectedChannels = selected,
+                RecoveryEligibleChannels = NormalizeChannels(heartbeat.RecoveryEligibleChannels),
+                CompletedChannels = NormalizeChannels(heartbeat.CompletedChannels),
+                ManuallyDisabledChannels = NormalizeChannels(heartbeat.ManuallyDisabledChannels),
+                PermanentAlarmedChannels = NormalizeChannels(heartbeat.PermanentAlarmedChannels),
+                HeartbeatSequence = heartbeat.Sequence,
+                CheckpointRunId = checkpointMatches ? checkpoint.RunId : string.Empty,
+                CheckpointRunEpoch = checkpointMatches ? checkpoint.RunEpoch : 0,
+                CheckpointRevision = checkpointMatches ? checkpoint.Revision : 0,
+                CheckpointSha256 = checkpointMatches ? checkpoint.Sha256 : string.Empty,
+                CapturedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
+            };
+            return changed;
+        }
+
+        internal static FrozenChannelIntentResolution ResolveAndPersist(
+            WatchdogJournal journal,
+            Func<bool> persistSynchronously)
+        {
+            var result = Resolve(journal);
+            if (!result.Succeeded || !result.NewlyFrozen)
+                return result;
+
+            var persisted = false;
+            try
+            {
+                persisted = persistSynchronously != null &&
+                            persistSynchronously();
+            }
+            catch
+            {
+                persisted = false;
+            }
+            if (persisted) return result;
+            return Failed("FrozenExcludedChannelsPersistenceFailed");
+        }
+
+        internal static FrozenChannelIntentResolution Resolve(WatchdogJournal journal)
+        {
+            if (journal == null)
+                return Failed("FrozenExcludedChannelsJournalMissing");
+
+            if (journal.RecoveryChannelIntentFrozen)
+            {
+                var frozen = journal.FrozenExcludedChannels;
+                if (frozen == null ||
+                    frozen.Any(channel => channel < 1 || channel > 12) ||
+                    !frozen.SequenceEqual(frozen.Distinct().OrderBy(channel => channel)) ||
+                    journal.FrozenExcludedSourceProcessId <= 0 ||
+                    journal.FrozenExcludedSourceProcessStartUtcTicks <= 0 ||
+                    string.IsNullOrWhiteSpace(journal.FrozenExcludedSourceRunId) ||
+                    journal.FrozenExcludedSourceRunEpoch <= 0)
+                    return Failed("FrozenExcludedChannelsEvidenceInvalid");
+
+                return Succeeded(frozen, newlyFrozen: false);
+            }
+
+            WatchdogHeartbeat heartbeat;
+            if (journal.LastVerifiedActiveRun != null)
+            {
+                heartbeat = BuildVerifiedHeartbeat(journal.LastVerifiedActiveRun);
+                if (heartbeat == null)
+                    return Failed("LastVerifiedActiveRunIdentityInvalid");
+            }
+            else
+            {
+                heartbeat = GetValidInitialHeartbeat(journal.LastHeartbeat) ??
+                            BuildCheckpointFallback(journal);
+            }
+            if (heartbeat == null)
+                return Failed("FrozenExcludedChannelsInitialHeartbeatMissing");
+            if (journal.LastVerifiedActiveRun == null &&
+                (heartbeat.ProcessId != journal.CurrentPid ||
+                 heartbeat.ProcessStartUtcTicks != journal.CurrentProcessStartUtcTicks))
+                return Failed("FrozenExcludedChannelsInitialIdentityMismatch");
+            if (!string.Equals(
+                    heartbeat.RecoveryProcessSource,
+                    RecoveryFailurePolicy.InitialProcessSource,
+                    StringComparison.OrdinalIgnoreCase))
+                return Failed("FrozenExcludedChannelsInitialSourceInvalid");
+            if (string.IsNullOrWhiteSpace(heartbeat.RunId) || heartbeat.RunEpoch <= 0)
+                return Failed("FrozenExcludedChannelsRunIdentityMissing");
+            if (string.Equals(
+                    journal.RelaunchState,
+                    DurableRelaunchPermitState.LaunchIntent.ToString(),
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    journal.RelaunchState,
+                    DurableRelaunchPermitState.Started.ToString(),
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    journal.RelaunchState,
+                    DurableRelaunchPermitState.Attached.ToString(),
+                    StringComparison.OrdinalIgnoreCase))
+                return Failed("FrozenExcludedChannelsMissingAfterRecoveryStarted");
+
+            var excluded = (heartbeat.ManuallyDisabledChannels ?? Array.Empty<int>())
+                .Concat(heartbeat.CompletedChannels ?? Array.Empty<int>())
+                .Concat(heartbeat.PermanentAlarmedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            journal.RecoveryChannelIntentFrozen = true;
+            journal.FrozenExcludedChannels = excluded;
+            journal.FrozenExcludedSourceProcessId = heartbeat.ProcessId;
+            journal.FrozenExcludedSourceProcessStartUtcTicks =
+                heartbeat.ProcessStartUtcTicks;
+            journal.FrozenExcludedSourceRunId = heartbeat.RunId;
+            journal.FrozenExcludedSourceRunEpoch = heartbeat.RunEpoch;
+            return Succeeded(excluded, newlyFrozen: true);
+        }
+
+        private static WatchdogHeartbeat BuildVerifiedHeartbeat(
+            WatchdogVerifiedActiveRun activeRun)
+        {
+            if (activeRun == null || string.IsNullOrWhiteSpace(activeRun.RunId) ||
+                activeRun.RunEpoch <= 0 || activeRun.ProcessId <= 0 ||
+                activeRun.ProcessStartUtcTicks <= 0)
+                return null;
+            return new WatchdogHeartbeat
+            {
+                ProcessId = activeRun.ProcessId,
+                ProcessStartUtcTicks = activeRun.ProcessStartUtcTicks,
+                RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource,
+                RunId = activeRun.RunId,
+                RunEpoch = activeRun.RunEpoch,
+                RunActive = true,
+                CompletedChannels = NormalizeChannels(activeRun.CompletedChannels),
+                ManuallyDisabledChannels = NormalizeChannels(activeRun.ManuallyDisabledChannels),
+                PermanentAlarmedChannels = NormalizeChannels(activeRun.PermanentAlarmedChannels)
+            };
+        }
+
+        private static WatchdogHeartbeat GetValidInitialHeartbeat(
+            WatchdogHeartbeat heartbeat)
+        {
+            return heartbeat != null && heartbeat.RunActive &&
+                   !string.IsNullOrWhiteSpace(heartbeat.RunId) &&
+                   heartbeat.RunEpoch > 0
+                ? heartbeat
+                : null;
+        }
+
+        private static WatchdogHeartbeat BuildCheckpointFallback(WatchdogJournal journal)
+        {
+            var checkpoint = journal?.LastCheckpointMirror;
+            if (checkpoint == null || !checkpoint.Armed ||
+                string.IsNullOrWhiteSpace(checkpoint.RunId) || checkpoint.RunEpoch <= 0 ||
+                journal.CurrentPid <= 0 || journal.CurrentProcessStartUtcTicks <= 0 ||
+                (!string.IsNullOrWhiteSpace(checkpoint.SessionId) &&
+                 !string.Equals(checkpoint.SessionId, journal.SessionId, StringComparison.Ordinal)))
+                return null;
+            return new WatchdogHeartbeat
+            {
+                ProcessId = journal.CurrentPid,
+                ProcessStartUtcTicks = journal.CurrentProcessStartUtcTicks,
+                RecoveryProcessSource = RecoveryFailurePolicy.InitialProcessSource,
+                RunId = checkpoint.RunId,
+                RunEpoch = checkpoint.RunEpoch,
+                RunActive = true
+            };
+        }
+
+        private static int[] NormalizeChannels(IEnumerable<int> channels)
+        {
+            return (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+        }
+
+        private static FrozenChannelIntentResolution Succeeded(
+            int[] excludedChannels,
+            bool newlyFrozen)
+        {
+            return new FrozenChannelIntentResolution
+            {
+                Succeeded = true,
+                NewlyFrozen = newlyFrozen,
+                ExcludedChannels = (excludedChannels ?? Array.Empty<int>()).ToArray()
+            };
+        }
+
+        private static FrozenChannelIntentResolution Failed(string reason)
+        {
+            return new FrozenChannelIntentResolution
+            {
+                Succeeded = false,
+                FailureReason = reason
+            };
+        }
     }
 
     internal sealed class WatchdogArguments
@@ -357,6 +652,20 @@ namespace MTTFTest.Watchdog
                 RecoveryStage = previous?.RecoveryStage,
                 RecoveryProgressToken = previous?.RecoveryProgressToken,
                 RecoveryProcessSource = previous?.RecoveryProcessSource,
+                RecoveryChannelIntentFrozen =
+                    previous?.RecoveryChannelIntentFrozen == true,
+                FrozenExcludedChannels =
+                    previous?.FrozenExcludedChannels?.ToArray() ?? Array.Empty<int>(),
+                FrozenExcludedSourceProcessId =
+                    previous?.FrozenExcludedSourceProcessId ?? 0,
+                FrozenExcludedSourceProcessStartUtcTicks =
+                    previous?.FrozenExcludedSourceProcessStartUtcTicks ?? 0,
+                FrozenExcludedSourceRunId =
+                    previous?.FrozenExcludedSourceRunId,
+                FrozenExcludedSourceRunEpoch =
+                    previous?.FrozenExcludedSourceRunEpoch ?? 0,
+                LastVerifiedActiveRun = previous?.LastVerifiedActiveRun,
+                LastCheckpointMirror = previous?.LastCheckpointMirror,
                 RecoveryFailureMaxProcessRelaunches =
                     previous?.RecoveryFailureMaxProcessRelaunches ?? 0,
                 RecoveryFirstFailureUtcTicks = previous?.RecoveryFirstFailureUtcTicks ?? 0,
@@ -765,6 +1074,11 @@ namespace MTTFTest.Watchdog
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
                     _journal.CurrentProcessStartUtcTicks = message.Heartbeat.ProcessStartUtcTicks;
                     _journal.LastHeartbeat = message.Heartbeat;
+                    var verifiedActiveRunChanged =
+                        WatchdogRecoveryChannelIntentPolicy.TryCaptureLastVerifiedActiveRun(
+                            _journal,
+                            message.Heartbeat,
+                            identityValidated: true);
                     var stopProjection = StopSafetyHeartbeatProjection.FromHeartbeat(
                         message.Heartbeat);
                     stopProjection.AttachEpoch = Volatile.Read(
@@ -826,6 +1140,18 @@ namespace MTTFTest.Watchdog
                     }
                     _lastHeartbeatAckSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatAckSequence = _lastHeartbeatAckSequence;
+                    if (verifiedActiveRunChanged)
+                    {
+                        lock (_journalGate)
+                        {
+                            if (!TryPersistJournalSnapshotLocked())
+                                RecordEvent(
+                                    "LastVerifiedActiveRunPersistenceFailed",
+                                    $"RunId={message.Heartbeat.RunId};" +
+                                    $"Epoch={message.Heartbeat.RunEpoch};" +
+                                    $"Sequence={message.Heartbeat.Sequence}");
+                        }
+                    }
                     SaveJournal();
                     RecordHeartbeatCheckpoint();
                     Send(new WatchdogMessage
@@ -843,7 +1169,29 @@ namespace MTTFTest.Watchdog
                     break;
                 case WatchdogMessageType.RecoveryCheckpointValidated:
                     if (message.CheckpointMirror != null)
+                    {
                         _journal.LastCheckpointMirror = message.CheckpointMirror;
+                        var lastVerified = _journal.LastVerifiedActiveRun;
+                        if (lastVerified != null && message.CheckpointMirror.Armed &&
+                            string.Equals(
+                                lastVerified.RunId,
+                                message.CheckpointMirror.RunId,
+                                StringComparison.OrdinalIgnoreCase) &&
+                            lastVerified.RunEpoch == message.CheckpointMirror.RunEpoch)
+                        {
+                            lastVerified.SelectedChannels =
+                                (message.CheckpointMirror.SelectedChannels ?? Array.Empty<int>())
+                                .Where(channel => channel >= 1 && channel <= 12)
+                                .Distinct()
+                                .OrderBy(channel => channel)
+                                .ToArray();
+                            lastVerified.CheckpointRunId = message.CheckpointMirror.RunId;
+                            lastVerified.CheckpointRunEpoch = message.CheckpointMirror.RunEpoch;
+                            lastVerified.CheckpointRevision = message.CheckpointMirror.Revision;
+                            lastVerified.CheckpointSha256 = message.CheckpointMirror.Sha256;
+                            lock (_journalGate) TryPersistJournalSnapshotLocked();
+                        }
+                    }
                     Record("RecoveryCheckpointValidated", message.Reason);
                     break;
                 case WatchdogMessageType.SafetyPreflightPassed:
@@ -1076,6 +1424,39 @@ namespace MTTFTest.Watchdog
                        _journal.CurrentProcessStartUtcTicks ==
                        heartbeat.ProcessStartUtcTicks;
             }
+        }
+
+        internal static bool IsVerifiedHardwareSafeIdle(
+            WatchdogHeartbeat heartbeat,
+            int currentProcessId,
+            long currentProcessStartUtcTicks,
+            bool processAlive,
+            double heartbeatAgeSeconds,
+            bool sessionRevoked,
+            bool manualStopRequested,
+            bool alreadyTakingOver)
+        {
+            return heartbeat != null &&
+                   processAlive &&
+                   heartbeatAgeSeconds >= 0 &&
+                   heartbeatAgeSeconds < 5 &&
+                   !sessionRevoked &&
+                   !manualStopRequested &&
+                   !alreadyTakingOver &&
+                   heartbeat.ProcessId == currentProcessId &&
+                   heartbeat.ProcessStartUtcTicks == currentProcessStartUtcTicks &&
+                   RecoveryFailurePolicy.IsRecoveryProcessSource(
+                       heartbeat.RecoveryProcessSource) &&
+                   heartbeat.HardwareUnavailable &&
+                   string.Equals(
+                       heartbeat.Phase,
+                       "SafeIdleHardwareUnavailable",
+                       StringComparison.Ordinal) &&
+                   heartbeat.EnergizedChannelCount == 0 &&
+                   !string.IsNullOrWhiteSpace(
+                       heartbeat.HardwareFailureFingerprint) &&
+                   heartbeat.HardwareProbeAttempt > 0 &&
+                   heartbeat.HardwareNextProbeUtc > 0;
         }
 
         private bool TryValidateAttachBeforeMutation(
@@ -1350,19 +1731,32 @@ namespace MTTFTest.Watchdog
                     // the policy here; the supervisor supplies the once-only
                     // transaction gate.  The broad watchdog policy below is
                     // deliberately not given StopAll stage deadlines.
+                    var sessionRevoked = IsSessionRevoked();
+                    var alreadyTakingOver =
+                        Interlocked.CompareExchange(ref _takeoverStarted, 0, 0) != 0;
+                    var hardwareSafeIdle = IsVerifiedHardwareSafeIdle(
+                        heartbeat,
+                        _journal.CurrentPid,
+                        _journal.CurrentProcessStartUtcTicks,
+                        processAlive,
+                        heartbeatAge,
+                        sessionRevoked,
+                        _journal.ManualStopRequested,
+                        alreadyTakingOver);
                     _stopSafetyMonitor.EvaluateTick(
                         nowUtc,
                         processAlive,
                         heartbeatAge,
-                        IsSessionRevoked(),
+                        sessionRevoked,
                         _journal.ManualStopRequested,
-                        Interlocked.CompareExchange(ref _takeoverStarted, 0, 0) != 0,
+                        alreadyTakingOver,
                         recoveryActive: false,
                         orphanPaused: false,
                         powerDisablePending: false,
                         hasRecoveryEligibleChannels: false,
                         manualPauseActive: manualPauseCommanded,
                         manualPauseUnsafe: manualPauseUnsafe,
+                        hardwareSafeIdle: hardwareSafeIdle,
                         sink: DispatchStopSafetySupervisorTakeover);
 
                     var stopActive = heartbeat?.StopAllActive == true ||
@@ -1881,15 +2275,23 @@ namespace MTTFTest.Watchdog
                             0,
                             attempt);
                         var previousPid = _journal.CurrentPid;
-                        // AlarmStopped/InterlockStopped 可能是可恢复的软件或基础设施故障，
-                        // 不能仅凭旧进程运行态永久排除；持久禁用会落为 NotEnabled，
-                        // 与人工禁用和已完成通道一起排除。
-                        var excluded = (_journal.LastHeartbeat?.ManuallyDisabledChannels ?? Array.Empty<int>())
-                            .Concat(_journal.LastHeartbeat?.CompletedChannels ?? Array.Empty<int>())
-                            .Concat(_journal.LastHeartbeat?.PermanentAlarmedChannels ?? Array.Empty<int>())
-                            .Distinct()
-                            .OrderBy(channel => channel)
-                            .ToArray();
+                        // Freeze the recovery intent from the verified initial
+                        // process before the first launch intent. A recovery
+                        // child may report every channel disabled while it is
+                        // rebuilding state; that observation must never rewrite
+                        // the original recovery scope.
+                        var frozenIntent = TryGetOrFreezeRecoveryChannelIntent();
+                        if (!frozenIntent.Succeeded)
+                        {
+                            var failure = frozenIntent.FailureReason ??
+                                "FrozenExcludedChannelsUnavailable";
+                            EnterRelaunchCircuitOpen(
+                                RecoveryFailurePolicy.BuildFingerprint(failure),
+                                Math.Max(1, _journal.ConsecutiveStartupFailures),
+                                failure);
+                            return;
+                        }
+                        var excluded = frozenIntent.ExcludedChannels;
                         var permitRecord = _relaunchCoordinator.Snapshot;
                         if (permitRecord == null ||
                             permitRecord.Generation != permitGeneration ||
@@ -2045,6 +2447,25 @@ namespace MTTFTest.Watchdog
             finally
             {
                 Interlocked.Exchange(ref _relaunchStarted, 0);
+            }
+        }
+
+        private FrozenChannelIntentResolution TryGetOrFreezeRecoveryChannelIntent()
+        {
+            lock (_journalGate)
+            {
+                var result = WatchdogRecoveryChannelIntentPolicy.ResolveAndPersist(
+                    _journal,
+                    TryPersistJournalSnapshotLocked);
+                if (!result.Succeeded)
+                {
+                    _journal.RecoveryFailureCode = result.FailureReason;
+                    MarkRecoveryBlockedLocked(result.FailureReason);
+                    try { TryPersistJournalSnapshotLocked(); } catch { }
+                    return result;
+                }
+
+                return result;
             }
         }
 
