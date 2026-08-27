@@ -789,6 +789,11 @@ namespace Controller
                         },
                         allowTerminalReset,
                         allowSystemFaultReset);
+                if (update.State == ChannelRuntimeState.Recovering)
+                    _recoveryTaskRegistry.ReportProgressForChannel(
+                        update.RunEpoch,
+                        update.Channel,
+                        update.ReasonCode);
                 PublishRecoveryAggregateOwnershipSourceLocked();
                 // Refresh the logical and operational sources at the same
                 // producer boundary.  The resulting aggregate is the only
@@ -934,6 +939,8 @@ namespace Controller
         private readonly int _daqClockRecoveryFreshBatches;
         private readonly int _daqClockRecoveryMaxAttempts;
         private readonly int _daqClockRecoveryWindowMinutes;
+        private readonly double _epbPowerSupplyOffProofThresholdA;
+        private readonly int _epbPowerSupplyOffProofMaxAgeMs;
         private readonly DaqRecoveryAttemptWindow _daqClockRecoveryAttempts;
         private readonly IDaqHardwareProbe _daqHardwareProbe;
         private readonly ConcurrentDictionary<string, DaqAutoRecoveryContext> _daqAutoRecovery =
@@ -1030,6 +1037,8 @@ namespace Controller
         private readonly ConcurrentDictionary<string, byte> _daqRecoveredGapAbortedCycles =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, long> _daqFreshnessSafetyCutoffGeneration =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, long> _daqFreshnessEscalationWatchGeneration =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<int, long> _daqMechanicalRequalificationGeneration = new();
         private readonly object _daqMechanicalRequalificationGate = new();
@@ -2399,18 +2408,32 @@ namespace Controller
                 "DaqClockRecoveryMaxAttempts", 3, 1, 20);
             _daqClockRecoveryWindowMinutes = ReadIntAppSetting(
                 "DaqClockRecoveryWindowMinutes", 10, 1, 1440);
+            _epbPowerSupplyOffProofThresholdA = ReadDoubleAppSetting(
+                "EpbPowerSupplyOffProofThresholdA", 0.5, 0.01, 20.0);
+            _epbPowerSupplyOffProofMaxAgeMs = ReadIntAppSetting(
+                "EpbPowerSupplyOffProofMaxAgeMs", 1000, 100, 10000);
             _daqClockRecoveryAttempts = new DaqRecoveryAttemptWindow(
                 _daqClockRecoveryMaxAttempts,
                 TimeSpan.FromMinutes(_daqClockRecoveryWindowMinutes));
             _daqLivenessWatchdogIntervalMs = ReadIntAppSetting(
-                // 这是带电安全门，不允许现场 App.config 把扫描周期放宽到数百毫秒。
-                "DaqLivenessWatchdogIntervalMs", 20, 10, 20);
+                "DaqLivenessWatchdogIntervalMs", 20, 10, 1000);
             _daqLivenessWarnThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessWarnThresholdMs", 100, 100, 100);
+                "DaqLivenessWarnThresholdMs", 250, 100, 5000);
             _daqLivenessSuspectThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessSuspectThresholdMs", 1000, 1000, 1000);
+                "DaqLivenessSuspectThresholdMs", 1500, 200, 30000);
             _daqLivenessTripThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessTripThresholdMs", 2000, 2000, 2000);
+                "DaqLivenessTripThresholdMs", 5000, 300, 300000);
+            if (!AreDaqLivenessThresholdsStrictlyIncreasing(
+                    _daqLivenessWarnThresholdMs,
+                    _daqLivenessSuspectThresholdMs,
+                    _daqLivenessTripThresholdMs))
+                throw new InvalidOperationException(
+                    "DAQ存活阈值必须满足 Warn < Suspect < Trip。" +
+                    $" Effective={_daqLivenessWarnThresholdMs:0.#}/" +
+                    $"{_daqLivenessSuspectThresholdMs:0.#}/" +
+                    $"{_daqLivenessTripThresholdMs:0.#}ms");
+            _globalFormalSlotAdmissionWindowMs = ReadIntAppSetting(
+                "GlobalFormalSlotAdmissionWindowMs", 300, 200, 500);
             _persistence = new DaqPersistenceCoordinator(
                 () => Recorder,
                 _log,
@@ -2476,6 +2499,8 @@ namespace Controller
                 Math.Max(30000, PeriodMs * 2),
                 5000,
                 600000);
+            _recoveryOrphanGraceMs = ReadIntAppSetting(
+                "RecoveryOrphanGraceMs", 10000, 10000, 60000);
             _timerRuntimeWatchdog = new System.Threading.Timer(
                 InspectTimerRuntimeHealth,
                 null,
@@ -2492,6 +2517,8 @@ namespace Controller
                 $"WarnMs={_daqLivenessWarnThresholdMs:F0} " +
                 $"SuspectMs={_daqLivenessSuspectThresholdMs:F0} " +
                 $"TripMs={_daqLivenessTripThresholdMs:F0} " +
+                $"PowerOffProofA={_epbPowerSupplyOffProofThresholdA:F3} " +
+                $"PowerOffProofMaxAgeMs={_epbPowerSupplyOffProofMaxAgeMs} " +
                 $"ProcessId={Process.GetCurrentProcess().Id}",
                 "FIELD");
         }
@@ -2557,6 +2584,18 @@ namespace Controller
                     : fallback;
             }
             catch { return fallback; }
+        }
+
+        internal static bool AreDaqLivenessThresholdsStrictlyIncreasing(
+            double warnMs,
+            double suspectMs,
+            double tripMs)
+        {
+            return !double.IsNaN(warnMs) && !double.IsInfinity(warnMs) && warnMs > 0 &&
+                   !double.IsNaN(suspectMs) && !double.IsInfinity(suspectMs) &&
+                   suspectMs > warnMs &&
+                   !double.IsNaN(tripMs) && !double.IsInfinity(tripMs) &&
+                   tripMs > suspectMs;
         }
 
         private void SaveProgramSafetySnapshot()
@@ -2779,6 +2818,37 @@ namespace Controller
             }
         }
 
+        private async Task RetireOrAbortHydraulicLeaseForChannelAsync(
+            int channel,
+            string abortReason,
+            string completedForceReleaseReason,
+            int expectedHydraulicId)
+        {
+            if (!_hydraulicLeaseByChannel.TryGetValue(channel, out var scope)) return;
+
+            RequireSoftwareRecoveryOutputOff(
+                channel,
+                abortReason ?? "HydraulicLeaseRetireOrAbort");
+            if (!string.IsNullOrWhiteSpace(completedForceReleaseReason) &&
+                _hydCoordinator != null &&
+                _hydCoordinator.TryRetireForceReleasedScope(
+                    scope,
+                    expectedHydraulicId,
+                    completedForceReleaseReason))
+            {
+                ((ICollection<KeyValuePair<int, HydraulicChannelLeaseScope>>)_hydraulicLeaseByChannel)
+                    .Remove(new KeyValuePair<int, HydraulicChannelLeaseScope>(channel, scope));
+                _log.Info(
+                    $"液压旧租约已按已完成ForceRelease精确退役：EPB={channel} " +
+                    $"Hydraulic={expectedHydraulicId} Reason={completedForceReleaseReason}",
+                    "液压协调");
+                return;
+            }
+
+            await AbortHydraulicLeaseForChannelAsync(channel, abortReason)
+                .ConfigureAwait(false);
+        }
+
         private void ObserveSafetyTask(Task task, string operation, int channel)
         {
             ObserveBackgroundTask(task, operation, channel);
@@ -2847,11 +2917,7 @@ namespace Controller
                 _recoveryContractGate,
                 new RecoveryIncidentCoordinator.Port
                 {
-                    Reserve = (operation, runEpoch, channels) =>
-                        _recoveryTaskRegistry.Reserve(
-                            operation,
-                            runEpoch,
-                            channels?.ToArray() ?? Array.Empty<int>()),
+                    Reserve = contract => _recoveryTaskRegistry.Reserve(contract),
                     Schedule = body => Task.Run(body),
                     Bind = (lease, worker) => lease != null && lease.TryBind(worker),
                     PublishRecovering = contract => { },
@@ -2924,7 +2990,8 @@ namespace Controller
             IEnumerable<int> channels,
             Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
             Action<RecoveryContractSnapshot> publishRecovering,
-            out RecoveryIncidentHandle incident)
+            out RecoveryIncidentHandle incident,
+            Guid incidentId = default)
         {
             incident = null;
             var safetyAffected = (channels ?? Array.Empty<int>())
@@ -2955,7 +3022,8 @@ namespace Controller
                     safetyAffected,
                     workerFactory,
                     publishRecovering,
-                    out var createdIncident);
+                    out var createdIncident,
+                    incidentId);
                 if (result != RecoveryIncidentCoordinator.BeginResult.Created ||
                     createdIncident == null)
                     return false;
@@ -4713,7 +4781,7 @@ namespace Controller
 
         internal static string ClassifyDaqStaleRoot(
             DaqFreshnessSnapshot freshness,
-            double staleThresholdMs = 100)
+            double staleThresholdMs = 250)
         {
             if (freshness == null) return "DaqSampleStale";
             var threshold = Math.Max(1, staleThresholdMs);
@@ -4752,18 +4820,22 @@ namespace Controller
             var faultReason = reason;
             if (IsRunnerDaqFreshnessSafetyCutoff(faultCode))
             {
-                var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
-                faultCode = ClassifyDaqStaleRoot(freshness, 100);
+                var freshness = _acq.GetDaqFreshnessSnapshot(
+                    device,
+                    _daqLivenessWarnThresholdMs);
+                faultCode = ClassifyDaqStaleRoot(
+                    freshness,
+                    _daqLivenessWarnThresholdMs);
                 faultReason =
-                    $"DaqFreshnessSafetyCutoff>100ms Root={faultCode} " +
+                    $"DaqFreshnessSafetyCutoff>{_daqLivenessWarnThresholdMs:0.#}ms " +
+                    $"Root={faultCode} " +
                     $"CallbackAge={freshness?.CallbackAgeMs ?? double.PositiveInfinity:F1}ms " +
                     $"ControlEnqueueAge={freshness?.ControlEnqueueAgeMs ?? double.PositiveInfinity:F1}ms " +
                     $"ControlProcessedAge={freshness?.ControlProcessedAgeMs ?? double.PositiveInfinity:F1}ms " +
                     $"ProcessedSampleUtc={(freshness == null || freshness.ProcessedSampleUtc == default ? "none" : freshness.ProcessedSampleUtc.ToString("O"))} " +
                     $"Original={reason}";
                 var generation = Math.Max(0, freshness?.Generation ?? 0);
-                _daqFreshnessSafetyCutoffGeneration[device] = generation;
-                RequireDaqMechanicalRequalification(channel, generation);
+                _daqFreshnessEscalationWatchGeneration[device] = generation;
                 if (_currentCycleNumberByChannel.TryGetValue(channel, out var cutoffCycle))
                 {
                     MarkDaqClockCycleAborted(
@@ -5897,7 +5969,9 @@ namespace Controller
                 RaiseRecoverableAlarm = raiseRecoverableAlarm ? 1 : 0,
                 RecoverableAlarmChannel = recoverableAlarmChannel,
                 RecoveryTransactionId = Guid.NewGuid(),
-                BeforeClock = _acq.GetDaqFreshnessSnapshot(device, 100),
+                BeforeClock = _acq.GetDaqFreshnessSnapshot(
+                    device,
+                    _daqLivenessWarnThresholdMs),
                 PreviousGeneration = _acq.GetCurrentGeneration(device),
                 CutoffParticipantVersions = affected.ToDictionary(
                     channel => channel,
@@ -6276,7 +6350,8 @@ namespace Controller
                 if (!AdvanceDaqRecoveryStage(
                         context,
                         DaqRecoveryPhase.DoOffConfirmed,
-                        "受影响通道DO OFF已确认。"))
+                        "受影响通道DO OFF已确认。",
+                        allowAlreadyCommitted: true))
                     throw new InvalidOperationException(
                         $"DAQ DO OFF确认阶段顺序无效 Device={device} " +
                         $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
@@ -6809,7 +6884,9 @@ namespace Controller
                              .Select(GetElectricalGroupId)
                              .Where(id => id > 0)
                              .Distinct())
-                    _emergencyPowerGroupLatch.TryRemove(groupId);
+                    _emergencyPowerGroupLatch.TryRemove(
+                        groupId,
+                        context.CorrelationId);
                 _log.Info(
                     holdForBatchPause
                         ? $"DAQ软件自动恢复完成 Device={device}；批次状态={batchPauseState}，" +
@@ -7285,7 +7362,8 @@ namespace Controller
                         if (!AdvanceDaqRecoveryStage(
                                 context,
                                 DaqRecoveryPhase.DoOffConfirmed,
-                                "DAQ自维护重试确认整组DO OFF。"))
+                                "DAQ自维护重试确认整组DO OFF。",
+                                allowAlreadyCommitted: true))
                             throw new InvalidOperationException(
                                 $"DAQ自维护DO OFF确认阶段顺序无效 Device={context.Device} " +
                                 $"Phase={context.Phase.Current}");
@@ -8186,11 +8264,13 @@ namespace Controller
                             $"DaqRecoveryFailed Device={device} Reason={lateResult.FailureReason}");
                     stableSince = Stopwatch.GetTimestamp();
                 }
-                var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+                var freshness = _acq.GetDaqFreshnessSnapshot(
+                    device,
+                    _daqLivenessWarnThresholdMs);
                 var fresh = freshness?.IsFresh == true &&
-                            freshness.CallbackAgeMs <= 100 &&
-                            freshness.ControlEnqueueAgeMs <= 100 &&
-                            freshness.ControlProcessedAgeMs <= 100;
+                            freshness.CallbackAgeMs <= _daqLivenessWarnThresholdMs &&
+                            freshness.ControlEnqueueAgeMs <= _daqLivenessWarnThresholdMs &&
+                            freshness.ControlProcessedAgeMs <= _daqLivenessWarnThresholdMs;
                 if (!fresh)
                     stableSince = Stopwatch.GetTimestamp();
                 else if ((Stopwatch.GetTimestamp() - stableSince) * 1000.0 /
@@ -8209,8 +8289,8 @@ namespace Controller
                             .ConfigureAwait(false);
                         CompleteDaqMechanicalRequalification(channel, requiredGeneration);
                     }
-                    _daqFreshnessSafetyCutoffGeneration.TryRemove(device, out _);
-                    return;
+                    if (TryClearDaqMechanicalRequalificationFence(device))
+                        return;
                 }
                 await Task.Delay(20, token).ConfigureAwait(false);
             }
@@ -8240,6 +8320,54 @@ namespace Controller
                     required <= generation)
                     _daqMechanicalRequalificationGeneration.Remove(channel);
             }
+        }
+
+        private void RequireDaqDeviceMechanicalRequalification(string device, long generation)
+        {
+            if (string.IsNullOrWhiteSpace(device)) return;
+            var channels = GetDaqGroupChannels(device);
+            if (channels.Length == 0) return;
+            var normalizedGeneration = Math.Max(0, generation);
+            _daqFreshnessSafetyCutoffGeneration.AddOrUpdate(
+                device,
+                normalizedGeneration,
+                (_, current) => Math.Max(current, normalizedGeneration));
+            foreach (var channel in channels)
+                RequireDaqMechanicalRequalification(channel, normalizedGeneration);
+        }
+
+        private bool TryClearDaqMechanicalRequalificationFence(string device)
+        {
+            if (string.IsNullOrWhiteSpace(device)) return true;
+            var activeChannels = new HashSet<int>(GetDaqGroupChannels(device));
+            lock (_daqMechanicalRequalificationGate)
+            {
+                foreach (var staleChannel in _daqMechanicalRequalificationGeneration.Keys
+                             .Where(channel =>
+                                 string.Equals(
+                                     _acq.GetDeviceForEpbChannel(channel),
+                                     device,
+                                     StringComparison.OrdinalIgnoreCase) &&
+                                 !activeChannels.Contains(channel))
+                             .ToArray())
+                    _daqMechanicalRequalificationGeneration.Remove(staleChannel);
+                var pending = _daqMechanicalRequalificationGeneration.Keys.Any(channel =>
+                    string.Equals(
+                        _acq.GetDeviceForEpbChannel(channel),
+                        device,
+                        StringComparison.OrdinalIgnoreCase));
+                if (pending) return false;
+                _daqFreshnessSafetyCutoffGeneration.TryRemove(device, out _);
+                return true;
+            }
+        }
+
+        private void ClearDaqMechanicalRequalificationFences()
+        {
+            _daqFreshnessSafetyCutoffGeneration.Clear();
+            _daqFreshnessEscalationWatchGeneration.Clear();
+            lock (_daqMechanicalRequalificationGate)
+                _daqMechanicalRequalificationGeneration.Clear();
         }
 
         private void OnPowerSupplyTelemetryUpdated(PowerSupplyTelemetry telemetry)
@@ -8693,6 +8821,24 @@ namespace Controller
                     executionPermits.Values.Select(permit => permit.RevocationToken))
                     .ToArray());
             var groups = selected.Select(GetElectricalGroupId).Where(id => id > 0).Distinct().ToArray();
+            var waitingLogged = false;
+            while (groups.Any(group => _powerSoftwareRecoveryGroups.ContainsKey(group)))
+            {
+                executionCts.Token.ThrowIfCancellationRequested();
+                if (!waitingLogged)
+                {
+                    waitingLogged = true;
+                    var waitingGroups = groups
+                        .Where(group => _powerSoftwareRecoveryGroups.ContainsKey(group))
+                        .ToArray();
+                    _log.Info(
+                        $"ExpectedOutputDisabled AwaitUniquePowerRecoveryOwner " +
+                        $"Groups=[{string.Join(",", waitingGroups)}] " +
+                        $"Channels=[{string.Join(",", selected)}]",
+                        "程控电源");
+                }
+                await Task.Delay(20, executionCts.Token).ConfigureAwait(false);
+            }
             if (groups.Length > 0 && groups.All(group => _powerSupply.HasEnergizationPermit(group, out _)))
                 return;
             await _powerSupply.PrepareAndEnableAsync(selected, executionCts.Token).ConfigureAwait(false);
@@ -9483,7 +9629,9 @@ namespace Controller
                                         "电源控制链已恢复；启动定位原流程继续重试，禁止提前进入正式节律。",
                                         affectedChannels: channels,
                                         correlationId: controlFault.CorrelationId);
-                                _emergencyPowerGroupLatch.TryRemove(groupId);
+                                _emergencyPowerGroupLatch.TryRemove(
+                                    groupId,
+                                    controlFault.CorrelationId);
                                 return;
                             }
                             var batchPauseState = CurrentBatchPauseState;
@@ -9547,7 +9695,9 @@ namespace Controller
                                 $"电源组{groupId}软件自愈完成 Attempt={attempt}；" +
                                 "作废圈不计数，机械释放后按公共正式槽继续。",
                                 "程控电源");
-                            _emergencyPowerGroupLatch.TryRemove(groupId);
+                            _emergencyPowerGroupLatch.TryRemove(
+                                groupId,
+                                controlFault.CorrelationId);
                             return;
                         }
                         catch (OperationCanceledException)
@@ -11424,7 +11574,37 @@ namespace Controller
             return snapshot.IsConnected &&
                    !double.IsNaN(measuredCurrentA) &&
                    !double.IsInfinity(measuredCurrentA) &&
-                   ageMs <= 1000;
+                   ageMs <= _epbPowerSupplyOffProofMaxAgeMs;
+        }
+
+        internal bool TryConfirmPowerSupplyOffProof(
+            int channel,
+            out double measuredCurrentA,
+            out double ageMs,
+            out bool outputEnabled)
+        {
+            return TryGetFreshPowerSupplyCurrent(
+                       channel,
+                       out measuredCurrentA,
+                       out ageMs,
+                       out outputEnabled) &&
+                   IsRedundantOffProofSatisfied(
+                       doOffSucceeded: true,
+                       powerTelemetryFresh: true,
+                       measuredCurrentA,
+                       _epbPowerSupplyOffProofThresholdA);
+        }
+
+        internal static bool IsRedundantOffProofSatisfied(
+            bool doOffSucceeded,
+            bool powerTelemetryFresh,
+            double measuredCurrentA,
+            double thresholdA)
+        {
+            return doOffSucceeded && powerTelemetryFresh && thresholdA > 0 &&
+                   !double.IsNaN(measuredCurrentA) &&
+                   !double.IsInfinity(measuredCurrentA) &&
+                   Math.Abs(measuredCurrentA) <= thresholdA;
         }
 
         internal void RequestElectricalGroupEmergencyShutdown(int sourceChannel, string reason)

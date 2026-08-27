@@ -110,7 +110,9 @@ namespace Controller
                 {
                     var control = _acq.GetControlSnapshot(device);
                     var pipeline = _acq.GetPipelineSnapshot(device);
-                    var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+                    var freshness = _acq.GetDaqFreshnessSnapshot(
+                        device,
+                        _daqLivenessWarnThresholdMs);
                     var persistence = _persistence.GetSnapshot(device);
                     var published = _acq.GetLastDiskPublishedSequence(device);
                     _log.Info(

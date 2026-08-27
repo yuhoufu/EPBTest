@@ -199,6 +199,7 @@ namespace Controller
         private ElectricalStaggerPlan _activeStaggerPlan;
         private readonly GlobalHydraulicSlotCoordinator _globalHydraulicSlots =
             new GlobalHydraulicSlotCoordinator();
+        private readonly int _globalFormalSlotAdmissionWindowMs;
         private readonly ConcurrentDictionary<
             GlobalHydraulicSlotKey,
             IReadOnlyDictionary<int, IReadOnlyList<int>>> _globalHydraulicParticipantSnapshots =
@@ -330,6 +331,61 @@ namespace Controller
                 .ConfigureAwait(false);
             LogGlobalHydraulicSlotOnce(result, staggerPlan);
             return result;
+        }
+
+        private async Task<GlobalHydraulicSlotAdmissionResult>
+            EnterGlobalFormalHydraulicSlotAsync(
+                Guid runId,
+                long slot,
+                int channel,
+                DateTime pressureBuildPlannedUtc,
+                DateTime wallClockAnchorUtc,
+                ElectricalStaggerPlan staggerPlan,
+                CancellationToken operationToken,
+                CancellationToken waitToken)
+        {
+            if (staggerPlan == null) throw new ArgumentNullException(nameof(staggerPlan));
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, slot);
+            var hydraulicId = channel <= 6 ? 1 : 2;
+            var maxPhaseMs = staggerPlan.Assignments.Keys
+                .Select(candidate => staggerPlan.Get(candidate).PhaseMs)
+                .DefaultIfEmpty(0)
+                .Max();
+            var admission = await _globalHydraulicSlots.JoinFormalAsync(
+                    key,
+                    hydraulicId,
+                    channel,
+                    _globalFormalSlotAdmissionWindowMs,
+                    pressureBuildPlannedUtc,
+                    wallClockAnchorUtc,
+                    PeriodMs,
+                    maxPhaseMs,
+                    GlobalMotorAnchorGuardMs,
+                    (group, members, ct) => HydraulicEnterAtGroupAnchorAsync(
+                        new HydraulicGenerationKey(
+                            runId,
+                            group,
+                            HydraulicPhaseKind.Formal,
+                            slot),
+                        members,
+                        ct),
+                    ReleaseSuccessfulGlobalSlotGroupsAsync,
+                    operationToken,
+                    waitToken)
+                .ConfigureAwait(false);
+            if (admission.Slot != null)
+                LogGlobalHydraulicSlotOnce(admission.Slot, staggerPlan);
+            return admission;
+        }
+
+        private void SkipGlobalFormalSlot(Guid runId, long slot, int channel, string reason)
+        {
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, slot);
+            var removedBeforeFreeze = _globalHydraulicSlots.SkipFormalSlot(key, channel, reason);
+            _log?.Info(
+                $"SkippedForSlot Run={runId:N} GlobalSlot={slot} EPB={channel} " +
+                $"BeforeFreeze={removedBeforeFreeze} Reason={reason}",
+                "液压全局槽");
         }
 
         private async Task ReleaseSuccessfulGlobalSlotGroupsAsync(
@@ -1148,7 +1204,7 @@ namespace Controller
                         ? ticks
                         : nowMonotonicTicks;
                     return nowMonotonicTicks - since >= Stopwatch.Frequency &&
-                           !HasRecoveryExecutionCoverage(state, runEpoch);
+                           !HasRecoveryExecutionCoverage(state, runEpoch, out _);
                 })
                 .Select(state => state.Channel)
                 .Distinct()
@@ -1356,7 +1412,9 @@ namespace Controller
             WatchdogDeviceStorageSnapshot Capture(string device)
             {
                 var persistence = _persistence.GetSnapshot(device);
-                var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+                var freshness = _acq.GetDaqFreshnessSnapshot(
+                    device,
+                    _daqLivenessWarnThresholdMs);
                 var frozen = _daqAutoRecovery.TryGetValue(device, out var recovery) &&
                              recovery?.CutoffSnapshot != null
                     ? recovery.CutoffSnapshot.FrozenBoundary
@@ -2775,6 +2833,7 @@ namespace Controller
                 _daqRecoveryBatchAliases.Clear();
                 _daqLivenessLatchedGeneration.Clear();
                 _daqLivenessObservedGapEvents.Clear();
+                ClearDaqMechanicalRequalificationFences();
                 _daqLivenessLogTransitions.BeginSession(
                     Guid.Empty,
                     Interlocked.Read(ref _runEpoch) + 1);
@@ -2813,6 +2872,7 @@ namespace Controller
             Interlocked.Exchange(ref _batchSessionActive, 0);
             Interlocked.Exchange(ref _formalPhaseCommitted, 0);
             _globalHydraulicSlots.ClearRun(_activeBatchId);
+            ClearDaqMechanicalRequalificationFences();
             foreach (var key in _globalHydraulicParticipantSnapshots.Keys
                          .Where(key => key.RunId == _activeBatchId).ToArray())
                 _globalHydraulicParticipantSnapshots.TryRemove(key, out _);
@@ -3011,47 +3071,62 @@ namespace Controller
                                 ReleaseCyclePauseCts(ch, cyclePauseCts);
                                 return false;
                             }
-                            await WaitForDaqRecoveryAsync(ch, token).ConfigureAwait(false);
-                            await EnsurePowerSupplyReadyForChannelsAsync(new[] { ch }, token)
-                                .ConfigureAwait(false);
-
-                            // 1) 同一 Run/Phase/Slot 由唯一 owner 同时下发双液压建压；
-                            //    两组全部达压后只生成一个电机锚点。任一组失败时，健康组
-                            //    释放压力并跳过当前半槽，在下一完整槽重新会合。
-                            var participantsByHydraulic = CaptureGlobalFormalParticipants(
-                                _activeBatchId,
-                                staggerPlan,
-                                phaseSlot);
-                            var globalSlot = await EnterGlobalHydraulicSlotAsync(
-                                _activeBatchId,
-                                HydraulicPhaseKind.Formal,
-                                phaseSlot,
-                                participantsByHydraulic,
-                                t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
-                                t0,
-                                staggerPlan,
-                                startupSelfHealing: false,
-                                sessionToken)
-                                .ConfigureAwait(false);
-                            if (globalSlot.HasFailures)
+                            GlobalHydraulicSlotAdmissionResult admission;
+                            try
                             {
+                                await WaitForDaqRecoveryAsync(ch, token).ConfigureAwait(false);
+                                await EnsurePowerSupplyReadyForChannelsAsync(new[] { ch }, token)
+                                    .ConfigureAwait(false);
+                                admission = await EnterGlobalFormalHydraulicSlotAsync(
+                                        _activeBatchId,
+                                        phaseSlot,
+                                        ch,
+                                        t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
+                                        t0,
+                                        staggerPlan,
+                                        sessionToken,
+                                        token)
+                                    .ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                SkipGlobalFormalSlot(
+                                    _activeBatchId,
+                                    phaseSlot,
+                                    ch,
+                                    "FormalGateOrAdmissionFailed");
                                 ReleaseCyclePauseCts(ch, cyclePauseCts);
-                                if (globalSlot.Groups.TryGetValue(pg, out var groupOutcome) &&
-                                    groupOutcome.IsSuccess)
-                                {
-                                    _log?.Warn(
-                                        $"正式阶段健康液压组跳过降级槽 Run={_activeBatchId:N} " +
-                                        $"GlobalSlot={phaseSlot} Hydraulic={pg} EPB={ch}",
-                                        "液压全局槽");
-                                    return false;
-                                }
-
-                                // 保留原始异常栈，交由现有故障隔离策略仅处置失败组。
-                                globalSlot.GetLeaseOrThrow(pg);
+                                throw;
+                            }
+                            if (!admission.Admitted || admission.Slot == null)
+                            {
+                                _log?.Info(
+                                    $"SkippedForSlot Run={_activeBatchId:N} GlobalSlot={phaseSlot} " +
+                                    $"EPB={ch} Reason={admission.SkipReason}",
+                                    "液压全局槽");
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
                                 return false;
                             }
 
-                            var lease = globalSlot.GetLeaseOrThrow(pg);
+                            var globalSlot = admission.Slot;
+                            if (!globalSlot.Groups.TryGetValue(pg, out var groupOutcome))
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                return false;
+                            }
+                            if (!groupOutcome.IsSuccess)
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                globalSlot.GetLeaseOrThrow(pg);
+                                return false;
+                            }
+                            if (globalSlot.HasFailures)
+                                _log?.Warn(
+                                    $"正式阶段健康液压组继续当前槽 Run={_activeBatchId:N} " +
+                                    $"GlobalSlot={phaseSlot} Hydraulic={pg} EPB={ch}",
+                                    "液压全局槽");
+
+                            var lease = groupOutcome.Lease;
                             var plannedStartUtc = globalSlot.MotorAnchorUtc.Value
                                 .AddMilliseconds(phase);
                             var delay = plannedStartUtc - DateTime.UtcNow;
@@ -3655,7 +3730,7 @@ namespace Controller
                                     new HydraulicGenerationKey(
                                         runId,
                                         pressureGroup,
-                                        HydraulicPhaseKind.Recovery,
+                                        HydraulicPhaseKind.Learning,
                                         Interlocked.Increment(ref _learningRetryGeneration)),
                                     new[] { channel },
                                     attemptToken)
@@ -3732,7 +3807,7 @@ namespace Controller
                                             new HydraulicGenerationKey(
                                                 runId,
                                                 pressureGroup,
-                                                HydraulicPhaseKind.Recovery,
+                                                HydraulicPhaseKind.Learning,
                                                 Interlocked.Increment(ref _learningRetryGeneration)),
                                             new[] { channel },
                                             attemptToken)
@@ -4524,7 +4599,8 @@ namespace Controller
                 adaptiveShadowMode: _adaptiveShadowMode,
                 adaptiveProfile: GetAdaptiveProfile(channel),
                 saveAdaptiveProfile: SaveAdaptiveProfile,
-                programSafetySettings: _programSafetySettings);
+                programSafetySettings: _programSafetySettings,
+                daqFreshnessCutoffMs: _daqLivenessWarnThresholdMs);
 
             runner.BindExecutionPermit(_channelExecutionFence.Capture(channel));
 
@@ -4640,7 +4716,8 @@ namespace Controller
         private async Task<HydraulicCycleLease> HydraulicEnterAtGroupAnchorAsync(
             HydraulicGenerationKey generationKey,
             IReadOnlyList<int> channelsInGroup,
-            CancellationToken token)
+            CancellationToken token,
+            string completedForceReleaseReason = null)
         {
             if (generationKey == null) throw new ArgumentNullException(nameof(generationKey));
             var pressureGroupId = generationKey.HydraulicId;
@@ -4682,9 +4759,11 @@ namespace Controller
                 if (!_hydraulicLeaseByChannel.TryGetValue(ch, out var existing) ||
                     (!existing.IsClosed && existing.Key.Equals(generationKey)))
                     continue;
-                await AbortHydraulicLeaseForChannelAsync(
+                await RetireOrAbortHydraulicLeaseForChannelAsync(
                         ch,
-                        "HydraulicGenerationBeforeEnter")
+                        "HydraulicGenerationBeforeEnter",
+                        completedForceReleaseReason,
+                        pressureGroupId)
                     .ConfigureAwait(false);
             }
 
@@ -4715,9 +4794,11 @@ namespace Controller
                         existing.Key.Equals(lease.Key) &&
                         existing.CoordinatorEpoch == lease.CoordinatorEpoch)
                         continue;
-                    await AbortHydraulicLeaseForChannelAsync(
+                    await RetireOrAbortHydraulicLeaseForChannelAsync(
                             ch,
-                            "HydraulicGenerationScopeReplacement")
+                            "HydraulicGenerationScopeReplacement",
+                            completedForceReleaseReason,
+                            pressureGroupId)
                         .ConfigureAwait(false);
                 }
 
@@ -4748,8 +4829,13 @@ namespace Controller
             CancellationToken token)
         {
             if (initialKey == null) throw new ArgumentNullException(nameof(initialKey));
+            if (initialKey.PhaseKind == HydraulicPhaseKind.Recovery)
+                throw new ArgumentException(
+                    "液压自愈入口必须保留原始业务阶段，不得传入 Recovery。",
+                    nameof(initialKey));
             var attempt = 0;
             var key = initialKey;
+            var recoveryLoopStartedUtc = DateTime.UtcNow;
             while (true)
             {
                 token.ThrowIfCancellationRequested();
@@ -4778,11 +4864,14 @@ namespace Controller
                                 "HydraulicGenerationSelfHealing OutputOffCommandFailed");
                         }
                     }
+                    var forceReleaseReason =
+                        $"StartupGenerationSelfHealing:{ex.GetType().Name}:" +
+                        $"Attempt={attempt}:Key={key}:Token={Guid.NewGuid():N}";
                     try
                     {
                         await _hydCoordinator.ForceReleaseAsync(
                                 initialKey.HydraulicId,
-                                $"StartupGenerationSelfHealing:{ex.GetType().Name}")
+                                forceReleaseReason)
                             .ConfigureAwait(false);
                     }
                     catch (Exception releaseEx)
@@ -4802,7 +4891,8 @@ namespace Controller
                         $"液压组{initialKey.HydraulicId}启动/学习代次软件异常，" +
                         $"{delayMs}ms后创建全新Recovery代次。Attempt={attempt} Error={ex.Message}",
                         "液压协调");
-                    if (attempt >= 3)
+                    if ((DateTime.UtcNow - recoveryLoopStartedUtc).TotalMilliseconds >=
+                        RecoveryGroupHardDeadlineMs)
                         throw new SoftwareSelfHealingExhaustedException(
                             $"HydraulicGeneration:{initialKey.HydraulicId}",
                             attempt,
@@ -4815,12 +4905,21 @@ namespace Controller
 
                     try
                     {
+                        var intent = HydraulicRecoveryIntent.Create(
+                            initialKey.PhaseKind,
+                            initialKey.TestRunId,
+                            Interlocked.Read(ref _runEpoch),
+                            initialKey.HydraulicId,
+                            channelsInGroup,
+                            Guid.NewGuid(),
+                            Guid.NewGuid());
                         return await RunHydraulicRecoveryAttemptIncidentAsync(
                                 key,
-                                channelsInGroup,
+                                intent,
                                 token,
                                 attempt,
-                                delayMs)
+                                delayMs,
+                                forceReleaseReason)
                             .ConfigureAwait(false);
                     }
                     catch (Exception retryEx) when (
@@ -4846,45 +4945,39 @@ namespace Controller
         /// </summary>
         private async Task<HydraulicCycleLease> RunHydraulicRecoveryAttemptIncidentAsync(
             HydraulicGenerationKey key,
-            IReadOnlyList<int> channelsInGroup,
+            HydraulicRecoveryIntent intent,
             CancellationToken token,
             int attempt,
-            int delayMs)
+            int delayMs,
+            string completedForceReleaseReason)
         {
-            var channels = (channelsInGroup ?? Array.Empty<int>())
-                .Where(channel => channel >= 1 && channel <= 12)
-                .Distinct()
-                .OrderBy(channel => channel)
-                .ToArray();
-            var runId = key.TestRunId;
-            var runEpoch = Interlocked.Read(ref _runEpoch);
-            var ownerId = Guid.NewGuid();
-            var ownerKind = key.PhaseKind == HydraulicPhaseKind.Learning
-                ? RecoveryOwnerKind.BatchLearning
-                : key.PhaseKind == HydraulicPhaseKind.Qualification
-                    ? RecoveryOwnerKind.BatchQualification
-                    : key.PhaseKind == HydraulicPhaseKind.Formal
-                        ? RecoveryOwnerKind.HydraulicGroupRecovery
-                        : RecoveryOwnerKind.BatchStartup;
-            var targetPhase = key.PhaseKind == HydraulicPhaseKind.Learning
-                ? RecoveryTargetPhase.Learning
-                : key.PhaseKind == HydraulicPhaseKind.Qualification
-                    ? RecoveryTargetPhase.Qualification
-                    : key.PhaseKind == HydraulicPhaseKind.Formal
-                        ? RecoveryTargetPhase.Formal
-                        : RecoveryTargetPhase.Startup;
+            if (key == null) throw new ArgumentNullException(nameof(key));
+            if (intent == null) throw new ArgumentNullException(nameof(intent));
+            if (key.PhaseKind != HydraulicPhaseKind.Recovery ||
+                key.TestRunId != intent.RunId ||
+                key.HydraulicId != intent.HydraulicId)
+                throw new InvalidOperationException(
+                    $"HydraulicRecoveryIntentMismatch Key={key} " +
+                    $"Intent={intent.RunId:N}/{intent.SourcePhase}/H{intent.HydraulicId}");
+            var channels = intent.Channels.ToArray();
+            var runId = intent.RunId;
+            var runEpoch = intent.RunEpoch;
             HydraulicCycleLease recoveredLease = null;
             RecoveryIncidentHandle recoveryIncident = null;
             Func<Task> BuildRecoveryWorker()
             {
                 return async () =>
                 {
+                    recoveryIncident?.TaskLease.ReportProgress("Backoff");
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
+                    recoveryIncident?.TaskLease.ReportProgress("HydraulicBuildStarted");
                     recoveredLease = await HydraulicEnterAtGroupAnchorAsync(
                             key,
                             channels,
-                            token)
+                            token,
+                            completedForceReleaseReason)
                         .ConfigureAwait(false);
+                    recoveryIncident?.TaskLease.ReportProgress("HydraulicQualified");
                 };
             }
 
@@ -4892,9 +4985,9 @@ namespace Controller
                     "HydraulicGenerationSelfHealing",
                     runId,
                     runEpoch,
-                    ownerKind,
-                    targetPhase,
-                    ownerId,
+                    intent.OwnerKind,
+                    intent.TargetPhase,
+                    intent.OwnerId,
                     channels,
                     _ => BuildRecoveryWorker(),
                     contract =>
@@ -4904,7 +4997,8 @@ namespace Controller
                                 channel,
                                 ChannelRuntimeState.Recovering,
                                 "HydraulicGenerationSelfHealing",
-                                $"液压软件代次自愈第{attempt}次；已抛弃旧代次并重新建压。",
+                                $"液压软件代次自愈第{attempt}次；" +
+                                $"Source={intent.SourcePhase}，已抛弃旧代次并重新建压。",
                                 affectedChannels: contract.Channels,
                                 correlationId: contract.IncidentId,
                                 allowTerminalReset: true,
@@ -4913,7 +5007,8 @@ namespace Controller
                                 recoveryOwnerId: contract.OwnerId,
                                 recoveryOwnerGeneration: contract.RunEpoch);
                     },
-                    out recoveryIncident))
+                    out recoveryIncident,
+                    incidentId: intent.IncidentId))
                 throw new InvalidOperationException(
                     $"液压组{key.HydraulicId}恢复事务建立失败，已保持安全终态。");
 
@@ -4928,6 +5023,7 @@ namespace Controller
                     throw new InvalidOperationException(
                         "液压代次恢复worker启动许可被拒绝。");
                 await recoveryIncident.WorkerTask.ConfigureAwait(false);
+                recoveryIncident.TaskLease.ReportProgress("WorkerCompleted");
             }
             finally
             {
@@ -4935,7 +5031,7 @@ namespace Controller
                     CommitRecoveryIncidentStateForRelease(
                         contract,
                         "HydraulicGenerationRecoverySucceeded",
-                        "液压软件代次已恢复，继续当前启动/学习阶段。"));
+                        $"液压软件代次已恢复，继续 {intent.TargetPhase} 阶段。"));
             }
             return recoveredLease;
         }
@@ -5025,6 +5121,10 @@ namespace Controller
                 value >= long.MaxValue ? 1 : value + 1);
             _watchdogLastProgressUtcTicks[channel] = nowTicks;
             _watchdogProgressKind[channel] = ResolveWatchdogProgressKind(kind);
+            _recoveryTaskRegistry.ReportProgressForChannel(
+                Interlocked.Read(ref _runEpoch),
+                channel,
+                $"MechanicalCycleCompleted:{kind}:{cycleNumber}");
             RequestWatchdogLogicalSourcePublish();
             NonCriticalObserver.Invoke(
                 ChannelMechanicalCycleCompleted,

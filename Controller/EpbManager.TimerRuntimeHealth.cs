@@ -42,6 +42,7 @@ namespace Controller
         private readonly System.Threading.Timer _timerRuntimeWatchdog;
         private readonly int _timerRuntimeWatchdogIntervalMs;
         private readonly int _timerRuntimeSilenceThresholdMs;
+        private readonly int _recoveryOrphanGraceMs;
         private readonly ConcurrentDictionary<int, byte> _timerRuntimeRecoveries =
             new ConcurrentDictionary<int, byte>();
         // 以 RunId/RunEpoch/Device/Correlation/Channel 组成一次性孤儿暂停身份。
@@ -434,9 +435,19 @@ namespace Controller
                     0d,
                     (Stopwatch.GetTimestamp() - startedMonotonic) * 1000d /
                     Stopwatch.Frequency);
-                var hardDeadlineReached = ageMs >= RecoveryGroupHardDeadlineMs;
-                var ownerOrTaskMissing = ageMs >= 1000d &&
-                                         !HasRecoveryExecutionCoverage(runtime, runEpoch);
+                var hasCoverage = HasRecoveryExecutionCoverage(
+                    runtime,
+                    runEpoch,
+                    out var taskCoverage);
+                var lastProgressUtc = taskCoverage?.LastProgressUtc ?? runtime.TimestampUtc;
+                var progressAgeMs = lastProgressUtc == default
+                    ? ageMs
+                    : Math.Max(0d, (DateTime.UtcNow - lastProgressUtc).TotalMilliseconds);
+                var hardDeadlineReached = ageMs >= RecoveryGroupHardDeadlineMs &&
+                                          progressAgeMs >= RecoveryGroupHardDeadlineMs;
+                var ownerOrTaskMissing = ageMs >= _recoveryOrphanGraceMs &&
+                                         progressAgeMs >= _recoveryOrphanGraceMs &&
+                                         !hasCoverage;
                 if (!hardDeadlineReached && !ownerOrTaskMissing) continue;
 
                 ScheduleRecoveryInvariantEscalation(
@@ -452,12 +463,28 @@ namespace Controller
 
         private bool HasRecoveryExecutionCoverage(
             ChannelRuntimeStateChangedEvent runtime,
-            long runEpoch)
+            long runEpoch,
+            out RecoveryTaskRegistry.RecoveryTaskLeaseSnapshot exactTask)
         {
+            exactTask = null;
+            var channel = runtime.Channel;
+            if (_recoveryTaskRegistry.TryGetActiveIncidentCoverage(
+                    channel,
+                    runEpoch,
+                    runtime.CorrelationId,
+                    out exactTask))
+            {
+                if (runtime.RecoveryOwnerKind != exactTask.OwnerKind ||
+                    runtime.RecoveryTargetPhase != exactTask.TargetPhase ||
+                    runtime.RecoveryOwnerId != exactTask.OwnerId ||
+                    runtime.RecoveryOwnerGeneration != exactTask.RunEpoch)
+                    RepairRecoveryOwnerProjection(runtime, exactTask);
+                return true;
+            }
+
             if (!RecoveryOwnershipPolicy.IsOwnerCurrent(runtime) ||
                 runtime.RecoveryOwnerGeneration != runEpoch)
                 return false;
-            var channel = runtime.Channel;
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (runtime.RecoveryOwnerKind == RecoveryOwnerKind.DaqRecovery &&
                 !string.IsNullOrWhiteSpace(device) &&
@@ -475,7 +502,6 @@ namespace Controller
                 runtime.RecoveryTargetPhase != RecoveryTargetPhase.Formal)
                 return true;
 
-            var taskOwned = _recoveryTaskRegistry.HasActiveTaskForChannel(channel, runEpoch);
             var hydraulicGroup = GetHydraulicGroupForChannel(channel);
             var owner = hydraulicGroup > 0
                 ? _recoveryOwnership.GetOwner(hydraulicGroup)
@@ -484,25 +510,52 @@ namespace Controller
             switch (runtime.RecoveryOwnerKind)
             {
                 case RecoveryOwnerKind.FormalTimer:
-                    return taskOwned || _timerRuntimeRecoveries.ContainsKey(channel) ||
+                    return _timerRuntimeRecoveries.ContainsKey(channel) ||
                            _recoverableChannelRestartJobs.ContainsKey(channel);
                 case RecoveryOwnerKind.HydraulicGroupRecovery:
-                    return taskOwned || !string.IsNullOrWhiteSpace(owner) ||
+                    return !string.IsNullOrWhiteSpace(owner) ||
                            (hydraulicGroup > 0 &&
                             _hydraulicSoftwareRecoveryGroups.ContainsKey(hydraulicGroup));
                 case RecoveryOwnerKind.PowerRecovery:
-                    return taskOwned ||
-                           (electricalGroup > 0 &&
-                            _powerSoftwareRecoveryGroups.ContainsKey(electricalGroup));
+                    return electricalGroup > 0 &&
+                           _powerSoftwareRecoveryGroups.ContainsKey(electricalGroup);
                 case RecoveryOwnerKind.AffectedGroupRecovery:
-                    return taskOwned || (hydraulicGroup > 0 &&
+                    return hydraulicGroup > 0 &&
                            _affectedGroupResetInProgress.ContainsKey(
-                               GetAffectedGroupResetKey(runEpoch, hydraulicGroup)));
+                               GetAffectedGroupResetKey(runEpoch, hydraulicGroup));
                 case RecoveryOwnerKind.Watchdog:
-                    return taskOwned;
+                    return false;
                 default:
                     return false;
             }
+        }
+
+        private void RepairRecoveryOwnerProjection(
+            ChannelRuntimeStateChangedEvent runtime,
+            RecoveryTaskRegistry.RecoveryTaskLeaseSnapshot task)
+        {
+            ChannelRuntimeStateChangedEvent repaired;
+            lock (_recoveryContractGate)
+            {
+                if (!_channelRuntimeStateStore.TryRepairRecoveryOwnerIfCurrent(
+                        runtime.Channel,
+                        runtime.Revision,
+                        runtime.RunId,
+                        runtime.RunEpoch,
+                        runtime.CorrelationId,
+                        task,
+                        out repaired))
+                    return;
+                PublishRecoveryAggregateOwnershipSourceLocked();
+                CaptureLogicalQuiescenceSnapshotLocked();
+            }
+            _log?.Warn(
+                $"RecoveryOwnerMetadataMismatchRepaired EPB={runtime.Channel} " +
+                $"IncidentId={runtime.CorrelationId:N} TaskId={task.Id} " +
+                $"Owner={task.OwnerKind}/{task.OwnerId:N} Target={task.TargetPhase}",
+                "Timer");
+            TrackRecoveringRuntimeTransition(runtime, repaired);
+            _adaptiveLifecyclePort.PublishRuntimeState(repaired);
         }
 
         internal static bool IsBatchLifecycleOwnedRecoveryReason(string reasonCode)
@@ -587,12 +640,20 @@ namespace Controller
             var correlationId = runtime.CorrelationId == Guid.Empty
                 ? Guid.NewGuid()
                 : runtime.CorrelationId;
+            var taskCovered = _recoveryTaskRegistry.TryGetActiveIncidentCoverage(
+                channel,
+                runEpoch,
+                runtime.CorrelationId,
+                out var coveredTask);
             var reason =
                 $"Code={code}; EPB={channel}; StateReason={runtime.ReasonCode}; " +
                 $"RecoveringSinceUtc={new DateTime(startedUtcTicks, DateTimeKind.Utc):O}; " +
                 $"RunId={runId:N}; RunEpoch={runEpoch}; " +
                 $"Owner={_recoveryOwnership.GetOwner(hydraulicGroup)}; " +
-                $"TaskCovered={_recoveryTaskRegistry.HasActiveTaskForChannel(channel, runEpoch)}";
+                $"TaskCovered={taskCovered};" +
+                $"TaskId={coveredTask?.Id ?? 0};" +
+                $"LastProgressUtc={(coveredTask == null ? "none" : coveredTask.LastProgressUtc.ToString("O"))};" +
+                $"ProgressStage={coveredTask?.ProgressStage ?? "none"}";
             _log?.Error(
                 $"RecoveryInvariantViolation {reason}; Action={action}; " +
                 (action == RecoveryInvariantEscalationAction.FormalGroupReset

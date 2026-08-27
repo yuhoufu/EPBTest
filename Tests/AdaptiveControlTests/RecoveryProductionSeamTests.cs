@@ -61,6 +61,9 @@ namespace AdaptiveControlTests
             Run("DAQ事务物理完成不足时不发布Confirmed",
                 DaqPhysicalCompletionIsASeparateBarrier,
                 ref passed);
+            Run("DAQ DoOffConfirmed仅对三方同阶段提交允许幂等",
+                DaqDoOffConfirmedAlreadyCommittedIsNarrow,
+                ref passed);
             Run("DAQ事务拒绝或异常进入单次SafeIdle且不升级",
                 DaqRejectOrThrowIsSafeIdleOnly,
                 ref passed);
@@ -578,6 +581,51 @@ namespace AdaptiveControlTests
                        true) &&
                    transaction.Phase == DaqRecoveryPhase.DoOffConfirmed,
                 "全部物理完成后未发布DoOffConfirmed。");
+        }
+
+        private static void DaqDoOffConfirmedAlreadyCommittedIsNarrow()
+        {
+            var confirmed = DaqRecoveryPhase.DoOffConfirmed;
+            Assert(EpbManager.IsAlreadyCommittedDaqRecoveryStage(
+                    true,
+                    confirmed,
+                    confirmed,
+                    confirmed,
+                    confirmed),
+                "Controller、进度和事务三方同为DoOffConfirmed时未幂等成功。");
+            Assert(!EpbManager.IsAlreadyCommittedDaqRecoveryStage(
+                    false,
+                    confirmed,
+                    confirmed,
+                    confirmed,
+                    confirmed),
+                "未显式授权的重复阶段被放行。");
+            Assert(!EpbManager.IsAlreadyCommittedDaqRecoveryStage(
+                    true,
+                    DaqRecoveryPhase.PowerOffSubmitted,
+                    DaqRecoveryPhase.PowerOffSubmitted,
+                    DaqRecoveryPhase.PowerOffSubmitted,
+                    DaqRecoveryPhase.PowerOffSubmitted),
+                "非DoOffConfirmed阶段被错误设为幂等。");
+            Assert(!EpbManager.IsAlreadyCommittedDaqRecoveryStage(
+                    true,
+                    confirmed,
+                    DaqRecoveryPhase.SafeIdle,
+                    confirmed,
+                    confirmed) &&
+                   !EpbManager.IsAlreadyCommittedDaqRecoveryStage(
+                    true,
+                    confirmed,
+                    confirmed,
+                    DaqRecoveryPhase.PowerOffSubmitted,
+                    confirmed) &&
+                   !EpbManager.IsAlreadyCommittedDaqRecoveryStage(
+                    true,
+                    confirmed,
+                    confirmed,
+                    confirmed,
+                    DaqRecoveryPhase.DoOffSubmitted),
+                "SafeIdle、跨阶段进度或事务不一致被错误放行。");
         }
 
         private static void DaqRejectOrThrowIsSafeIdleOnly()
@@ -1291,6 +1339,17 @@ namespace AdaptiveControlTests
                        seam.TerminalCount == seam.ChannelCount,
                     $"{mode} body异常后未安全收口：Active={coordinator.ActiveCount}; " +
                     $"Lease={seam.Registry.ActiveCount}; Terminal={seam.TerminalCount}/{seam.ChannelCount}");
+                Assert(seam.LastTerminalReason?.StartsWith(
+                           "RecoveryWorkerFailed:",
+                           StringComparison.Ordinal) == true &&
+                       !string.Equals(
+                           seam.LastTerminalReason,
+                           "RecoveryTerminalPublisherMissing",
+                           StringComparison.Ordinal) &&
+                       seam.LastTerminalDetail?.Contains("Incident=") == true &&
+                       seam.LastTerminalDetail?.Contains("Scope=") == true,
+                    $"{mode} body异常未保留真实终态原因：" +
+                    $"Reason={seam.LastTerminalReason};Detail={seam.LastTerminalDetail}");
             }
         }
 
@@ -1613,6 +1672,8 @@ namespace AdaptiveControlTests
             internal RecoveryIncidentCoordinator Coordinator;
             internal RecoveryIncidentCoordinator.Incident LastIncident;
             internal RecoveryContractSnapshot LastOffContract;
+            internal string LastTerminalReason;
+            internal string LastTerminalDetail;
 
             internal int ChannelCount => Channels.Length;
             internal int TerminalCount
@@ -1637,14 +1698,14 @@ namespace AdaptiveControlTests
                     new object(),
                     new RecoveryIncidentCoordinator.Port
                     {
-                        Reserve = (operation, epoch, channels) =>
+                        Reserve = contract =>
                         {
                             ProbeGate("reserve");
                             Events.Enqueue("reserve");
                             Interlocked.Increment(ref ReserveCount);
                             if (Failure == "reserve")
                                 throw new InvalidOperationException("reserve");
-                            return Registry.Reserve(operation, epoch, channels.ToArray());
+                            return Registry.Reserve(contract);
                         },
                         Schedule = body =>
                         {
@@ -1682,6 +1743,8 @@ namespace AdaptiveControlTests
                         {
                             ProbeGate("safe-terminal");
                             Events.Enqueue("safe-terminal");
+                            LastTerminalReason = reason;
+                            LastTerminalDetail = detail;
                             MarkTerminal(contract);
                         },
                         IsRecoveringPublished = contract =>

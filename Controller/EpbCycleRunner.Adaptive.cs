@@ -1366,26 +1366,36 @@ namespace Controller
                     if (!verification.SampleFresh)
                     {
                         var staleVerificationUtc = DateTime.UtcNow;
+                        var groupCurrentA = double.NaN;
+                        var powerAgeMs = double.PositiveInfinity;
+                        var powerOutputEnabled = false;
+                        var redundantOffProof = _manager != null &&
+                            _manager.TryConfirmPowerSupplyOffProof(
+                                _channel,
+                                out groupCurrentA,
+                                out powerAgeMs,
+                                out powerOutputEnabled);
                         _manager?.RecordTerminalOffCurrentVerification(
                             _channel,
-                            currentA,
+                            redundantOffProof ? groupCurrentA : currentA,
                             thresholdA,
                             verification.ElapsedMs,
-                            false,
+                            redundantOffProof,
                             staleVerificationUtc);
-                        var powerEvidence = string.Empty;
-                        if (_manager != null &&
-                            _manager.TryGetFreshPowerSupplyCurrent(
-                                _channel,
-                                out var groupCurrentA,
-                                out var powerAgeMs,
-                                out var powerOutputEnabled))
-                            powerEvidence =
-                                $" PowerGroupIOut={groupCurrentA:F3}A " +
-                                $"PowerTelemetryAge={powerAgeMs:F1}ms Output={powerOutputEnabled}";
+                        var powerEvidence =
+                            $" PowerGroupIOut={groupCurrentA:F3}A " +
+                            $"PowerTelemetryAge={powerAgeMs:F1}ms Output={powerOutputEnabled}";
                         var staleReason =
                             $"OffCurrentUnverifiableDaqStale AgeMs={verification.SampleAgeMs:F1}" +
                             powerEvidence;
+                        if (redundantOffProof)
+                        {
+                            _log?.Info(
+                                $"EPB[{_channel}] DAQ样本陈旧，但DO OFF已物理成功且程控电源新鲜低电流，" +
+                                $"冗余证据确认断电，不触发电源组联锁。{staleReason}",
+                                "EPB");
+                            return true;
+                        }
                         _manager?.RequestElectricalGroupEmergencyShutdown(_channel, staleReason);
                         _log?.Error(
                             $"EPB[{_channel}] DAQ样本陈旧，无法确认断电电流；按失效安全触发电源组联锁：" +
@@ -1552,7 +1562,7 @@ namespace Controller
             var currentA = Math.Abs(_readCurrent(_channel));
             if (_acq == null) return new OffCurrentSample(currentA, true, 0);
             var device = _acq.GetDeviceForEpbChannel(_channel);
-            var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+            var freshness = _acq.GetDaqFreshnessSnapshot(device, _daqFreshnessCutoffMs);
             return new OffCurrentSample(currentA, freshness.IsFresh, freshness.AgeMs);
         }
 

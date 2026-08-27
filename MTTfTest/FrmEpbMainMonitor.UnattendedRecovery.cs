@@ -71,7 +71,7 @@ namespace MTEmbTest
                     : "HardwareSafetyProbePending";
                 PostSafetyStatus(
                     $"{state}：所有输出保持 OFF；第{attempt}次安全预检未通过。" +
-                    $" 下一次探测={nextProbeUtc:HH:mm:ss}；{detail}",
+                    $" 下一次探测(本地)={nextProbeUtc.ToLocalTime():HH:mm:ss}；{detail}",
                     true);
             }
             if (InvokeRequired) BeginInvoke((Action)Apply); else Apply();
@@ -759,7 +759,9 @@ namespace MTEmbTest
             {
                 var detail =
                     "安全接管预检未完整确认，禁止重新学习。" +
-                    $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
+                    $" Outcome={safety.Outcome}; LastStage={safety.LastStage}; " +
+                    $"StageError={safety.StageError}; Motor={safety.MotorError}; " +
+                    $"Power={safety.PowerError}; " +
                     $"Pressure={safety.PressureError}; Persistence={safety.PersistenceError}; " +
                     $"Logical={safety.LogicalError}; Latch={latchRejection}";
                 var report = new RecoveryFailureReport

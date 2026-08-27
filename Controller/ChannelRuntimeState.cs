@@ -437,6 +437,36 @@ namespace Controller
             return _states.TryGetValue(channel, out var state) ? state.Clone() : null;
         }
 
+        internal bool TryRepairRecoveryOwnerIfCurrent(
+            int channel,
+            long expectedRevision,
+            Guid expectedRunId,
+            long expectedRunEpoch,
+            Guid expectedIncidentId,
+            RecoveryTaskRegistry.RecoveryTaskLeaseSnapshot lease,
+            out ChannelRuntimeStateChangedEvent repaired)
+        {
+            repaired = null;
+            if (lease == null || channel < 1 || channel > 12) return false;
+            if (!_states.TryGetValue(channel, out var current) ||
+                current.State != ChannelRuntimeState.Recovering ||
+                current.Revision != expectedRevision ||
+                current.RunId != expectedRunId ||
+                current.RunEpoch != expectedRunEpoch ||
+                current.CorrelationId != expectedIncidentId)
+                return false;
+            var candidate = current.Clone();
+            candidate.Revision = current.Revision + 1;
+            candidate.TimestampUtc = DateTime.UtcNow;
+            candidate.RecoveryOwnerKind = lease.OwnerKind;
+            candidate.RecoveryTargetPhase = lease.TargetPhase;
+            candidate.RecoveryOwnerId = lease.OwnerId;
+            candidate.RecoveryOwnerGeneration = lease.RunEpoch;
+            if (!_states.TryUpdate(channel, candidate, current)) return false;
+            repaired = candidate.Clone();
+            return true;
+        }
+
         internal IReadOnlyList<ChannelRuntimeStateChangedEvent> Snapshot()
         {
             return _states.Values.Select(x => x.Clone()).OrderBy(x => x.Channel).ToArray();

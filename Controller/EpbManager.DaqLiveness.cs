@@ -353,6 +353,8 @@ namespace Controller
                     var recoveryActive = _daqAutoRecovery.TryGetValue(device, out var recovery) &&
                                          recovery.Terminal.Current == DaqRecoveryTerminal.None;
                     var deviceEnergized = IsDaqDeviceControlActive(device);
+                    var escalationWatchActive =
+                        _daqFreshnessEscalationWatchGeneration.ContainsKey(device);
                     if (_daqIncidentLatch.TryGet(
                             _activeBatchId,
                             device,
@@ -402,7 +404,7 @@ namespace Controller
                             _ => new DaqLivenessDeviceState())
                         .Observe(
                             IsBatchSessionActive,
-                            IsDaqDeviceControlActive(device),
+                            deviceEnergized || escalationWatchActive,
                             recoveryActive,
                             freshness,
                             _daqLivenessWarnThresholdMs,
@@ -420,6 +422,17 @@ namespace Controller
                     }
                     if (decision.RecoveredGap)
                         AbortCurrentCyclesForRecoveredDaqGap(device, freshness);
+                    if (freshness != null &&
+                        freshness.CallbackAgeMs < _daqLivenessWarnThresholdMs &&
+                        freshness.ControlEnqueueAgeMs < _daqLivenessWarnThresholdMs &&
+                        freshness.ControlProcessedAgeMs < _daqLivenessWarnThresholdMs)
+                        _daqFreshnessEscalationWatchGeneration.TryRemove(device, out _);
+                    if (decision.Suspect)
+                    {
+                        RequireDaqDeviceMechanicalRequalification(
+                            device,
+                            Math.Max(0, freshness?.Generation ?? 0));
+                    }
                     if (!decision.Trip)
                     {
                         if (freshness != null)

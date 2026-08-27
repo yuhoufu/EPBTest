@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 
 namespace Controller
@@ -8,12 +9,14 @@ namespace Controller
     {
         internal EmergencyPowerGroupRegistration(
             Guid correlationId,
+            long generation,
             DateTime startedUtc,
             bool isFirst,
             int requestCount,
             bool shouldPublishNonDaqFault)
         {
             CorrelationId = correlationId;
+            Generation = generation;
             StartedUtc = startedUtc;
             IsFirst = isFirst;
             RequestCount = requestCount;
@@ -21,6 +24,7 @@ namespace Controller
         }
 
         internal Guid CorrelationId { get; }
+        internal long Generation { get; }
         internal DateTime StartedUtc { get; }
         internal bool IsFirst { get; }
         internal int RequestCount { get; }
@@ -36,12 +40,14 @@ namespace Controller
         private sealed class Entry
         {
             internal Guid CorrelationId;
+            internal long Generation;
             internal DateTime StartedUtc;
             internal int RequestCount;
             internal int NonDaqFaultPublished;
         }
 
         private readonly ConcurrentDictionary<int, Entry> _entries = new();
+        private long _generation;
 
         internal EmergencyPowerGroupRegistration Register(
             int groupId,
@@ -58,6 +64,7 @@ namespace Controller
             var candidate = new Entry
             {
                 CorrelationId = requestedCorrelationId,
+                Generation = Interlocked.Increment(ref _generation),
                 StartedUtc = requestedUtc,
                 RequestCount = 1
             };
@@ -70,6 +77,7 @@ namespace Controller
                 Interlocked.CompareExchange(ref active.NonDaqFaultPublished, 1, 0) == 0;
             return new EmergencyPowerGroupRegistration(
                 active.CorrelationId,
+                active.Generation,
                 active.StartedUtc,
                 isFirst,
                 requestCount,
@@ -84,6 +92,16 @@ namespace Controller
         internal bool TryRemove(int groupId)
         {
             return _entries.TryRemove(groupId, out _);
+        }
+
+        internal bool TryRemove(int groupId, Guid correlationId, long generation = 0)
+        {
+            if (!_entries.TryGetValue(groupId, out var active) ||
+                correlationId == Guid.Empty || active.CorrelationId != correlationId ||
+                (generation > 0 && active.Generation != generation))
+                return false;
+            return ((ICollection<KeyValuePair<int, Entry>>)_entries).Remove(
+                new KeyValuePair<int, Entry>(groupId, active));
         }
 
         internal void Clear()

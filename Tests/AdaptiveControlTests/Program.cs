@@ -1637,7 +1637,7 @@ namespace AdaptiveControlTests
             var machine = NewMachine();
             machine.ArmForward(Tick(0), 100, 6000, 15, 1, 3);
             machine.OnSample(Tick(10), 1);
-            var fault = machine.CheckWatchdog(Tick(120));
+            var fault = machine.CheckWatchdog(Tick(270));
             Assert(fault.HardFault && fault.Reason.Contains("DaqSampleStale"), "DAQ断流未触发");
         }
 
@@ -4599,7 +4599,7 @@ namespace AdaptiveControlTests
                 Channel = 5,
                 State = ChannelRuntimeState.AlarmStopped,
                 ReasonCode = "DaqSampleStale",
-                ReasonText = "Dev1有效样本超过100ms未提交",
+                ReasonText = "Dev1有效样本超过250ms未提交",
                 SourceChannel = 5,
                 AffectedChannels = affected,
                 CorrelationId = correlation

@@ -57,6 +57,7 @@ namespace MTEmbTest
         public string ConfigurationSha256 { get; set; }
         public string ExecutableSha256 { get; set; }
         public string BuildVersion { get; set; }
+        public string EffectiveRuntimeSafetyParameters { get; set; }
         /// <summary>首次人工授权本次无人值守运行链时的 RunId，进程重启后保持不变。</summary>
         public string RootRunId { get; set; }
         /// <summary>创建当前执行 RunId 的上一进程 RunId；首次人工启动为空。</summary>
@@ -152,6 +153,8 @@ namespace MTEmbTest
                 checkpoint.ConfigurationSha256 = ComputeConfigurationHash(config);
                 checkpoint.ExecutableSha256 = ComputeFileHash(GetExecutablePath());
                 checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
+                checkpoint.EffectiveRuntimeSafetyParameters =
+                    CaptureEffectiveRuntimeSafetyParameters();
                 checkpoint.RootRunId = transition.RootRunId;
                 checkpoint.ParentRunId = transition.ParentRunId;
                 checkpoint.RunId = transition.CurrentRunId;
@@ -780,6 +783,8 @@ namespace MTEmbTest
                 checkpoint.ConfigurationSha256 = ComputeConfigurationHash(config);
                 checkpoint.ExecutableSha256 = ComputeFileHash(GetExecutablePath());
                 checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
+                checkpoint.EffectiveRuntimeSafetyParameters =
+                    CaptureEffectiveRuntimeSafetyParameters();
                 checkpoint.RootRunId = runId.ToString("N");
                 checkpoint.ParentRunId = string.Empty;
                 checkpoint.RunId = runId.ToString("N");
@@ -1270,6 +1275,52 @@ namespace MTEmbTest
                 return ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(value)));
         }
 
+        private static string CaptureEffectiveRuntimeSafetyParameters()
+        {
+            double ReadDouble(string key, double fallback, double min, double max)
+            {
+                try
+                {
+                    return double.TryParse(
+                               System.Configuration.ConfigurationManager.AppSettings[key],
+                               NumberStyles.Float,
+                               CultureInfo.InvariantCulture,
+                               out var value) && value >= min && value <= max
+                        ? value
+                        : fallback;
+                }
+                catch { return fallback; }
+            }
+            int ReadInt(string key, int fallback, int min, int max)
+            {
+                try
+                {
+                    return int.TryParse(
+                               System.Configuration.ConfigurationManager.AppSettings[key],
+                               NumberStyles.Integer,
+                               CultureInfo.InvariantCulture,
+                               out var value) && value >= min && value <= max
+                        ? value
+                        : fallback;
+                }
+                catch { return fallback; }
+            }
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "DaqWarnMs={0:F0};DaqSuspectMs={1:F0};DaqTripMs={2:F0};" +
+                "FormalAdmissionMs={3};OrphanGraceMs={4};NoProgressMs={5};MaxTotalMs={6};" +
+                "PowerOffProofA={7:F3};PowerOffProofMaxAgeMs={8}",
+                ReadDouble("DaqLivenessWarnThresholdMs", 250, 100, 5000),
+                ReadDouble("DaqLivenessSuspectThresholdMs", 1500, 200, 30000),
+                ReadDouble("DaqLivenessTripThresholdMs", 5000, 300, 300000),
+                ReadInt("GlobalFormalSlotAdmissionWindowMs", 300, 200, 500),
+                ReadInt("RecoveryOrphanGraceMs", 10000, 10000, 60000),
+                ReadInt("InProcessRecoveryNoProgressMs", 60000, 10000, 300000),
+                ReadInt("InProcessRecoveryMaxTotalMs", 300000, 60000, 900000),
+                ReadDouble("EpbPowerSupplyOffProofThresholdA", 0.5, 0.01, 20.0),
+                ReadInt("EpbPowerSupplyOffProofMaxAgeMs", 1000, 100, 10000));
+        }
+
         private static string ToHex(byte[] bytes)
         {
             return string.Concat(bytes.Select(value => value.ToString("x2", CultureInfo.InvariantCulture)));
@@ -1285,8 +1336,52 @@ namespace MTEmbTest
         }
     }
 
+    internal static class InProcessRecoveryLeasePolicy
+    {
+        internal static string SelectHandoffBoundary(
+            DateTime startedUtc,
+            DateTime lastProgressUtc,
+            DateTime nowUtc,
+            int noProgressMs,
+            int maxTotalMs)
+        {
+            if ((nowUtc - startedUtc).TotalMilliseconds >= maxTotalMs)
+                return "MaxTotal";
+            if ((nowUtc - lastProgressUtc).TotalMilliseconds >= noProgressMs)
+                return "NoMaterialProgress";
+            return string.Empty;
+        }
+    }
+
     internal static class UnattendedRecoveryCoordinator
     {
+        private sealed class InProcessRecoveryProgressLease
+        {
+            private long _lastProgressUtcTicks;
+            private long _progressVersion;
+            private string _stage;
+
+            public InProcessRecoveryProgressLease()
+            {
+                StartedUtc = DateTime.UtcNow;
+                _lastProgressUtcTicks = StartedUtc.Ticks;
+                _stage = "Created";
+            }
+
+            public DateTime StartedUtc { get; }
+            public DateTime LastProgressUtc =>
+                new DateTime(Interlocked.Read(ref _lastProgressUtcTicks), DateTimeKind.Utc);
+            public long ProgressVersion => Interlocked.Read(ref _progressVersion);
+            public string Stage => Volatile.Read(ref _stage) ?? string.Empty;
+
+            public void Report(string stage)
+            {
+                Volatile.Write(ref _stage, string.IsNullOrWhiteSpace(stage) ? "Progress" : stage);
+                Interlocked.Exchange(ref _lastProgressUtcTicks, DateTime.UtcNow.Ticks);
+                Interlocked.Increment(ref _progressVersion);
+            }
+        }
+
         private sealed class RecoveryTaskLogger : Config.IAppLogger
         {
             public void Info(string message, string category = null)
@@ -1313,6 +1408,7 @@ namespace MTEmbTest
         private static int _restartStarted;
         private static int _inProcessRecoveryStarted;
         private static int _recoveryProcessMode;
+        private static InProcessRecoveryProgressLease _activeInProcessRecoveryLease;
 
         internal static bool IsRecoveryProcessMode =>
             Volatile.Read(ref _recoveryProcessMode) != 0;
@@ -1608,34 +1704,159 @@ namespace MTEmbTest
             int cycleNumber)
         {
             UnattendedRunCheckpointStore.RecordMechanicalCycleCompleted(channel);
+            Volatile.Read(ref _activeInProcessRecoveryLease)?.Report(
+                $"MechanicalCycle:EPB{channel}:{kind}:{cycleNumber}");
         }
 
         private static async Task RecoverInProcessOrRestartAsync(ControlFault fault)
         {
-            var recovery = RecoverInProcessOrRestartCoreAsync(fault);
-            if (await Task.WhenAny(recovery, Task.Delay(TimeSpan.FromSeconds(30))) == recovery)
+            if (Interlocked.CompareExchange(ref _inProcessRecoveryStarted, 1, 0) != 0)
             {
-                await recovery.ConfigureAwait(false);
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Info,
+                    "同进程恢复已有唯一 owner，重复故障请求已合并。",
+                    "无人值守恢复");
                 return;
             }
+            var noProgressMs = ReadRecoveryDurationSetting(
+                "InProcessRecoveryNoProgressMs",
+                60000,
+                10000,
+                300000);
+            var maxTotalMs = ReadRecoveryDurationSetting(
+                "InProcessRecoveryMaxTotalMs",
+                300000,
+                60000,
+                900000);
+            var lease = new InProcessRecoveryProgressLease();
+            var releaseOwnerInFinally = true;
+            try
+            {
+                using (var workerCancellation = new CancellationTokenSource())
+                {
+                    Volatile.Write(ref _activeInProcessRecoveryLease, lease);
+                    var recovery = RecoverInProcessOrRestartCoreAsync(
+                        fault,
+                        lease,
+                        workerCancellation.Token);
+                    string boundaryReason = null;
+                    while (!recovery.IsCompleted)
+                    {
+                        await Task.WhenAny(recovery, Task.Delay(500)).ConfigureAwait(false);
+                        if (recovery.IsCompleted) break;
+                        var now = DateTime.UtcNow;
+                        boundaryReason = InProcessRecoveryLeasePolicy.SelectHandoffBoundary(
+                            lease.StartedUtc,
+                            lease.LastProgressUtc,
+                            now,
+                            noProgressMs,
+                            maxTotalMs);
+                        if (!string.IsNullOrWhiteSpace(boundaryReason))
+                        {
+                            break;
+                        }
+                    }
 
-            EpbManager manager;
-            lock (Sync) manager = _manager;
-            var reason = fault?.Reason ?? "SoftwareRecoveryCircuitOpen";
-            try { manager?.RevokeExecutionForExternalRecovery("InProcessRecovery30sTimeout:" + reason); }
-            catch { }
-            ProjectLogHub.Write(
-                ProjectLogLevel.Error,
-                "同进程无人值守恢复超过30秒，已撤销当前进程上电授权并交由独立Watchdog接管。",
-                "无人值守恢复");
-            WatchdogRuntime.RequestExternalRecovery(
-                "InProcessRecovery30sTimeout:" + reason +
-                ";CorrelationId=" + (fault?.CorrelationId.ToString("N") ?? string.Empty));
+                    if (boundaryReason == null)
+                    {
+                        await recovery.ConfigureAwait(false);
+                        return;
+                    }
+
+                    workerCancellation.Cancel();
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        $"同进程恢复到达外部接管边界，先取消恢复 worker 并执行有界安全清场。" +
+                        $"Boundary={boundaryReason}; ProgressVersion={lease.ProgressVersion}; " +
+                        $"Stage={lease.Stage}; TotalMs={(DateTime.UtcNow - lease.StartedUtc).TotalMilliseconds:F0}; " +
+                        $"IdleMs={(DateTime.UtcNow - lease.LastProgressUtc).TotalMilliseconds:F0}",
+                        "无人值守恢复");
+                    await Task.WhenAny(recovery, Task.Delay(TimeSpan.FromSeconds(30)))
+                        .ConfigureAwait(false);
+                    if (!recovery.IsCompleted)
+                    {
+                        releaseOwnerInFinally = false;
+                        RecoveryTasks.Observe(
+                            ReleaseInProcessRecoveryOwnerWhenWorkerStopsAsync(recovery, lease),
+                            "CancelledInProcessRecoveryWorker",
+                            fault?.CorrelationId ?? Guid.Empty,
+                            fault?.AffectedChannels?.FirstOrDefault() ?? 0);
+                    }
+
+                    EpbManager manager;
+                    lock (Sync) manager = _manager;
+                    var reason = fault?.Reason ?? "SoftwareRecoveryCircuitOpen";
+                    if (manager != null)
+                    {
+                        using (var safetyCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                        {
+                            try
+                            {
+                                await manager.PrepareForFreshRestartAsync(
+                                        new StopContext
+                                        {
+                                            Source = StopSource.SystemFault,
+                                            Reason = $"外部恢复安全交接：{boundaryReason}:{reason}",
+                                            Initiator = nameof(UnattendedRecoveryCoordinator),
+                                            CorrelationId = fault?.CorrelationId.ToString("N"),
+                                            RequestedUtc = DateTime.UtcNow
+                                        },
+                                        safetyCancellation.Token)
+                                    .ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                ProjectLogHub.Write(
+                                    ProjectLogLevel.Error,
+                                    "外部恢复接管前的有界安全清场未正常完成。",
+                                    "无人值守恢复",
+                                    ex);
+                            }
+                        }
+                    }
+
+                    var externalReason = $"InProcessRecovery{boundaryReason}:{reason}";
+                    try { manager?.RevokeExecutionForExternalRecovery(externalReason); }
+                    catch { }
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "同进程恢复已取消并完成有界安全交接，现撤销当前进程上电授权并交由独立 Watchdog 接管。",
+                        "无人值守恢复");
+                    WatchdogRuntime.RequestExternalRecovery(
+                        externalReason +
+                        ";CorrelationId=" + (fault?.CorrelationId.ToString("N") ?? string.Empty));
+                }
+            }
+            finally
+            {
+                if (releaseOwnerInFinally)
+                {
+                    Interlocked.CompareExchange(ref _activeInProcessRecoveryLease, null, lease);
+                    Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
+                }
+            }
         }
 
-        private static async Task RecoverInProcessOrRestartCoreAsync(ControlFault fault)
+        private static async Task ReleaseInProcessRecoveryOwnerWhenWorkerStopsAsync(
+            Task recovery,
+            InProcessRecoveryProgressLease lease)
         {
-            if (Interlocked.CompareExchange(ref _inProcessRecoveryStarted, 1, 0) != 0) return;
+            try
+            {
+                await recovery.ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref _activeInProcessRecoveryLease, null, lease);
+                Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
+            }
+        }
+
+        private static async Task RecoverInProcessOrRestartCoreAsync(
+            ControlFault fault,
+            InProcessRecoveryProgressLease progress,
+            CancellationToken cancellationToken)
+        {
             var recoveryBatchCommitted = false;
             var reason = fault?.Reason ?? "SoftwareRecoveryCircuitOpen";
             var correlationId = fault?.CorrelationId.ToString("N") ?? Guid.NewGuid().ToString("N");
@@ -1647,6 +1868,7 @@ namespace MTEmbTest
                 $"Channels={affected}|State={reason}";
             try
             {
+                progress.Report("RegistrationStarted");
                 EpbManager manager;
                 GlobalConfig config;
                 lock (Sync)
@@ -1683,7 +1905,6 @@ namespace MTEmbTest
                         $"同进程自动恢复不可用，升级到进程自重启。" +
                         $"Reason={registrationError}; Fault={reason}",
                         "无人值守恢复");
-                    Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
                     await RestartAsync(reason, correlationId, fault?.RunId.ToString("N"))
                         .ConfigureAwait(false);
                     return;
@@ -1694,6 +1915,7 @@ namespace MTEmbTest
                     $"启动同进程无人值守恢复：冻结旧批次→StopAll→逻辑清场→完整学习。" +
                     $"Fingerprint={fingerprint}",
                     "无人值守恢复");
+                progress.Report("StopAllStarted");
                 var safety = await manager.PrepareForFreshRestartAsync(
                         new StopContext
                         {
@@ -1703,8 +1925,9 @@ namespace MTEmbTest
                             CorrelationId = correlationId,
                             RequestedUtc = DateTime.UtcNow
                         },
-                        CancellationToken.None)
+                        cancellationToken)
                     .ConfigureAwait(false);
+                progress.Report("StopAllCompleted");
                 if (!safety.CanRestartInProcess)
                     throw new InvalidOperationException(
                         "同进程恢复清场不变量未通过：" + safety.LogicalError);
@@ -1730,6 +1953,7 @@ namespace MTEmbTest
                     authorized,
                     checkpoint.RemainingFormalCycles,
                     durableRemaining);
+                progress.Report("RemainingPlanValidated");
                 if (!remainingPlan.IsValid)
                     throw new InvalidOperationException(
                         remainingPlan.Error +
@@ -1759,6 +1983,7 @@ namespace MTEmbTest
                     .Where(pair => pair.Value > 0)
                     .ToDictionary(pair => pair.Key, pair => pair.Value);
                 var learnCycles = Math.Max(5, checkpoint.LearnCycles);
+                progress.Report("BatchRecoveryStarted");
                 var startResult = await manager.StartBatchSynchronizedWithResultAsync(
                         selected,
                         learnCycles,
@@ -1774,8 +1999,9 @@ namespace MTEmbTest
                                 : Guid.Empty,
                             Math.Max(0, checkpoint.RestartGeneration + 1),
                             Math.Max(1, checkpoint.RunEpoch + 1)),
-                        CancellationToken.None)
+                        cancellationToken)
                     .ConfigureAwait(false);
+                progress.Report("BatchRecoveryCompleted");
                 if (EpbManager.HasInfrastructureHardwareIsolationPersistenceFailure(startResult))
                 {
                     UnattendedRunCheckpointStore.CompleteInProcessRecovery(
@@ -1849,6 +2075,17 @@ namespace MTEmbTest
                     $"LearnCycles={learnCycles}",
                     "无人值守恢复");
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                UnattendedRunCheckpointStore.CompleteInProcessRecovery(
+                    false,
+                    "CancelledForSafeExternalHandoff");
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Warning,
+                    "同进程恢复 worker 已响应取消，等待外部接管安全清场。",
+                    "无人值守恢复");
+                return;
+            }
             catch (Exception ex)
             {
                 if (!EpbManager.ShouldRestartAfterRecoveryStartupFailure(
@@ -1869,15 +2106,35 @@ namespace MTEmbTest
                     ProjectLogLevel.Error,
                     $"同进程无人值守恢复失败，升级到进程自重启：{ex}",
                     "无人值守恢复");
-                Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
                 await RestartAsync(reason, correlationId, fault?.RunId.ToString("N"))
                     .ConfigureAwait(false);
                 return;
             }
             finally
             {
-                Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
                 ProjectLogHub.Flush(true);
+            }
+        }
+
+        private static int ReadRecoveryDurationSetting(
+            string key,
+            int fallback,
+            int min,
+            int max)
+        {
+            try
+            {
+                return int.TryParse(
+                           System.Configuration.ConfigurationManager.AppSettings[key],
+                           NumberStyles.Integer,
+                           CultureInfo.InvariantCulture,
+                           out var value) && value >= min && value <= max
+                    ? value
+                    : fallback;
+            }
+            catch
+            {
+                return fallback;
             }
         }
 

@@ -77,7 +77,15 @@ namespace Controller
                 long runEpoch,
                 IEnumerable<int> channels,
                 bool bound,
-                bool terminal)
+                bool terminal,
+                Guid incidentId = default,
+                Guid runId = default,
+                Guid ownerId = default,
+                RecoveryOwnerKind ownerKind = RecoveryOwnerKind.None,
+                RecoveryTargetPhase targetPhase = RecoveryTargetPhase.None,
+                long progressVersion = 0,
+                DateTime lastProgressUtc = default,
+                string progressStage = null)
             {
                 Id = id;
                 Operation = operation ?? string.Empty;
@@ -85,6 +93,14 @@ namespace Controller
                 Channels = (channels ?? Array.Empty<int>()).ToArray();
                 IsBound = bound;
                 IsTerminal = terminal;
+                IncidentId = incidentId;
+                RunId = runId;
+                OwnerId = ownerId;
+                OwnerKind = ownerKind;
+                TargetPhase = targetPhase;
+                ProgressVersion = progressVersion;
+                LastProgressUtc = lastProgressUtc;
+                ProgressStage = progressStage ?? string.Empty;
             }
 
             internal long Id { get; }
@@ -93,6 +109,14 @@ namespace Controller
             internal IReadOnlyList<int> Channels { get; }
             internal bool IsBound { get; }
             internal bool IsTerminal { get; }
+            internal Guid IncidentId { get; }
+            internal Guid RunId { get; }
+            internal Guid OwnerId { get; }
+            internal RecoveryOwnerKind OwnerKind { get; }
+            internal RecoveryTargetPhase TargetPhase { get; }
+            internal long ProgressVersion { get; }
+            internal DateTime LastProgressUtc { get; }
+            internal string ProgressStage { get; }
         }
 
         private sealed class Entry
@@ -101,6 +125,14 @@ namespace Controller
             internal string Operation;
             internal long RunEpoch;
             internal int[] Channels;
+            internal Guid IncidentId;
+            internal Guid RunId;
+            internal Guid OwnerId;
+            internal RecoveryOwnerKind OwnerKind;
+            internal RecoveryTargetPhase TargetPhase;
+            internal long ProgressVersion;
+            internal DateTime LastProgressUtc;
+            internal string ProgressStage;
             // The completion task is intentionally created at reservation time.  A
             // recovery state must never become externally visible while its task
             // identity is still being constructed.
@@ -128,7 +160,12 @@ namespace Controller
                 string operation,
                 long runEpoch,
                 int[] channels,
-                Task reservationTask)
+                Task reservationTask,
+                Guid incidentId = default,
+                Guid runId = default,
+                Guid ownerId = default,
+                RecoveryOwnerKind ownerKind = RecoveryOwnerKind.None,
+                RecoveryTargetPhase targetPhase = RecoveryTargetPhase.None)
             {
                 _registry = registry;
                 _id = id;
@@ -136,12 +173,22 @@ namespace Controller
                 RunEpoch = runEpoch;
                 Channels = channels ?? Array.Empty<int>();
                 _reservationTask = reservationTask ?? throw new ArgumentNullException(nameof(reservationTask));
+                IncidentId = incidentId;
+                RunId = runId;
+                OwnerId = ownerId;
+                OwnerKind = ownerKind;
+                TargetPhase = targetPhase;
             }
 
             internal long Id => _id;
             internal string Operation { get; }
             internal long RunEpoch { get; }
             internal IReadOnlyList<int> Channels { get; }
+            internal Guid IncidentId { get; }
+            internal Guid RunId { get; }
+            internal Guid OwnerId { get; }
+            internal RecoveryOwnerKind OwnerKind { get; }
+            internal RecoveryTargetPhase TargetPhase { get; }
             internal Task ReservationTask => _reservationTask;
 
             internal bool IsActive => _registry?.IsLeaseActive(_id) == true;
@@ -151,6 +198,11 @@ namespace Controller
             {
                 if (workerTask == null) return false;
                 return _registry?.Bind(this, workerTask) == true;
+            }
+
+            internal void ReportProgress(string stage)
+            {
+                _registry?.ReportProgress(_id, stage);
             }
 
             /// <summary>
@@ -241,7 +293,15 @@ namespace Controller
                             entry.RunEpoch,
                             entry.Channels,
                             entry.WorkerTask != null,
-                            entry.Terminal);
+                            entry.Terminal,
+                            entry.IncidentId,
+                            entry.RunId,
+                            entry.OwnerId,
+                            entry.OwnerKind,
+                            entry.TargetPhase,
+                            entry.ProgressVersion,
+                            entry.LastProgressUtc,
+                            entry.ProgressStage);
                     }
                 })
                 .OrderBy(snapshot => snapshot.Id)
@@ -278,6 +338,41 @@ namespace Controller
             long runEpoch,
             params int[] channels)
         {
+            return ReserveCore(
+                operation,
+                runEpoch,
+                channels,
+                Guid.Empty,
+                Guid.Empty,
+                Guid.Empty,
+                RecoveryOwnerKind.None,
+                RecoveryTargetPhase.None);
+        }
+
+        internal RecoveryTaskLease Reserve(RecoveryContractSnapshot contract)
+        {
+            if (contract == null) throw new ArgumentNullException(nameof(contract));
+            return ReserveCore(
+                contract.Operation,
+                contract.RunEpoch,
+                contract.Channels,
+                contract.IncidentId,
+                contract.RunId,
+                contract.OwnerId,
+                contract.OwnerKind,
+                contract.TargetPhase);
+        }
+
+        private RecoveryTaskLease ReserveCore(
+            string operation,
+            long runEpoch,
+            IEnumerable<int> channels,
+            Guid incidentId,
+            Guid runId,
+            Guid ownerId,
+            RecoveryOwnerKind ownerKind,
+            RecoveryTargetPhase targetPhase)
+        {
             if (!IsRecoveryOperation(operation))
                 throw new ArgumentException("恢复登记操作名必须属于恢复/自愈域。", nameof(operation));
 
@@ -295,7 +390,15 @@ namespace Controller
                 RunEpoch = runEpoch,
                 Channels = normalizedChannels,
                 ReservationTask = reservation.Task,
-                AutoRelease = false
+                AutoRelease = false,
+                IncidentId = incidentId,
+                RunId = runId,
+                OwnerId = ownerId,
+                OwnerKind = ownerKind,
+                TargetPhase = targetPhase,
+                ProgressVersion = 1,
+                LastProgressUtc = DateTime.UtcNow,
+                ProgressStage = "Reserved"
             };
             _active[entry.Id] = entry;
             SignalChanged();
@@ -305,7 +408,39 @@ namespace Controller
                 entry.Operation,
                 entry.RunEpoch,
                 entry.Channels,
-                entry.ReservationTask);
+                entry.ReservationTask,
+                entry.IncidentId,
+                entry.RunId,
+                entry.OwnerId,
+                entry.OwnerKind,
+                entry.TargetPhase);
+        }
+
+        private void ReportProgress(long id, string stage)
+        {
+            if (!_active.TryGetValue(id, out var entry)) return;
+            lock (entry.Gate)
+            {
+                if (entry.Terminal) return;
+                entry.ProgressVersion++;
+                entry.LastProgressUtc = DateTime.UtcNow;
+                entry.ProgressStage = string.IsNullOrWhiteSpace(stage)
+                    ? "Progress"
+                    : stage.Trim();
+            }
+            SignalChanged();
+        }
+
+        internal void ReportProgressForChannel(long runEpoch, int channel, string stage)
+        {
+            if (runEpoch <= 0 || channel < 1 || channel > 12) return;
+            foreach (var entry in _active.Values.Where(candidate =>
+                         candidate != null &&
+                         candidate.RunEpoch == runEpoch &&
+                         !candidate.Terminal &&
+                         candidate.Channels != null &&
+                         candidate.Channels.Contains(channel)).ToArray())
+                ReportProgress(entry.Id, stage);
         }
 
         private bool Bind(RecoveryTaskLease lease, Task workerTask)
@@ -353,6 +488,48 @@ namespace Controller
                 !entry.Terminal &&
                 entry.Channels != null &&
                 entry.Channels.Contains(channel));
+        }
+
+        internal bool TryGetActiveIncidentCoverage(
+            int channel,
+            long runEpoch,
+            Guid incidentId,
+            out RecoveryTaskLeaseSnapshot snapshot)
+        {
+            snapshot = null;
+            if (channel < 1 || channel > 12 || runEpoch <= 0 || incidentId == Guid.Empty)
+                return false;
+            foreach (var entry in _active.Values
+                         .Where(candidate => candidate != null &&
+                                             candidate.RunEpoch == runEpoch &&
+                                             candidate.IncidentId == incidentId &&
+                                             !candidate.Terminal &&
+                                             candidate.Channels != null &&
+                                             candidate.Channels.Contains(channel))
+                         .OrderBy(candidate => candidate.Id))
+            {
+                lock (entry.Gate)
+                {
+                    if (entry.Terminal) continue;
+                    snapshot = new RecoveryTaskLeaseSnapshot(
+                        entry.Id,
+                        entry.Operation,
+                        entry.RunEpoch,
+                        entry.Channels,
+                        entry.WorkerTask != null,
+                        entry.Terminal,
+                        entry.IncidentId,
+                        entry.RunId,
+                        entry.OwnerId,
+                        entry.OwnerKind,
+                        entry.TargetPhase,
+                        entry.ProgressVersion,
+                        entry.LastProgressUtc,
+                        entry.ProgressStage);
+                    return true;
+                }
+            }
+            return false;
         }
 
         internal int[] CaptureActiveChannels(long runEpoch)

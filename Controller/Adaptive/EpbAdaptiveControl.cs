@@ -327,10 +327,14 @@ namespace Controller.Adaptive
         private long _forwardProgressStallStartTick;
         private EpbAdaptiveSafetyLimits _safetyLimits = new EpbAdaptiveSafetyLimits();
         private int _reverseNoModelDeadlineMs;
+        private readonly double _daqFreshnessCutoffMs;
 
-        public EpbAdaptiveCurrentStateMachine(EpbAdaptiveProfile profile)
+        public EpbAdaptiveCurrentStateMachine(
+            EpbAdaptiveProfile profile,
+            double daqFreshnessCutoffMs = 250)
         {
             _profile = profile?.Clone() ?? new EpbAdaptiveProfile();
+            _daqFreshnessCutoffMs = Math.Max(1, daqFreshnessCutoffMs);
         }
 
         public EpbCurrentStage Stage
@@ -731,9 +735,12 @@ namespace Controller.Adaptive
                 if (!_forwardDirection)
                     TryApplyReverseWindowDiagnostics(nowTick, decision, out _);
 
-                if ((_lastSampleTick == 0 && decision.ElapsedMs > 100) ||
-                    (_lastSampleTick != 0 && ElapsedMs(_lastSampleTick, nowTick) > 100))
-                    return Fault(decision, "DaqSampleStale>100ms");
+                if ((_lastSampleTick == 0 && decision.ElapsedMs > _daqFreshnessCutoffMs) ||
+                    (_lastSampleTick != 0 &&
+                     ElapsedMs(_lastSampleTick, nowTick) > _daqFreshnessCutoffMs))
+                    return Fault(
+                        decision,
+                        $"DaqSampleStale>{_daqFreshnessCutoffMs:0.#}ms");
 
                 if (decision.ElapsedMs >= _absoluteMaxMs)
                     return Fault(decision, _forwardDirection ? "ForwardAbsoluteOnTimeExceeded" : "ReverseAbsoluteOnTimeExceeded");

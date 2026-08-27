@@ -82,7 +82,7 @@ namespace AdaptiveControlTests
             Run("恢复连续性故障后重新建立干净窗口", RecoveryVerifierResetsOnRealDiscontinuity, ref passed);
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
-            Run("独立DAQ存活监督在带电100ms陈旧时触发且恢复期间去重", IndependentDaqLivenessSupervisorPolicy, ref passed);
+            Run("DAQ按250/1500/5000ms分级且历史峰值不反向升级", IndependentDaqLivenessSupervisorPolicy, ref passed);
             Run("DAQ存活日志转换按批次关联与参与设备有界去重", DaqLivenessLogTransitionDedup, ref passed);
             Run("未带电DAQ回调空窗只记录一次且不触发恢复", UnenergizedDaqGapObservationPolicy, ref passed);
             Run("后台冻结边界结果逐项报告Published与Raw未闭合谓词", BackgroundDrainResultExplainsPendingPredicate, ref passed);
@@ -935,51 +935,59 @@ namespace AdaptiveControlTests
 
         private static void IndependentDaqLivenessSupervisorPolicy()
         {
+            Assert(EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 1500, 5000) &&
+                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 250, 5000) &&
+                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(0, 1500, 5000),
+                "DAQ阈值未按正数且严格递增校验");
             var state = new DaqLivenessDeviceState();
             var stale = new DaqFreshnessSnapshot
             {
                 Device = "Dev1",
                 Generation = 7,
                 LastCallbackMonotonicTicks = Stopwatch.GetTimestamp(),
-                CallbackAgeMs = 120,
+                CallbackAgeMs = 134,
                 LastProducedSequence = 100,
                 LastProcessedSequence = 100
             };
-            var warn = state.Observe(true, true, false, stale, 100, 1000, 2000);
+            var freshGap = state.Observe(true, true, false, stale, 250, 1500, 5000);
+            Assert(!freshGap.Trip && !freshGap.Warn && !freshGap.Suspect,
+                "134ms双设备短空窗被错误放大为作废或恢复");
+            stale.CallbackAgeMs = 251;
+            var warn = state.Observe(true, true, false, stale, 250, 1500, 5000);
             Assert(!warn.Trip && warn.Warn && warn.Code == "DaqLivenessWarn",
-                "120ms空窗没有保持为仅Warn策略");
-            Assert(!EpbManager.EvaluateDaqLiveness(true, false, false, stale, 0, 100).Trip,
+                "250ms以上空窗没有保持为带电OFF/作废级Warn策略");
+            Assert(!EpbManager.EvaluateDaqLiveness(true, false, false, stale, 0, 250).Trip,
                 "未带电设备被独立监督器错误断言为故障");
-            Assert(!EpbManager.EvaluateDaqLiveness(true, true, true, stale, 0, 100).Trip,
+            Assert(!EpbManager.EvaluateDaqLiveness(true, true, true, stale, 0, 250).Trip,
                 "既有恢复上下文期间重复发布DAQ存活故障");
-            stale.CallbackAgeMs = 700;
-            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
-                "100ms门槛以内的新鲜回调被错误停机");
-            stale.CallbackAgeMs = 1200;
-            var suspect = state.Observe(true, true, false, stale, 100, 1000, 2000);
+            stale.CallbackAgeMs = 1499;
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Suspect,
+                "1500ms门槛以内被错误建立资格栅栏");
+            stale.CallbackAgeMs = 1501;
+            var suspect = state.Observe(true, true, false, stale, 250, 1500, 5000);
             Assert(suspect.Suspect && !suspect.Trip,
-                "1200ms没有进入Suspect或被错误Trip");
-            stale.CallbackAgeMs = 1999;
-            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
-                "2000ms内恢复窗口被错误Trip");
-            stale.CallbackAgeMs = 2100;
-            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
-                "Trip首次确认即触发");
-            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
-                "Trip第二次确认即触发");
-            var trip = state.Observe(true, true, false, stale, 100, 1000, 2000);
+                "1500ms没有进入Suspect或被错误Trip");
+            stale.CallbackAgeMs = 4999;
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
+                "5000ms内恢复窗口被错误Trip");
+            stale.CallbackAgeMs = 5001;
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
+                "Trip首次监督确认即触发");
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
+                "Trip第二次监督确认即触发");
+            var trip = state.Observe(true, true, false, stale, 250, 1500, 5000);
             Assert(trip.Trip && trip.TripConfirmations == 3,
                 "超过2000ms且连续三次确认未触发局部恢复");
 
             stale.CallbackAgeMs = 10;
             stale.LastProducedSequence++;
             stale.CallbackGapEventCount = 4;
-            stale.LastCallbackGapIntervalMs = 1200;
+            stale.LastCallbackGapIntervalMs = 5200;
             var recoveredBeforeWatchdog = state.Observe(
-                true, true, false, stale, 100, 1000, 2000);
+                true, true, false, stale, 250, 1500, 5000);
             Assert(!recoveredBeforeWatchdog.Trip && recoveredBeforeWatchdog.RecoveredGap &&
                    recoveredBeforeWatchdog.Code == "RecoveredGap",
-                "已恢复1200ms历史空窗被事后重建DAQ");
+                "已恢复5200ms历史空窗被事后重建DAQ");
         }
 
         private static void DaqLivenessLogTransitionDedup()
@@ -3626,9 +3634,9 @@ namespace AdaptiveControlTests
 
         private static void DaqStaleRootClassification()
         {
-            Assert(EpbManager.IsRunnerDaqFreshnessSafetyCutoff("DaqSampleStale>100ms") &&
+            Assert(EpbManager.IsRunnerDaqFreshnessSafetyCutoff("DaqSampleStale>250ms") &&
                    !EpbManager.IsRunnerDaqFreshnessSafetyCutoff("DaqCallbackStale"),
-                "100ms单圈安全切断与独立DAQ设备恢复触发未分层");
+                "250ms单圈安全切断与独立DAQ设备恢复触发未分层");
             Assert(EpbManager.ClassifyDaqStaleRoot(new DaqFreshnessSnapshot
             {
                 CallbackAgeMs = 1167,
@@ -3638,14 +3646,14 @@ namespace AdaptiveControlTests
             Assert(EpbManager.ClassifyDaqStaleRoot(new DaqFreshnessSnapshot
             {
                 CallbackAgeMs = 10,
-                ControlEnqueueAgeMs = 120,
-                ControlProcessedAgeMs = 130
+                ControlEnqueueAgeMs = 320,
+                ControlProcessedAgeMs = 330
             }) == "ControlEnqueueStale", "回调到控制入队停顿未识别");
             Assert(EpbManager.ClassifyDaqStaleRoot(new DaqFreshnessSnapshot
             {
                 CallbackAgeMs = 10,
                 ControlEnqueueAgeMs = 10,
-                ControlProcessedAgeMs = 120
+                ControlProcessedAgeMs = 320
             }) == "ControlProcessingStale", "控制消费停顿未识别");
         }
 

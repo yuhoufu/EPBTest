@@ -71,6 +71,8 @@ namespace AdaptiveControlTests
                 StageDeadlineIsStickyAndSingleOrphan, ref passed);
             Run("Stop runner aggregate projection dispatches inactive timeout once",
                 AggregateProjectionDispatchesOnce, ref passed);
+            Run("硬件安全等待仅抑制非活动粘滞Stop终态且保留接管边界",
+                HardwareSafeIdleSuppressesOnlyInactiveStickyStop, ref passed);
             Run("Stop supervisor orders heartbeats by validated process attachment",
                 ValidatedAttachmentOrdersHeartbeat, ref passed);
             return passed;
@@ -1473,6 +1475,147 @@ namespace AdaptiveControlTests
             supervisor.EvaluateAndDispatch(sink);
             Assert(sinkCount == 2,
                 "只有新的 validated Attached 才能开启下一事务接管门，但未重置。");
+        }
+
+        private static void HardwareSafeIdleSuppressesOnlyInactiveStickyStop()
+        {
+            var heartbeat = new WatchdogHeartbeat
+            {
+                ProcessId = 4242,
+                ProcessStartUtcTicks = 987654321,
+                RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource,
+                HardwareUnavailable = true,
+                Phase = "SafeIdleHardwareUnavailable",
+                EnergizedChannelCount = 0,
+                HardwareFailureFingerprint = "daq-missing-dev2",
+                HardwareProbeAttempt = 3,
+                HardwareNextProbeUtc = DateTime.UtcNow.AddSeconds(30).Ticks
+            };
+            Assert(WatchdogHost.IsVerifiedHardwareSafeIdle(
+                    heartbeat,
+                    heartbeat.ProcessId,
+                    heartbeat.ProcessStartUtcTicks,
+                    processAlive: true,
+                    heartbeatAgeSeconds: 1,
+                    sessionRevoked: false,
+                    manualStopRequested: false,
+                    alreadyTakingOver: false),
+                "完整的恢复进程硬件安全等待证据未被识别。");
+
+            var terminal = new StopSafetyHeartbeatProjection
+            {
+                Active = false,
+                TakeoverRequired = true,
+                TransactionId = "hardware-safe-idle",
+                Generation = 1,
+                TerminalReason = "PreviousStopTerminal"
+            };
+            var idleMonitor = new WatchdogHostStopMonitor("hardware-safe-idle");
+            idleMonitor.Observe(terminal);
+            var idleDispatches = 0;
+            Assert(!idleMonitor.EvaluateTick(
+                    DateTime.UtcNow,
+                    processAlive: true,
+                    heartbeatAgeSeconds: 1,
+                    sessionRevoked: false,
+                    manualStopRequested: false,
+                    alreadyTakingOver: false,
+                    hardwareSafeIdle: true,
+                    sink: _ => Interlocked.Increment(ref idleDispatches)) &&
+                   idleDispatches == 0,
+                "硬件安全等待仍因非活动Stop粘滞终态派发了重启。");
+
+            var activeMonitor = new WatchdogHostStopMonitor("active-stop");
+            activeMonitor.Observe(new StopSafetyHeartbeatProjection
+            {
+                Active = true,
+                TimedOut = true,
+                TransactionId = "active-stop",
+                Generation = 1,
+                TerminalReason = "ActiveStopTimedOut"
+            });
+            var activeDispatches = 0;
+            var activeSink = new Action<string>(
+                _ => Interlocked.Increment(ref activeDispatches));
+            Assert(activeMonitor.EvaluateTick(
+                    DateTime.UtcNow,
+                    processAlive: true,
+                    heartbeatAgeSeconds: 1,
+                    sessionRevoked: false,
+                    manualStopRequested: false,
+                    alreadyTakingOver: false,
+                    hardwareSafeIdle: true,
+                    sink: activeSink),
+                "活动StopAll被硬件安全等待错误抑制。");
+            activeMonitor.EvaluateTick(
+                DateTime.UtcNow,
+                processAlive: true,
+                heartbeatAgeSeconds: 1,
+                sessionRevoked: false,
+                manualStopRequested: false,
+                alreadyTakingOver: false,
+                hardwareSafeIdle: true,
+                sink: activeSink);
+            Assert(activeDispatches == 1,
+                "活动StopAll接管没有保持单次派发。");
+
+            var deadMonitor = new WatchdogHostStopMonitor("dead-recovery");
+            deadMonitor.Observe(terminal);
+            var deadDispatches = 0;
+            Assert(deadMonitor.EvaluateTick(
+                    DateTime.UtcNow,
+                    processAlive: false,
+                    heartbeatAgeSeconds: 1,
+                    sessionRevoked: false,
+                    manualStopRequested: false,
+                    alreadyTakingOver: false,
+                    hardwareSafeIdle: true,
+                    sink: _ => Interlocked.Increment(ref deadDispatches)) &&
+                   deadDispatches == 1,
+                "恢复进程死亡被硬件安全等待错误抑制。");
+
+            Assert(!WatchdogHost.IsVerifiedHardwareSafeIdle(
+                       heartbeat,
+                       heartbeat.ProcessId,
+                       heartbeat.ProcessStartUtcTicks,
+                       true,
+                       5,
+                       false,
+                       false,
+                       false) &&
+                   !WatchdogHost.IsVerifiedHardwareSafeIdle(
+                       heartbeat,
+                       heartbeat.ProcessId,
+                       heartbeat.ProcessStartUtcTicks,
+                       true,
+                       1,
+                       false,
+                       true,
+                       false),
+                "心跳超时或人工停止仍被误判为硬件安全等待。");
+            heartbeat.EnergizedChannelCount = 1;
+            Assert(!WatchdogHost.IsVerifiedHardwareSafeIdle(
+                    heartbeat,
+                    heartbeat.ProcessId,
+                    heartbeat.ProcessStartUtcTicks,
+                    true,
+                    1,
+                    false,
+                    false,
+                    false),
+                "重新带电仍被误判为硬件安全等待。");
+            heartbeat.EnergizedChannelCount = 0;
+            heartbeat.HardwareFailureFingerprint = string.Empty;
+            Assert(!WatchdogHost.IsVerifiedHardwareSafeIdle(
+                    heartbeat,
+                    heartbeat.ProcessId,
+                    heartbeat.ProcessStartUtcTicks,
+                    true,
+                    1,
+                    false,
+                    false,
+                    false),
+                "缺少硬件指纹仍被误判为硬件安全等待。");
         }
 
         private static void ValidatedAttachmentOrdersHeartbeat()

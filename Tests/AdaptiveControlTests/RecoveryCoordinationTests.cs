@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Controller;
 using DataOperation;
 using IO.NI;
+using MTEmbTest;
 
 namespace AdaptiveControlTests
 {
@@ -22,6 +23,11 @@ namespace AdaptiveControlTests
             Run("同优先级不同电源恢复排队且不得互相取消", SamePriorityOwnersQueueWithoutCancellation, ref passed);
             Run("硬件确认同步取消当前恢复所有者", ConfirmedHardwareCancelsRecoveryOwner, ref passed);
             Run("恢复任务登记覆盖全部受影响通道并在终态清除", RecoveryTaskRegistryTracksAffectedChannels, ref passed);
+            Run("恢复任务按RunEpoch/Incident/Owner/通道精确覆盖并刷新进展", RecoveryTaskRegistryExactIdentityAndProgress, ref passed);
+            Run("TaskCovered且owner投影暂缺时从不可变契约自修复", CoveredTaskRepairsMissingOwnerProjection, ref passed);
+            Run("冗余断电矩阵只在DO成功且电源新鲜低电流时放行", RedundantPowerOffProofMatrixIsFailSafe, ref passed);
+            Run("电源应急latch旧incident不得清除新generation", EmergencyPowerLatchRemovalIsExact, ref passed);
+            Run("同进程恢复持续进展越过30秒且仅60秒停滞或300秒总限接管", InProcessRecoveryLeaseUsesMaterialProgress, ref passed);
             Run("已完成未终态恢复任务有界返回且绝不热循环", CompletedWorkerWithoutTerminalReturnsImmediately, ref passed);
             Run("恢复任务清退取消令牌可到达内部等待", RecoveryDrainCancellationIsBounded, ref passed);
             Run("x86恢复内存熔断按600与800MiB分级", RecoveryMemoryCircuitBreakerIsDeterministic, ref passed);
@@ -556,6 +562,140 @@ namespace AdaptiveControlTests
             SpinWait.SpinUntil(() => registry.ActiveCount == 0, 1000);
             Assert(!registry.HasActiveTaskForChannel(10, 17) && registry.ActiveCount == 0,
                 "恢复任务终态后通道登记未原子清除");
+        }
+
+        private static void RecoveryTaskRegistryExactIdentityAndProgress()
+        {
+            var registry = new RecoveryTaskRegistry();
+            var incidentId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var ownerId = Guid.NewGuid();
+            var contract = new RecoveryContractSnapshot(
+                incidentId,
+                runId,
+                31,
+                ownerId,
+                RecoveryOwnerKind.HydraulicGroupRecovery,
+                RecoveryTargetPhase.Formal,
+                "FormalHydraulicRecovery",
+                DateTime.UtcNow,
+                DateTime.UtcNow.AddMinutes(3),
+                new[] { 4, 5 });
+            var lease = registry.Reserve(contract);
+            Assert(registry.TryGetActiveIncidentCoverage(4, 31, incidentId, out var exact) &&
+                   exact.RunId == runId && exact.OwnerId == ownerId &&
+                   exact.TargetPhase == RecoveryTargetPhase.Formal &&
+                   !registry.TryGetActiveIncidentCoverage(4, 31, Guid.NewGuid(), out _) &&
+                   !registry.TryGetActiveIncidentCoverage(6, 31, incidentId, out _),
+                "恢复任务覆盖仍使用宽松epoch/通道匹配");
+            lease.ReportProgress("MechanicalCycle:1");
+            Assert(registry.TryGetActiveIncidentCoverage(5, 31, incidentId, out var progressed) &&
+                   progressed.ProgressVersion > exact.ProgressVersion &&
+                   progressed.ProgressStage == "MechanicalCycle:1" &&
+                   progressed.LastProgressUtc >= exact.LastProgressUtc,
+                "恢复任务材料进展未刷新续租令牌");
+            lease.CompleteAfterTerminal();
+        }
+
+        private static void CoveredTaskRepairsMissingOwnerProjection()
+        {
+            var registry = new RecoveryTaskRegistry();
+            var store = new ChannelRuntimeStateStore();
+            var incidentId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var ownerId = Guid.NewGuid();
+            var contract = new RecoveryContractSnapshot(
+                incidentId,
+                runId,
+                41,
+                ownerId,
+                RecoveryOwnerKind.BatchLearning,
+                RecoveryTargetPhase.Learning,
+                "LearningRecovery",
+                DateTime.UtcNow,
+                DateTime.UtcNow.AddMinutes(3),
+                new[] { 4 });
+            var lease = registry.Reserve(contract);
+            var missingOwner = store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 4,
+                State = ChannelRuntimeState.Recovering,
+                RunId = runId,
+                RunEpoch = 41,
+                CorrelationId = incidentId,
+                Enabled = true,
+                RecoveryOwnerKind = RecoveryOwnerKind.None,
+                RecoveryTargetPhase = RecoveryTargetPhase.None
+            });
+            Assert(registry.TryGetActiveIncidentCoverage(4, 41, incidentId, out var coverage) &&
+                   store.TryRepairRecoveryOwnerIfCurrent(
+                       4,
+                       missingOwner.Revision,
+                       runId,
+                       41,
+                       incidentId,
+                       coverage,
+                       out var repaired) &&
+                   RecoveryOwnershipPolicy.IsOwnerCurrent(repaired) &&
+                   repaired.RecoveryOwnerId == ownerId &&
+                   repaired.RecoveryTargetPhase == RecoveryTargetPhase.Learning,
+                "有效Task覆盖未能修复短暂缺失的owner投影");
+            lease.CompleteAfterTerminal();
+        }
+
+        private static void RedundantPowerOffProofMatrixIsFailSafe()
+        {
+            Assert(EpbManager.IsRedundantOffProofSatisfied(true, true, 0.0, 0.5),
+                "DO成功+新鲜0A未确认为断电");
+            Assert(!EpbManager.IsRedundantOffProofSatisfied(false, true, 0.0, 0.5) &&
+                   !EpbManager.IsRedundantOffProofSatisfied(true, false, 0.0, 0.5) &&
+                   !EpbManager.IsRedundantOffProofSatisfied(true, true, 0.501, 0.5) &&
+                   !EpbManager.IsRedundantOffProofSatisfied(true, true, double.NaN, 0.5),
+                "DO失败、遥测陈旧或高电流被错误证明为断电");
+        }
+
+        private static void EmergencyPowerLatchRemovalIsExact()
+        {
+            var latch = new EmergencyPowerGroupLatch();
+            var firstIncident = Guid.NewGuid();
+            var first = latch.Register(4, firstIncident, DateTime.UtcNow);
+            Assert(!latch.TryRemove(4, Guid.NewGuid(), first.Generation) &&
+                   latch.ContainsKey(4) &&
+                   latch.TryRemove(4, firstIncident, first.Generation),
+                "错误incident可清除活动电源latch，或精确身份无法释放");
+            var secondIncident = Guid.NewGuid();
+            var second = latch.Register(4, secondIncident, DateTime.UtcNow);
+            Assert(second.Generation > first.Generation &&
+                   !latch.TryRemove(4, firstIncident, first.Generation) &&
+                   latch.ContainsKey(4) &&
+                   latch.TryRemove(4, secondIncident, second.Generation),
+                "旧incident/generation清除了新事务建立的电源latch");
+        }
+
+        private static void InProcessRecoveryLeaseUsesMaterialProgress()
+        {
+            var started = new DateTime(638000000000000000, DateTimeKind.Utc);
+            Assert(string.IsNullOrEmpty(InProcessRecoveryLeasePolicy.SelectHandoffBoundary(
+                       started,
+                       started.AddSeconds(40),
+                       started.AddSeconds(45),
+                       60000,
+                       300000)),
+                "学习持续产生机械圈时仍被固定30秒反杀");
+            Assert(InProcessRecoveryLeasePolicy.SelectHandoffBoundary(
+                       started,
+                       started.AddSeconds(20),
+                       started.AddSeconds(80),
+                       60000,
+                       300000) == "NoMaterialProgress",
+                "连续60秒无材料进展未进入安全外部接管");
+            Assert(InProcessRecoveryLeasePolicy.SelectHandoffBoundary(
+                       started,
+                       started.AddSeconds(299),
+                       started.AddSeconds(300),
+                       60000,
+                       300000) == "MaxTotal",
+                "恢复总时间达到300秒仍未进入安全外部接管");
         }
 
         private static void CompletedWorkerWithoutTerminalReturnsImmediately()

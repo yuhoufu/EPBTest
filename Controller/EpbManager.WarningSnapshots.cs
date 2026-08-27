@@ -1256,7 +1256,9 @@ namespace Controller
                                      sessionDecision.HeavyEvidenceAllowed;
             var includeRecentCycleCopies = allowHeavyEvidence && requestedRecentCycleCopies;
             var beforeClock = context.BeforeClock ?? new DaqFreshnessSnapshot();
-            var afterClock = context.AfterClock ?? _acq.GetDaqFreshnessSnapshot(context.Device, 100);
+            var afterClock = context.AfterClock ?? _acq.GetDaqFreshnessSnapshot(
+                context.Device,
+                _daqLivenessWarnThresholdMs);
             var generation = _acq.GetCurrentGeneration(context.Device);
             var previousGeneration = context.PreviousGeneration;
             var recoveredGeneration = context.RecoveredGeneration;

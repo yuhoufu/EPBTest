@@ -818,7 +818,7 @@ namespace Controller
                                     new HydraulicGenerationKey(
                                         runId,
                                         pressureGroup,
-                                        HydraulicPhaseKind.Recovery,
+                                        HydraulicPhaseKind.Qualification,
                                         Interlocked.Increment(ref _qualificationGeneration)),
                                     new[] { channel },
                                     attemptToken)
@@ -1880,43 +1880,60 @@ namespace Controller
                 // 只有旧 execution 已完全退出后，才允许取得并重新配置共享 Runner。
                 var runner = (EpbCycleRunner)GetRunner(channel);
                 PrepareRunnerForNoHeadAndTailCompensation(channel);
-                await WaitForDaqRecoveryAsync(channel, ct).ConfigureAwait(false);
-                await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, ct)
-                    .ConfigureAwait(false);
-
-                var participantsByHydraulic = CaptureGlobalFormalParticipants(
-                    _activeBatchId,
-                    staggerPlan,
-                    phaseSlot);
-                var globalSlot = await EnterGlobalHydraulicSlotAsync(
-                    _activeBatchId,
-                    HydraulicPhaseKind.Formal,
-                    phaseSlot,
-                    participantsByHydraulic,
-                    t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
-                    t0,
-                    staggerPlan,
-                    startupSelfHealing: false,
-                    GetBatchSessionTokenOr(timerToken))
-                    .ConfigureAwait(false);
-                if (globalSlot.HasFailures)
+                GlobalHydraulicSlotAdmissionResult admission;
+                try
                 {
+                    await WaitForDaqRecoveryAsync(channel, ct).ConfigureAwait(false);
+                    await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, ct)
+                        .ConfigureAwait(false);
+                    admission = await EnterGlobalFormalHydraulicSlotAsync(
+                            _activeBatchId,
+                            phaseSlot,
+                            channel,
+                            t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
+                            t0,
+                            staggerPlan,
+                            GetBatchSessionTokenOr(timerToken),
+                            ct)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    SkipGlobalFormalSlot(
+                        _activeBatchId,
+                        phaseSlot,
+                        channel,
+                        "FormalRejoinGateOrAdmissionFailed");
                     ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    if (globalSlot.Groups.TryGetValue(pressureGroup, out var outcome) &&
-                        outcome.IsSuccess)
-                    {
-                        _log?.Warn(
-                            $"重入健康液压组跳过降级槽 Run={_activeBatchId:N} " +
-                            $"GlobalSlot={phaseSlot} Hydraulic={pressureGroup} EPB={channel}",
-                            "液压全局槽");
-                        return false;
-                    }
-
-                    globalSlot.GetLeaseOrThrow(pressureGroup);
+                    throw;
+                }
+                if (!admission.Admitted || admission.Slot == null)
+                {
+                    _log?.Info(
+                        $"SkippedForSlot Run={_activeBatchId:N} GlobalSlot={phaseSlot} " +
+                        $"EPB={channel} Reason={admission.SkipReason}",
+                        "液压全局槽");
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
                     return false;
                 }
 
-                globalSlot.GetLeaseOrThrow(pressureGroup);
+                var globalSlot = admission.Slot;
+                if (!globalSlot.Groups.TryGetValue(pressureGroup, out var outcome))
+                {
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
+                    return false;
+                }
+                if (!outcome.IsSuccess)
+                {
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
+                    globalSlot.GetLeaseOrThrow(pressureGroup);
+                    return false;
+                }
+                if (globalSlot.HasFailures)
+                    _log?.Warn(
+                        $"重入正式阶段健康液压组继续当前槽 Run={_activeBatchId:N} " +
+                        $"GlobalSlot={phaseSlot} Hydraulic={pressureGroup} EPB={channel}",
+                        "液压全局槽");
                 var plannedUtc = globalSlot.MotorAnchorUtc.Value.AddMilliseconds(phase);
                 var delay = plannedUtc - DateTime.UtcNow;
                 if (delay.TotalMilliseconds > 1)

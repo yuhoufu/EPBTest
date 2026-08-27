@@ -84,7 +84,7 @@ namespace Controller
         /// </summary>
         internal sealed class Port
         {
-            internal Func<string, long, IReadOnlyList<int>, RecoveryTaskRegistry.RecoveryTaskLease> Reserve;
+            internal Func<RecoveryContractSnapshot, RecoveryTaskRegistry.RecoveryTaskLease> Reserve;
             internal Func<Func<Task>, Task> Schedule;
             internal Func<RecoveryTaskRegistry.RecoveryTaskLease, Task, bool> Bind;
             internal Action<Incident, Task> Observe;
@@ -309,7 +309,8 @@ namespace Controller
             IEnumerable<int> channels,
             Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
             Action<RecoveryContractSnapshot> publishRecovering,
-            out Incident incident)
+            out Incident incident,
+            Guid incidentId = default)
         {
             return TryBegin(
                 operation,
@@ -322,7 +323,8 @@ namespace Controller
                 channels,
                 workerFactory,
                 publishRecovering,
-                out incident);
+                out incident,
+                incidentId);
         }
 
         internal BeginResult TryBegin(
@@ -336,7 +338,8 @@ namespace Controller
             IEnumerable<int> safetyAffectedChannels,
             Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
             Action<RecoveryContractSnapshot> publishRecovering,
-            out Incident incident)
+            out Incident incident,
+            Guid incidentId = default)
         {
             incident = null;
             var owned = NormalizeChannels(ownedChannels);
@@ -362,7 +365,7 @@ namespace Controller
                 BuildResourceScope(safetyAffected));
             var startedUtc = DateTime.UtcNow;
             var contract = new RecoveryContractSnapshot(
-                Guid.NewGuid(),
+                incidentId == Guid.Empty ? Guid.NewGuid() : incidentId,
                 runId,
                 runEpoch,
                 ownerId,
@@ -448,10 +451,7 @@ namespace Controller
             {
                 // Reserve is intentionally outside _gate. The reservation
                 // placeholder already blocks overlapping callers.
-                var lease = _port.Reserve(
-                    operation,
-                    entry.Scope.RunEpoch,
-                    owned);
+                var lease = _port.Reserve(entry.Contract.Clone());
                 if (lease == null)
                     throw new InvalidOperationException("Recovery lease reserve returned null.");
 
@@ -533,11 +533,13 @@ namespace Controller
                     incident.TerminalPublished != 0 ||
                     incident.TerminalStateCommitted)
                     return;
+                incident.TaskLease.ReportProgress("WorkerStarted");
                 var bodyTask = body();
                 if (bodyTask == null)
                     throw new InvalidOperationException(
                         $"Recovery worker body returned null Task. Incident={incident.Contract.IncidentId:N}");
                 await bodyTask.ConfigureAwait(false);
+                incident.TaskLease.ReportProgress("WorkerCompleted");
             }
             catch (TaskCanceledException) when (incident.IsAborting)
             {
@@ -547,7 +549,13 @@ namespace Controller
             catch (Exception workerError)
             {
                 ReportFaultOutsideGate("body", workerError);
-                incident.CompleteAfterTerminal(null);
+                var baseError = workerError.GetBaseException() ?? workerError;
+                var reason = "RecoveryWorkerFailed:" + baseError.GetType().Name;
+                var detail =
+                    $"{baseError.Message};Incident={incident.Contract.IncidentId:N};" +
+                    $"Scope={incident.Scope}";
+                incident.CompleteAfterTerminal(contract =>
+                    _port.PublishSafeTerminal?.Invoke(contract, reason, detail));
                 throw;
             }
         }

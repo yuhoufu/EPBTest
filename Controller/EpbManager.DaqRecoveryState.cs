@@ -1221,7 +1221,8 @@ namespace Controller
         private bool AdvanceDaqRecoveryStage(
             DaqAutoRecoveryContext context,
             DaqRecoveryPhase next,
-            string reason)
+            string reason,
+            bool allowAlreadyCommitted = false)
         {
             if (context == null) return false;
             var changed = false;
@@ -1234,6 +1235,19 @@ namespace Controller
                 var publishedBefore = context.ProgressStage;
                 if ((int)next < (int)publishedBefore) return false;
                 var gateCurrent = context.Phase.Current;
+                // Physical confirmation can publish DoOffConfirmed from the
+                // transaction callback before the Controller resumes after
+                // ConfirmPhysicalFromController. Only that exact, fully
+                // committed triple is an idempotent success; every other
+                // duplicate, skip, regression or terminal transition remains
+                // fail-closed.
+                if (IsAlreadyCommittedDaqRecoveryStage(
+                        allowAlreadyCommitted,
+                        next,
+                        gateCurrent,
+                        publishedBefore,
+                        context.Transaction?.Phase))
+                    return true;
                 if (gateCurrent == DaqRecoveryPhase.Terminal &&
                     next != DaqRecoveryPhase.Terminal)
                     return false;
@@ -1291,6 +1305,7 @@ namespace Controller
 
             if (changed)
             {
+                context.RegistryLease?.ReportProgress(effective.ToString());
                 // The aggregate store is the sole committed DAQ source used
                 // by watchdog capture; keep it in lockstep with the
                 // Controller's authoritative phase/version publication.
@@ -1327,6 +1342,21 @@ namespace Controller
                     ex => _log?.Warn($"DAQ恢复进度观察者异常，已隔离：{ex.Message}", "AI"));
             }
             return changed;
+        }
+
+        internal static bool IsAlreadyCommittedDaqRecoveryStage(
+            bool explicitlyAllowed,
+            DaqRecoveryPhase requested,
+            DaqRecoveryPhase controllerPhase,
+            DaqRecoveryPhase publishedPhase,
+            DaqRecoveryPhase? transactionPhase)
+        {
+            return explicitlyAllowed &&
+                   requested == DaqRecoveryPhase.DoOffConfirmed &&
+                   controllerPhase == requested &&
+                   publishedPhase == requested &&
+                   transactionPhase.HasValue &&
+                   transactionPhase.Value == requested;
         }
 
         private void PublishRecoveryProgress(DaqAutoRecoveryContext context, string reason)

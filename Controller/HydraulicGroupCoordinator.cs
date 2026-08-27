@@ -82,6 +82,107 @@ namespace Controller
         Qualification
     }
 
+    internal sealed class HydraulicRecoveryIntent
+    {
+        private HydraulicRecoveryIntent(
+            HydraulicPhaseKind sourcePhase,
+            RecoveryOwnerKind ownerKind,
+            RecoveryTargetPhase targetPhase,
+            Guid runId,
+            long runEpoch,
+            Guid incidentId,
+            Guid ownerId,
+            int hydraulicId,
+            IEnumerable<int> channels)
+        {
+            SourcePhase = sourcePhase;
+            OwnerKind = ownerKind;
+            TargetPhase = targetPhase;
+            RunId = runId;
+            RunEpoch = runEpoch;
+            IncidentId = incidentId;
+            OwnerId = ownerId;
+            HydraulicId = hydraulicId;
+            Channels = Array.AsReadOnly((channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray());
+        }
+
+        internal HydraulicPhaseKind SourcePhase { get; }
+        internal RecoveryOwnerKind OwnerKind { get; }
+        internal RecoveryTargetPhase TargetPhase { get; }
+        internal Guid RunId { get; }
+        internal long RunEpoch { get; }
+        internal Guid IncidentId { get; }
+        internal Guid OwnerId { get; }
+        internal int HydraulicId { get; }
+        internal IReadOnlyList<int> Channels { get; }
+
+        internal static HydraulicRecoveryIntent Create(
+            HydraulicPhaseKind sourcePhase,
+            Guid runId,
+            long runEpoch,
+            int hydraulicId,
+            IEnumerable<int> channels,
+            Guid incidentId,
+            Guid ownerId)
+        {
+            if (sourcePhase == HydraulicPhaseKind.Recovery)
+                throw new ArgumentException(
+                    "Recovery 只表示执行代次，不能作为业务来源阶段。",
+                    nameof(sourcePhase));
+            if (runId == Guid.Empty) throw new ArgumentException("RunId 不能为空。", nameof(runId));
+            if (runEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(runEpoch));
+            if (hydraulicId <= 0) throw new ArgumentOutOfRangeException(nameof(hydraulicId));
+            if (incidentId == Guid.Empty) throw new ArgumentException("IncidentId 不能为空。", nameof(incidentId));
+            if (ownerId == Guid.Empty) throw new ArgumentException("OwnerId 不能为空。", nameof(ownerId));
+
+            RecoveryOwnerKind ownerKind;
+            RecoveryTargetPhase targetPhase;
+            switch (sourcePhase)
+            {
+                case HydraulicPhaseKind.Learning:
+                    ownerKind = RecoveryOwnerKind.BatchLearning;
+                    targetPhase = RecoveryTargetPhase.Learning;
+                    break;
+                case HydraulicPhaseKind.Qualification:
+                    ownerKind = RecoveryOwnerKind.BatchQualification;
+                    targetPhase = RecoveryTargetPhase.Qualification;
+                    break;
+                case HydraulicPhaseKind.Formal:
+                    ownerKind = RecoveryOwnerKind.HydraulicGroupRecovery;
+                    targetPhase = RecoveryTargetPhase.Formal;
+                    break;
+                case HydraulicPhaseKind.PreRelease:
+                case HydraulicPhaseKind.SingleChannel:
+                    ownerKind = RecoveryOwnerKind.BatchStartup;
+                    targetPhase = RecoveryTargetPhase.Startup;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(sourcePhase),
+                        sourcePhase,
+                        "未定义的液压恢复来源阶段。");
+            }
+
+            var intent = new HydraulicRecoveryIntent(
+                sourcePhase,
+                ownerKind,
+                targetPhase,
+                runId,
+                runEpoch,
+                incidentId,
+                ownerId,
+                hydraulicId,
+                channels);
+            if (intent.Channels.Count == 0)
+                throw new ArgumentException("恢复意图必须包含通道。", nameof(channels));
+            return intent;
+        }
+    }
+
     public sealed class HydraulicGenerationKey : IEquatable<HydraulicGenerationKey>
     {
         public HydraulicGenerationKey(Guid testRunId, int hydraulicId, HydraulicPhaseKind phaseKind, long slot)
@@ -656,6 +757,40 @@ namespace Controller
             {
                 _activeLeaseScopes.TryRemove(scope, out _);
             }
+        }
+
+        /// <summary>
+        /// Retires only a stale channel scope that was faulted by the exact
+        /// ForceRelease operation which has already completed physical release
+        /// and safe-pressure confirmation. Unrelated faults, live generations
+        /// and active leases remain observable and fail closed.
+        /// </summary>
+        internal bool TryRetireForceReleasedScope(
+            HydraulicChannelLeaseScope scope,
+            int hydraulicId,
+            string exactForceReleaseReason)
+        {
+            if (scope == null ||
+                string.IsNullOrWhiteSpace(exactForceReleaseReason) ||
+                scope.IsClosed ||
+                scope.Key.HydraulicId != hydraulicId ||
+                _generations.ContainsKey(scope.Key))
+                return false;
+
+            var completion = scope.Lease.Completion;
+            if (completion == null ||
+                !completion.IsCompleted ||
+                !completion.IsFaulted)
+                return false;
+
+            var fault = completion.Exception?.GetBaseException();
+            var expectedMessage = "HydraulicForceRelease Reason=" + exactForceReleaseReason;
+            if (!(fault is OperationCanceledException) ||
+                !string.Equals(fault.Message, expectedMessage, StringComparison.Ordinal))
+                return false;
+
+            scope.ForceCloseWithoutWait();
+            return _activeLeaseScopes.TryRemove(scope, out _);
         }
 
         public Task AbortGenerationMemberAsync(

@@ -202,7 +202,8 @@ namespace Controller
                     $"AbsoluteOnTime={timing.AbsoluteOnTimeMs}ms，HighFloor={acceptableHighA:F3}A。",
                     "EPB");
                 var forwardDetector = new EpbAdaptiveCurrentStateMachine(
-                    _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel });
+                    _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel },
+                    _daqFreshnessCutoffMs);
                 var forwardStart = Stopwatch.GetTimestamp();
                 forwardDetector.ArmForward(
                     forwardStart,
@@ -321,7 +322,8 @@ namespace Controller
                     $"ReleaseThreshold={reverseTiming.ReleaseThresholdA:F3}A。",
                     "EPB");
                 var reverseDetector = new EpbAdaptiveCurrentStateMachine(
-                    _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel });
+                    _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel },
+                    _daqFreshnessCutoffMs);
                 var reverseStart = Stopwatch.GetTimestamp();
                 reverseDetector.ArmReverse(
                     reverseStart,
@@ -509,7 +511,7 @@ namespace Controller
                 reason = $"EPB[{_channel}]没有有效DAQ设备映射。";
                 return false;
             }
-            var snapshot = _acq.GetDaqFreshnessSnapshot(device, 100);
+            var snapshot = _acq.GetDaqFreshnessSnapshot(device, _daqFreshnessCutoffMs);
             if (snapshot.IsFresh) return true;
             reason =
                 $"DAQ样本陈旧：Device={device} Age={snapshot.AgeMs:F1}ms，要求≤100ms。";

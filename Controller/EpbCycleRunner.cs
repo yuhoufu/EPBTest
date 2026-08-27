@@ -125,6 +125,7 @@ namespace Controller
         private readonly int _adaptiveOvershootConfirmCycles = 8;
         private readonly int _peakEvidenceMismatchConfirmCycles = 3;
         private readonly int _adaptiveForwardStallConfirmCycles = 8;
+        private readonly double _daqFreshnessCutoffMs = 250;
 
         /// <summary>
         ///     报警事件：由 Runner 判定“异常/过流”等场景触发。
@@ -223,7 +224,8 @@ namespace Controller
             bool adaptiveShadowMode = true,
             EpbAdaptiveProfile adaptiveProfile = null,
             Action<EpbAdaptiveProfile> saveAdaptiveProfile = null,
-            EpbProgramSafetySettings programSafetySettings = null)
+            EpbProgramSafetySettings programSafetySettings = null,
+            double daqFreshnessCutoffMs = 250)
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
                 log)
         {
@@ -244,7 +246,10 @@ namespace Controller
             _adaptiveShadowMode = adaptiveShadowMode;
             _adaptiveProfile = adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = channel };
             _saveAdaptiveProfile = saveAdaptiveProfile;
-            _adaptiveStateMachine = new EpbAdaptiveCurrentStateMachine(_adaptiveProfile);
+            _daqFreshnessCutoffMs = Math.Max(1, daqFreshnessCutoffMs);
+            _adaptiveStateMachine = new EpbAdaptiveCurrentStateMachine(
+                _adaptiveProfile,
+                _daqFreshnessCutoffMs);
             _programSafetySettings =
                 programSafetySettings ?? EpbProgramSafetySettings.Load(_log);
             _adaptiveSafetyLimits = _programSafetySettings.ToAdaptiveSafetyLimits();
@@ -1365,7 +1370,8 @@ namespace Controller
         {
             var waitMs = Math.Max(500, maxWaitMs);
             var detector = new EpbAdaptiveCurrentStateMachine(
-                _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel });
+                _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel },
+                _daqFreshnessCutoffMs);
             var startTick = Stopwatch.GetTimestamp();
             detector.ArmReverse(
                 startTick,

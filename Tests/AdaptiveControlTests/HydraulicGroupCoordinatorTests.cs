@@ -26,6 +26,10 @@ namespace AdaptiveControlTests
             Run("双液压全局槽仅并发建压一次并共享电机锚点", GlobalSlotBuildsTogetherAndSharesAnchor, ref passed);
             Run("全局槽成员快照不可变", GlobalSlotMembershipIsImmutable, ref passed);
             Run("单液压失败时健康组释压并跳过半槽", GlobalSlotFailureReleasesHealthyGroup, ref passed);
+            Run("正式槽按实际到达300ms窗口准入且迟到滚入下一槽", FormalAdmissionWindowSkipsLateChannel, ref passed);
+            Run("正式槽一组失败时健康组保留lease继续提交", FormalPartialFailureKeepsHealthyLease, ref passed);
+            Run("正式槽Join/Skip重复竞态一万次必然收敛", FormalJoinSkipRaceConvergesTenThousandTimes, ref passed);
+            Run("液压恢复意图完整映射且拒绝Recovery来源", HydraulicRecoveryIntentMappingIsStrict, ref passed);
             Run("全局槽整批取消保持取消语义", GlobalSlotCancellationIsNotHardwareFailure, ref passed);
             Run("液压非末成员等待全组低压确认", NonLastMemberWaitsForSafePressure, ref passed);
             Run("液压释放超时产生指定硬故障", ReleaseTimeoutIsExplicit, ref passed);
@@ -33,6 +37,7 @@ namespace AdaptiveControlTests
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
             Run("已完成液压代次不阻碍不同成员重新开始", CompletedGenerationAllowsFreshMembership, ref passed);
             Run("液压通道作用域作废后代次完整归还", ChannelLeaseScopesAlwaysCloseGeneration, ref passed);
+            Run("已完成ForceRelease仅按精确原因退役旧租约", ForceReleasedScopeRetirementIsExact, ref passed);
             Run("StopAll强制撤权不等待缺员液压屏障", StopAllForceAbortDoesNotWaitForMissingMember, ref passed);
             Run("液压组重建替换旧Gate并递增Epoch", RebuildGroupRestoresFreshStartHealth, ref passed);
             Run("DAQ压力失新不再阻塞协调器安全重建", StalePressureAllowsDeenergizedCoordinatorRebuild, ref passed);
@@ -145,6 +150,175 @@ namespace AdaptiveControlTests
             {
                 Assert(ex.Message.Contains("GlobalHydraulicSlotMembersImmutable"),
                     "成员变化未返回稳定的不可变错误码。");
+            }
+        }
+
+        private static void FormalAdmissionWindowSkipsLateChannel()
+        {
+            var coordinator = new GlobalHydraulicSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var planned = DateTime.UtcNow;
+            var wall = planned;
+            Task<HydraulicCycleLease> Enter(
+                int hydraulicId,
+                IReadOnlyList<int> members,
+                CancellationToken token)
+            {
+                var now = DateTime.UtcNow;
+                return Task.FromResult(new HydraulicCycleLease(
+                    new HydraulicGenerationKey(runId, hydraulicId, HydraulicPhaseKind.Formal, 50),
+                    members,
+                    new PressureQualification(
+                        hydraulicId, 1, 70, 70, now, 0, 70, 70, 70, 7, now),
+                    now,
+                    Task.CompletedTask,
+                    1));
+            }
+
+            var slot50 = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, 50);
+            var healthy = coordinator.JoinFormalAsync(
+                slot50, 1, 5, 30, planned, wall, 1000, 800, 10,
+                Enter, (_, __) => Task.CompletedTask,
+                CancellationToken.None, CancellationToken.None);
+            var healthyResult = healthy.GetAwaiter().GetResult();
+            var late = coordinator.JoinFormalAsync(
+                    slot50, 1, 4, 30, planned, wall, 1000, 800, 10,
+                    Enter, (_, __) => Task.CompletedTask,
+                    CancellationToken.None, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(healthyResult.Admitted && !late.Admitted &&
+                   late.SkipReason == "AdmissionWindowClosed" &&
+                   healthyResult.Slot.Groups[1].Participants.SequenceEqual(new[] { 5 }),
+                "迟到EPB4仍污染当前正式槽，或健康EPB5被静态缺员阻塞");
+
+            var next = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, 51);
+            var nextPlanned = planned.AddSeconds(1);
+            var first = coordinator.JoinFormalAsync(
+                next, 1, 4, 30, nextPlanned, nextPlanned, 1000, 800, 10,
+                Enter, (_, __) => Task.CompletedTask,
+                CancellationToken.None, CancellationToken.None);
+            var second = coordinator.JoinFormalAsync(
+                next, 1, 5, 30, nextPlanned, nextPlanned, 1000, 800, 10,
+                Enter, (_, __) => Task.CompletedTask,
+                CancellationToken.None, CancellationToken.None);
+            Task.WaitAll(first, second);
+            Assert(first.Result.Admitted && second.Result.Admitted,
+                "当前槽迟到通道未能在下一正式槽重新准入");
+        }
+
+        private static void FormalPartialFailureKeepsHealthyLease()
+        {
+            var coordinator = new GlobalHydraulicSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, 60);
+            var planned = DateTime.UtcNow;
+            var released = 0;
+            Task<HydraulicCycleLease> Enter(
+                int hydraulicId,
+                IReadOnlyList<int> members,
+                CancellationToken token)
+            {
+                if (hydraulicId == 2)
+                    throw new HydraulicBuildException("FormalHydraulic2Failed");
+                var now = DateTime.UtcNow;
+                return Task.FromResult(new HydraulicCycleLease(
+                    new HydraulicGenerationKey(runId, hydraulicId, HydraulicPhaseKind.Formal, 60),
+                    members,
+                    new PressureQualification(
+                        hydraulicId, 1, 70, 70, now, 0, 70, 70, 70, 7, now),
+                    now,
+                    Task.CompletedTask,
+                    1));
+            }
+            var group1 = coordinator.JoinFormalAsync(
+                key, 1, 5, 20, planned, planned, 1000, 800, 10,
+                Enter, (_, __) => { Interlocked.Increment(ref released); return Task.CompletedTask; },
+                CancellationToken.None, CancellationToken.None);
+            var group2 = coordinator.JoinFormalAsync(
+                key, 2, 11, 20, planned, planned, 1000, 800, 10,
+                Enter, (_, __) => { Interlocked.Increment(ref released); return Task.CompletedTask; },
+                CancellationToken.None, CancellationToken.None);
+            Task.WaitAll(group1, group2);
+            var slot = group1.Result.Slot;
+            Assert(slot.HasFailures && !slot.ShouldDeferHealthyGroups &&
+                   slot.AlignmentState == "DegradedHealthyGroupsContinue" &&
+                   slot.MotorAnchorUtc.HasValue && slot.GetLeaseOrThrow(1) != null &&
+                   released == 0,
+                "正式槽局部失败仍回退或释放了已成功的健康液压组");
+        }
+
+        private static void FormalJoinSkipRaceConvergesTenThousandTimes()
+        {
+            var coordinator = new GlobalHydraulicSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, 70);
+            var planned = DateTime.UtcNow;
+            Task<HydraulicCycleLease> Enter(
+                int hydraulicId,
+                IReadOnlyList<int> members,
+                CancellationToken token)
+            {
+                var now = DateTime.UtcNow;
+                return Task.FromResult(new HydraulicCycleLease(
+                    new HydraulicGenerationKey(runId, hydraulicId, HydraulicPhaseKind.Formal, 70),
+                    members,
+                    new PressureQualification(
+                        hydraulicId, 1, 70, 70, now, 0, 70, 70, 70, 7, now),
+                    now,
+                    Task.CompletedTask,
+                    1));
+            }
+            var admitted = coordinator.JoinFormalAsync(
+                key, 1, 5, 20, planned, planned, 1000, 800, 10,
+                Enter, (_, __) => Task.CompletedTask,
+                CancellationToken.None, CancellationToken.None);
+            Parallel.For(0, 10000, index =>
+                coordinator.SkipFormalSlot(key, 4, "SyntheticRace" + (index % 3)));
+            var result = admitted.GetAwaiter().GetResult();
+            var skipped = coordinator.JoinFormalAsync(
+                    key, 1, 4, 20, planned, planned, 1000, 800, 10,
+                    Enter, (_, __) => Task.CompletedTask,
+                    CancellationToken.None, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(result.Admitted && !skipped.Admitted &&
+                   result.Slot.Groups[1].Participants.SequenceEqual(new[] { 5 }),
+                "一万次Join/Skip幂等竞态后槽未收敛或出现静态缺员");
+        }
+
+        private static void HydraulicRecoveryIntentMappingIsStrict()
+        {
+            var expected = new Dictionary<HydraulicPhaseKind, RecoveryTargetPhase>
+            {
+                [HydraulicPhaseKind.PreRelease] = RecoveryTargetPhase.Startup,
+                [HydraulicPhaseKind.SingleChannel] = RecoveryTargetPhase.Startup,
+                [HydraulicPhaseKind.Learning] = RecoveryTargetPhase.Learning,
+                [HydraulicPhaseKind.Qualification] = RecoveryTargetPhase.Qualification,
+                [HydraulicPhaseKind.Formal] = RecoveryTargetPhase.Formal
+            };
+            foreach (var pair in expected)
+            {
+                var intent = HydraulicRecoveryIntent.Create(
+                    pair.Key,
+                    Guid.NewGuid(),
+                    9,
+                    1,
+                    new[] { 5, 4, 5 },
+                    Guid.NewGuid(),
+                    Guid.NewGuid());
+                Assert(intent.SourcePhase == pair.Key && intent.TargetPhase == pair.Value &&
+                       intent.Channels.SequenceEqual(new[] { 4, 5 }),
+                    $"液压恢复来源阶段{pair.Key}映射错误");
+            }
+            try
+            {
+                HydraulicRecoveryIntent.Create(
+                    HydraulicPhaseKind.Recovery,
+                    Guid.NewGuid(), 1, 1, new[] { 4 }, Guid.NewGuid(), Guid.NewGuid());
+                throw new InvalidOperationException("Recovery来源阶段未被拒绝");
+            }
+            catch (ArgumentException ex)
+            {
+                Assert(ex.ParamName == "sourcePhase", "Recovery来源拒绝未暴露稳定编程错误");
             }
         }
 
@@ -849,6 +1023,60 @@ namespace AdaptiveControlTests
                 _ => readPressure(),
                 _ => release(),
                 NullLogger.Instance);
+        }
+
+        private static void ForceReleasedScopeRetirementIsExact()
+        {
+            var pressure = 80.0;
+            var coordinator = NewCoordinator(
+                () => Volatile.Read(ref pressure),
+                () =>
+                {
+                    Volatile.Write(ref pressure, 0.0);
+                    return Task.CompletedTask;
+                },
+                stableMs: 0,
+                timeoutMs: 300);
+            var key = new HydraulicGenerationKey(
+                Guid.NewGuid(),
+                2,
+                HydraulicPhaseKind.Formal,
+                77);
+            var lease = coordinator.EnterGenerationAsync(
+                    key,
+                    new[] { 8 },
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var scope = coordinator.CreateChannelScope(lease, 8);
+            Assert(!coordinator.TryRetireForceReleasedScope(
+                    scope,
+                    2,
+                    "exact-release"),
+                "活动代次租约在ForceRelease前被错误退役。");
+
+            coordinator.ForceReleaseAsync(2, "exact-release")
+                .GetAwaiter().GetResult();
+            Assert(!coordinator.TryRetireForceReleasedScope(
+                    scope,
+                    2,
+                    "different-release"),
+                "不匹配的ForceRelease异常被错误吞掉。");
+            Assert(!coordinator.TryRetireForceReleasedScope(
+                    scope,
+                    1,
+                    "exact-release"),
+                "不匹配液压组的旧租约被错误退役。");
+            Assert(coordinator.TryRetireForceReleasedScope(
+                    scope,
+                    2,
+                    "exact-release") &&
+                   scope.IsClosed,
+                "匹配本次已完成ForceRelease的旧租约未能安全退役。");
+            Assert(!coordinator.TryRetireForceReleasedScope(
+                    scope,
+                    2,
+                    "exact-release"),
+                "同一旧租约被重复退役。");
         }
 
         private static void PowerGroupIdlePredicateIsScoped()
