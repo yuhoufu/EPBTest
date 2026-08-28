@@ -160,6 +160,7 @@ namespace MtEmbTest
 
             // 加载配置文件
             Cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", Logger);
+            PublishCurrentProjectBuildIdentity(buildIdentity);
             var projectRestore = ConfigLoader.LastProjectRestoreResult;
             if (projectRestore != null && projectRestore.SelectionFound && !projectRestore.Restored)
                 ShowMainOperatorMessage(
@@ -398,6 +399,37 @@ namespace MtEmbTest
             关于ToolStripMenuItem1.Visible = true;
             关于ToolStripMenuItem1.Text = "运行身份";
             关于ToolStripMenuItem1.Click += ShowRuntimeBuildIdentity;
+        }
+
+        private void PublishCurrentProjectBuildIdentity(RuntimeBuildIdentity identity = null)
+        {
+            if (Cfg?.Test == null) return;
+            var configDirectory = ConfigLoader.GetProjectConfigDir(
+                Cfg.Test.StoreDir,
+                Cfg.Test.TestName);
+            var projectRoot = ConfigLoader.GetProjectRootDir(
+                Cfg.Test.StoreDir,
+                Cfg.Test.TestName);
+            if (string.IsNullOrWhiteSpace(configDirectory) ||
+                string.IsNullOrWhiteSpace(projectRoot))
+            {
+                Logger?.Warn("项目路径无效，未写入运行构建身份。", "启动构建身份");
+                return;
+            }
+
+            var current = identity ?? RuntimeBuildIdentity.Capture();
+            if (current.TryWriteProjectJson(
+                    configDirectory,
+                    Cfg.Test.TestName,
+                    projectRoot,
+                    out var path,
+                    out var error))
+            {
+                Logger?.Info($"已更新项目运行构建身份：{path}", "启动构建身份");
+                return;
+            }
+
+            Logger?.Warn($"写入项目运行构建身份失败：{error}", "启动构建身份");
         }
 
         private void ShowRuntimeBuildIdentity(object sender, EventArgs e)

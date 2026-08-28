@@ -190,6 +190,181 @@ namespace MTTFTest.Watchdog.Client
             TransportWriteFailed = 4
         }
 
+        private sealed class SendRequest
+        {
+            private const int Pending = 0;
+            private const int Writing = 1;
+            private const int Cancelled = 2;
+            private int _writeState = Pending;
+
+            internal readonly string Payload;
+            internal readonly bool Lifecycle;
+            internal readonly StreamWriter Writer;
+            internal readonly long SessionLease;
+            internal readonly long ConnectionGeneration;
+            internal readonly object ConnectionIdentity;
+            internal readonly TaskCompletionSource<SendDisposition> Completion =
+                new TaskCompletionSource<SendDisposition>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal SendRequest(
+                string payload,
+                bool lifecycle,
+                StreamWriter writer,
+                long sessionLease,
+                long connectionGeneration,
+                object connectionIdentity)
+            {
+                Payload = payload ?? string.Empty;
+                Lifecycle = lifecycle;
+                Writer = writer;
+                SessionLease = sessionLease;
+                ConnectionGeneration = connectionGeneration;
+                ConnectionIdentity = connectionIdentity;
+            }
+
+            internal bool TryBeginWrite()
+            {
+                return Interlocked.CompareExchange(
+                           ref _writeState,
+                           Writing,
+                           Pending) == Pending;
+            }
+
+            internal bool TryCancelBeforeWrite(SendDisposition disposition)
+            {
+                if (Interlocked.CompareExchange(
+                        ref _writeState,
+                        Cancelled,
+                        Pending) != Pending)
+                    return false;
+                Completion.TrySetResult(disposition);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Exact-connection send owner.  The queues bound admission while one
+        /// worker owns every WriteLineAsync task for the connection.  Eight
+        /// control slots are isolated from normal traffic so a heartbeat
+        /// backlog cannot starve StopCompleted/ShutdownExpected.
+        /// </summary>
+        private sealed class SendQueueOwner
+        {
+            internal const int NormalCapacity = 248;
+            internal const int LifecycleCapacity = 8;
+
+            private readonly object _gate = new object();
+            private readonly Queue<SendRequest> _lifecycle = new Queue<SendRequest>();
+            private readonly Queue<SendRequest> _normal = new Queue<SendRequest>();
+            internal readonly SemaphoreSlim Signal = new SemaphoreSlim(0);
+            internal readonly CancellationTokenSource Lifetime = new CancellationTokenSource();
+            internal readonly StreamWriter Writer;
+            internal readonly long SessionLease;
+            internal readonly long ConnectionGeneration;
+            internal readonly object ConnectionIdentity;
+            internal Task WorkerTask;
+            internal Task InflightWriteTask;
+            private int _accepting = 1;
+
+            internal SendQueueOwner(
+                StreamWriter writer,
+                long sessionLease,
+                long connectionGeneration,
+                object connectionIdentity)
+            {
+                Writer = writer ?? throw new ArgumentNullException(nameof(writer));
+                SessionLease = sessionLease;
+                ConnectionGeneration = connectionGeneration;
+                ConnectionIdentity = connectionIdentity ??
+                    throw new ArgumentNullException(nameof(connectionIdentity));
+            }
+
+            internal bool TryEnqueue(SendRequest request)
+            {
+                if (request == null) return false;
+                lock (_gate)
+                {
+                    if (_accepting == 0) return false;
+                    var queue = request.Lifecycle ? _lifecycle : _normal;
+                    var capacity = request.Lifecycle ? LifecycleCapacity : NormalCapacity;
+                    if (queue.Count >= capacity) return false;
+                    queue.Enqueue(request);
+                }
+                try { Signal.Release(); }
+                catch (ObjectDisposedException) { return false; }
+                return true;
+            }
+
+            internal bool TryDequeue(out SendRequest request)
+            {
+                lock (_gate)
+                {
+                    if (_lifecycle.Count > 0)
+                    {
+                        request = _lifecycle.Dequeue();
+                        return true;
+                    }
+                    if (_normal.Count > 0)
+                    {
+                        request = _normal.Dequeue();
+                        return true;
+                    }
+                    request = null;
+                    return false;
+                }
+            }
+
+            internal void SetInflight(Task writeTask)
+            {
+                lock (_gate) InflightWriteTask = writeTask;
+            }
+
+            internal void ClearInflight(Task writeTask)
+            {
+                lock (_gate)
+                {
+                    if (ReferenceEquals(InflightWriteTask, writeTask))
+                        InflightWriteTask = null;
+                }
+            }
+
+            internal Task CaptureInflight()
+            {
+                lock (_gate) return InflightWriteTask;
+            }
+
+            internal void StopAccepting(SendDisposition pendingDisposition)
+            {
+                List<SendRequest> pending;
+                lock (_gate)
+                {
+                    _accepting = 0;
+                    pending = _lifecycle.Concat(_normal).ToList();
+                    _lifecycle.Clear();
+                    _normal.Clear();
+                }
+                foreach (var request in pending)
+                {
+                    if (!request.TryCancelBeforeWrite(pendingDisposition))
+                        request.Completion.TrySetResult(pendingDisposition);
+                }
+                try { Lifetime.Cancel(); } catch { }
+                try { Signal.Release(); } catch { }
+            }
+
+            internal bool IsTerminal
+            {
+                get
+                {
+                    var worker = WorkerTask;
+                    var write = CaptureInflight();
+                    return (worker == null || worker.IsCompleted) &&
+                           (write == null || write.IsCompleted);
+                }
+            }
+        }
+
         private enum HeartbeatSendDisposition
         {
             Sent = 0,
@@ -200,7 +375,6 @@ namespace MTTFTest.Watchdog.Client
         }
 
         private readonly object _gate = new object();
-        private readonly object _sendGate = new object();
         private readonly object _heartbeatCaptureGate = new object();
         private readonly object _stateEventDispatchGate = new object();
         private readonly SortedDictionary<long, WatchdogClientTransportEvent> _pendingStateEvents =
@@ -214,6 +388,8 @@ namespace MTTFTest.Watchdog.Client
         private NamedPipeClientStream _pipe;
         private StreamReader _reader;
         private StreamWriter _writer;
+        private SendQueueOwner _sendQueueOwner;
+        private Task _sendTask;
         private CancellationTokenSource _lifetime;
         private CancellationTokenSource _sessionLifetime;
         private TaskCompletionSource<bool> _attached;
@@ -899,6 +1075,7 @@ namespace MTTFTest.Watchdog.Client
         {
             if (message == null) return SendDisposition.TransportWriteFailed;
             StreamWriter writer;
+            SendQueueOwner sendOwner;
             long capturedSessionLease;
             long capturedConnectionGeneration;
             object capturedConnectionIdentity;
@@ -911,11 +1088,12 @@ namespace MTTFTest.Watchdog.Client
                         expectedConnectionIdentity))
                     return SendDisposition.ScopeStale;
                 writer = _writer;
+                sendOwner = _sendQueueOwner;
                 capturedSessionLease = _activeSessionLease;
                 capturedConnectionGeneration = _activeConnectionGeneration;
                 capturedConnectionIdentity = _activeConnectionIdentity;
             }
-            if (writer == null)
+            if (writer == null || sendOwner == null)
             {
                 TryCommitSendFailure(
                     writer,
@@ -939,87 +1117,53 @@ namespace MTTFTest.Watchdog.Client
             try
             {
                 payload = WatchdogProtocol.Serialize(message);
-                if (!Monitor.TryEnter(_sendGate, WatchdogTransportPolicy.SendGateWaitMs))
+                lock (_gate)
                 {
-                    TryCommitSendFailure(
-                        writer,
-                        capturedSessionLease,
-                        capturedConnectionGeneration,
-                        capturedConnectionIdentity,
-                        "SendBusy",
-                        "命名管道发送未能取得串行锁。");
-                    // AdmissionBusy is deliberately not a transport-loss
-                    // signal.  The owner of the gate continues its exact
-                    // write; this caller may retry on its normal cadence.
+                    if (!ReferenceEquals(_writer, writer) ||
+                        !ReferenceEquals(_sendQueueOwner, sendOwner) ||
+                        (guarded && !IsExpectedSendScopeLocked(
+                            expectedSessionLease,
+                            expectedConnectionGeneration,
+                            expectedConnectionIdentity)))
+                        return SendDisposition.ScopeStale;
+                }
+
+                var request = new SendRequest(
+                    WatchdogWireFrame.Encode(payload),
+                    IsLifecycleSend(message.Type),
+                    writer,
+                    capturedSessionLease,
+                    capturedConnectionGeneration,
+                    capturedConnectionIdentity);
+                if (!sendOwner.TryEnqueue(request))
                     return SendDisposition.AdmissionBusy;
-                }
-                try
+
+                var waitMs = WatchdogTransportPolicy.SendWriteTimeoutMs +
+                             WatchdogTransportPolicy.SendGateWaitMs;
+                if (!request.Completion.Task.Wait(waitMs))
                 {
-                    lock (_gate)
+                    // AdmissionBusy is truthful only while this request is
+                    // still queued.  Once the writer owns it, returning false
+                    // would allow the same frame to arrive after the caller
+                    // has already acted on an apparent failure.
+                    if (request.TryCancelBeforeWrite(SendDisposition.AdmissionBusy))
+                        return SendDisposition.AdmissionBusy;
+
+                    if (!request.Completion.Task.Wait(waitMs))
                     {
-                        if (!ReferenceEquals(_writer, writer) ||
-                            (guarded && !IsExpectedSendScopeLocked(
-                                expectedSessionLease,
-                                expectedConnectionGeneration,
-                                expectedConnectionIdentity)))
-                            return SendDisposition.ScopeStale;
-                    }
-                    var writeTask = writer.WriteLineAsync(WatchdogWireFrame.Encode(payload));
-                    var completed = Task.WhenAny(
-                            writeTask,
-                            Task.Delay(WatchdogTransportPolicy.SendWriteTimeoutMs))
-                        .GetAwaiter().GetResult();
-                    if (!ReferenceEquals(completed, writeTask))
-                    {
-                        TryCommitSendFailure(
-                            writer,
-                            capturedSessionLease,
-                            capturedConnectionGeneration,
-                            capturedConnectionIdentity,
-                            "Send",
-                            "命名管道写入超时。");
                         BreakTransport(
                             writer,
                             capturedSessionLease,
                             capturedConnectionGeneration,
                             capturedConnectionIdentity,
-                            null,
-                            "SendWriteFailed",
-                            "命名管道写入超时。");
-                        return SendDisposition.TransportWriteFailed;
+                            sendOwner,
+                            "SendCompletionTimeout",
+                            message.Type.ToString());
+                        request.Completion.TrySetResult(
+                            SendDisposition.TransportWriteFailed);
                     }
-                    try
-                    {
-                        writeTask.GetAwaiter().GetResult();
-                    }
-                    catch (Exception ex)
-                    {
-                        TryCommitSendFailure(
-                            writer,
-                            capturedSessionLease,
-                            capturedConnectionGeneration,
-                            capturedConnectionIdentity,
-                            "Send",
-                            ex.GetBaseException().Message);
-                        BreakTransport(
-                            writer,
-                            capturedSessionLease,
-                            capturedConnectionGeneration,
-                            capturedConnectionIdentity,
-                            null,
-                            "SendWriteFailed",
-                            ex.GetBaseException().Message);
-                        return SendDisposition.TransportWriteFailed;
-                    }
-                    return TryCommitSendSuccess(
-                               writer,
-                               capturedSessionLease,
-                               capturedConnectionGeneration,
-                               capturedConnectionIdentity)
-                        ? SendDisposition.Sent
-                        : SendDisposition.ScopeStale;
                 }
-                finally { Monitor.Exit(_sendGate); }
+                return request.Completion.Task.GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
@@ -1040,6 +1184,169 @@ namespace MTTFTest.Watchdog.Client
                     ex.GetBaseException().Message);
                 return SendDisposition.TransportWriteFailed;
             }
+        }
+
+        private static bool IsLifecycleSend(string messageType)
+        {
+            return string.Equals(messageType, WatchdogMessageType.StopCompleted, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ManualStopRequested, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ManualStopIntent, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.PhysicalStopConfirmed, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.RunStopped, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.RunCompleted, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ApplicationClosing, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ShutdownExpected, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.WatchdogTakeoverExit, StringComparison.Ordinal);
+        }
+
+        private async Task RunSendQueueAsync(SendQueueOwner owner)
+        {
+            try
+            {
+                while (!owner.Lifetime.IsCancellationRequested)
+                {
+                    if (!owner.TryDequeue(out var request))
+                    {
+                        await owner.Signal.WaitAsync(owner.Lifetime.Token).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (!request.TryBeginWrite())
+                    {
+                        request.Completion.TrySetResult(SendDisposition.AdmissionBusy);
+                        continue;
+                    }
+                    if (!IsCurrentSendOwner(owner, request))
+                    {
+                        request.Completion.TrySetResult(SendDisposition.ScopeStale);
+                        continue;
+                    }
+
+                    Task writeTask = null;
+                    try
+                    {
+                        writeTask = owner.Writer.WriteLineAsync(request.Payload);
+                        owner.SetInflight(writeTask);
+                        var completed = await Task.WhenAny(
+                                writeTask,
+                                Task.Delay(WatchdogTransportPolicy.SendWriteTimeoutMs))
+                            .ConfigureAwait(false);
+                        if (!ReferenceEquals(completed, writeTask))
+                        {
+                            ObserveLateWriteTask(writeTask);
+                            TryCommitSendFailure(
+                                request.Writer,
+                                request.SessionLease,
+                                request.ConnectionGeneration,
+                                request.ConnectionIdentity,
+                                "Send",
+                                "命名管道写入超时。");
+                            request.Completion.TrySetResult(SendDisposition.TransportWriteFailed);
+                            owner.StopAccepting(SendDisposition.ScopeStale);
+                            BreakTransport(
+                                request.Writer,
+                                request.SessionLease,
+                                request.ConnectionGeneration,
+                                request.ConnectionIdentity,
+                                owner,
+                                "SendWriteFailed",
+                                "命名管道写入超时。",
+                                fromSendWorker: true);
+                            return;
+                        }
+
+                        await writeTask.ConfigureAwait(false);
+                        owner.ClearInflight(writeTask);
+                        request.Completion.TrySetResult(
+                            TryCommitSendSuccess(
+                                request.Writer,
+                                request.SessionLease,
+                                request.ConnectionGeneration,
+                                request.ConnectionIdentity)
+                                ? SendDisposition.Sent
+                                : SendDisposition.ScopeStale);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (writeTask != null)
+                        {
+                            ObserveLateWriteTask(writeTask);
+                            if (writeTask.IsCompleted) owner.ClearInflight(writeTask);
+                        }
+                        var detail = ex.GetBaseException().Message;
+                        TryCommitSendFailure(
+                            request.Writer,
+                            request.SessionLease,
+                            request.ConnectionGeneration,
+                            request.ConnectionIdentity,
+                            "Send",
+                            detail);
+                        request.Completion.TrySetResult(SendDisposition.TransportWriteFailed);
+                        owner.StopAccepting(SendDisposition.ScopeStale);
+                        BreakTransport(
+                            request.Writer,
+                            request.SessionLease,
+                            request.ConnectionGeneration,
+                            request.ConnectionIdentity,
+                            owner,
+                            "SendWriteFailed",
+                            detail,
+                            fromSendWorker: true);
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected exact-connection shutdown.
+            }
+            finally
+            {
+                owner.StopAccepting(SendDisposition.ScopeStale);
+            }
+        }
+
+        private bool IsCurrentSendOwner(SendQueueOwner owner, SendRequest request)
+        {
+            lock (_gate)
+            {
+                return ReferenceEquals(_sendQueueOwner, owner) &&
+                       ReferenceEquals(_writer, request.Writer) &&
+                       IsCurrentConnectionLocked(
+                           request.ConnectionGeneration,
+                           _activeSessionGeneration,
+                           request.SessionLease,
+                           request.ConnectionIdentity) &&
+                       (_sessionClosing == 0 || request.Lifecycle);
+            }
+        }
+
+        private static void ObserveLateWriteTask(Task writeTask)
+        {
+            if (writeTask == null) return;
+            if (writeTask.IsCompleted)
+            {
+                try { _ = writeTask.Exception; } catch { }
+                return;
+            }
+            try
+            {
+                writeTask.ContinueWith(
+                    completed => { try { _ = completed.Exception; } catch { } },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            catch { }
+        }
+
+        private static bool StopAndJoinSendOwner(SendQueueOwner owner, int timeoutMs)
+        {
+            if (owner == null) return true;
+            owner.StopAccepting(SendDisposition.ScopeStale);
+            WaitTaskBounded(owner.WorkerTask, timeoutMs);
+            var inflight = owner.CaptureInflight();
+            WaitTaskBounded(inflight, timeoutMs);
+            return owner.IsTerminal;
         }
 
         private void TryCommitSendFailure(
@@ -1382,8 +1689,10 @@ namespace MTTFTest.Watchdog.Client
             NamedPipeClientStream pipe;
             StreamReader reader;
             StreamWriter writer;
+            SendQueueOwner sendOwner;
             Task readerTask;
             Task heartbeatTask;
+            Task sendTask;
             Task monitorTask;
             Task reconnectTask;
             Task connectTask;
@@ -1410,6 +1719,7 @@ namespace MTTFTest.Watchdog.Client
                     _lifetime != null || _pipe != null || _reader != null ||
                     _writer != null || _pending != null ||
                     _readerTask != null || _heartbeatTask != null ||
+                    _sendQueueOwner != null || _sendTask != null ||
                     _monitorTask != null || _reconnectTask != null ||
                     _connectTask != null || _launchTask != null ||
                     _retainedLaunchTask != null || _connectReservation != null ||
@@ -1430,8 +1740,10 @@ namespace MTTFTest.Watchdog.Client
                 pipe = _pipe;
                 reader = _reader;
                 writer = _writer;
+                sendOwner = _sendQueueOwner;
                 readerTask = _readerTask;
                 heartbeatTask = _heartbeatTask;
+                sendTask = _sendTask;
                 monitorTask = _monitorTask;
                 reconnectTask = _reconnectTask;
                 connectTask = _connectTask;
@@ -1447,6 +1759,8 @@ namespace MTTFTest.Watchdog.Client
                 _pipe = null;
                 _reader = null;
                 _writer = null;
+                _sendQueueOwner = null;
+                _sendTask = null;
                 _attached = null;
                 _activeConnectionGeneration = 0;
                 _activeConnectionIdentity = null;
@@ -1477,12 +1791,14 @@ namespace MTTFTest.Watchdog.Client
                 if (hadSession)
                     shutdownEvent = ReserveStateChangedLocked("Shutdown", "TransportSessionClosed");
             }
+            sendOwner?.StopAccepting(SendDisposition.ScopeStale);
             CancelNoDispose(lifetime);
             CancelNoDispose(sessionLifetime);
             TryDispose(pipe);
             TryDispose(reader);
             TryDispose(writer);
             DisposePending(pending, true);
+                    StopAndJoinSendOwner(sendOwner, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(monitorTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
@@ -1534,6 +1850,8 @@ namespace MTTFTest.Watchdog.Client
                 var connectTerminal = (connectTask == null || connectTask.IsCompleted) &&
                     (connectReservation == null ||
                      connectReservation.Completion.Task.IsCompleted);
+                var sendTerminal = sendOwner == null ||
+                    ((sendTask == null || sendTask.IsCompleted) && sendOwner.IsTerminal);
                 // A retained launch is a sixth-worker resource as well as a
                 // reservation.  Keep LaunchTerminal false until its retained
                 // task has actually settled, even if the active task was
@@ -1549,6 +1867,7 @@ namespace MTTFTest.Watchdog.Client
                     reconnectTerminal,
                     connectTerminal,
                     launchTerminal,
+                    sendTerminal,
                     launchReservationTerminal,
                     retainedLaunchTerminal,
                     pendingOwnerReleased,
@@ -1668,6 +1987,8 @@ namespace MTTFTest.Watchdog.Client
             object connectionIdentity = null;
             Task readerTask = null;
             Task heartbeatTask = null;
+            SendQueueOwner sendOwner = null;
+            Task sendTask = null;
             Task pipeConnectTask = null;
             var connectionTransferred = false;
             var stage = WatchdogConnectFailureKind.PipeUnavailable;
@@ -1731,6 +2052,27 @@ namespace MTTFTest.Watchdog.Client
                     _lastHeartbeatAckSequence = 0;
                     _sendFailureReported = 0;
                     connectionTransferred = true;
+                }
+
+                sendOwner = new SendQueueOwner(
+                    writer,
+                    sessionLease,
+                    connectionGeneration,
+                    connectionIdentity);
+                sendTask = Task.Run(() => RunSendQueueAsync(sendOwner));
+                sendOwner.WorkerTask = sendTask;
+                lock (_gate)
+                {
+                    if (!IsCurrentConnectionLocked(
+                            connectionGeneration,
+                            sessionGeneration,
+                            sessionLease,
+                            connectionIdentity))
+                        throw new WatchdogConnectException(
+                            WatchdogConnectFailureKind.SessionRevoked,
+                            "Watchdog发送worker安装期间Session已失效。");
+                    _sendQueueOwner = sendOwner;
+                    _sendTask = sendTask;
                 }
 
                 readerTask = Task.Run(() => ReaderLoopAsync(
@@ -1865,6 +2207,7 @@ namespace MTTFTest.Watchdog.Client
                     TryDispose(reader);
                     TryDispose(writer);
                     TryDispose(pipe);
+                    StopAndJoinSendOwner(sendOwner, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(pipeConnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
@@ -1890,6 +2233,7 @@ namespace MTTFTest.Watchdog.Client
                     TryDispose(reader);
                     TryDispose(writer);
                     TryDispose(pipe);
+                    StopAndJoinSendOwner(sendOwner, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(pipeConnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
@@ -1917,6 +2261,7 @@ namespace MTTFTest.Watchdog.Client
                     TryDispose(reader);
                     TryDispose(writer);
                     TryDispose(pipe);
+                    StopAndJoinSendOwner(sendOwner, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(pipeConnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
@@ -3426,10 +3771,12 @@ namespace MTTFTest.Watchdog.Client
             NamedPipeClientStream pipe;
             StreamReader reader;
             StreamWriter writer;
+            SendQueueOwner sendOwner;
             CancellationTokenSource lifetime;
             CancellationTokenSource sessionLifetime;
             Task readerTask;
             Task heartbeatTask;
+            Task sendTask;
             Task monitorTask;
             Task reconnectTask;
             Task connectTask;
@@ -3452,10 +3799,12 @@ namespace MTTFTest.Watchdog.Client
                 pipe = _pipe;
                 reader = _reader;
                 writer = _writer;
+                sendOwner = _sendQueueOwner;
                 lifetime = _lifetime;
                 sessionLifetime = _sessionLifetime;
                 readerTask = _readerTask;
                 heartbeatTask = _heartbeatTask;
+                sendTask = _sendTask;
                 monitorTask = _monitorTask;
                 reconnectTask = _reconnectTask;
                 connectTask = _connectTask;
@@ -3465,6 +3814,8 @@ namespace MTTFTest.Watchdog.Client
                 _pipe = null;
                 _reader = null;
                 _writer = null;
+                _sendQueueOwner = null;
+                _sendTask = null;
                 _lifetime = null;
                 _sessionLifetime = null;
                 _attached = null;
@@ -3491,11 +3842,13 @@ namespace MTTFTest.Watchdog.Client
                     failureKind + ":" + (_transportFailureDetail ?? string.Empty));
             }
 
+            sendOwner?.StopAccepting(SendDisposition.ScopeStale);
             CancelNoDispose(lifetime);
             CancelNoDispose(sessionLifetime);
             TryDispose(pipe);
             TryDispose(reader);
             TryDispose(writer);
+                    StopAndJoinSendOwner(sendOwner, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(monitorTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
@@ -3747,11 +4100,13 @@ namespace MTTFTest.Watchdog.Client
         private bool CloseTransportOnly(
             long expectedSessionLease,
             long expectedConnectionGeneration,
-            object expectedConnectionIdentity)
+            object expectedConnectionIdentity,
+            bool fromSendWorker = false)
         {
             NamedPipeClientStream pipe;
             StreamReader reader;
             StreamWriter writer;
+            SendQueueOwner sendOwner;
             CancellationTokenSource lifetime;
             Task readerTask;
             Task heartbeatTask;
@@ -3765,12 +4120,15 @@ namespace MTTFTest.Watchdog.Client
                 pipe = _pipe;
                 reader = _reader;
                 writer = _writer;
+                sendOwner = _sendQueueOwner;
                 lifetime = _lifetime;
                 readerTask = _readerTask;
                 heartbeatTask = _heartbeatTask;
                 _pipe = null;
                 _reader = null;
                 _writer = null;
+                _sendQueueOwner = null;
+                _sendTask = null;
                 _lifetime = null;
                 _attached = null;
                 _pingResponseScheduled = 0;
@@ -3784,10 +4142,13 @@ namespace MTTFTest.Watchdog.Client
                 _activeSessionGeneration = 0;
                 _attachedConnectionGeneration = 0;
             }
+            sendOwner?.StopAccepting(SendDisposition.ScopeStale);
             TryCancel(lifetime);
             TryDispose(reader);
             TryDispose(writer);
             TryDispose(pipe);
+            if (!fromSendWorker)
+                StopAndJoinSendOwner(sendOwner, 250);
             WaitTaskBounded(readerTask, 250);
             WaitTaskBounded(heartbeatTask, 250);
             return true;
@@ -3800,7 +4161,8 @@ namespace MTTFTest.Watchdog.Client
             object expectedConnectionIdentity = null,
             object expectedWorkerIdentity = null,
             string reason = "TransportWriteFailed",
-            string detail = "命名管道写入失败。")
+            string detail = "命名管道写入失败。",
+            bool fromSendWorker = false)
         {
             long sessionLease;
             long connectionGeneration;
@@ -3822,7 +4184,11 @@ namespace MTTFTest.Watchdog.Client
                 connectionGeneration = _activeConnectionGeneration;
                 connectionIdentity = _activeConnectionIdentity;
             }
-            if (CloseTransportOnly(sessionLease, connectionGeneration, connectionIdentity))
+            if (CloseTransportOnly(
+                    sessionLease,
+                    connectionGeneration,
+                    connectionIdentity,
+                    fromSendWorker))
             {
                 ReportTransportLostOnce(
                     reason,

@@ -82,12 +82,31 @@ namespace MtEmbTest
 
     public partial class Main_Frm
     {
+        internal sealed class WatchdogTakeoverExitReceipt
+        {
+            internal WatchdogTakeoverExitReceipt(
+                RuntimeShutdownReceipt shutdownReceipt,
+                string reason)
+            {
+                ShutdownReceipt = shutdownReceipt;
+                Reason = reason ?? string.Empty;
+            }
+
+            internal RuntimeShutdownReceipt ShutdownReceipt { get; }
+            internal string Reason { get; }
+            internal bool IsTerminal => ShutdownReceipt?.IsTerminal == true;
+        }
+
         // All watchdog UI ownership, binding, retention, and terminal release
         // state lives in this one production adapter.  The form only provides
         // the stable WinForms owner and delegates to it.
         private readonly MainWatchdogUiLifecycleAdapter _watchdogUiAdapter;
+        private readonly object _watchdogExitGate = new object();
         private int _watchdogOwnedExitRequested;
         private int _watchdogAllowClose;
+        private int _watchdogTakeoverExitRequested;
+        private Task _watchdogCloseTask;
+        private Task<RuntimeShutdownReceipt> _watchdogShutdownTask;
 
         internal WinFormsWatchdogPostTarget WatchdogPostTarget =>
             _watchdogUiAdapter?.PostTarget;
@@ -110,6 +129,8 @@ namespace MtEmbTest
         internal Task<WinFormsWatchdogUiBindingReceipt>
             BindWatchdogUiProductionAsync(FrmEpbMainMonitor monitor)
         {
+            // 新精确会话不得继承上一会话的应用退出授权。
+            Interlocked.Exchange(ref _watchdogAllowClose, 0);
             return _watchdogUiAdapter.BindExactAsync(monitor);
         }
 
@@ -119,6 +140,7 @@ namespace MtEmbTest
                 string subscriberId,
                 Func<WatchdogStopAllOfferEnvelope, Task> handler)
         {
+            Interlocked.Exchange(ref _watchdogAllowClose, 0);
             return _watchdogUiAdapter.BindExactAsync(targetId, subscriberId, handler);
         }
 
@@ -134,9 +156,15 @@ namespace MtEmbTest
             var retained = WatchdogRuntime.CaptureRetainedShutdown();
             var decision = WinFormsWatchdogUiCloseCoordinator.Evaluate(
                 composite, retained, _watchdogUiAdapter.HasResources);
-            if (!decision.HasActiveEvidence) return false;
+            if (!WinFormsWatchdogUiCloseCoordinator.ShouldCoordinateMainClose(
+                    decision.HasActiveEvidence,
+                    MdiChildren.Length))
+                return false;
             e.Cancel = true;
-            RequestWatchdogOwnedExit("MainFormClosing:" + decision.Reason);
+            var reason = decision.HasActiveEvidence
+                ? decision.Reason
+                : "MdiChildrenPendingClose";
+            RequestWatchdogOwnedExit("MainFormClosing:" + reason);
             return true;
         }
 
@@ -149,23 +177,90 @@ namespace MtEmbTest
                 catch { }
                 return;
             }
-            if (Interlocked.CompareExchange(ref _watchdogOwnedExitRequested, 1, 0) != 0)
-                return;
+            Interlocked.Exchange(ref _watchdogOwnedExitRequested, 1);
+            if ((reason ?? string.Empty).StartsWith(
+                    "WatchdogStopAllCompleted:",
+                    StringComparison.Ordinal))
+                Interlocked.Exchange(ref _watchdogTakeoverExitRequested, 1);
             BeginWatchdogClose(reason ?? "WatchdogOwnedExit");
         }
 
         internal Task<RuntimeShutdownReceipt> ShutdownWatchdogSessionAndReleaseUiAsync(
             string reason)
         {
-            return _watchdogUiAdapter.ShutdownAndReleaseAsync(reason);
+            return GetOrCreateWatchdogShutdownTask(
+                reason,
+                RuntimeShutdownIntent.SessionClose);
         }
 
         internal Task<RuntimeShutdownReceipt> ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
             string reason)
         {
-            return _watchdogUiAdapter.ShutdownAndReleaseAsync(
+            return GetOrCreateWatchdogShutdownTask(
                 reason,
-                processExitExpected: true);
+                RuntimeShutdownIntent.ApplicationExit);
+        }
+
+        internal async Task<WatchdogTakeoverExitReceipt>
+            ShutdownWatchdogForTakeoverExitAndReleaseUiAsync(string reason)
+        {
+            var receipt = await GetOrCreateWatchdogShutdownTask(
+                    reason,
+                    RuntimeShutdownIntent.WatchdogTakeoverExit)
+                .ConfigureAwait(true);
+            return new WatchdogTakeoverExitReceipt(receipt, reason);
+        }
+
+        private Task<RuntimeShutdownReceipt> GetOrCreateWatchdogShutdownTask(
+            string reason,
+            RuntimeShutdownIntent shutdownIntent)
+        {
+            lock (_watchdogExitGate)
+            {
+                if (_watchdogShutdownTask != null)
+                {
+                    if (!_watchdogShutdownTask.IsCompleted)
+                        return _watchdogShutdownTask;
+                    if (_watchdogShutdownTask.Status == TaskStatus.RanToCompletion &&
+                        _watchdogShutdownTask.Result?.IsTerminal == true)
+                    {
+                        var active = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
+                        var previousReceipt = _watchdogShutdownTask.Result;
+                        if (active == null ||
+                            (string.Equals(
+                                 active.SessionId,
+                                 previousReceipt.SessionId,
+                                 StringComparison.Ordinal) &&
+                             active.SessionLease == previousReceipt.SessionLease))
+                            return _watchdogShutdownTask;
+                        // 同一个Main_Frm已经绑定到新的精确会话；旧终态回执只能
+                        // 服务旧会话的并发调用，不能吞掉新会话的真正Shutdown。
+                        _watchdogShutdownTask = null;
+                    }
+                }
+
+                _watchdogShutdownTask = CompleteSharedWatchdogShutdownAsync(
+                    reason,
+                    shutdownIntent);
+                return _watchdogShutdownTask;
+            }
+        }
+
+        private async Task<RuntimeShutdownReceipt> CompleteSharedWatchdogShutdownAsync(
+            string reason,
+            RuntimeShutdownIntent shutdownIntent)
+        {
+            var receipt = await _watchdogUiAdapter.ShutdownAndReleaseAsync(
+                    reason,
+                    shutdownIntent)
+                .ConfigureAwait(false);
+            // A transport terminal receipt is the sole close authorization,
+            // regardless of whether it was obtained by manual stop, monitor
+            // close, unattended completion, or the main-form close path.
+            if (receipt?.IsTerminal == true &&
+                shutdownIntent != RuntimeShutdownIntent.SessionClose)
+                Interlocked.Exchange(ref _watchdogAllowClose, 1);
+            return receipt;
         }
 
         private void BeginWatchdogClose(string reason)
@@ -175,15 +270,103 @@ namespace MtEmbTest
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                 return;
             }
-            CompleteWatchdogCloseOnUiThread(reason);
+            lock (_watchdogExitGate)
+            {
+                if (_watchdogCloseTask != null && !_watchdogCloseTask.IsCompleted)
+                {
+                    UseWaitCursor = true;
+                    Text = BuildWindowTitle() + " - 正在安全退出…";
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Info,
+                        $"MainProcessExitJoinedExistingTask Reason={reason}",
+                        "独立看门狗");
+                    return;
+                }
+                UseWaitCursor = true;
+                Text = BuildWindowTitle() + " - 正在安全退出…";
+                _watchdogCloseTask = CompleteWatchdogCloseOnUiThreadAsync(reason);
+            }
         }
 
-        private async void CompleteWatchdogCloseOnUiThread(string reason)
+        private async Task CompleteWatchdogCloseOnUiThreadAsync(string reason)
         {
             if (IsDisposed || Disposing) return;
             var children = MdiChildren
                 .Where(child => child != null && !child.IsDisposed)
                 .ToArray();
+            // Safety preparation is separated from visual destruction.  The
+            // monitor stays visible while StopAll/persistence/DAQ release is
+            // running, so a non-terminal Watchdog receipt can never strand a
+            // blank MDI shell.
+            var monitors = children.OfType<FrmEpbMainMonitor>().ToArray();
+            var prepareTasks = monitors
+                .Select(monitor => monitor.PrepareForMainApplicationExitAsync())
+                .ToArray();
+            if (prepareTasks.Length > 0)
+            {
+                var prepared = Task.WhenAll(prepareTasks);
+                var completed = await Task.WhenAny(prepared, Task.Delay(15000));
+                if (!ReferenceEquals(completed, prepared))
+                {
+                    Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                    UseWaitCursor = false;
+                    Text = BuildWindowTitle() + " - 安全收口未完成，可重试关闭";
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        $"MainProcessExitStalled MonitorSafetyPreparationTimeout Reason={reason}",
+                        "独立看门狗");
+                    return;
+                }
+                bool[] preparedResults;
+                try { preparedResults = await prepared; }
+                catch (Exception ex)
+                {
+                    Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                    UseWaitCursor = false;
+                    Text = BuildWindowTitle() + " - 安全收口失败，可重试关闭";
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "MainProcessExitStalled MonitorSafetyPreparationFailed: " +
+                        ex.GetBaseException().Message,
+                        "独立看门狗");
+                    return;
+                }
+                if (preparedResults.Any(result => !result))
+                {
+                    Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                    UseWaitCursor = false;
+                    Text = BuildWindowTitle() + " - 安全条件未满足，可重试关闭";
+                    return;
+                }
+            }
+
+            // Keep the sidecar and its authenticated PID identity alive while
+            // child windows execute their bounded safety/DAQ cleanup.  Only at
+            // the final main-process boundary publish ShutdownExpected; its
+            // five-second observer therefore starts immediately before Close.
+            RuntimeShutdownReceipt receipt;
+            if (Volatile.Read(ref _watchdogTakeoverExitRequested) != 0)
+            {
+                var takeoverReceipt =
+                    await ShutdownWatchdogForTakeoverExitAndReleaseUiAsync(reason);
+                receipt = takeoverReceipt?.ShutdownReceipt;
+            }
+            else
+            {
+                receipt = await ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
+                    reason);
+            }
+            if (receipt == null || !receipt.IsTerminal)
+            {
+                Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                UseWaitCursor = false;
+                Text = BuildWindowTitle();
+                ProjectLogHub.Write(ProjectLogLevel.Warning,
+                    "Watchdog主窗体退出保留资源未完成；窗口继续保持可见，等待下一次安全收口。",
+                    "独立看门狗");
+                return;
+            }
+
             var closed = new List<Task>(children.Length);
             foreach (var child in children)
             {
@@ -197,19 +380,26 @@ namespace MtEmbTest
                 };
                 child.FormClosed += handler;
                 closed.Add(completion.Task);
-                try { child.Close(); }
+                try
+                {
+                    if (child is FrmEpbMainMonitor monitor)
+                        monitor.CloseAfterMainExitAuthorized();
+                    else
+                        child.Close();
+                }
                 catch (Exception ex)
                 {
                     try { child.FormClosed -= handler; } catch { }
                     completion.TrySetException(ex);
                 }
             }
-
             var allClosed = Task.WhenAll(closed);
-            var completed = await Task.WhenAny(allClosed, Task.Delay(15000));
-            if (!ReferenceEquals(completed, allClosed))
+            var childrenClosed = await Task.WhenAny(allClosed, Task.Delay(5000));
+            if (!ReferenceEquals(childrenClosed, allClosed))
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                UseWaitCursor = false;
+                Text = BuildWindowTitle() + " - 子窗口释放超时，可重试关闭";
                 ProjectLogHub.Write(
                     ProjectLogLevel.Error,
                     $"MainProcessExitStalled ChildWindowReleaseTimeout Reason={reason}; " +
@@ -221,24 +411,12 @@ namespace MtEmbTest
             catch (Exception ex)
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                UseWaitCursor = false;
+                Text = BuildWindowTitle() + " - 子窗口释放失败，可重试关闭";
                 ProjectLogHub.Write(
                     ProjectLogLevel.Error,
-                    "MainProcessExitStalled ChildWindowReleaseFailed: " + ex.GetBaseException().Message,
-                    "独立看门狗");
-                return;
-            }
-
-            // Keep the sidecar and its authenticated PID identity alive while
-            // child windows execute their bounded safety/DAQ cleanup.  Only at
-            // the final main-process boundary publish ShutdownExpected; its
-            // five-second observer therefore starts immediately before Close.
-            var receipt = await ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
-                reason);
-            if (receipt == null || !receipt.IsTerminal)
-            {
-                Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
-                ProjectLogHub.Write(ProjectLogLevel.Warning,
-                    "Watchdog主窗体退出保留资源未完成；窗口继续保持可见，等待下一次安全收口。",
+                    "MainProcessExitStalled ChildWindowReleaseFailed: " +
+                    ex.GetBaseException().Message,
                     "独立看门狗");
                 return;
             }

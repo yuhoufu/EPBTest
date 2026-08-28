@@ -1,5 +1,6 @@
 ﻿using Config;
 using Config.Models;
+using Controller;
 using DevExpress.Data.Helpers;
 using DevExpress.XtraEditors;
 using MTEmbTest;
@@ -117,6 +118,7 @@ namespace MtEmbTest
 
             // 3) 当前窗体后续一律使用“项目配置”
             _cfg.Test = projectTest;
+            PublishCurrentProjectBuildIdentity();
         }
 
         #region EPB 状态及进度面板
@@ -2132,6 +2134,7 @@ namespace MtEmbTest
         private void RememberCurrentProjectOrWarn()
         {
             if (_cfg?.Test == null) return;
+            PublishCurrentProjectBuildIdentity();
             if (LastProjectSelectionStore.TrySave(
                     _cfg.Test.StoreDir,
                     _cfg.Test.TestName,
@@ -2149,6 +2152,29 @@ namespace MtEmbTest
                 "项目选择未保存",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+        }
+
+        private void PublishCurrentProjectBuildIdentity()
+        {
+            var configDirectory = ConfigLoader.GetProjectConfigDir(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName);
+            var projectRoot = ConfigLoader.GetProjectRootDir(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName);
+            var identity = RuntimeBuildIdentity.Capture();
+            if (identity.TryWriteProjectJson(
+                    configDirectory,
+                    _cfg.Test.TestName,
+                    projectRoot,
+                    out var path,
+                    out var error))
+            {
+                logger?.Info($"已更新项目运行构建身份：{path}", "配置");
+                return;
+            }
+
+            logger?.Warn($"写入项目运行构建身份失败：{error}", "配置");
         }
 
         private void RestorePreviousTestName()

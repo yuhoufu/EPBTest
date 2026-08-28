@@ -31,6 +31,17 @@ namespace MTEmbTest
 
     internal static class WinFormsWatchdogUiCloseCoordinator
     {
+        internal static bool ShouldCoordinateMainClose(
+            bool hasActiveEvidence,
+            int mdiChildCount)
+        {
+            // An MDI child is itself an application-owned resource.  After a
+            // completed manual stop the watchdog runtime can already be
+            // released while the monitor window is still alive; that close
+            // must still join the single-flight application-exit coordinator.
+            return hasActiveEvidence || mdiChildCount > 0;
+        }
+
         internal static bool ShouldApplyLegacyMdiGuard(
             bool watchdogCloseAuthorized,
             int mdiChildCount)

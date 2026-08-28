@@ -2283,6 +2283,17 @@ namespace MTEmbTest
             WatchdogClientTransportEngine engine,
             bool processExitExpected = false)
         {
+            return SendApplicationClosingForShutdown(
+                engine,
+                processExitExpected
+                    ? RuntimeShutdownIntent.ApplicationExit
+                    : RuntimeShutdownIntent.SessionClose);
+        }
+
+        internal static bool SendApplicationClosingForShutdown(
+            WatchdogClientTransportEngine engine,
+            RuntimeShutdownIntent shutdownIntent)
+        {
             if (engine == null) return false;
             var snapshot = engine.CaptureSnapshot();
             if (snapshot == null || !snapshot.SessionActive ||
@@ -2300,7 +2311,7 @@ namespace MTEmbTest
                     // session shutdown/rebind retains the compatible immediate
                     // ApplicationClosing semantics.
                     Type = SelectShutdownMessageTypeForRetention(
-                        processExitExpected),
+                        shutdownIntent),
                     SessionId = snapshot.SessionId,
                     Reason = "RuntimeShutdown"
                 },
@@ -2312,9 +2323,24 @@ namespace MTEmbTest
         internal static string SelectShutdownMessageTypeForRetention(
             bool processExitExpected)
         {
-            return processExitExpected
-                ? WatchdogMessageType.ShutdownExpected
-                : WatchdogMessageType.ApplicationClosing;
+            return SelectShutdownMessageTypeForRetention(
+                processExitExpected
+                    ? RuntimeShutdownIntent.ApplicationExit
+                    : RuntimeShutdownIntent.SessionClose);
+        }
+
+        internal static string SelectShutdownMessageTypeForRetention(
+            RuntimeShutdownIntent shutdownIntent)
+        {
+            switch (shutdownIntent)
+            {
+                case RuntimeShutdownIntent.ApplicationExit:
+                    return WatchdogMessageType.ShutdownExpected;
+                case RuntimeShutdownIntent.WatchdogTakeoverExit:
+                    return WatchdogMessageType.WatchdogTakeoverExit;
+                default:
+                    return WatchdogMessageType.ApplicationClosing;
+            }
         }
 
         private static RuntimeTransportSessionContext MarkSessionClosing(string reason)

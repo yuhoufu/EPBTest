@@ -3,7 +3,7 @@ using System;
 namespace MTTFTest.Watchdog.Client
 {
     /// <summary>
-    /// Immutable termination evidence for the six engine workers.  A worker
+    /// Immutable termination evidence for the seven engine workers.  A worker
     /// is terminal only after the task captured by ShutdownWithReceipt has
     /// completed; no Task is exposed to callers, so the receipt remains a
     /// stable value object rather than a second lifecycle control surface.
@@ -18,6 +18,7 @@ namespace MTTFTest.Watchdog.Client
         public bool ReconnectTerminal { get; }
         public bool ConnectTerminal { get; }
         public bool LaunchTerminal { get; }
+        public bool SendTerminal { get; }
         public bool LaunchReservationTerminal { get; }
         public bool RetainedLaunchTerminal { get; }
         public bool PendingOwnerReleased { get; }
@@ -45,6 +46,48 @@ namespace MTTFTest.Watchdog.Client
             int liveOwnedHandleCount,
             int ownedHandleCountBefore = 0,
             bool capturedOwnerReleased = true)
+            : this(
+                sessionLease,
+                capturedUtcTicks,
+                readerTerminal,
+                heartbeatTerminal,
+                monitorTerminal,
+                reconnectTerminal,
+                connectTerminal,
+                launchTerminal,
+                sendTerminal: true,
+                launchReservationTerminal,
+                retainedLaunchTerminal,
+                pendingOwnerReleased,
+                transportDetached,
+                liveOwnedHandleCount,
+                ownedHandleCountBefore,
+                capturedOwnerReleased)
+        {
+        }
+
+        /// <summary>
+        /// Full constructor used by the production engine.  The compatibility
+        /// overload above treats transports created before the dedicated send
+        /// worker existed as already send-terminal.
+        /// </summary>
+        public WorkerTerminationState(
+            long sessionLease,
+            long capturedUtcTicks,
+            bool readerTerminal,
+            bool heartbeatTerminal,
+            bool monitorTerminal,
+            bool reconnectTerminal,
+            bool connectTerminal,
+            bool launchTerminal,
+            bool sendTerminal,
+            bool launchReservationTerminal,
+            bool retainedLaunchTerminal,
+            bool pendingOwnerReleased,
+            bool transportDetached,
+            int liveOwnedHandleCount,
+            int ownedHandleCountBefore = 0,
+            bool capturedOwnerReleased = true)
         {
             SessionLease = sessionLease;
             CapturedUtcTicks = capturedUtcTicks;
@@ -54,6 +97,7 @@ namespace MTTFTest.Watchdog.Client
             ReconnectTerminal = reconnectTerminal;
             ConnectTerminal = connectTerminal;
             LaunchTerminal = launchTerminal;
+            SendTerminal = sendTerminal;
             LaunchReservationTerminal = launchReservationTerminal;
             RetainedLaunchTerminal = retainedLaunchTerminal;
             PendingOwnerReleased = pendingOwnerReleased;
@@ -64,7 +108,7 @@ namespace MTTFTest.Watchdog.Client
             LiveOwnedHandleCount = Math.Max(0, liveOwnedHandleCount);
             AllWorkersTerminal = ReaderTerminal && HeartbeatTerminal &&
                 MonitorTerminal && ReconnectTerminal && ConnectTerminal &&
-                LaunchTerminal;
+                LaunchTerminal && SendTerminal;
             AllResourcesReleased = AllWorkersTerminal &&
                 LaunchReservationTerminal && RetainedLaunchTerminal &&
                 PendingOwnerReleased && TransportDetached &&

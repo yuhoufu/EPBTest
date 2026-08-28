@@ -163,6 +163,25 @@ namespace MTEmbTest
                 }
                 if (_epb.CanAcknowledgeChannelAlarm(channel, out _))
                 {
+                    var fullRelearning =
+                        _epb.RequiresOperatorFullRelearning(channel, out var faultReason);
+                    var prompt = fullRelearning
+                        ? $"EPB{channel} 检测到 ForwardUnderTargetHighLoadStall。\r\n\r\n" +
+                          "继续前请确认已检查负载端动态压降、继电器/端子温升和机械阻滞。\r\n" +
+                          "确认后软件将清除旧模型，执行完整重学习及2圈资格复核；" +
+                          "任一步失败都会保持输出OFF。\r\n\r\n" +
+                          $"故障详情：{faultReason}\r\n\r\n是否确认现场检查完成并开始恢复？"
+                        : $"是否确认 EPB{channel} 的故障原因已排除，并开始完整恢复预检？";
+                    var confirmed = ShowOperatorMessage(
+                        prompt,
+                        $"EPB{channel} 报警恢复确认",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                    if (confirmed != DialogResult.Yes)
+                    {
+                        LogInfo($"EPB{channel} 操作员取消报警恢复；保持报警停机和输出OFF。");
+                        return;
+                    }
                     ApplyChannelStartTransitionUi(channel);
                     LogInfo($"EPB{channel} 重新开始：已抛弃上次故障锁存，进入实时预检与自愈。");
                     RevokeManualStopExitAuthorizationBeforeEnergization();
@@ -268,6 +287,7 @@ namespace MTEmbTest
                    state == ChannelRuntimeState.Learning ||
                    state == ChannelRuntimeState.Running ||
                    state == ChannelRuntimeState.WarningRunning ||
+                   state == ChannelRuntimeState.WaitingForSlotBarrier ||
                    state == ChannelRuntimeState.PausePending ||
                    state == ChannelRuntimeState.ResumeChecking ||
                    state == ChannelRuntimeState.Qualification;
@@ -277,6 +297,7 @@ namespace MTEmbTest
         {
             return state == ChannelRuntimeState.Starting ||
                    state == ChannelRuntimeState.Learning ||
+                   state == ChannelRuntimeState.WaitingForSlotBarrier ||
                    state == ChannelRuntimeState.PausePending ||
                    state == ChannelRuntimeState.ResumeChecking ||
                    state == ChannelRuntimeState.Qualification;

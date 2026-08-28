@@ -26,6 +26,7 @@ namespace MTEmbTest
             new Dictionary<int, ChannelRuntimeStateChangedEvent>();
         private readonly Dictionary<int, ChannelWarningOverlayChangedEvent> _channelWarningOverlays =
             new Dictionary<int, ChannelWarningOverlayChangedEvent>();
+        private readonly HashSet<int> _channelSelectionUiGuard = new HashSet<int>();
         private readonly HashSet<int> _powerGroupInterlockLatches = new HashSet<int>();
         private readonly object _powerSupplyTelemetryGate = new object();
         private readonly Dictionary<int, PowerSupplyTelemetry> _latestPowerSupplyTelemetry =
@@ -275,6 +276,17 @@ namespace MTEmbTest
                         Cursor = Cursors.Help
                     };
                     panels[groupIndex].Controls.Add(label, 3, row);
+                    var menu = new ContextMenuStrip();
+                    var resetPermanentAlarm = new ToolStripMenuItem("重置永久报警（保持未勾选）");
+                    resetPermanentAlarm.Click += (sender, args) =>
+                        ResetPermanentAlarmFromUi(channel, false);
+                    menu.Items.Add(resetPermanentAlarm);
+                    menu.Opening += (sender, args) =>
+                    {
+                        var record = _cfg?.Test?.GetEpbRecord(channel);
+                        resetPermanentAlarm.Enabled = record?.PermanentAlarmLatched == true;
+                    };
+                    label.ContextMenuStrip = menu;
                     _channelRuntimeLabels[channel] = label;
                 }
             }
@@ -364,7 +376,22 @@ namespace MTEmbTest
                     : null;
             var warningActive = IsWarningOverlayActiveForState(state, warning);
             var record = EnsureEpbRecord(state.Channel);
-            if (!record.Enabled && state.State != ChannelRuntimeState.NotEnabled)
+            var permanentAlarmLatched = record.PermanentAlarmLatched ||
+                                        state.PermanentAlarmLatched;
+            if (permanentAlarmLatched)
+            {
+                state = state.Clone();
+                state.State = ChannelRuntimeState.AlarmStopped;
+                state.PermanentAlarmLatched = true;
+                if (string.IsNullOrWhiteSpace(state.PermanentAlarmCode))
+                    state.PermanentAlarmCode = record.PermanentAlarmCode;
+                if (!state.PermanentAlarmUtc.HasValue)
+                    state.PermanentAlarmUtc = record.PermanentAlarmUtc;
+                state.ConsecutivePeriodOverrunCount = Math.Max(
+                    state.ConsecutivePeriodOverrunCount,
+                    record.ConsecutivePeriodOverrunCount);
+            }
+            else if (!record.Enabled && state.State != ChannelRuntimeState.NotEnabled)
             {
                 state = state.Clone();
                 state.State = ChannelRuntimeState.NotEnabled;
@@ -376,7 +403,9 @@ namespace MTEmbTest
                 : state.TimestampUtc.ToLocalTime();
             // 状态格宽度很小，原来的第二行时间会被截成“运行1…”或“运行0…”，
             // 容易被误解为数值状态。格内只保留状态，时间和原因放在悬浮提示中。
-            label.Text = GetRuntimeStateDisplayText(state.State, warningActive);
+            label.Text = permanentAlarmLatched
+                ? "永久报警"
+                : GetRuntimeStateDisplayText(state.State, warningActive);
             label.BackColor = warningActive &&
                               (state.State == ChannelRuntimeState.Running ||
                                state.State == ChannelRuntimeState.WarningRunning)
@@ -391,6 +420,11 @@ namespace MTEmbTest
                 $"EPB{state.Channel:D2} {GetRuntimeStateText(state.State)}\r\n" +
                 $"时间：{localTime:yyyy-MM-dd HH:mm:ss.fff}\r\n" +
                 $"原因：{AlarmMessageLocalizer.ToUserMessage(state.ReasonText ?? state.ReasonCode ?? "-")}\r\n" +
+                $"永久报警：{(permanentAlarmLatched ? "是" : "否")} " +
+                $"{(state.PermanentAlarmCode ?? record.PermanentAlarmCode ?? string.Empty)}\r\n" +
+                $"报警时间：{(state.PermanentAlarmUtc ?? record.PermanentAlarmUtc)?.ToLocalTime():yyyy-MM-dd HH:mm:ss}\r\n" +
+                $"连续周期超限：{Math.Max(state.ConsecutivePeriodOverrunCount, record.ConsecutivePeriodOverrunCount)}/" +
+                $"{EpbManager.ConsecutivePeriodOverrunAlarmThreshold}\r\n" +
                 $"故障源：{(state.SourceChannel.HasValue ? "EPB" + state.SourceChannel.Value.ToString("D2") : "-")}\r\n" +
                 $"关联号：{(state.CorrelationId == Guid.Empty ? "-" : state.CorrelationId.ToString("N"))}\r\n" +
                 $"RunEpoch：{state.RunEpoch}，Formal：{state.FormalPhaseCommitted}\r\n" +
@@ -434,7 +468,8 @@ namespace MTEmbTest
                 warnings = _channelWarningOverlays.Values.ToArray();
             var running = states.Count(x => x.State == ChannelRuntimeState.Starting ||
                                             x.State == ChannelRuntimeState.Learning ||
-                                            x.State == ChannelRuntimeState.Running);
+                                            x.State == ChannelRuntimeState.Running ||
+                                            x.State == ChannelRuntimeState.WaitingForSlotBarrier);
             var warning = warnings.Count(x =>
                               states.Any(state =>
                                   state.Channel == x.Channel &&
@@ -483,6 +518,7 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Learning: return "学习中";
                 case ChannelRuntimeState.Running: return "运行";
                 case ChannelRuntimeState.WarningRunning: return "软预警";
+                case ChannelRuntimeState.WaitingForSlotBarrier: return "等待同槽";
                 case ChannelRuntimeState.PausePending: return "等待暂停";
                 case ChannelRuntimeState.Paused: return "暂停";
                 case ChannelRuntimeState.ResumeChecking: return "恢复预检";
@@ -538,6 +574,7 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Qualification: return Color.FromArgb(52, 152, 219);
                 case ChannelRuntimeState.PausePending: return Color.FromArgb(96, 125, 139);
                 case ChannelRuntimeState.WarningRunning: return Color.FromArgb(230, 126, 34);
+                case ChannelRuntimeState.WaitingForSlotBarrier: return Color.FromArgb(69, 90, 100);
                 case ChannelRuntimeState.Recovering: return Color.FromArgb(52, 152, 219);
                 case ChannelRuntimeState.SystemFault: return Color.FromArgb(245, 166, 35);
                 case ChannelRuntimeState.AlarmStopped:
@@ -556,6 +593,7 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Starting:
                 case ChannelRuntimeState.Running:
                 case ChannelRuntimeState.WarningRunning: return EpbTestStatus.Running;
+                case ChannelRuntimeState.WaitingForSlotBarrier: return EpbTestStatus.Running;
                 case ChannelRuntimeState.Learning: return EpbTestStatus.Learning;
                 case ChannelRuntimeState.PausePending:
                 case ChannelRuntimeState.Paused: return EpbTestStatus.Paused;
@@ -603,13 +641,109 @@ namespace MTEmbTest
         private void PersistRuntimeChannelSelection(int channelIndex)
         {
             if (_cfg?.Test == null || channelIndex < 0 || channelIndex >= EpbGroup.Length) return;
+            var channel = channelIndex + 1;
+            if (_channelSelectionUiGuard.Contains(channel)) return;
             var selected = EpbGroup[channelIndex]?.CtrlJoinTest?.Checked == true;
+            var configured = _cfg.Test.GetEpbRecord(channel);
+            if (selected && configured.PermanentAlarmLatched)
+            {
+                var answer = ShowOperatorMessage(
+                    $"卡钳{channel} 当前锁存永久报警：\r\n" +
+                    $"{configured.PermanentAlarmReason}\r\n\r\n" +
+                    "重新勾选将清除永久报警和连续周期超限次数并启用该卡钳；" +
+                    "不会自动开始试验，后续仍执行完整预检。是否继续？",
+                    "确认清除永久报警并启用",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (answer != DialogResult.Yes)
+                {
+                    SetChannelSelectionChecked(channel, false);
+                    return;
+                }
+
+                var reset = _epb?.ResetPermanentAlarm(channel, true);
+                if (reset?.Succeeded != true)
+                {
+                    SetChannelSelectionChecked(channel, false);
+                    ShowOperatorMessage(
+                        reset?.Error ?? "控制器不可用，未清除永久报警。",
+                        "永久报警重置失败",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return;
+                }
+                lock (_epbRecordsLock)
+                {
+                    var local = EnsureEpbRecord(channel);
+                    local.ClearPermanentAlarm();
+                    local.Enabled = true;
+                }
+                ApplyLatestChannelRuntimeState(channel);
+                return;
+            }
             lock (_epbRecordsLock)
             {
-                EnsureEpbRecord(channelIndex + 1).Enabled = selected;
-                _cfg.Test.GetEpbRecord(channelIndex + 1).Enabled = selected;
+                EnsureEpbRecord(channel).Enabled = selected;
+                _cfg.Test.GetEpbRecord(channel).Enabled = selected;
             }
             SaveEpbRecordsToTestConfigSafe();
+        }
+
+        private void ResetPermanentAlarmFromUi(int channel, bool enableAfterReset)
+        {
+            var record = _cfg?.Test?.GetEpbRecord(channel);
+            if (record?.PermanentAlarmLatched != true) return;
+            var answer = ShowOperatorMessage(
+                $"确认重置卡钳{channel}永久报警？\r\n\r\n" +
+                "将清除永久报警和连续周期超限次数，保留历史试验圈数，" +
+                "并保持卡钳未勾选。",
+                "重置永久报警",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (answer != DialogResult.Yes) return;
+
+            var result = _epb?.ResetPermanentAlarm(channel, enableAfterReset);
+            if (result?.Succeeded != true)
+            {
+                ShowOperatorMessage(
+                    result?.Error ?? "控制器不可用。",
+                    "永久报警重置失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                return;
+            }
+            lock (_epbRecordsLock)
+            {
+                var local = EnsureEpbRecord(channel);
+                local.ClearPermanentAlarm();
+                local.Enabled = enableAfterReset;
+            }
+            SetChannelSelectionChecked(channel, enableAfterReset);
+            ApplyLatestChannelRuntimeState(channel);
+            LogInfo(
+                $"卡钳{channel}永久报警已人工重置；历史试验圈数保留，" +
+                (enableAfterReset ? "当前已启用但不会自动开始。" : "当前保持未勾选。"));
+        }
+
+        private void SetChannelSelectionChecked(int channel, bool selected)
+        {
+            if (channel < 1 || channel > EpbGroup.Length) return;
+            _channelSelectionUiGuard.Add(channel);
+            try
+            {
+                var check = EpbGroup[channel - 1]?.CtrlJoinTest;
+                if (check != null && check.Checked != selected)
+                    check.Checked = selected;
+                var curve = Controls.Find($"CheckEpbA{channel}", true)
+                    .OfType<DevExpress.XtraEditors.CheckEdit>()
+                    .FirstOrDefault();
+                if (curve != null && curve.Checked != selected)
+                    curve.Checked = selected;
+            }
+            finally
+            {
+                _channelSelectionUiGuard.Remove(channel);
+            }
         }
 
         private void OnNonRecoverableChannelDisableRequested(int channel, string reason)

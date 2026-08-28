@@ -294,10 +294,10 @@ namespace MtEmbTest
 
         internal async Task<RuntimeShutdownReceipt> ShutdownAndReleaseAsync(
             string reason,
-            bool processExitExpected = false)
+            RuntimeShutdownIntent shutdownIntent = RuntimeShutdownIntent.SessionClose)
         {
             Task<RuntimeShutdownReceipt> shutdown;
-            lock (_gate) shutdown = EnsureShutdownTaskLocked(processExitExpected);
+            lock (_gate) shutdown = EnsureShutdownTaskLocked(shutdownIntent);
 
             RuntimeShutdownReceipt receipt;
             try
@@ -322,7 +322,7 @@ namespace MtEmbTest
         }
 
         private Task<RuntimeShutdownReceipt> EnsureShutdownTaskLocked(
-            bool processExitExpected)
+            RuntimeShutdownIntent shutdownIntent)
         {
             if (_closeTask != null && !_closeTask.IsCompleted) return _closeTask;
             _closeTask = Task.Run(() =>
@@ -330,7 +330,7 @@ namespace MtEmbTest
                 try
                 {
                     return WatchdogRuntime.ShutdownRuntimeWithReceipt(
-                        processExitExpected);
+                        shutdownIntent);
                 }
                 catch (Exception ex)
                 {

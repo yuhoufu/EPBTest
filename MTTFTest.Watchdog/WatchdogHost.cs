@@ -568,7 +568,7 @@ namespace MTTFTest.Watchdog
         private long _lastHeartbeatSequence;
         private long _lastHeartbeatAckSequence;
         private int _permitStalledLogged;
-        private int _expectedExitObserverStarted;
+        private long _expectedExitObserverEpoch;
         private long _eventSequence;
         private long _lastHeartbeatCheckpointTimestamp;
         private long _pendingCommitGenerationAwaitingRunIdentity;
@@ -990,6 +990,8 @@ namespace MTTFTest.Watchdog
                         _journal.OrphanPauseTriggered = false;
                         _journal.PowerDisableTriggered = false;
                         Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
+                        var validatedAttachEpoch = Interlocked.Increment(ref _validatedAttachEpoch);
+                        Interlocked.Exchange(ref _expectedExitObserverEpoch, 0);
                         _stopSafetyMonitor.NotifyValidatedAttached(
                             _args.SessionId,
                             // Do not seed the new attachment with a heartbeat
@@ -1007,7 +1009,7 @@ namespace MTTFTest.Watchdog
                                       CultureInfo.InvariantCulture),
                             message.Session?.ProcessId ?? 0,
                             message.Session?.ProcessStartUtcTicks ?? 0,
-                            Interlocked.Increment(ref _validatedAttachEpoch));
+                            validatedAttachEpoch);
                         Record("Attached", message.Session?.RecoveryProcess == true
                             ? "RecoveryProcess"
                             : "MainProcess");
@@ -1340,72 +1342,141 @@ namespace MTTFTest.Watchdog
                     _journal.ManualStopRequested = true;
                     CancelAutomaticTakeover("ApplicationClosing");
                     Record(message.Type, message.Reason);
-                    PublishTerminal(message.Type, message.Reason);
+                    PublishTerminal("ExpectedApplicationExit", message.Reason);
                     _stop.Cancel();
                     break;
                 case WatchdogMessageType.ShutdownExpected:
                     _journal.ManualStopRequested = true;
                     CancelAutomaticTakeover("ShutdownExpected");
                     Record(message.Type, message.Reason);
-                    PublishTerminal(message.Type, message.Reason);
-                    if (Interlocked.CompareExchange(
-                            ref _expectedExitObserverStarted,
-                            1,
-                            0) == 0)
-                        _ = Task.Run(() => ObserveExpectedMainExitAsync(
-                            message.Type,
-                            message.Reason));
+                    PublishTerminal("ExpectedApplicationExit", message.Reason);
+                    StartExpectedMainExitObserver(
+                        message.Type,
+                        message.Reason,
+                        completeHostOnExit: true);
+                    break;
+                case WatchdogMessageType.WatchdogTakeoverExit:
+                    // Watchdog接管已完成StopCompleted后，旧主进程只交回UI/传输所有权。
+                    // 不得把它当成人工ShutdownExpected，否则会撤销仍需消费的恢复许可。
+                    Record(message.Type, message.Reason);
+                    StartExpectedMainExitObserver(
+                        message.Type,
+                        message.Reason,
+                        completeHostOnExit: false);
                     break;
             }
             return Task.CompletedTask;
         }
 
-        private async Task ObserveExpectedMainExitAsync(string messageType, string reason)
+        private void StartExpectedMainExitObserver(
+            string messageType,
+            string reason,
+            bool completeHostOnExit)
         {
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (DateTime.UtcNow < deadline && IsCurrentProcessAlive())
-                await Task.Delay(100).ConfigureAwait(false);
-            if (!IsCurrentProcessAlive())
+            int processId;
+            long processStartUtcTicks;
+            long attachEpoch;
+            lock (_journalGate)
             {
-                Record("MainProcessExited", messageType + ":" + reason);
-                _stop.Cancel();
+                processId = _journal.CurrentPid;
+                processStartUtcTicks = _journal.CurrentProcessStartUtcTicks;
+                attachEpoch = Interlocked.Read(ref _validatedAttachEpoch);
+            }
+            if (processId <= 0 || processStartUtcTicks <= 0 || attachEpoch <= 0)
+            {
+                Record("MainProcessExitObserverRejected", "ExactIdentityMissing:" + messageType);
                 return;
             }
+            if (Interlocked.CompareExchange(
+                    ref _expectedExitObserverEpoch,
+                    attachEpoch,
+                    0) != 0)
+                return;
+            _ = Task.Run(() => ObserveExpectedMainExitAsync(
+                messageType,
+                reason,
+                completeHostOnExit,
+                processId,
+                processStartUtcTicks,
+                attachEpoch));
+        }
 
-            Record(
-                "MainProcessExitStalled",
-                $"PID={_journal.CurrentPid};Message={messageType};Reason={reason}");
-            _transitionWindow.Show(
-                "安全停止已完成，正在释放旧程序",
-                "主程序在退出回执后超过5秒仍未结束，正在执行有界回收。",
-                0,
-                0);
+        private async Task ObserveExpectedMainExitAsync(
+            string messageType,
+            string reason,
+            bool completeHostOnExit,
+            int processId,
+            long processStartUtcTicks,
+            long attachEpoch)
+        {
             try
             {
-                using (var process = Process.GetProcessById(_journal.CurrentPid))
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                while (DateTime.UtcNow < deadline &&
+                       IsExactProcessAlive(processId, processStartUtcTicks))
+                    await Task.Delay(100).ConfigureAwait(false);
+                if (!IsExactProcessAlive(processId, processStartUtcTicks))
                 {
-                    if (!MatchesCurrentProcess(process))
-                    {
-                        Record("MainProcessExitStalledIdentityMismatch", _journal.CurrentPid.ToString());
-                        return;
-                    }
-                    await CaptureMiniDumpBeforeTerminationAsync(
-                            process,
-                            "MainProcessExitStalled:" + messageType)
-                        .ConfigureAwait(false);
-                    process.Kill();
-                    process.WaitForExit(5000);
-                    Record("MainProcessExitStalledTerminated", $"PID={_journal.CurrentPid}");
+                    Record(
+                        "MainProcessExited",
+                        $"{messageType}:{reason};PID={processId};AttachEpoch={attachEpoch}");
+                    if (completeHostOnExit) _stop.Cancel();
+                    return;
                 }
-            }
-            catch (Exception ex)
-            {
-                Record("MainProcessExitStalledTerminationFailed", ex.Message);
+
+                Record(
+                    "MainProcessExitStalled",
+                    $"PID={processId};Message={messageType};Reason={reason};AttachEpoch={attachEpoch}");
+                _transitionWindow.Show(
+                    "安全停止已完成，正在释放旧程序",
+                    "主程序在退出回执后超过5秒仍未结束，正在执行有界回收。",
+                    0,
+                    0);
+                try
+                {
+                    using (var process = Process.GetProcessById(processId))
+                    {
+                        if (!MatchesExactProcess(process, processStartUtcTicks))
+                        {
+                            Record("MainProcessExitStalledIdentityMismatch", processId.ToString());
+                            return;
+                        }
+                        await CaptureMiniDumpBeforeTerminationAsync(
+                                process,
+                                "MainProcessExitStalled:" + messageType)
+                            .ConfigureAwait(false);
+                        process.Kill();
+                        process.WaitForExit(5000);
+                        Record("MainProcessExitStalledTerminated", $"PID={processId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Record("MainProcessExitStalledTerminationFailed", ex.Message);
+                }
             }
             finally
             {
-                _stop.Cancel();
+                Interlocked.CompareExchange(ref _expectedExitObserverEpoch, 0, attachEpoch);
+                if (completeHostOnExit) _stop.Cancel();
             }
+        }
+
+        private static bool IsExactProcessAlive(int processId, long processStartUtcTicks)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                    return MatchesExactProcess(process, processStartUtcTicks) && !process.HasExited;
+            }
+            catch { return false; }
+        }
+
+        private static bool MatchesExactProcess(Process process, long processStartUtcTicks)
+        {
+            if (process == null || processStartUtcTicks <= 0) return false;
+            try { return process.StartTime.ToUniversalTime().Ticks == processStartUtcTicks; }
+            catch { return false; }
         }
 
         private bool IsValidatedHeartbeatIdentity(WatchdogHeartbeat heartbeat)
@@ -1799,6 +1870,8 @@ namespace MTTFTest.Watchdog
                                     : formalProgressStalled
                                         ? "FormalProgressStalledAggregateFallback"
                                     : "ExternalRecoveryStageStalled";
+                        if (!processAlive)
+                            Record("ProcessExitedUnexpectedly", reason);
                         if (manualPauseCommanded)
                             BeginManualPauseSafetyTakeover(
                                 heartbeat?.ManualPauseSafetyFault == true
@@ -3396,7 +3469,7 @@ namespace MTTFTest.Watchdog
                 _args.SessionId,
                 OperatorTransitionStopMarkerReason); }
             catch (Exception ex) { Record("OperatorStopProjectMarkerFailed", ex.Message); }
-            PublishTerminal("OperatorRecoveryCanceled", OperatorTransitionStopMarkerReason);
+            PublishTerminal("OperatorCanceledRecovery", OperatorTransitionStopMarkerReason);
             try { _transitionWindow.Hide(); } catch { }
             _stop.Cancel();
         }

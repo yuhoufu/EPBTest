@@ -770,6 +770,13 @@ namespace MTTFTest.Watchdog.Protocol
                 contract.TimerRequired = true;
                 contract.RunnerRequired = true;
             }
+            else if (EqualsPhase(phase, "WaitingForSlotBarrier"))
+            {
+                // 屏障等待期间当前通道已经完成自身动作，不应继续收取机械进展期限；
+                // 但正式 Timer/Runner 仍必须存在，否则会形成永远无法退出的假等待。
+                contract.TimerRequired = true;
+                contract.RunnerRequired = true;
+            }
             else if (EqualsPhase(phase, "Recovering") || EqualsPhase(phase, "ResumeChecking"))
             {
                 contract.RequireTimerRunnerParity = true;

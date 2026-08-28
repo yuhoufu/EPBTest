@@ -165,6 +165,8 @@ namespace MTEmbTest
         private int _stopUiGuard;
         private readonly ManualStopExitReceiptOwner _manualStopExitReceipt =
             new ManualStopExitReceiptOwner();
+        private readonly StopSessionReceiptOwner _stopSessionReceipt =
+            new StopSessionReceiptOwner();
         private readonly EpbMonitorHardwareReleaseOwner _hardwareReleaseOwner =
             new EpbMonitorHardwareReleaseOwner();
 
@@ -1006,6 +1008,7 @@ namespace MTEmbTest
                 // 4) 确保默认 Config\TestConfig.xml 中也同步了 Basic 和 TotalCount（但进度清零）
                 //    方便下次启动软件时，仍然能通过默认配置推算出当前项目路径。
                 ConfigLoader.UpdateDefaultTestFromProject(projectTest, logger);
+                PublishCurrentProjectBuildIdentity();
 
 
                 // ===== 数据落盘：优先初始化写盘器（用于启动时从 DB 回填 RunCount） =====
@@ -2021,6 +2024,7 @@ namespace MTEmbTest
 
         private void RevokeManualStopExitAuthorizationBeforeEnergization()
         {
+            _stopSessionReceipt.RevokeForNewStart();
             _manualStopExitReceipt.RevokeForNewStart();
             Interlocked.Exchange(ref _operatorStopRequested, 0);
         }
@@ -2668,6 +2672,9 @@ namespace MTEmbTest
             _manualStopExitReceipt.Revoke();
             Interlocked.Exchange(ref _operatorStopRequested, 1);
             var stopCommandId = Guid.NewGuid().ToString("N");
+            _stopSessionReceipt.Begin(stopCommandId);
+            var stopWatchdogContext = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
+            StopSafetyResult completedSafety = null;
             LogInfo($"已接收停止试验命令，正在执行安全断能与数据收口。CommandId={stopCommandId}");
             PostSafetyStatus("停止命令已接收，正在安全断能与收口…", false);
             BtnStop.Enabled = false;
@@ -2728,6 +2735,7 @@ namespace MTEmbTest
                             $"{Math.Max(0, 15 - (int)elapsed)} 秒。阶段={progress.Stage}");
                 }
                 var safety = await stopTask;
+                completedSafety = safety;
                 if (!_manualStopExitReceipt.Publish(safety))
                     logger?.Warn(
                         $"人工停止结果不满足关闭复用条件，将在关闭时重新执行安全停机。" +
@@ -2740,18 +2748,53 @@ namespace MTEmbTest
                         System.Threading.Tasks.Task.Delay(750));
                 if (safety.RequiresProcessRestart || safety.TimedOut)
                 {
+                    _stopSessionReceipt.Complete(new StopSessionReceipt
+                    {
+                        CommandId = stopCommandId,
+                        SessionId = stopWatchdogContext?.SessionId ?? string.Empty,
+                        SessionGeneration = stopWatchdogContext?.SessionGeneration ?? 0,
+                        SessionLease = stopWatchdogContext?.SessionLease ?? 0,
+                        StopSafety = safety,
+                        CompletedUtc = DateTime.UtcNow,
+                        Error = ProcessRestartUiPolicy.GetOperatorMessage(safety.TimedOut)
+                    });
                     LogInfo(ProcessRestartUiPolicy.GetOperatorMessage(safety.TimedOut));
                     BtnStop.Enabled = false;
                     BtnStartTest.Enabled = false;
                 }
                 else
                 {
-                    LogInfo($"停止试验完成；可以关闭软件或重新开始。CommandId={stopCommandId}");
-                    QueueManualStopCompletionNotifications(safety, stopCommandId);
+                    LogInfo($"设备与数据侧停止完成，正在释放Watchdog精确会话。CommandId={stopCommandId}");
+                    PostSafetyStatus("设备输出已OFF，正在释放Watchdog会话…", false);
+                    if (!watchdogNotificationTask.IsCompleted)
+                        await watchdogNotificationTask.ConfigureAwait(true);
+                    var combined = await CompleteManualStopSessionAsync(
+                            safety,
+                            stopCommandId,
+                            stopWatchdogContext)
+                        .ConfigureAwait(true);
+                    _stopSessionReceipt.Complete(combined);
+                    if (!combined.CanRestart)
+                        throw new InvalidOperationException(
+                            "人工停止组合终态未完成：" + combined.Error);
+                    LogInfo($"停止试验组合终态完成；可以关闭软件或重新开始。" +
+                            $"CommandId={stopCommandId}; Session={combined.SessionId}; " +
+                            $"Lease={combined.SessionLease}");
+                    PostSafetyStatus("停止收口已完成，可以关闭或重新开始。", false);
                 }
             }
             catch (Exception ex)
             {
+                _stopSessionReceipt.Complete(new StopSessionReceipt
+                {
+                    CommandId = stopCommandId,
+                    SessionId = stopWatchdogContext?.SessionId ?? string.Empty,
+                    SessionGeneration = stopWatchdogContext?.SessionGeneration ?? 0,
+                    SessionLease = stopWatchdogContext?.SessionLease ?? 0,
+                    StopSafety = completedSafety,
+                    CompletedUtc = DateTime.UtcNow,
+                    Error = ex.GetBaseException().Message
+                });
                 // 操作员的停止意图已经成立；关闭或下一次启动会再次执行幂等清场。
                 LogInfo($"停止试验收尾异常，等待 Watchdog 自动接管：{ex.Message}");
                 BtnStartTest.Enabled = false;
@@ -2822,12 +2865,14 @@ namespace MTEmbTest
             });
         }
 
-        private void QueueManualStopCompletionNotifications(
+        private async System.Threading.Tasks.Task<StopSessionReceipt>
+            CompleteManualStopSessionAsync(
             StopSafetyResult safety,
-            string stopCommandId)
+            string stopCommandId,
+            RuntimeTransportSessionContext capturedContext)
         {
             var summary = WinFormsWatchdogStopHandlerCore.ToWatchdogStopSummary(safety);
-            var notificationTask = System.Threading.Tasks.Task.Run(() =>
+            await System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
@@ -2843,27 +2888,50 @@ namespace MTEmbTest
                         $"CommandId={stopCommandId}; Error={ex.Message}",
                         "Watchdog");
                 }
-            });
+            }).ConfigureAwait(true);
 
-            _ = System.Threading.Tasks.Task.Run(async () =>
+            var main = MdiParent as Main_Frm;
+            if (main == null)
             {
-                await System.Threading.Tasks.Task.WhenAny(
-                        notificationTask,
-                        System.Threading.Tasks.Task.Delay(1000))
-                    .ConfigureAwait(false);
-                var main = MdiParent as Main_Frm;
-                if (main == null)
+                return new StopSessionReceipt
                 {
-                    logger?.Warn(
-                        $"人工停止完成但缺少 Main-owned Watchdog shutdown owner；" +
-                        $"CommandId={stopCommandId}。",
-                        "Watchdog");
-                    return;
-                }
-                await main.ShutdownWatchdogSessionAndReleaseUiAsync(
-                        "ManualStopCompleted")
-                    .ConfigureAwait(false);
-            });
+                    CommandId = stopCommandId,
+                    SessionId = capturedContext?.SessionId ?? string.Empty,
+                    SessionGeneration = capturedContext?.SessionGeneration ?? 0,
+                    SessionLease = capturedContext?.SessionLease ?? 0,
+                    StopSafety = safety,
+                    CompletedUtc = DateTime.UtcNow,
+                    Error = "缺少Main-owned Watchdog shutdown owner。"
+                };
+            }
+
+            var shutdown = await main.ShutdownWatchdogSessionAndReleaseUiAsync(
+                    "ManualStopCompleted")
+                .ConfigureAwait(true);
+            var receipt = new StopSessionReceipt
+            {
+                CommandId = stopCommandId,
+                SessionId = capturedContext?.SessionId ?? shutdown?.SessionId ?? string.Empty,
+                SessionGeneration = capturedContext?.SessionGeneration ??
+                                    shutdown?.SessionGeneration ?? 0,
+                SessionLease = capturedContext?.SessionLease ?? shutdown?.SessionLease ?? 0,
+                StopSafety = safety,
+                WatchdogShutdown = shutdown,
+                UiResourcesReleased = shutdown?.IsTerminal == true,
+                CompletedUtc = DateTime.UtcNow
+            };
+            if (!receipt.CanRestart)
+            {
+                var workers = shutdown?.EngineReceipt?.WorkerTermination;
+                receipt.Error = shutdown == null
+                    ? "Watchdog shutdown未返回回执。"
+                    : $"Watchdog终态={shutdown.IsTerminal}; " +
+                      $"Reader={workers?.ReaderTerminal}; Send={workers?.SendTerminal}; " +
+                      $"Heartbeat={workers?.HeartbeatTerminal}; Monitor={workers?.MonitorTerminal}; " +
+                      $"Reconnect={workers?.ReconnectTerminal}; Connect={workers?.ConnectTerminal}; " +
+                      $"Launch={workers?.LaunchTerminal}; Retained={shutdown.Retained}。";
+            }
+            return receipt;
         }
 
         #region 3) 窗体关闭：一次性解绑/停止/释放
@@ -2887,7 +2955,7 @@ namespace MTEmbTest
         {
             try
             {
-                await PrepareAndFinalizeMonitorCloseAsync();
+                await PrepareAndFinalizeMonitorCloseAsync(closeAfterPreparation: true);
             }
             catch (Exception ex)
             {
@@ -2898,19 +2966,61 @@ namespace MTEmbTest
             }
         }
 
-        private async System.Threading.Tasks.Task PrepareAndFinalizeMonitorCloseAsync()
+        internal async System.Threading.Tasks.Task<bool> PrepareForMainApplicationExitAsync()
+        {
+            if (Volatile.Read(ref _closingReentry) == 3) return true;
+            Interlocked.CompareExchange(ref _closingReentry, 1, 0);
+            _isClosing = true;
+            return await PrepareAndFinalizeMonitorCloseAsync(
+                    closeAfterPreparation: false)
+                .ConfigureAwait(true);
+        }
+
+        internal void CloseAfterMainExitAuthorized()
+        {
+            Interlocked.Exchange(ref _closingReentry, 3);
+            if (!IsDisposed && !Disposing) Close();
+        }
+
+        private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseAsync(
+            bool closeAfterPreparation)
         {
                 var wasExplicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0 ||
                                            Volatile.Read(ref _watchdogTakeoverExit) != 0 ||
                                            !(_epb?.IsBatchSessionActive ?? false);
                 StopSafetyResult safety;
-                var reusableManualStop = _manualStopExitReceipt.TryCapture(
-                    _epb?.IsBatchSessionActive ?? false);
+                var stopSessionTask = _stopSessionReceipt.CaptureTask();
+                StopSessionReceipt combinedStop = null;
+                if (stopSessionTask != null)
+                {
+                    PostSafetyStatus("关闭请求已加入人工停止收口，正在等待组合终态…", false);
+                    var completed = await System.Threading.Tasks.Task.WhenAny(
+                            stopSessionTask,
+                            System.Threading.Tasks.Task.Delay(15000))
+                        .ConfigureAwait(true);
+                    if (!ReferenceEquals(completed, stopSessionTask))
+                    {
+                        ShowOperatorMessage(
+                            "人工停止仍在释放Watchdog会话，窗口保持可见。请稍后重试关闭。",
+                            "正在安全收口",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        _isClosing = false;
+                        Interlocked.Exchange(ref _closingReentry, 0);
+                        return false;
+                    }
+                    combinedStop = await stopSessionTask.ConfigureAwait(true);
+                }
+
+                var reusableManualStop = combinedStop?.StopSafety?.CanCloseApplication == true
+                    ? combinedStop.StopSafety
+                    : _manualStopExitReceipt.TryCapture(
+                        _epb?.IsBatchSessionActive ?? false);
                 if (reusableManualStop != null)
                 {
                     safety = reusableManualStop;
                     LogInfo(
-                        $"关闭复用已完成的人工停止安全凭证，不重复执行StopAll。" +
+                        $"关闭复用人工停止组合任务中的设备安全凭证，不重复执行StopAll。" +
                         $"CorrelationId={safety.CorrelationId}; RunId={safety.RunId:N}");
                 }
                 else
@@ -2962,7 +3072,7 @@ namespace MTEmbTest
                     {
                         _isClosing = false;
                         Interlocked.Exchange(ref _closingReentry, 0);
-                        return;
+                        return false;
                     }
                 }
 
@@ -2991,7 +3101,7 @@ namespace MTEmbTest
                     {
                         _isClosing = false;
                         Interlocked.Exchange(ref _closingReentry, 0);
-                        return;
+                        return false;
                     }
                 }
 
@@ -3004,7 +3114,7 @@ namespace MTEmbTest
             // protocol path here; it used to race the retention owner.
 
             // 只执行一次
-            if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0) return;
+            if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0) return true;
             _isClosing = true;
 
             // StopAll 已经完成物理安全和持久化边界；在窗体直接释放 DAQ/DO/液压
@@ -3265,9 +3375,13 @@ namespace MTEmbTest
 
             // 所有异步收尾和资源释放均已完成。下一轮 FormClosing 由状态 3 放行，
             // 不再在事件处理器内部调用 base.OnFormClosing，避免递归触发。
-            Interlocked.Exchange(ref _closingReentry, 3);
-            if (!IsDisposed && !Disposing && IsHandleCreated)
-                BeginInvoke((Action)Close);
+            if (closeAfterPreparation)
+            {
+                Interlocked.Exchange(ref _closingReentry, 3);
+                if (!IsDisposed && !Disposing && IsHandleCreated)
+                    BeginInvoke((Action)Close);
+            }
+            return true;
         }
 
         #endregion
@@ -5525,6 +5639,30 @@ namespace MTEmbTest
         ///     生成一次试验的落盘根目录，并拷贝关键配置，便于追溯。
         ///     命名示例：DataStore\2025-09-08_12-34-56\
         /// </summary>
+        private void PublishCurrentProjectBuildIdentity()
+        {
+            if (_cfg?.Test == null) return;
+            var configDirectory = ConfigLoader.GetProjectConfigDir(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName);
+            var projectRoot = ConfigLoader.GetProjectRootDir(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName);
+            var identity = RuntimeBuildIdentity.Capture();
+            if (identity.TryWriteProjectJson(
+                    configDirectory,
+                    _cfg.Test.TestName,
+                    projectRoot,
+                    out var path,
+                    out var error))
+            {
+                logger?.Info($"已更新项目运行构建身份：{path}", "配置");
+                return;
+            }
+
+            logger?.Warn($"写入项目运行构建身份失败：{error}", "配置");
+        }
+
         private void PrepareDataStoreDirectory()
         {
             var root = Path.Combine(Environment.CurrentDirectory, "DataStore");

@@ -80,6 +80,18 @@ namespace MTEmbTest
                 BtnStartTest.Enabled = false;
                 BtnStartTest.Cursor = System.Windows.Forms.Cursors.WaitCursor;
 
+                var pendingStop = _stopSessionReceipt.CaptureTask();
+                if (pendingStop != null)
+                {
+                    BtnStartTest.Text = "正在释放看门狗会话…";
+                    LogInfo("开始请求已加入正在执行的人工停止组合收口；终态完成后自动继续。");
+                    var stopReceipt = await pendingStop.ConfigureAwait(true);
+                    if (stopReceipt == null || !stopReceipt.CanRestart)
+                        throw new InvalidOperationException(
+                            "人工停止组合终态未完成，拒绝创建新试验会话：" +
+                            (stopReceipt?.Error ?? "MissingReceipt"));
+                }
+
                 var requestedState = _epb?.CurrentBatchPauseState ?? Controller.BatchPauseState.Idle;
                 if (requestedState == Controller.BatchPauseState.Running)
                     BtnStartTest.Text = "正在暂停…";

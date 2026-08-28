@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using Controller;
 
 namespace MTEmbTest
@@ -114,6 +115,92 @@ namespace MTEmbTest
                    !string.IsNullOrWhiteSpace(result.CorrelationId) &&
                    result.CompletedUtc != default(DateTime) &&
                    result.CanCloseApplication;
+        }
+    }
+
+    /// <summary>
+    /// Immutable combined terminal for one operator stop.  Device/persistence
+    /// completion alone never authorizes a new run; the exact Watchdog lease
+    /// and Main-owned UI resources must have reached their terminal receipt.
+    /// </summary>
+    internal sealed class StopSessionReceipt
+    {
+        internal string CommandId { get; set; } = string.Empty;
+        internal string SessionId { get; set; } = string.Empty;
+        internal long SessionGeneration { get; set; }
+        internal long SessionLease { get; set; }
+        internal StopSafetyResult StopSafety { get; set; }
+        internal RuntimeShutdownReceipt WatchdogShutdown { get; set; }
+        internal bool UiResourcesReleased { get; set; }
+        internal DateTime CompletedUtc { get; set; }
+        internal string Error { get; set; } = string.Empty;
+
+        internal bool ExactSessionTerminal =>
+            WatchdogShutdown != null && WatchdogShutdown.IsTerminal &&
+            string.Equals(SessionId, WatchdogShutdown.SessionId, StringComparison.Ordinal) &&
+            SessionGeneration == WatchdogShutdown.SessionGeneration &&
+            SessionLease == WatchdogShutdown.SessionLease;
+
+        internal bool CanRestart => StopSafety?.CanCloseApplication == true &&
+                                    ExactSessionTerminal &&
+                                    UiResourcesReleased;
+        internal bool CanClose => CanRestart;
+    }
+
+    /// <summary>
+    /// Single-flight owner shared by stop, immediate start and monitor close.
+    /// A new start explicitly revokes only a completed receipt; an in-flight
+    /// stop must first be joined and cannot be replaced by another shutdown.
+    /// </summary>
+    internal sealed class StopSessionReceiptOwner
+    {
+        private readonly object _gate = new object();
+        private TaskCompletionSource<StopSessionReceipt> _completion;
+        private StopSessionReceipt _receipt;
+
+        internal Task<StopSessionReceipt> Begin(string commandId)
+        {
+            lock (_gate)
+            {
+                if (_completion != null && !_completion.Task.IsCompleted)
+                    return _completion.Task;
+                _receipt = null;
+                _completion = new TaskCompletionSource<StopSessionReceipt>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                return _completion.Task;
+            }
+        }
+
+        internal Task<StopSessionReceipt> CaptureTask()
+        {
+            lock (_gate) return _completion?.Task;
+        }
+
+        internal void Complete(StopSessionReceipt receipt)
+        {
+            TaskCompletionSource<StopSessionReceipt> completion;
+            lock (_gate)
+            {
+                _receipt = receipt;
+                completion = _completion;
+            }
+            completion?.TrySetResult(receipt);
+        }
+
+        internal StopSessionReceipt TryCaptureCompleted()
+        {
+            lock (_gate) return _receipt?.CanClose == true ? _receipt : null;
+        }
+
+        internal void RevokeForNewStart()
+        {
+            lock (_gate)
+            {
+                if (_completion != null && !_completion.Task.IsCompleted)
+                    throw new InvalidOperationException("人工停止组合终态仍在收口，不能撤权。");
+                _receipt = null;
+                _completion = null;
+            }
         }
     }
 }

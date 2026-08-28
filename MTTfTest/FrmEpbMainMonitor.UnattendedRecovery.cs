@@ -248,7 +248,9 @@ namespace MTEmbTest
                 manualPausePending ? "ManualPausePending" :
                 manualPauseActive ? "ManualPaused" :
                 states.Any(x => x.State == ChannelRuntimeState.Learning) ? "Learning" :
-                states.Any(x => x.State == ChannelRuntimeState.Running || x.State == ChannelRuntimeState.WarningRunning) ? "Formal" :
+                states.Any(x => x.State == ChannelRuntimeState.Running ||
+                                x.State == ChannelRuntimeState.WarningRunning ||
+                                x.State == ChannelRuntimeState.WaitingForSlotBarrier) ? "Formal" :
                 recovering.Length > 0 ? "Recovering" :
                 (logical?.BatchSessionActive ?? false) ? "Paused" : "Idle";
             var watchdogRunId = aggregate?.Infrastructure?.RunId ?? Guid.Empty;
