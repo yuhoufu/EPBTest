@@ -821,6 +821,22 @@ namespace Controller.Adaptive
                     }
                 }
 
+                // 缺少本圈空载基线只能阻止“夹紧成功”归因，不能放宽堵转保护。
+                // 当快速负载上升已经越过高负载区并形成约 200ms 欠目标平台时，
+                // 无论当前仍停留在 EmptyTravel 还是已经进入 LoadRise，都必须在
+                // 本窗口立即结束正向上电。连续圈策略只决定是否永久报警，不能
+                // 把当前电机继续带载到 5/9 秒硬截止。
+                var emptyTravelBaselineA = historicalBaselineAvailable
+                    ? _profile.ForwardEmptyCurrentA
+                    : Math.Max(1.0, _observedForwardEmptyA);
+                if (TryFaultForwardUnderTargetHighLoadPlateau(
+                        tick,
+                        current,
+                        Math.Max(_peakCurrentA, _observedFullRatePeakA),
+                        emptyTravelBaselineA,
+                        decision))
+                    return;
+
                 if (_observedForwardEmptyA > 0)
                 {
                     // 本圈观测优先。历史画像只用于后续学习/审计，不能收紧本圈
@@ -940,6 +956,15 @@ namespace Controller.Adaptive
                 var highLoadPlateauFloorA = Math.Max(
                     forwardEmptyBaselineA + 2.0,
                     _forwardA * 0.60);
+
+                if (TryFaultForwardUnderTargetHighLoadPlateau(
+                        tick,
+                        current,
+                        effectiveObservedPeakA,
+                        forwardEmptyBaselineA,
+                        decision))
+                    return;
+
                 if (_loadRiseStartTick != 0 &&
                     effectiveObservedPeakA >= highLoadPlateauFloorA &&
                     TryGetLinearSlope(
@@ -1041,6 +1066,58 @@ namespace Controller.Adaptive
                         reason);
                 }
             }
+        }
+
+        private bool TryFaultForwardUnderTargetHighLoadPlateau(
+            long tick,
+            double current,
+            double effectiveObservedPeakA,
+            double forwardEmptyBaselineA,
+            EpbAdaptiveDecision decision)
+        {
+            var highLoadPlateauFloorA = Math.Max(
+                Math.Max(1.0, forwardEmptyBaselineA) + 2.0,
+                _forwardA * 0.60);
+            var acceptableFloorA = Math.Max(
+                0,
+                _forwardA - _safetyLimits.ForwardAcceptableUndershootA);
+            var lowTargetPlateauFloorA = Math.Min(
+                acceptableFloorA,
+                _forwardA * MinimumLowTargetPlateauFraction);
+
+            // 达到低目标合格线时仍由既有 NearTarget/LowTarget 逻辑完成本圈；
+            // 这里只处理低于合格线、但已经足以造成堵转热风险的平台。
+            if (effectiveObservedPeakA < highLoadPlateauFloorA ||
+                effectiveObservedPeakA >= lowTargetPlateauFloorA ||
+                current >= lowTargetPlateauFloorA)
+                return false;
+
+            var confirmMs = _safetyLimits.ForwardProgressConfirmMs;
+            if (!TryGetLinearSlope(
+                    tick,
+                    confirmMs + 20,
+                    confirmMs,
+                    out var stats,
+                    out var slope) ||
+                // P10 位于高负载区是比仅检查 P90 更稳健的连续平台证据；
+                // 它同时满足 P90 高负载要求，并排除孤立高点和短促毛刺。
+                stats.P10 < highLoadPlateauFloorA ||
+                stats.P90 >= lowTargetPlateauFloorA ||
+                slope > _safetyLimits.ForwardMinimumRiseSlopeAperMs)
+                return false;
+
+            ApplyWindowDiagnostics(decision, stats);
+            decision.EstimatedSlopeAperMs = slope;
+            Fault(
+                decision,
+                $"ForwardUnderTargetHighLoadStall Peak={effectiveObservedPeakA:F3}A " +
+                $"I={current:F3}A HighLoadFloor={highLoadPlateauFloorA:F3}A " +
+                $"CompletionFloor={lowTargetPlateauFloorA:F3}A Target={_forwardA:F3}A " +
+                $"p10={stats.P10:F3}A p90={stats.P90:F3}A " +
+                $"slope={slope:F6}A/ms " +
+                $"limit={_safetyLimits.ForwardMinimumRiseSlopeAperMs:F6}A/ms " +
+                $"confirm={stats.SpanMs}ms");
+            return true;
         }
 
         private void CompleteForwardClamp(

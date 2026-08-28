@@ -3235,6 +3235,59 @@ namespace Controller
             }
         }
 
+        /// <summary>
+        /// Complete a bounded recovery attempt without converting it into a
+        /// permanent safe terminal. The retry stays in the same run/epoch,
+        /// clears the recovery owner through an incident-correlated lifecycle
+        /// publication, and deliberately keeps Runner/Timer/permit resources.
+        /// </summary>
+        private void CommitRecoveryIncidentStateForRetry(
+            RecoveryContractSnapshot contract,
+            ChannelRuntimeState retryState,
+            string reasonCode,
+            string reasonText)
+        {
+            if (contract == null) return;
+            if (retryState != ChannelRuntimeState.Starting &&
+                retryState != ChannelRuntimeState.Learning &&
+                retryState != ChannelRuntimeState.Running &&
+                retryState != ChannelRuntimeState.WarningRunning)
+                throw new ArgumentOutOfRangeException(
+                    nameof(retryState),
+                    retryState,
+                    "RetryReady 只能回到可继续执行的非终态。");
+
+            foreach (var channel in contract.Channels ?? Array.Empty<int>())
+            {
+                var current = _channelRuntimeStateStore.Get(channel);
+                var sameOwner = current != null &&
+                                current.State == ChannelRuntimeState.Recovering &&
+                                current.RunId == contract.RunId &&
+                                current.RunEpoch == contract.RunEpoch &&
+                                current.RecoveryOwnerKind == contract.OwnerKind &&
+                                current.RecoveryTargetPhase == contract.TargetPhase &&
+                                current.RecoveryOwnerId == contract.OwnerId &&
+                                current.RecoveryOwnerGeneration == contract.RunEpoch;
+                if (!sameOwner)
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] RetryReady提交时恢复所有权已变化；" +
+                        $"Incident={contract.IncidentId:N} State={current?.State} " +
+                        $"Owner={current?.RecoveryOwnerKind}/{current?.RecoveryOwnerId:N}。");
+
+                PublishChannelRuntimeState(
+                    channel,
+                    retryState,
+                    reasonCode ?? "RecoveryRetryReady",
+                    reasonText ?? "恢复尝试已完成，原执行流程继续重试。",
+                    affectedChannels: contract.Channels,
+                    correlationId: contract.IncidentId,
+                    allowTerminalReset: true,
+                    allowSystemFaultReset: false,
+                    runIdOverride: contract.RunId,
+                    runEpochOverride: contract.RunEpoch);
+            }
+        }
+
         private bool IsRecoveryTerminalStateCommitted(
             RecoveryContractSnapshot contract)
         {
@@ -4657,43 +4710,78 @@ namespace Controller
                 "已安全断电，本圈作废并自动重试。",
                 ex => _log?.Warn($"EPB[{channel}] 预警观察者异常已隔离：{ex.Message}", "EPB"));
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "ConfirmedFaultWarning")) return;
-            var pauseCompletion = _timers.TryGetValue(channel, out var timer)
-                ? timer.PauseAfterCurrentCycleAsync($"RecoverableWarning:{faultCode}")
-                : Task.CompletedTask;
-            UnmarkHydraulicParticipant(channel);
-            Task releaseTask;
-            try { releaseTask = HydraulicMarkReleaseAsync(channel); }
-            catch (Exception ex) { releaseTask = Task.FromException(ex); }
-            var cutoffUtc = DateTime.UtcNow;
-            var cutoffCycles = CaptureSoftwareRecoveryCycles(new[] { channel });
-            TrySealSoftwareRecoveryCycleWindows(
-                cutoffCycles,
-                cutoffUtc,
-                $"{faultCode} Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}");
-            _log.Warn(
-                $"EPB[{channel}] 非电流故障未达到报警门槛，已安全断电并封闭当前尝试圈时间窗。" +
-                $"Code={faultCode} Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}",
-                "EPB");
-            ObserveBackgroundTask(Task.Run(async () =>
+
+            var currentLifecycle = _channelRuntimeStateStore.Get(channel);
+            if (currentLifecycle?.State == ChannelRuntimeState.Recovering)
             {
-                try
+                _log?.Info(
+                    $"RecoverableWarningDelegatedToLifecycleOwner EPB={channel} " +
+                    $"State={currentLifecycle.State} " +
+                    $"Owner={currentLifecycle.RecoveryOwnerKind} " +
+                    $"Target={currentLifecycle.RecoveryTargetPhase} Code={faultCode}",
+                    "EPB");
+                return;
+            }
+
+            var recoveryRunId = currentLifecycle != null &&
+                                currentLifecycle.RunId != Guid.Empty
+                ? currentLifecycle.RunId
+                : _activeBatchId;
+            var recoveryRunEpoch = currentLifecycle != null &&
+                                   currentLifecycle.RunEpoch > 0
+                ? currentLifecycle.RunEpoch
+                : Interlocked.Read(ref _runEpoch);
+            var restartCancellation = new CancellationTokenSource();
+            if (!_recoverableChannelRestartJobs.TryAdd(channel, restartCancellation))
+            {
+                restartCancellation.Dispose();
+                _log?.Info(
+                    $"RecoverableWarningAlreadyOwned EPB={channel} Code={faultCode}",
+                    "EPB");
+                return;
+            }
+
+            RecoveryIncidentHandle recoveryIncident = null;
+            Func<Task> BuildRecoveryWorker()
+            {
+                return async () =>
                 {
+                    var token = restartCancellation.Token;
+                    var pauseCompletion = _timers.TryGetValue(channel, out var timer)
+                        ? timer.PauseAfterCurrentCycleAsync($"RecoverableWarning:{faultCode}")
+                        : Task.CompletedTask;
+                    UnmarkHydraulicParticipant(channel);
+                    Task releaseTask;
+                    try { releaseTask = HydraulicMarkReleaseAsync(channel); }
+                    catch (Exception ex) { releaseTask = Task.FromException(ex); }
+                    var cutoffUtc = DateTime.UtcNow;
+                    var cutoffCycles = CaptureSoftwareRecoveryCycles(new[] { channel });
+                    TrySealSoftwareRecoveryCycleWindows(
+                        cutoffCycles,
+                        cutoffUtc,
+                        $"{faultCode} Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}");
+                    _log.Warn(
+                        $"EPB[{channel}] 可恢复故障未达到报警门槛，已安全断电并由恢复Owner封闭当前尝试圈。" +
+                        $"Code={faultCode} Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}",
+                        "EPB");
+
                     await Task.WhenAll(pauseCompletion, releaseTask).ConfigureAwait(false);
                     if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
                             cutoffCycles,
                             cutoffUtc,
                             $"RecoverableWarning:{faultCode}",
                             _daqPersistenceRecoveryTimeoutMs,
-                            CancellationToken.None)
+                            token)
                         .ConfigureAwait(false))
                         throw new SoftwareSelfHealingRetryException(
                             "警告圈截止 Raw/耐久边界尚未闭合；保持停机并转入持续恢复。");
+                    token.ThrowIfCancellationRequested();
                     if (!_timers.ContainsKey(channel) ||
                         IsAlarmStopRequested(channel) ||
                         _channelPausedUtc.ContainsKey(channel) ||
                         ShouldHoldDaqRecoveredChannelsForBatchPause(CurrentBatchPauseState))
                         return;
-                    var currentLifecycle = _channelRuntimeStateStore.Get(channel);
+                    currentLifecycle = _channelRuntimeStateStore.Get(channel);
                     if (!CanRouteRecoverableWarningToFormalRejoin(
                             currentLifecycle,
                             IsFormalPhaseCommitted))
@@ -4714,6 +4802,52 @@ namespace Controller
                         "RecoverableWarningSelfHealed",
                         "警告圈已安全断电并完成机械释放，按未来完整节律槽自动重试",
                         allowTerminalReset: false);
+                };
+            }
+
+            if (!TryBeginRecoveryIncident(
+                    "RecoverableWarningRetry",
+                    recoveryRunId,
+                    recoveryRunEpoch,
+                    RecoveryOwnerKind.FormalTimer,
+                    RecoveryTargetPhase.Formal,
+                    correlationId,
+                    new[] { channel },
+                    _ => BuildRecoveryWorker(),
+                    contract => PublishRecoveryIncidentState(
+                        channel,
+                        ChannelRuntimeState.Recovering,
+                        "RecoverableWarningRecovery",
+                        $"{faultCode} 单次观察已断电；恢复Owner正在封存本圈并安排受监管重试。",
+                        affectedChannels: contract.Channels,
+                        correlationId: contract.IncidentId,
+                        allowTerminalReset: true,
+                        recoveryOwnerKind: contract.OwnerKind,
+                        recoveryTargetPhase: contract.TargetPhase,
+                        recoveryOwnerId: contract.OwnerId,
+                        recoveryOwnerGeneration: contract.RunEpoch),
+                    out recoveryIncident,
+                    correlationId))
+            {
+                _recoverableChannelRestartJobs.TryRemove(channel, out _);
+                restartCancellation.Dispose();
+                return;
+            }
+
+            async Task ObserveRecoveryAsync()
+            {
+                try
+                {
+                    if (!recoveryIncident.Start())
+                        throw new InvalidOperationException(
+                            $"EPB[{channel}] 可恢复预警Owner启动许可被拒绝。");
+                    await recoveryIncident.WorkerTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (restartCancellation.IsCancellationRequested)
+                {
+                    _log?.Info(
+                        $"EPB[{channel}] 可恢复预警重试已由停止流程取消。Code={faultCode}",
+                        "EPB");
                 }
                 catch (Exception ex)
                 {
@@ -4727,7 +4861,23 @@ namespace Controller
                         ex.Message,
                         "EPB");
                 }
-            }), "RecoverableWarningRetry", channel);
+                finally
+                {
+                    recoveryIncident.CompleteAfterTerminal(contract =>
+                        CommitRecoveryIncidentStateForRelease(
+                            contract,
+                            "RecoverableWarningRecoveryCommitted",
+                            "可恢复预警Owner已完成重入或安全终态提交。"));
+                    _recoverableChannelRestartJobs.TryRemove(channel, out _);
+                    restartCancellation.Dispose();
+                }
+            }
+
+            _taskSupervisor.Observe(
+                ObserveRecoveryAsync(),
+                "RecoverableWarningRetry",
+                _activeBatchId,
+                channel);
         }
 
         internal static bool CanRouteRecoverableWarningToFormalRejoin(
@@ -4738,7 +4888,11 @@ namespace Controller
                 !lifecycle.FormalPhaseCommitted)
                 return false;
             return lifecycle.State == ChannelRuntimeState.Running ||
-                   lifecycle.State == ChannelRuntimeState.WarningRunning;
+                   lifecycle.State == ChannelRuntimeState.WarningRunning ||
+                   (lifecycle.State == ChannelRuntimeState.Recovering &&
+                    lifecycle.RecoveryOwnerKind == RecoveryOwnerKind.FormalTimer &&
+                    lifecycle.RecoveryTargetPhase == RecoveryTargetPhase.Formal &&
+                    RecoveryOwnershipPolicy.IsOwnerCurrent(lifecycle));
         }
 
         internal static bool IsImmediateCurrentHardFault(string reason)
@@ -12363,8 +12517,39 @@ namespace Controller
                             ?? throw new InvalidOperationException($"EPB[{ch}] Runner 类型不支持启动定位。");
                         var detectMs = Math.Max(1, runner.DefaultPreReleaseDetectTimeoutMs);
                         var attempt = 0;
+                        var executionRepairAttempt = 0;
                         while (true)
                         {
+                            if (!TryEnsureStartupPositioningExecutionResources(
+                                    ch,
+                                    runId,
+                                    ref concreteRunner,
+                                    out var executionRepairFailure))
+                            {
+                                executionRepairAttempt++;
+                                if (ShouldEscalateSoftwareRecovery(executionRepairAttempt))
+                                    throw new SoftwareSelfHealingExhaustedException(
+                                        "StartupPositioningExecutionFramework",
+                                        executionRepairAttempt,
+                                        new SoftwareSelfHealingRetryException(
+                                            $"EPB[{ch}] 启动定位执行框架连续{executionRepairAttempt}次未恢复。" +
+                                            executionRepairFailure),
+                                        ch);
+                                var repairDelayMs = GetDaqSelfMaintenanceDelayMs(executionRepairAttempt);
+                                await RunStartupPositioningRetryIncidentAsync(
+                                        ch,
+                                        runId,
+                                        executionRepairAttempt,
+                                        "StartupPositioningExecutionFrameworkRepair",
+                                        $"Runner/执行许可校验未通过；{repairDelayMs}ms后修复重试，" +
+                                        "不占用机械定位尝试次数。" + executionRepairFailure,
+                                        repairDelayMs,
+                                        ct,
+                                        "StartupPositioningExecutionRepairOff")
+                                    .ConfigureAwait(false);
+                                continue;
+                            }
+                            executionRepairAttempt = 0;
                             attempt++;
                             StartupPositioningResult result;
                             try
@@ -12394,7 +12579,8 @@ namespace Controller
                                             attempt,
                                             new SoftwareSelfHealingRetryException(
                                                 $"EPB[{ch}] 启动定位断电连续{attempt}次未确认。",
-                                                ex));
+                                                ex),
+                                            ch);
                                     var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                                     try
                                     {
@@ -12423,7 +12609,8 @@ namespace Controller
                                         attempt,
                                         new SoftwareSelfHealingRetryException(
                                             $"EPB[{ch}] 启动定位连续{attempt}次软件异常。",
-                                            ex));
+                                            ex),
+                                        ch);
                                 var exceptionDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                                 _log.Warn(
                                     $"EPB[{ch}] 启动定位抛出软件异常，自动重试且不标记启动受阻。" +
@@ -12471,7 +12658,8 @@ namespace Controller
                                         "StartupPositioningOutputOff",
                                         attempt,
                                         new SoftwareSelfHealingRetryException(
-                                            $"EPB[{ch}] 启动定位重试前断电连续{attempt}次未确认。"));
+                                            $"EPB[{ch}] 启动定位重试前断电连续{attempt}次未确认。"),
+                                        ch);
                                 var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                                 try
                                 {
@@ -12500,7 +12688,8 @@ namespace Controller
                                     attempt,
                                     new SoftwareSelfHealingRetryException(
                                         $"EPB[{ch}] 启动定位连续{attempt}次软件瞬态未通过。" +
-                                        $"Code={result.Code} Reason={result.Reason}"));
+                                        $"Code={result.Code} Reason={result.Reason}"),
+                                    ch);
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                             _log.Warn(
                                 $"EPB[{ch}] 启动定位软件瞬态自动重试，不标记启动受阻。" +

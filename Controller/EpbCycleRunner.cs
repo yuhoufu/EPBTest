@@ -531,7 +531,8 @@ namespace Controller
                         startupAttempt,
                         new SoftwareSelfHealingRetryException(
                             $"EPB[{_channel}] 学习启动定位连续{startupAttempt}次软件瞬态未通过。" +
-                            $"Code={startup.Code} Reason={startup.Reason}"));
+                            $"Code={startup.Code} Reason={startup.Reason}"),
+                        _channel);
 
                 var delayMs = EpbManager.GetDaqSelfMaintenanceDelayMs(startupAttempt);
                 _log.Warn(

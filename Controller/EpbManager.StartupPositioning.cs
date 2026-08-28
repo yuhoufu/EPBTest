@@ -12,6 +12,78 @@ namespace Controller
     public sealed partial class EpbManager
     {
         /// <summary>
+        /// A RetryReady transition must preserve these resources. If a legacy
+        /// terminal path revoked them, repair only while the same startup
+        /// run/epoch is still authoritative and every output is confirmed OFF.
+        /// Framework repair attempts are not mechanical positioning attempts.
+        /// </summary>
+        private bool TryEnsureStartupPositioningExecutionResources(
+            int channel,
+            Guid runId,
+            ref EpbCycleRunner runner,
+            out string failure)
+        {
+            failure = string.Empty;
+            var permit = _channelExecutionFence.Capture(channel);
+            if (IsChannelExecutionPermitCurrent(channel, permit) &&
+                runner != null &&
+                runner.IsBoundToExecutionPermit(permit))
+                return true;
+
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var lifecycle = _channelRuntimeStateStore.Get(channel);
+            if (runId == Guid.Empty || _activeBatchId != runId ||
+                lifecycle == null || lifecycle.RunId != runId ||
+                lifecycle.RunEpoch != runEpoch ||
+                lifecycle.State != ChannelRuntimeState.Starting ||
+                Volatile.Read(ref _energizationRevoked) != 0 ||
+                RequiresProcessRestart || !IsChannelEnabled(channel))
+            {
+                failure =
+                    $"StartupExecutionRepairRejected Run={runId:N} Active={_activeBatchId:N} " +
+                    $"Epoch={runEpoch} State={lifecycle?.State} " +
+                    $"StateRun={lifecycle?.RunId:N}/{lifecycle?.RunEpoch} " +
+                    $"Revoked={Volatile.Read(ref _energizationRevoked)} Restart={RequiresProcessRestart}";
+                return false;
+            }
+
+            if (!CommandEpbOffSafetyImmediate(channel))
+            {
+                failure = "StartupExecutionRepairOffNotConfirmed";
+                return false;
+            }
+
+            try
+            {
+                // Authorize creates a fresh permit generation and cancels any
+                // legacy permit. Recreate the Runner so it cannot retain the
+                // canceled generation in its private command fence.
+                AuthorizeChannelExecution(channel, runEpoch);
+                RemoveRunnerRuntime(channel, "StartupPositioningExecutionRepair");
+                runner = GetRunner(channel) as EpbCycleRunner;
+                permit = _channelExecutionFence.Capture(channel);
+                if (runner == null ||
+                    !IsChannelExecutionPermitCurrent(channel, permit) ||
+                    !runner.IsBoundToExecutionPermit(permit))
+                {
+                    failure = "StartupExecutionRepairPermitOrRunnerMissing";
+                    return false;
+                }
+
+                _log?.Warn(
+                    $"EPB[{channel}] 已在同一启动 run/epoch 内修复 Runner/执行许可；" +
+                    "本次框架修复不计入启动定位尝试次数。",
+                    "EPB");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = "StartupExecutionRepairFailed:" + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Performs one startup-positioning retry under a real recovery
         /// worker.  The worker owns the output-off confirmation and backoff;
         /// no caller/stagger executor Task is registered as the owner.
@@ -99,8 +171,9 @@ namespace Controller
             finally
             {
                 recoveryIncident.CompleteAfterTerminal(contract =>
-                    CommitRecoveryIncidentStateForRelease(
+                    CommitRecoveryIncidentStateForRetry(
                         contract,
+                        ChannelRuntimeState.Starting,
                         "StartupPositioningRetryReady",
                         "启动定位重试前安全断电已确认，继续当前定位流程。"));
             }

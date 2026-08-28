@@ -276,8 +276,37 @@ namespace Controller
                     if (forwardClassifier.HasHighCurrentCandidate) continue;
                     var decision = forwardDetector.OnSample(Stopwatch.GetTimestamp(), currentA);
                     if (decision.HardFault)
+                    {
+                        if (!CommandOffHighPriority("StartupForwardTerminalProtection"))
+                            return Result(false, stage, StartupPositioningCompletionKind.None,
+                                "ForwardOffCommandFailed",
+                                $"正向定位保护断电命令失败：{decision.Reason}");
+                        CancelStartupPeakCapture(ref forwardPeakCapture);
+                        var faultOff = await PollOffCurrentUntilClearAsync(
+                                ReadOffCurrentSample,
+                                _adaptiveSafetyLimits.OffCurrentClearThresholdA,
+                                _adaptiveSafetyLimits.OffCurrentClearTimeoutMs,
+                                _sampleMs,
+                                token)
+                            .ConfigureAwait(false);
+                        AddTrace(
+                            faultOff.CurrentA,
+                            faultOff.Cleared
+                                ? "ForwardProtectionOffCleared"
+                                : "ForwardProtectionOffNotCleared");
+                        if (!faultOff.SampleFresh)
+                            return Result(false, stage, StartupPositioningCompletionKind.None,
+                                "DaqSampleStale",
+                                $"正向定位保护断电确认时DAQ样本陈旧：" +
+                                $"Age={faultOff.SampleAgeMs:F1}ms；Root={decision.Reason}");
+                        if (!faultOff.Cleared)
+                            return Result(false, stage, StartupPositioningCompletionKind.None,
+                                "ForwardOffCurrentNotCleared",
+                                $"正向定位保护断电后电流未清零：I={faultOff.CurrentA:F3}A，" +
+                                $"Elapsed={faultOff.ElapsedMs}ms；Root={decision.Reason}");
                         return Result(false, stage, StartupPositioningCompletionKind.None,
                             "ForwardPositioningFault", decision.Reason);
+                    }
                     if (decision.Stage == EpbCurrentStage.LoadRise || decision.ClampReached)
                     {
                         AddTrace(currentA, "ForwardLoadRise");

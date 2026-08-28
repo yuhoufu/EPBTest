@@ -2005,6 +2005,11 @@ namespace Controller
                 var failedRunId = _activeBatchId == Guid.Empty ? Guid.NewGuid() : _activeBatchId;
                 var circuitFailure = FindInnerException<SoftwareSelfHealingExhaustedException>(ex);
                 var circuitOpen = circuitFailure != null;
+                var failureChannels = ResolveBatchStartFailureChannels(
+                    circuitFailure,
+                    startFaults,
+                    selected);
+                var failureSet = new HashSet<int>(failureChannels);
                 var expectedCancellation = IsExpectedBatchCancellation(
                     ex,
                     sessionToken.IsCancellationRequested,
@@ -2041,12 +2046,28 @@ namespace Controller
                         }
                         else
                         {
-                            PublishStartBlockedAfterCleanup(
-                                channel,
-                                "StartFailed",
-                                ex.Message,
-                                failedRunId,
-                                selected);
+                            if (failureSet.Contains(channel))
+                            {
+                                PublishStartBlockedAfterCleanup(
+                                    channel,
+                                    "StartFailed",
+                                    ex.Message,
+                                    failedRunId,
+                                    failureChannels);
+                            }
+                            else
+                            {
+                                StopChannelForInternalCleanup(channel);
+                                PublishChannelRuntimeState(
+                                    channel,
+                                    ChannelRuntimeState.ManualStopped,
+                                    "StartPeerFailedSafeStopped",
+                                    $"同批故障通道[{string.Join(",", failureChannels)}]启动失败；" +
+                                    "本通道无失败证据，已安全停止并保留再次启动资格。",
+                                    affectedChannels: failureChannels,
+                                    correlationId: failedRunId,
+                                    allowTerminalReset: true);
+                            }
                         }
                     }
                     catch (Exception stopEx)
@@ -2079,13 +2100,15 @@ namespace Controller
                 {
                     await ExportSoftwareRecoveryCircuitDiagnosticOnceAsync(
                             circuitFailure,
-                            selected)
+                            failureChannels)
                         .ConfigureAwait(false);
                     var fault = new ControlFault(
                         "SoftwareRecoveryCircuitOpen",
                         ex.Message,
-                        FaultScope.Global,
-                        selected,
+                        failureChannels.Length == selected.Length
+                            ? FaultScope.Global
+                            : FaultScope.Channel,
+                        failureChannels,
                         null,
                         DateTime.UtcNow,
                         Guid.NewGuid(),
@@ -2100,6 +2123,33 @@ namespace Controller
 
                 throw;
             }
+        }
+
+        internal static int[] ResolveBatchStartFailureChannels(
+            SoftwareSelfHealingExhaustedException circuitFailure,
+            IEnumerable<ChannelStartFault> startFaults,
+            IEnumerable<int> selectedChannels)
+        {
+            var selected = (selectedChannels ?? Enumerable.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (circuitFailure?.FailedChannel is int failedChannel &&
+                selected.Contains(failedChannel))
+                return new[] { failedChannel };
+
+            // A circuit without a channel identity (DAQ/global power/startup
+            // infrastructure) is genuinely batch-scoped. For non-circuit
+            // failures, retain any channel-specific evidence already collected.
+            if (circuitFailure != null) return selected;
+            var evidenced = (startFaults ?? Enumerable.Empty<ChannelStartFault>())
+                .Select(fault => fault.Channel)
+                .Where(selected.Contains)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            return evidenced.Length > 0 ? evidenced : selected;
         }
 
         private async Task EnsureDaqReadyBeforeStartAsync(
@@ -4143,8 +4193,9 @@ namespace Controller
             finally
             {
                 recoveryIncident.CompleteAfterTerminal(contract =>
-                    CommitRecoveryIncidentStateForRelease(
+                    CommitRecoveryIncidentStateForRetry(
                         contract,
+                        ChannelRuntimeState.Learning,
                         "LearningPersistenceRetryReady",
                         "学习圈失败尝试已安全封存，准备重做同一逻辑学习圈。"));
             }

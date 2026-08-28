@@ -358,21 +358,12 @@ namespace Controller
             StopSafetyProductionState state)
         {
             var context = state.Context;
-            try
-            {
-                var terminalStatus = context.Source == StopSource.TargetCompleted
-                    ? "Successful"
-                    : context.Source == StopSource.AlarmInterlock ? "Failed" : "Cancelled";
-                EndBatchSession(
-                    cancel: true,
-                    publishIdleState: false,
-                    terminalStatus: terminalStatus,
-                    terminalReason: context.Reason);
-            }
-            catch (Exception ex)
-            {
-                return StopSafetyPortResult.Failure("撤销批次授权失败: " + ex.Message);
-            }
+            // 两秒快速隔离阶段只撤销准入和代次。EndBatchSession 会同步触发
+            // CancellationToken 回调、清理全局液压槽和会话对象，现场四通道曾
+            // 因该长尾让本阶段误超时并升级“需重启软件”。这些耗时清场统一移到
+            // 具有 5 秒预算的 ClearTimerAndRunner 阶段。
+            Interlocked.Exchange(ref _batchSessionActive, 0);
+            Interlocked.Exchange(ref _formalPhaseCommitted, 0);
             Volatile.Write(ref _energizationRevoked, 1);
             Interlocked.Increment(ref _runEpoch);
             foreach (var channel in Enumerable.Range(1, 12))
@@ -504,6 +495,23 @@ namespace Controller
         {
             if (!state.RuntimeObjectsFrozen)
             {
+                try
+                {
+                    var terminalStatus = state.Context.Source == StopSource.TargetCompleted
+                        ? "Successful"
+                        : state.Context.Source == StopSource.AlarmInterlock
+                            ? "Failed"
+                            : "Cancelled";
+                    EndBatchSession(
+                        cancel: true,
+                        publishIdleState: false,
+                        terminalStatus: terminalStatus,
+                        terminalReason: state.Context.Reason);
+                }
+                catch (Exception ex)
+                {
+                    state.FreezeErrors.Add("EndBatchSession:" + ex.Message);
+                }
                 foreach (var channel in state.Channels)
                 {
                     try { RemoveTimerRuntime(channel, "StopSafetyTransaction"); }

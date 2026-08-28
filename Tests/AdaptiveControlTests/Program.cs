@@ -470,7 +470,8 @@ namespace AdaptiveControlTests
                 Run("正向低平台200ms立即断电并软预警", ForwardCurrentRiseStallWarnsAndCutsPower);
                 Run("14.6A近目标平台200ms软完成", NearTargetPlateauCompletesWithWarning);
                 Run("EPB10第85993圈首样本越阈值不再误报高位平台", Epb10Cycle85993RapidLoadRiseReplay);
-                Run("2.13.0.16现场中段平台不得提前断电", RapidLoadRiseMidTravelPlateauDoesNotCutPower);
+                Run("10.8A高负载平台200ms立即断电", RapidLoadRiseMidTravelPlateauCutsPower);
+                Run("高负载短过渡不足确认窗不误切", ShortHighLoadTransitionDoesNotCutPower);
                 Run("13.9A短平台恢复后不误停", LowPlateauRecoversBeforeFaultWindow);
                 Run("13.9A持续平台按低目标预警完成", Sustained139AmpPlateauWarns);
                 Run("EPB10第28圈全数据峰值回放", Epb10Cycle28FullRatePeakReplay);
@@ -1164,7 +1165,7 @@ namespace AdaptiveControlTests
                 "85993快速负载回放未保留可审计诊断或安全等待状态。");
         }
 
-        private static void RapidLoadRiseMidTravelPlateauDoesNotCutPower()
+        private static void RapidLoadRiseMidTravelPlateauCutsPower()
         {
             var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
             machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
@@ -1191,18 +1192,43 @@ namespace AdaptiveControlTests
                 ms => Math.Min(10.8, 2.318 + (ms - 109) * 0.04));
             var midTravelPlateau = Feed(machine, 369, 699, 10, _ => 10.8);
             Assert(
-                !midTravelPlateau.ClampReached && !midTravelPlateau.HardFault,
-                $"10.8A中段平台被提前断电：{midTravelPlateau.Reason}");
+                midTravelPlateau.HardFault &&
+                !midTravelPlateau.ClampReached &&
+                midTravelPlateau.Reason.Contains("ForwardUnderTargetHighLoadStall") &&
+                midTravelPlateau.WindowSpanMs >= 200 &&
+                midTravelPlateau.WindowSpanMs <= 240,
+                $"10.8A高负载平台未在一个确认窗内安全断电：{midTravelPlateau.Reason}");
+        }
+
+        private static void ShortHighLoadTransitionDoesNotCutPower()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+
+            Feed(machine, 0, 100, 10, _ => 1.0);
+            Feed(
+                machine,
+                110,
+                330,
+                10,
+                ms => Math.Min(10.8, 1.0 + (ms - 100) * 0.05));
+
+            // 10.8A只停留150ms，低于200ms确认窗；随后继续正常上升。
+            // 这条用例约束保护必须依据连续平台，而不能对短促过渡或孤立尖峰过敏。
+            var shortTransition = Feed(machine, 340, 480, 10, _ => 10.8);
+            Assert(
+                !shortTransition.HardFault && !shortTransition.ClampReached,
+                $"不足确认窗的高负载过渡被误切：{shortTransition.Reason}");
 
             var completed = Feed(
                 machine,
-                709,
-                1300,
+                490,
+                900,
                 10,
-                ms => Math.Min(15.0, 10.8 + (ms - 699) * 0.012));
+                ms => Math.Min(15.0, 10.8 + (ms - 480) * 0.025));
             Assert(
                 completed.ClampReached && !completed.HardFault,
-                $"中段平台恢复上升后未能达到目标：{completed.Reason}");
+                $"短暂高负载过渡恢复上升后未能达到目标：{completed.Reason}");
         }
 
         private static void FullRateRapidClampBeforeLoadRiseIsAccepted()
