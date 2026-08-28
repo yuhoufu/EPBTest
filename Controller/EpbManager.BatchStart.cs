@@ -199,6 +199,8 @@ namespace Controller
         private ElectricalStaggerPlan _activeStaggerPlan;
         private readonly GlobalHydraulicSlotCoordinator _globalHydraulicSlots =
             new GlobalHydraulicSlotCoordinator();
+        private readonly FormalBatchSlotCoordinator _formalBatchSlots =
+            new FormalBatchSlotCoordinator();
         private readonly int _globalFormalSlotAdmissionWindowMs;
         private readonly ConcurrentDictionary<
             GlobalHydraulicSlotKey,
@@ -2921,6 +2923,7 @@ namespace Controller
 
             Interlocked.Exchange(ref _batchSessionActive, 0);
             Interlocked.Exchange(ref _formalPhaseCommitted, 0);
+            _formalBatchSlots.ClearRun(_activeBatchId);
             _globalHydraulicSlots.ClearRun(_activeBatchId);
             ClearDaqMechanicalRequalificationFences();
             foreach (var key in _globalHydraulicParticipantSnapshots.Keys
@@ -3114,6 +3117,74 @@ namespace Controller
                             // cycleIndex 是本计时器的逻辑圈序号；所有组员使用共同首槽，
                             // 因而即使实际回调有毫秒级抖动，也不会在周期边界两侧分槽。
                             var phaseSlot = firstFormalSlot + cycleIndex - 1L;
+                            var callbackStopwatch = Stopwatch.StartNew();
+                            FormalBatchSlotScope formalSlotScope;
+                            try
+                            {
+                                var slotParticipants = CaptureGlobalFormalParticipants(
+                                        _activeBatchId,
+                                        staggerPlan,
+                                        phaseSlot)
+                                    .Values
+                                    .SelectMany(members => members ?? Array.Empty<int>())
+                                    .Distinct()
+                                    .OrderBy(member => member)
+                                    .ToArray();
+                                formalSlotScope = await _formalBatchSlots.EnterAsync(
+                                        _activeBatchId,
+                                        phaseSlot,
+                                        ch,
+                                        slotParticipants,
+                                        t0,
+                                        PeriodMs,
+                                        () => PublishChannelRuntimeState(
+                                            ch,
+                                            ChannelRuntimeState.WaitingForSlotBarrier,
+                                            "WaitingForSlotBarrier",
+                                            "本卡钳已关闭输出，等待同一正式周期槽安全收尾"),
+                                        token,
+                                        () =>
+                                        {
+                                            var fallbackMotorOff = !IsChannelEnergized(ch);
+                                            var fallbackHydraulicReleased =
+                                                !_hydraulicLeaseByChannel.TryGetValue(
+                                                    ch,
+                                                    out var fallbackLease) ||
+                                                fallbackLease.IsClosed;
+                                            if (!fallbackMotorOff || !fallbackHydraulicReleased)
+                                                ReportFormalSlotSafetyBoundaryFailure(
+                                                    ch,
+                                                    phaseSlot,
+                                                    fallbackMotorOff,
+                                                    fallbackHydraulicReleased,
+                                                    true);
+                                            return new FormalBatchParticipantTerminal
+                                            {
+                                                Channel = ch,
+                                                MotorOffConfirmed = fallbackMotorOff,
+                                                HydraulicMemberReleased = fallbackHydraulicReleased,
+                                                PersistenceBoundaryRequired = false,
+                                                PersistenceCommitted = true,
+                                                Result = "CallbackExitedBeforeFormalCycleBoundary",
+                                                CallbackElapsedMs =
+                                                    callbackStopwatch.ElapsedMilliseconds,
+                                                SharedCoordinationWaitMs = 0,
+                                                CompletedUtc = DateTime.UtcNow
+                                            };
+                                        })
+                                    .ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                throw;
+                            }
+                            using var batchSlotScope = formalSlotScope;
+                            PublishChannelRuntimeState(
+                                ch,
+                                ChannelRuntimeState.Running,
+                                "SlotBarrierReleased",
+                                "全局正式周期屏障已放行");
 
                             if (!await WaitForPreviousCycleExecutionAsync(ch, token)
                                     .ConfigureAwait(false))
@@ -3240,17 +3311,38 @@ namespace Controller
 
                             // 3) 跑一圈（对齐外壳版）
                             var ok = false;
+                            var periodHardLimitReached = false;
                             Adaptive.EpbCycleOutcome cycleOutcome;
                             try
                             {
-                                ok = await runner.RunOneAlignedAsync(
+                                var runnerTask = runner.RunOneAlignedAsync(
                                     PeriodMs,
                                     T8BaseMs,
                                     phase,
                                     T8MinMs,
                                     deadlineUtc,
                                     cycleAttempt.AttemptCts.Token
-                                ).ConfigureAwait(false);
+                                );
+                                var hardDeadline = Task.Delay(
+                                    checked(PeriodMs * 2),
+                                    CancellationToken.None);
+                                var completed = await Task.WhenAny(runnerTask, hardDeadline)
+                                    .ConfigureAwait(false);
+                                if (completed == runnerTask)
+                                {
+                                    ok = await runnerTask.ConfigureAwait(false);
+                                }
+                                else
+                                {
+                                    periodHardLimitReached = IsChannelEnergized(ch);
+                                    ok = await HandleFormalPeriodHardLimitAsync(
+                                            ch,
+                                            cycleNumber,
+                                            cycleAttempt,
+                                            timer,
+                                            runnerTask)
+                                        .ConfigureAwait(false);
+                                }
                             }
                             catch (OperationCanceledException)
                             {
@@ -3264,7 +3356,17 @@ namespace Controller
                             {
                                 // 必须在释放 execution tombstone 前取得本圈不可变引用；
                                 // 下一圈获准复用 Runner 后会替换 LastCycleOutcome。
-                                cycleOutcome = runner.LastCycleOutcome;
+                                cycleOutcome = periodHardLimitReached
+                                    ? Adaptive.EpbCycleOutcome.HardFault(
+                                        Adaptive.EpbCurrentStage.Faulted,
+                                        "PeriodOverrunHardLimit")
+                                    : runner.LastCycleOutcome;
+                                if (periodHardLimitReached)
+                                {
+                                    cycleOutcome.PhysicalActionElapsedMs = PeriodMs * 2L;
+                                    cycleOutcome.PeriodOverrunKind =
+                                        Adaptive.PeriodOverrunKind.HardLimitReached;
+                                }
                                 if (_hydraulicLeaseByChannel.TryGetValue(ch, out var activeScope) &&
                                     !activeScope.IsClosed)
                                     await AbortHydraulicLeaseForChannelAsync(
@@ -3275,6 +3377,13 @@ namespace Controller
                             var controlSucceeded = IsFormalControlSucceeded(
                                 ok,
                                 cycleOutcome.IsSuccess);
+                            cycleOutcome.CallbackElapsedMs = callbackStopwatch.ElapsedMilliseconds;
+                            cycleOutcome.SharedCoordinationWaitMs = Math.Max(
+                                formalSlotScope.SharedWaitMs,
+                                Math.Max(
+                                    0L,
+                                    cycleOutcome.CallbackElapsedMs -
+                                    Math.Max(0L, cycleOutcome.PhysicalActionElapsedMs)));
                             if (controlSucceeded)
                                 _watchdogConsecutiveSoftwareAborts[ch] = 0;
                             var mechanicalTargetReached = false;
@@ -3331,7 +3440,15 @@ namespace Controller
                                     goto CyclePersistenceFinished;
                                 }
                                 var finalN = recorder?.GetCurrentCycleSampleCount(ch) ?? 0;
-                                if (IsAlarmStopRequested(ch))
+                                if (IsAlarmStopRequested(ch) &&
+                                    cycleOutcome.PeriodOverrunKind ==
+                                    Adaptive.PeriodOverrunKind.HardLimitReached)
+                                    AbortFormalCycleAttempt(
+                                        cycleAttempt,
+                                        recorder,
+                                        DateTime.UtcNow,
+                                        "alarm");
+                                else if (IsAlarmStopRequested(ch))
                                 {
                                     // 报警后台流程会在确认当前圈 CSV/BIN 快照存在后封为 alarm；
                                     // 若快照失败则封为 failed。这里保持活动身份，避免先写无文件的 alarm。
@@ -3381,14 +3498,22 @@ namespace Controller
                             {
                                 var committedCycles = Interlocked.Increment(ref successfulCycles);
                                 var nonRecoverableAlarm =
-                                    OnFormalCycleCommittedAndEvaluateClampFault(
-                                        runner,
-                                         ch,
-                                         cycleNumber,
-                                         committedCycles,
-                                         phaseSlot,
-                                         cycleAttempt,
-                                         cycleOutcome);
+                                    await EvaluateCommittedPeriodOverrunAsync(
+                                            ch,
+                                            cycleNumber,
+                                            cycleOutcome,
+                                            timer)
+                                        .ConfigureAwait(false);
+                                if (!nonRecoverableAlarm)
+                                    nonRecoverableAlarm =
+                                        OnFormalCycleCommittedAndEvaluateClampFault(
+                                            runner,
+                                             ch,
+                                             cycleNumber,
+                                             committedCycles,
+                                             phaseSlot,
+                                             cycleAttempt,
+                                             cycleOutcome);
                                 if (!nonRecoverableAlarm && mechanicalTargetReached)
                                 {
                                     FinalizeChannelAfterNaturalCompletion(ch, cycleNumber);
@@ -3403,12 +3528,79 @@ namespace Controller
                                 timer.Stop();
                             }
 
+                            var motorOffConfirmed = !IsChannelEnergized(ch);
+                            var hydraulicReleased =
+                                !_hydraulicLeaseByChannel.TryGetValue(ch, out var finalLease) ||
+                                finalLease.IsClosed;
+                            var persistenceBoundaryClosed = cycleAttempt.IsDurablyCommitted;
+                            if (!motorOffConfirmed || !hydraulicReleased ||
+                                (!persistenceBoundaryClosed && !IsAlarmStopRequested(ch)))
+                                ReportFormalSlotSafetyBoundaryFailure(
+                                    ch,
+                                    phaseSlot,
+                                    motorOffConfirmed,
+                                    hydraulicReleased,
+                                    persistenceBoundaryClosed);
+                            formalSlotScope.Complete(new FormalBatchParticipantTerminal
+                            {
+                                Channel = ch,
+                                MotorOffConfirmed = motorOffConfirmed,
+                                MechanicalCycleCompleted = cycleOutcome.MechanicalCycleCompleted,
+                                HydraulicMemberReleased = hydraulicReleased,
+                                ControlSucceeded = controlSucceeded,
+                                PersistenceBoundaryRequired = !IsAlarmStopRequested(ch),
+                                PersistenceCommitted = persistenceBoundaryClosed,
+                                PermanentlyIsolated = IsAlarmStopRequested(ch),
+                                CallbackElapsedMs = callbackStopwatch.ElapsedMilliseconds,
+                                PhysicalActionElapsedMs = cycleOutcome.PhysicalActionElapsedMs,
+                                SharedCoordinationWaitMs =
+                                    cycleOutcome.SharedCoordinationWaitMs,
+                                Result = cycleOutcome.Reason,
+                                CompletedUtc = DateTime.UtcNow
+                            });
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return controlSucceeded && persistenceCommitted;
 
                         }), "BatchChannelTimer", ch);
                 }
             }
+        }
+
+        private void ReportFormalSlotSafetyBoundaryFailure(
+            int channel,
+            long slot,
+            bool motorOffConfirmed,
+            bool hydraulicReleased,
+            bool persistenceBoundaryClosed)
+        {
+            var reason =
+                $"FormalSlotSafetyBoundaryFailed Slot={slot} EPB={channel} " +
+                $"MotorOff={motorOffConfirmed} HydraulicReleased={hydraulicReleased} " +
+                $"Persistence={persistenceBoundaryClosed}";
+            _log?.Error(reason, "周期屏障");
+            RevokeExecutionForExternalRecovery(reason);
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.SystemFault,
+                "FormalSlotSafetyBoundaryFailed",
+                "正式周期槽安全边界未闭合，已撤销整批执行授权并启动安全停止",
+                channel,
+                new[] { channel },
+                Guid.NewGuid(),
+                allowSystemFaultReset: false);
+            ObserveBackgroundTask(
+                StopAllAsync(
+                    new StopContext
+                    {
+                        Source = StopSource.SystemFault,
+                        Reason = reason,
+                        Initiator = nameof(ReportFormalSlotSafetyBoundaryFailure),
+                        CorrelationId = Guid.NewGuid().ToString("N"),
+                        RequestedUtc = DateTime.UtcNow
+                    },
+                    CancellationToken.None),
+                "FormalSlotSafetyBoundaryStopAll",
+                channel);
         }
 
         internal static long CalculateFirstFutureFormalSlot(

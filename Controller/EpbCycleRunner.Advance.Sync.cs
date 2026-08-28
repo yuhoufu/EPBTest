@@ -775,6 +775,8 @@ namespace Controller
             // 理解：假设旧流程内部已经用掉了 (periodMs - 旧T8) 的时间（粗略近似），我们在⑧中要扣回 phase，
             // 如果旧流程“忙得更久”，需要把迟到量计进⑧，避免超过 deadline。
             var elapsedMs = (int)sw.ElapsedMilliseconds;
+            if (LastCycleOutcome != null)
+                LastCycleOutcome.CallbackElapsedMs = elapsedMs;
             var expectedBeforeTail = periodMs - tailBaseMs;
             var lateness = Math.Max(0, elapsedMs - expectedBeforeTail);
 

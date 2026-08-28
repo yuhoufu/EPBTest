@@ -87,6 +87,22 @@ namespace Config
         /// </summary>
         public EpbTestStatus Status { get; set; } = EpbTestStatus.NotStarted;
 
+        /// <summary>需要人工确认后才能清除的永久报警锁存。</summary>
+        public bool PermanentAlarmLatched { get; set; }
+
+        public string PermanentAlarmCode { get; set; } = string.Empty;
+
+        public string PermanentAlarmReason { get; set; } = string.Empty;
+
+        public DateTime? PermanentAlarmUtc { get; set; }
+
+        public Guid PermanentAlarmCorrelationId { get; set; }
+
+        /// <summary>同一项目内连续完成但超过目标周期的正式圈数。</summary>
+        public int ConsecutivePeriodOverrunCount { get; set; }
+
+        public DateTime? LastPeriodOverrunUtc { get; set; }
+
         #endregion
 
         #region 内部字段
@@ -122,6 +138,13 @@ namespace Config
                 RunCount = 0,
                 MechanicalCycleCount = 0,
                 Status = EpbTestStatus.NotStarted,
+                PermanentAlarmLatched = false,
+                PermanentAlarmCode = string.Empty,
+                PermanentAlarmReason = string.Empty,
+                PermanentAlarmUtc = null,
+                PermanentAlarmCorrelationId = Guid.Empty,
+                ConsecutivePeriodOverrunCount = 0,
+                LastPeriodOverrunUtc = null,
                 _lastElapsedBaseUtc = null
             };
         }
@@ -335,6 +358,34 @@ namespace Config
             Status = EpbTestStatus.Alarm;
         }
 
+        public void LatchPermanentAlarm(
+            string code,
+            string reason,
+            DateTime utc,
+            Guid correlationId)
+        {
+            PermanentAlarmLatched = true;
+            PermanentAlarmCode = code ?? string.Empty;
+            PermanentAlarmReason = reason ?? string.Empty;
+            PermanentAlarmUtc = utc.Kind == DateTimeKind.Utc ? utc : utc.ToUniversalTime();
+            PermanentAlarmCorrelationId = correlationId;
+            Enabled = false;
+            Status = EpbTestStatus.Alarm;
+        }
+
+        public void ClearPermanentAlarm()
+        {
+            PermanentAlarmLatched = false;
+            PermanentAlarmCode = string.Empty;
+            PermanentAlarmReason = string.Empty;
+            PermanentAlarmUtc = null;
+            PermanentAlarmCorrelationId = Guid.Empty;
+            ConsecutivePeriodOverrunCount = 0;
+            LastPeriodOverrunUtc = null;
+            if (Status == EpbTestStatus.Alarm)
+                Status = EpbTestStatus.NotStarted;
+        }
+
         /// <summary>
         /// 将记录重置为默认状态（保留 Id 与 TotalCount）。
         /// </summary>
@@ -346,6 +397,7 @@ namespace Config
             RunCount = 0;
             MechanicalCycleCount = 0;
             Status = EpbTestStatus.NotStarted;
+            ClearPermanentAlarm();
             _lastElapsedBaseUtc = null;
         }
 
@@ -418,6 +470,23 @@ namespace Config
 
 
         #endregion
+    }
+
+    /// <summary>
+    /// 项目 TestConfig.xml 中单通道报警/超限事实的原子更新载荷。
+    /// Enabled 为 null 时只更新报警和超限字段。
+    /// </summary>
+    public sealed class EpbAlarmPersistenceUpdate
+    {
+        public int Channel { get; set; }
+        public bool? Enabled { get; set; }
+        public bool PermanentAlarmLatched { get; set; }
+        public string PermanentAlarmCode { get; set; } = string.Empty;
+        public string PermanentAlarmReason { get; set; } = string.Empty;
+        public DateTime? PermanentAlarmUtc { get; set; }
+        public Guid PermanentAlarmCorrelationId { get; set; }
+        public int ConsecutivePeriodOverrunCount { get; set; }
+        public DateTime? LastPeriodOverrunUtc { get; set; }
     }
 
     /// <summary>

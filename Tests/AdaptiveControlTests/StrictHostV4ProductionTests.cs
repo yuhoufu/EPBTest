@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using MTTFTest.Watchdog;
 using MTTFTest.Watchdog.Client;
 using MTTFTest.Watchdog.Protocol;
+using MtEmbTest;
 
 namespace AdaptiveControlTests
 {
@@ -21,7 +22,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V2.13.0.29 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
+            Run("V2.13.0.30 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
             Run("strict bootstrap format2", StrictBootstrapFormat2, ref passed);
             Run("approved intent durable", ApprovedToIntent, ref passed);
             Run("approved permit取消后耐久Superseded且重启不可消费", ApprovedPermitRevocationIsDurable, ref passed);
@@ -46,13 +47,15 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(2, 13, 0, 29);
+            var expected = new Version(2, 13, 0, 30);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
-                "Protocol assembly version is not V2.13.0.29");
+                "Protocol assembly version is not V2.13.0.30");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,
-                "Client assembly version is not V2.13.0.29");
+                "Client assembly version is not V2.13.0.30");
             Require(typeof(StrictHostV4AuthorityAdapter).Assembly.GetName().Version == expected,
-                "Host assembly version is not V2.13.0.29");
+                "Host assembly version is not V2.13.0.30");
+            Require(typeof(Main_Frm).Assembly.GetName().Version == expected,
+                "Main application assembly version is not V2.13.0.30");
             Require(WatchdogProtocol.Version == 3 &&
                     WatchdogJournalPolicy.CurrentSchemaVersion == 4 &&
                     DurableRelaunchAuthorityV4Validator.RequiredFormatRevision == 2,

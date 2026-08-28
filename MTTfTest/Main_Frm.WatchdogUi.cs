@@ -82,6 +82,21 @@ namespace MtEmbTest
 
     public partial class Main_Frm
     {
+        internal sealed class WatchdogTakeoverExitReceipt
+        {
+            internal WatchdogTakeoverExitReceipt(
+                RuntimeShutdownReceipt shutdownReceipt,
+                string reason)
+            {
+                ShutdownReceipt = shutdownReceipt;
+                Reason = reason ?? string.Empty;
+            }
+
+            internal RuntimeShutdownReceipt ShutdownReceipt { get; }
+            internal string Reason { get; }
+            internal bool IsTerminal => ShutdownReceipt?.IsTerminal == true;
+        }
+
         // All watchdog UI ownership, binding, retention, and terminal release
         // state lives in this one production adapter.  The form only provides
         // the stable WinForms owner and delegates to it.
@@ -89,6 +104,7 @@ namespace MtEmbTest
         private readonly object _watchdogExitGate = new object();
         private int _watchdogOwnedExitRequested;
         private int _watchdogAllowClose;
+        private int _watchdogTakeoverExitRequested;
         private Task _watchdogCloseTask;
         private Task<RuntimeShutdownReceipt> _watchdogShutdownTask;
 
@@ -153,6 +169,10 @@ namespace MtEmbTest
                 return;
             }
             Interlocked.Exchange(ref _watchdogOwnedExitRequested, 1);
+            if ((reason ?? string.Empty).StartsWith(
+                    "WatchdogStopAllCompleted:",
+                    StringComparison.Ordinal))
+                Interlocked.Exchange(ref _watchdogTakeoverExitRequested, 1);
             BeginWatchdogClose(reason ?? "WatchdogOwnedExit");
         }
 
@@ -161,7 +181,7 @@ namespace MtEmbTest
         {
             return GetOrCreateWatchdogShutdownTask(
                 reason,
-                processExitExpected: false);
+                RuntimeShutdownIntent.SessionClose);
         }
 
         internal Task<RuntimeShutdownReceipt> ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
@@ -169,12 +189,22 @@ namespace MtEmbTest
         {
             return GetOrCreateWatchdogShutdownTask(
                 reason,
-                processExitExpected: true);
+                RuntimeShutdownIntent.ApplicationExit);
+        }
+
+        internal async Task<WatchdogTakeoverExitReceipt>
+            ShutdownWatchdogForTakeoverExitAndReleaseUiAsync(string reason)
+        {
+            var receipt = await GetOrCreateWatchdogShutdownTask(
+                    reason,
+                    RuntimeShutdownIntent.WatchdogTakeoverExit)
+                .ConfigureAwait(true);
+            return new WatchdogTakeoverExitReceipt(receipt, reason);
         }
 
         private Task<RuntimeShutdownReceipt> GetOrCreateWatchdogShutdownTask(
             string reason,
-            bool processExitExpected)
+            RuntimeShutdownIntent shutdownIntent)
         {
             lock (_watchdogExitGate)
             {
@@ -184,23 +214,36 @@ namespace MtEmbTest
                         return _watchdogShutdownTask;
                     if (_watchdogShutdownTask.Status == TaskStatus.RanToCompletion &&
                         _watchdogShutdownTask.Result?.IsTerminal == true)
-                        return _watchdogShutdownTask;
+                    {
+                        var active = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
+                        var previousReceipt = _watchdogShutdownTask.Result;
+                        if (active == null ||
+                            (string.Equals(
+                                 active.SessionId,
+                                 previousReceipt.SessionId,
+                                 StringComparison.Ordinal) &&
+                             active.SessionLease == previousReceipt.SessionLease))
+                            return _watchdogShutdownTask;
+                        // 同一个Main_Frm已经绑定到新的精确会话；旧终态回执只能
+                        // 服务旧会话的并发调用，不能吞掉新会话的真正Shutdown。
+                        _watchdogShutdownTask = null;
+                    }
                 }
 
                 _watchdogShutdownTask = CompleteSharedWatchdogShutdownAsync(
                     reason,
-                    processExitExpected);
+                    shutdownIntent);
                 return _watchdogShutdownTask;
             }
         }
 
         private async Task<RuntimeShutdownReceipt> CompleteSharedWatchdogShutdownAsync(
             string reason,
-            bool processExitExpected)
+            RuntimeShutdownIntent shutdownIntent)
         {
             var receipt = await _watchdogUiAdapter.ShutdownAndReleaseAsync(
                     reason,
-                    processExitExpected)
+                    shutdownIntent)
                 .ConfigureAwait(false);
             // A transport terminal receipt is the sole close authorization,
             // regardless of whether it was obtained by manual stop, monitor
@@ -293,8 +336,18 @@ namespace MtEmbTest
             // child windows execute their bounded safety/DAQ cleanup.  Only at
             // the final main-process boundary publish ShutdownExpected; its
             // five-second observer therefore starts immediately before Close.
-            var receipt = await ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
-                reason);
+            RuntimeShutdownReceipt receipt;
+            if (Volatile.Read(ref _watchdogTakeoverExitRequested) != 0)
+            {
+                var takeoverReceipt =
+                    await ShutdownWatchdogForTakeoverExitAndReleaseUiAsync(reason);
+                receipt = takeoverReceipt?.ShutdownReceipt;
+            }
+            else
+            {
+                receipt = await ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
+                    reason);
+            }
             if (receipt == null || !receipt.IsTerminal)
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);

@@ -16,6 +16,13 @@ namespace MTEmbTest
         IdentityMismatch = 2
     }
 
+    internal enum RuntimeShutdownIntent
+    {
+        SessionClose = 0,
+        ApplicationExit = 1,
+        WatchdogTakeoverExit = 2
+    }
+
     /// <summary>
     /// Ten observable retention phases.  None is the empty state and the
     /// remaining values are monotonic transaction states.
@@ -82,7 +89,7 @@ namespace MTEmbTest
             {
                 WatchdogRuntime.SendApplicationClosingForShutdown(
                     _engine,
-                    WatchdogRuntime.IsProcessExitExpectedForCurrentShutdown);
+                    WatchdogRuntime.CurrentShutdownIntent);
             }
             catch { }
             return _engine.ShutdownWithReceipt();
@@ -240,10 +247,13 @@ namespace MTEmbTest
 
     internal static partial class WatchdogRuntime
     {
-        private static int _processExitExpectedForCurrentShutdown;
+        private static int _shutdownIntentForCurrentShutdown;
 
         internal static bool IsProcessExitExpectedForCurrentShutdown =>
-            Volatile.Read(ref _processExitExpectedForCurrentShutdown) != 0;
+            CurrentShutdownIntent != RuntimeShutdownIntent.SessionClose;
+
+        internal static RuntimeShutdownIntent CurrentShutdownIntent =>
+            (RuntimeShutdownIntent)Volatile.Read(ref _shutdownIntentForCurrentShutdown);
 
         private static readonly Lazy<RuntimeShutdownRetentionCoordinator> ShutdownRetentionCoordinatorHolder =
             new Lazy<RuntimeShutdownRetentionCoordinator>(
@@ -271,14 +281,23 @@ namespace MTEmbTest
         internal static RuntimeShutdownReceipt ShutdownRuntimeWithReceipt(
             bool processExitExpected)
         {
+            return ShutdownRuntimeWithReceipt(
+                processExitExpected
+                    ? RuntimeShutdownIntent.ApplicationExit
+                    : RuntimeShutdownIntent.SessionClose);
+        }
+
+        internal static RuntimeShutdownReceipt ShutdownRuntimeWithReceipt(
+            RuntimeShutdownIntent shutdownIntent)
+        {
             SessionLifecycleGate.Wait();
             var previous = Interlocked.Exchange(
-                ref _processExitExpectedForCurrentShutdown,
-                processExitExpected ? 1 : 0);
+                ref _shutdownIntentForCurrentShutdown,
+                (int)shutdownIntent);
             try { return ShutdownRuntimeWithReceiptNoGate(); }
             finally
             {
-                Interlocked.Exchange(ref _processExitExpectedForCurrentShutdown, previous);
+                Interlocked.Exchange(ref _shutdownIntentForCurrentShutdown, previous);
                 SessionLifecycleGate.Release();
             }
         }

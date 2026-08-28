@@ -1138,6 +1138,12 @@ namespace Controller
                     Reason = _adaptiveSoftWarningSeen ? "LegacyCompletedWithAdaptiveShadowWarning" : "LegacyCompleted",
                     ForwardElapsedMs = fwdJudgeElapsedMs,
                     ReverseElapsedMs = tRevPeakDecayMs,
+                    PhysicalActionElapsedMs = Math.Max(0, _peakIgnoreMs) +
+                                              Math.Max(0, fwdJudgeElapsedMs) +
+                                              Math.Max(0, _holdMs) +
+                                              Math.Max(0, _peakIgnoreMs) +
+                                              Math.Max(0, tRevPeakDecayMs) +
+                                              Math.Max(0, run7),
                     PeakCurrentA = _adaptiveForwardPeakA,
                     ControlPeakCurrentA = _adaptiveForwardControlPeakA
                 };

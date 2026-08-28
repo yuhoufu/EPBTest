@@ -2354,6 +2354,9 @@ namespace Controller
                     Reason = _adaptiveSoftWarningSeen ? "CompletedWithSoftWarning" : "Completed",
                     ForwardElapsedMs = _adaptiveForwardElapsedMs,
                     ReverseElapsedMs = _adaptiveReverseElapsedMs,
+                    PhysicalActionElapsedMs = Math.Max(0, _adaptiveForwardElapsedMs) +
+                                              Math.Max(0, _holdMs) +
+                                              Math.Max(0, _adaptiveReverseElapsedMs),
                     PeakCurrentA = _adaptiveForwardPeakA,
                     ControlPeakCurrentA = _adaptiveForwardControlPeakA,
                     TargetCurrentA = _posThrA,

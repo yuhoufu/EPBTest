@@ -268,6 +268,7 @@ namespace MTEmbTest
                    state == ChannelRuntimeState.Learning ||
                    state == ChannelRuntimeState.Running ||
                    state == ChannelRuntimeState.WarningRunning ||
+                   state == ChannelRuntimeState.WaitingForSlotBarrier ||
                    state == ChannelRuntimeState.PausePending ||
                    state == ChannelRuntimeState.ResumeChecking ||
                    state == ChannelRuntimeState.Qualification;
@@ -277,6 +278,7 @@ namespace MTEmbTest
         {
             return state == ChannelRuntimeState.Starting ||
                    state == ChannelRuntimeState.Learning ||
+                   state == ChannelRuntimeState.WaitingForSlotBarrier ||
                    state == ChannelRuntimeState.PausePending ||
                    state == ChannelRuntimeState.ResumeChecking ||
                    state == ChannelRuntimeState.Qualification;

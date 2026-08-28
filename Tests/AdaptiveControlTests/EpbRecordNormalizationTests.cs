@@ -19,6 +19,8 @@ namespace AdaptiveControlTests
             Run("并发Ensure仍保持十二通道唯一", ConcurrentEnsureIsIdempotent, ref passed);
             Run("归一化后恶意重复插入仍不能污染启动计划",
                 DuplicateReinsertionCannotCorruptStartPlan, ref passed);
+            Run("永久报警与连续超限次数保存后可恢复", PermanentAlarmRoundTrips, ref passed);
+            Run("旧项目仅禁用报警状态迁移为永久报警", LegacyDisabledAlarmMigrationIsNarrow, ref passed);
             return passed;
         }
 
@@ -143,6 +145,85 @@ namespace AdaptiveControlTests
                        .SequenceEqual(Enumerable.Range(1, 12)) &&
                    plan[4] == 99679,
                 "原子StartPlan存在重复/缺失键或没有保留单调完成证据");
+        }
+
+        private static void PermanentAlarmRoundTrips()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var path = Path.Combine(dir, "TestConfig.xml");
+                File.WriteAllText(path, "<TestConfig />");
+                var config = new TestConfig
+                {
+                    TestName = "alarm-roundtrip",
+                    StoreDir = dir,
+                    TestTarget = 100
+                };
+                config.EnsureEpbRecords(12);
+                var correlationId = Guid.NewGuid();
+                var record = config.GetEpbRecord(3);
+                record.ConsecutivePeriodOverrunCount = 7;
+                record.LastPeriodOverrunUtc = new DateTime(2026, 8, 28, 1, 2, 3, DateTimeKind.Utc);
+                record.LatchPermanentAlarm(
+                    "ConsecutivePeriodOverrun",
+                    "连续8次超限",
+                    new DateTime(2026, 8, 28, 1, 3, 4, DateTimeKind.Utc),
+                    correlationId);
+
+                ConfigLoader.SaveTest(path, config);
+                var reloaded = ConfigLoader.LoadTest(path, NullLogger.Instance);
+                var actual = reloaded.GetEpbRecord(3);
+                Assert(actual.PermanentAlarmLatched && !actual.Enabled &&
+                       actual.PermanentAlarmCode == "ConsecutivePeriodOverrun" &&
+                       actual.PermanentAlarmCorrelationId == correlationId &&
+                       actual.ConsecutivePeriodOverrunCount == 7 &&
+                       actual.LastPeriodOverrunUtc.HasValue,
+                    "永久报警或连续超限字段未完整往返");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void LegacyDisabledAlarmMigrationIsNarrow()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var path = Path.Combine(dir, "TestConfig.xml");
+                File.WriteAllText(
+                    path,
+                    "<TestConfig><Basic><TestName>legacy</TestName><TestTarget>10</TestTarget>" +
+                    "<IsSameCycleForAllEpb>true</IsSameCycleForAllEpb><TestCycle>15</TestCycle>" +
+                    "<LearnCycle>10</LearnCycle><StoreDir>C:\\Temp</StoreDir></Basic>" +
+                    "<EpbRecords>" +
+                    RecordXmlWithStatus(1, false, "Alarm") +
+                    RecordXmlWithStatus(2, false, "NotStarted") +
+                    RecordXmlWithStatus(3, true, "Alarm") +
+                    "</EpbRecords></TestConfig>");
+
+                var loaded = ConfigLoader.LoadTest(path, NullLogger.Instance);
+                Assert(loaded.GetEpbRecord(1).PermanentAlarmLatched &&
+                       loaded.GetEpbRecord(1).PermanentAlarmCode == "LegacyDisabledAlarm",
+                    "Enabled=false + Alarm 未迁移");
+                Assert(!loaded.GetEpbRecord(2).PermanentAlarmLatched,
+                    "普通未启用通道被错误反推为永久报警");
+                Assert(!loaded.GetEpbRecord(3).PermanentAlarmLatched,
+                    "仍启用的旧报警状态不应迁移为禁用永久报警");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static string RecordXmlWithStatus(int id, bool enabled, string status)
+        {
+            return $"<Record><Id>{id}</Id><Enabled>{enabled}</Enabled>" +
+                   "<RunTime>0.00:00:00</RunTime><TotalCount>10</TotalCount>" +
+                   $"<RunCount>0</RunCount><Status>{status}</Status></Record>";
         }
 
         private static string BuildDuplicateConfigXml()

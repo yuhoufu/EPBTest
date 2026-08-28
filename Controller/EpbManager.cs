@@ -269,6 +269,7 @@ namespace Controller
         private readonly ConcurrentDictionary<int, byte> _nonRecoverableChannelFaultLatch = new();
         private readonly ConcurrentDictionary<int, string> _nonRecoverableChannelFaultReasons =
             new();
+        private readonly ConcurrentDictionary<int, int> _periodOverrunStreaks = new();
         // 物理隔离已经成立、但项目 Enabled=false 尚未耐久提交时，必须把这个事实
         // 保留到无人值守启动结果。否则进程重启会从旧XML重新选中故障卡钳。
         private readonly ConcurrentDictionary<int, string> _disablePersistenceFailureReasons =
@@ -307,7 +308,8 @@ namespace Controller
         {
             return daqRecoveryActive &&
                    (requestedState == ChannelRuntimeState.Running ||
-                    requestedState == ChannelRuntimeState.WarningRunning);
+                    requestedState == ChannelRuntimeState.WarningRunning ||
+                    requestedState == ChannelRuntimeState.WaitingForSlotBarrier);
         }
 
         internal static ChannelRuntimeState ResolveRuntimeStateForRunnerWarning(
@@ -557,7 +559,11 @@ namespace Controller
             // 物理安全目标可以包含同组全部硬件成员，但禁用通道不属于当前运行状态机。
             // 这是中央不变量：任何故障、恢复或迟到事件都不能把 Enabled=false 污染为
             // Paused/Recovering/Alarm。硬件 OFF 证据仍由 DO 追踪单独保留。
-            var normalizedState = NormalizeRuntimeStateForEnabled(IsChannelEnabled(channel), state);
+            var permanentAlarmLatched = _cfg.Test.GetEpbRecord(channel).PermanentAlarmLatched;
+            var normalizedState = NormalizeRuntimeStateForEnabled(
+                IsChannelEnabled(channel),
+                state,
+                permanentAlarmLatched);
             if (normalizedState != state)
             {
                 state = normalizedState;
@@ -572,7 +578,8 @@ namespace Controller
             // DAQ恢复拥有受影响通道的状态机，直至恢复终态提交并移除上下文。
             // 圈尾软预警/旧Runner回调不得把“系统自恢复”覆盖回“运行/软预警”。
             if (state == ChannelRuntimeState.Running ||
-                state == ChannelRuntimeState.WarningRunning)
+                state == ChannelRuntimeState.WarningRunning ||
+                state == ChannelRuntimeState.WaitingForSlotBarrier)
             {
                 var device = _acq.GetDeviceForEpbChannel(channel);
                 DaqAutoRecoveryContext recovery = null;
@@ -781,6 +788,14 @@ namespace Controller
                             TimerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel),
                             RunnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel),
                             Energized = IsChannelEnergized(channel),
+                            PermanentAlarmLatched = _cfg.Test.GetEpbRecord(channel).PermanentAlarmLatched,
+                            PermanentAlarmCode = _cfg.Test.GetEpbRecord(channel).PermanentAlarmCode,
+                            PermanentAlarmUtc = _cfg.Test.GetEpbRecord(channel).PermanentAlarmUtc,
+                            ConsecutivePeriodOverrunCount = _periodOverrunStreaks.TryGetValue(
+                                channel,
+                                out var overrunStreak)
+                                ? overrunStreak
+                                : 0,
                             RecoveryOwnerKind = recoveryOwnerKind,
                             RecoveryOwnerId = recoveryOwnerId,
                             RecoveryOwnerGeneration = recoveryOwnerGeneration,
@@ -1210,8 +1225,10 @@ namespace Controller
 
         internal static ChannelRuntimeState NormalizeRuntimeStateForEnabled(
             bool enabled,
-            ChannelRuntimeState requested)
+            ChannelRuntimeState requested,
+            bool permanentAlarmLatched = false)
         {
+            if (permanentAlarmLatched) return ChannelRuntimeState.AlarmStopped;
             return enabled ? requested : ChannelRuntimeState.NotEnabled;
         }
 
@@ -1873,6 +1890,10 @@ namespace Controller
                 _hydraulicParticipants.TryRemove(channel, out _);
                 _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
             }
+            _formalBatchSlots.RetireParticipant(
+                _activeBatchId,
+                channel,
+                "HydraulicParticipantRemoved");
         }
 
         private object GetHydraulicParticipantGate(int channel)
@@ -1917,6 +1938,10 @@ namespace Controller
 
                 _hydraulicParticipants.TryRemove(channel, out _);
                 _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
+                _formalBatchSlots.RetireParticipant(
+                    _activeBatchId,
+                    channel,
+                    reason);
                 return true;
             }
         }
@@ -2381,6 +2406,17 @@ namespace Controller
             {
                 _mechanicalCycleBaseline[epbRecord.Id] = epbRecord.EffectiveMechanicalCycleCount;
                 EpbTestCycle[epbRecord.Id] = initialStartPlan[epbRecord.Id];
+                _periodOverrunStreaks[epbRecord.Id] = Math.Max(
+                    0,
+                    epbRecord.ConsecutivePeriodOverrunCount);
+                if (epbRecord.PermanentAlarmLatched)
+                {
+                    _nonRecoverableChannelFaultLatch[epbRecord.Id] = 0;
+                    _nonRecoverableChannelFaultReasons[epbRecord.Id] =
+                        string.IsNullOrWhiteSpace(epbRecord.PermanentAlarmReason)
+                            ? epbRecord.PermanentAlarmCode
+                            : epbRecord.PermanentAlarmReason;
+                }
             }
             
 
@@ -2483,12 +2519,22 @@ namespace Controller
             _hydCoordinator.FaultRaised += OnHydraulicFaultRaised;
 
             for (var channel = 1; channel <= 12; channel++)
+            {
+                var record = _cfg.Test.GetEpbRecord(channel);
                 PublishChannelRuntimeState(
                     channel,
-                    ChannelRuntimeState.NotEnabled,
-                    "NotEnabled",
-                    "本轮未启用",
+                    record.PermanentAlarmLatched
+                        ? ChannelRuntimeState.AlarmStopped
+                        : ChannelRuntimeState.NotEnabled,
+                    record.PermanentAlarmLatched
+                        ? record.PermanentAlarmCode
+                        : "NotEnabled",
+                    record.PermanentAlarmLatched
+                        ? record.PermanentAlarmReason
+                        : "本轮未启用",
+                    correlationId: record.PermanentAlarmCorrelationId,
                     allowTerminalReset: true);
+            }
 
             _timerRuntimeWatchdogIntervalMs = ReadIntAppSetting(
                 // Recovering owner/task 丢失必须在 1 秒内被观察到；扫描只读取
@@ -4265,7 +4311,11 @@ namespace Controller
                     .ConfigureAwait(false);
 
                 if (recoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel)
-                    PersistentlyDisableChannel(channel, reason);
+                    PersistentlyDisableChannel(
+                        channel,
+                        faultCode,
+                        reason,
+                        channelFaultCorrelationId);
 
                 if (recoveryPolicy == FaultRecoveryPolicy.Recoverable)
                     BeginRecoverableChannelRestartLoop(channel, reason, channelFaultCorrelationId);
@@ -4574,14 +4624,20 @@ namespace Controller
             return FaultRecoveryPolicy.Recoverable;
         }
 
-        private void PersistentlyDisableChannel(int channel, string reason)
+        private void PersistentlyDisableChannel(
+            int channel,
+            string code,
+            string reason,
+            Guid correlationId)
         {
-            PersistentlyDisableChannels(new[] { channel }, reason);
+            PersistentlyDisableChannels(new[] { channel }, code, reason, correlationId);
         }
 
         private bool PersistentlyDisableChannels(
             IEnumerable<int> requestedChannels,
-            string reason)
+            string code,
+            string reason,
+            Guid correlationId)
         {
             var channels = (requestedChannels ?? Array.Empty<int>())
                 .Where(channel => channel >= 1 && channel <= 12)
@@ -4589,6 +4645,9 @@ namespace Controller
                 .OrderBy(channel => channel)
                 .ToArray();
             if (channels.Length == 0) return true;
+            var alarmUtc = DateTime.UtcNow;
+            if (correlationId == Guid.Empty) correlationId = Guid.NewGuid();
+            if (string.IsNullOrWhiteSpace(code)) code = "PermanentAlarm";
             try
             {
                 var test = _cfg?.Test ??
@@ -4597,7 +4656,13 @@ namespace Controller
                 {
                     test.EnsureEpbRecords(12);
                     foreach (var channel in channels)
-                        test.GetEpbRecord(channel).Enabled = false;
+                    {
+                        var record = test.GetEpbRecord(channel);
+                        record.LatchPermanentAlarm(code, reason, alarmUtc, correlationId);
+                        _periodOverrunStreaks[channel] = Math.Max(
+                            0,
+                            record.ConsecutivePeriodOverrunCount);
+                    }
                 }
 
                 var projectPath = ConfigLoader.GetProjectTestConfigPath(
@@ -4610,7 +4675,24 @@ namespace Controller
 
                 // 共享故障cohort一次原子替换，进程在任意时刻退出都不会留下
                 // “只禁用了一半通道”的项目配置。
-                ConfigLoader.UpdateTestEpbEnabled(projectPath, channels, false);
+                ConfigLoader.UpdateTestEpbAlarmState(
+                    projectPath,
+                    channels.Select(channel =>
+                    {
+                        var record = test.GetEpbRecord(channel);
+                        return new EpbAlarmPersistenceUpdate
+                        {
+                            Channel = channel,
+                            Enabled = false,
+                            PermanentAlarmLatched = true,
+                            PermanentAlarmCode = code,
+                            PermanentAlarmReason = reason ?? string.Empty,
+                            PermanentAlarmUtc = alarmUtc,
+                            PermanentAlarmCorrelationId = correlationId,
+                            ConsecutivePeriodOverrunCount = record.ConsecutivePeriodOverrunCount,
+                            LastPeriodOverrunUtc = record.LastPeriodOverrunUtc
+                        };
+                    }));
                 foreach (var channel in channels)
                 {
                     _disablePersistenceFailureReasons.TryRemove(channel, out _);
@@ -8733,7 +8815,11 @@ namespace Controller
                             sourceChannel: channel,
                             affectedChannels: channels,
                             correlationId: fault.CorrelationId);
-                    PersistentlyDisableChannels(channels, reason);
+                    PersistentlyDisableChannels(
+                        channels,
+                        reasonCode,
+                        reason,
+                        fault.CorrelationId);
                 },
                 () =>
                 {

@@ -126,6 +126,13 @@ namespace AdaptiveControlTests
             Assert(WatchdogRuntime.SelectShutdownMessageTypeForRetention(true) ==
                    WatchdogMessageType.ShutdownExpected,
                 "正式应用退出没有启用Sidecar主PID退出监督");
+            Assert(WatchdogRuntime.SelectShutdownMessageTypeForRetention(
+                       RuntimeShutdownIntent.WatchdogTakeoverExit) ==
+                   WatchdogMessageType.WatchdogTakeoverExit,
+                "Watchdog接管退出仍被错误归类为人工ShutdownExpected");
+            Assert(!WatchdogLifecyclePolicy.IsTerminalMessage(
+                       WatchdogMessageType.WatchdogTakeoverExit),
+                "Watchdog接管退出错误撤销了仍待消费的自动恢复许可");
         }
 
         private static void WinFormsTargetPostsOnStaMessagePump()

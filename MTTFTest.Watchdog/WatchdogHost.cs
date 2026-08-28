@@ -1354,13 +1354,30 @@ namespace MTTFTest.Watchdog
                             0) == 0)
                         _ = Task.Run(() => ObserveExpectedMainExitAsync(
                             message.Type,
-                            message.Reason));
+                            message.Reason,
+                            completeHostOnExit: true));
+                    break;
+                case WatchdogMessageType.WatchdogTakeoverExit:
+                    // Watchdog接管已完成StopCompleted后，旧主进程只交回UI/传输所有权。
+                    // 不得把它当成人工ShutdownExpected，否则会撤销仍需消费的恢复许可。
+                    Record(message.Type, message.Reason);
+                    if (Interlocked.CompareExchange(
+                            ref _expectedExitObserverStarted,
+                            1,
+                            0) == 0)
+                        _ = Task.Run(() => ObserveExpectedMainExitAsync(
+                            message.Type,
+                            message.Reason,
+                            completeHostOnExit: false));
                     break;
             }
             return Task.CompletedTask;
         }
 
-        private async Task ObserveExpectedMainExitAsync(string messageType, string reason)
+        private async Task ObserveExpectedMainExitAsync(
+            string messageType,
+            string reason,
+            bool completeHostOnExit)
         {
             var deadline = DateTime.UtcNow.AddSeconds(5);
             while (DateTime.UtcNow < deadline && IsCurrentProcessAlive())
@@ -1368,7 +1385,7 @@ namespace MTTFTest.Watchdog
             if (!IsCurrentProcessAlive())
             {
                 Record("MainProcessExited", messageType + ":" + reason);
-                _stop.Cancel();
+                if (completeHostOnExit) _stop.Cancel();
                 return;
             }
 
@@ -1404,7 +1421,7 @@ namespace MTTFTest.Watchdog
             }
             finally
             {
-                _stop.Cancel();
+                if (completeHostOnExit) _stop.Cancel();
             }
         }
 

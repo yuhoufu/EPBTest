@@ -641,6 +641,7 @@ namespace MTTFTest.Watchdog.Protocol
         public const string RunCompleted = "RunCompleted";
         public const string ApplicationClosing = "ApplicationClosing";
         public const string ShutdownExpected = "ShutdownExpected";
+        public const string WatchdogTakeoverExit = "WatchdogTakeoverExit";
     }
 
     public sealed class WatchdogMessage

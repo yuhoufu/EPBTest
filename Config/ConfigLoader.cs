@@ -68,7 +68,10 @@ namespace Config
         public double EffectiveHoldDropToleranceBar =>
             Math.Max(Math.Max(0, PressureToleranceBar), Math.Max(0, HoldDropToleranceBar));
         public int EffectiveHoldDropConfirmMs => Math.Max(1000, HoldDropConfirmMs);
-        /// <summary>0 表示使用当前试验周期作为屏障上限。</summary>
+        /// <summary>
+        /// 成员到达液压释放屏障的显式下限。运行时至少使用
+        /// 2×PeriodMs + ReleaseTimeoutMs，避免把慢卡钳等待误报为液压故障。
+        /// </summary>
         public int BarrierTimeoutMs { get; set; }
         public int PressureDoId { get; set; }
 
@@ -193,13 +196,34 @@ public sealed class TestConfig
             .First();
 
         // 重复行是同一通道的多份快照，计数和时长只能取单调最大值，不能相加。
-        // Enabled 属于试验授权：任一历史副本为 true 都必须保留，避免静默漏跑卡钳。
-        primary.Enabled = records.Any(record => record.Enabled);
+        // 永久报警是比 Enabled 更强的安全事实；存在任一锁存副本时禁止重复行
+        // 合并逻辑用旧的 Enabled=true 覆盖报警禁用。
+        var permanent = records
+            .Where(record => record.PermanentAlarmLatched)
+            .OrderByDescending(record => record.PermanentAlarmUtc ?? DateTime.MinValue)
+            .FirstOrDefault();
+        primary.Enabled = permanent == null && records.Any(record => record.Enabled);
         primary.TotalCount = records.Max(record => Math.Max(0, record.TotalCount));
         primary.RunCount = records.Max(record => Math.Max(0, record.RunCount));
         primary.MechanicalCycleCount = records.Max(record =>
             Math.Max(record.MechanicalCycleCount, record.RunCount));
         primary.RunTimeSpan = records.Max(record => record.RunTimeSpan);
+        primary.ConsecutivePeriodOverrunCount = records.Max(record =>
+            Math.Max(0, record.ConsecutivePeriodOverrunCount));
+        primary.LastPeriodOverrunUtc = records
+            .Where(record => record.LastPeriodOverrunUtc.HasValue)
+            .Select(record => record.LastPeriodOverrunUtc)
+            .OrderByDescending(value => value)
+            .FirstOrDefault();
+        if (permanent != null)
+        {
+            primary.PermanentAlarmLatched = true;
+            primary.PermanentAlarmCode = permanent.PermanentAlarmCode;
+            primary.PermanentAlarmReason = permanent.PermanentAlarmReason;
+            primary.PermanentAlarmUtc = permanent.PermanentAlarmUtc;
+            primary.PermanentAlarmCorrelationId = permanent.PermanentAlarmCorrelationId;
+            primary.Status = EpbTestStatus.Alarm;
+        }
         primary.StartTime = records
             .Where(record => record.StartTime.HasValue)
             .Select(record => record.StartTime)
@@ -656,12 +680,40 @@ public static class ConfigLoader
                 LatestStartTime = TryParseDateTime(GetString(n, "LatestStartTime", null)),
                 RunTime = GetString(n, "RunTime", FormatTimeSpan(TimeSpan.Zero)),
                 TotalCount = GetInt(n, "TotalCount", 0),
-                RunCount = GetInt(n, "RunCount", 0)
+                RunCount = GetInt(n, "RunCount", 0),
+                MechanicalCycleCount = GetLong(n, "MechanicalCycleCount", 0),
+                PermanentAlarmLatched = GetBool(n, "PermanentAlarmLatched", false),
+                PermanentAlarmCode = GetString(n, "PermanentAlarmCode", string.Empty),
+                PermanentAlarmReason = GetString(n, "PermanentAlarmReason", string.Empty),
+                PermanentAlarmUtc = TryParseDateTime(GetString(n, "PermanentAlarmUtc", null)),
+                PermanentAlarmCorrelationId = Guid.TryParse(
+                    GetString(n, "PermanentAlarmCorrelationId", string.Empty),
+                    out var alarmCorrelationId)
+                    ? alarmCorrelationId
+                    : Guid.Empty,
+                ConsecutivePeriodOverrunCount = Math.Max(
+                    0,
+                    GetInt(n, "ConsecutivePeriodOverrunCount", 0)),
+                LastPeriodOverrunUtc = TryParseDateTime(
+                    GetString(n, "LastPeriodOverrunUtc", null))
             };
 
             // 状态解析（容错）
             var st = GetString(n, "Status", "NotStarted");
             r.Status = Enum.TryParse<EpbTestStatus>(st, out var status) ? status : EpbTestStatus.NotStarted;
+
+            // V2.13.0.29 及更早版本只留下 Enabled=false + Alarm。仅这一种组合
+            // 可以保守迁移；普通未启用记录不得反推为永久报警。
+            if (n.SelectSingleNode("PermanentAlarmLatched") == null &&
+                !r.Enabled &&
+                r.Status == EpbTestStatus.Alarm)
+            {
+                r.PermanentAlarmLatched = true;
+                r.PermanentAlarmCode = "LegacyDisabledAlarm";
+                r.PermanentAlarmReason = "旧版本项目中的禁用报警状态已迁移为永久报警。";
+                r.PermanentAlarmUtc = File.GetLastWriteTimeUtc(path);
+                r.PermanentAlarmCorrelationId = Guid.Empty;
+            }
 
             loadedEpbRecords.Add(r);
         }
@@ -1121,7 +1173,15 @@ public static class ConfigLoader
             AddRecordElement("RunTime", record.RunTime ?? "");
             AddRecordElement("TotalCount", record.TotalCount.ToString());
             AddRecordElement("RunCount", record.RunCount.ToString());
+            AddRecordElement("MechanicalCycleCount", record.MechanicalCycleCount.ToString(CultureInfo.InvariantCulture));
             AddRecordElement("Status", record.Status.ToString());
+            AddRecordElement("PermanentAlarmLatched", record.PermanentAlarmLatched ? "True" : "False");
+            AddRecordElement("PermanentAlarmCode", record.PermanentAlarmCode ?? string.Empty);
+            AddRecordElement("PermanentAlarmReason", record.PermanentAlarmReason ?? string.Empty);
+            AddRecordElement("PermanentAlarmUtc", record.PermanentAlarmUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+            AddRecordElement("PermanentAlarmCorrelationId", record.PermanentAlarmCorrelationId == Guid.Empty ? string.Empty : record.PermanentAlarmCorrelationId.ToString("N"));
+            AddRecordElement("ConsecutivePeriodOverrunCount", Math.Max(0, record.ConsecutivePeriodOverrunCount).ToString(CultureInfo.InvariantCulture));
+            AddRecordElement("LastPeriodOverrunUtc", record.LastPeriodOverrunUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
 
             epbRecordsNode.AppendChild(recordNode);
         }
@@ -1293,6 +1353,98 @@ public static class ConfigLoader
                     if (File.Exists(tmp)) File.Delete(tmp);
                 }
                 catch { }
+            }
+        }
+    }
+
+    /// <summary>原子更新项目中的永久报警、连续超限和可选启用状态。</summary>
+    public static void UpdateTestEpbAlarmState(
+        string path,
+        IEnumerable<EpbAlarmPersistenceUpdate> requestedUpdates)
+    {
+        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
+        var updates = (requestedUpdates ?? throw new ArgumentNullException(nameof(requestedUpdates)))
+            .Where(update => update != null)
+            .GroupBy(update => update.Channel)
+            .Select(group => group.Last())
+            .OrderBy(update => update.Channel)
+            .ToArray();
+        if (updates.Length == 0)
+            throw new ArgumentException("至少指定一个EPB报警更新", nameof(requestedUpdates));
+        if (updates.Any(update => update.Channel < 1 || update.Channel > 12))
+            throw new ArgumentOutOfRangeException(nameof(requestedUpdates));
+
+        path = Path.GetFullPath(path);
+        var fileLock = TestFileLocks.GetOrAdd(path, _ => new object());
+        lock (fileLock)
+        {
+            var doc = new XmlDocument();
+            doc.Load(path);
+            var records = doc.SelectNodes("/TestConfig/EpbRecords/Record");
+            var targets = new Dictionary<int, XmlElement>();
+            if (records != null)
+            {
+                foreach (XmlNode node in records)
+                {
+                    if (node is not XmlElement element) continue;
+                    if (int.TryParse(
+                            element.SelectSingleNode("Id")?.InnerText,
+                            NumberStyles.Integer,
+                            CultureInfo.InvariantCulture,
+                            out var id))
+                        targets[id] = element;
+                }
+            }
+
+            var missing = updates.Where(update => !targets.ContainsKey(update.Channel))
+                .Select(update => update.Channel)
+                .ToArray();
+            if (missing.Length > 0)
+                throw new InvalidOperationException(
+                    $"TestConfig.xml 缺少 EPB[{string.Join(",", missing)}] 记录");
+
+            foreach (var update in updates)
+            {
+                var target = targets[update.Channel];
+                void Set(string name, string value)
+                {
+                    var element = target.SelectSingleNode(name) as XmlElement;
+                    if (element == null)
+                    {
+                        element = doc.CreateElement(name);
+                        target.AppendChild(element);
+                    }
+                    element.InnerText = value ?? string.Empty;
+                }
+
+                if (update.Enabled.HasValue)
+                    Set("Enabled", update.Enabled.Value ? "True" : "False");
+                Set("PermanentAlarmLatched", update.PermanentAlarmLatched ? "True" : "False");
+                Set("PermanentAlarmCode", update.PermanentAlarmCode ?? string.Empty);
+                Set("PermanentAlarmReason", update.PermanentAlarmReason ?? string.Empty);
+                Set("PermanentAlarmUtc", update.PermanentAlarmUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+                Set("PermanentAlarmCorrelationId", update.PermanentAlarmCorrelationId == Guid.Empty ? string.Empty : update.PermanentAlarmCorrelationId.ToString("N"));
+                Set("ConsecutivePeriodOverrunCount", Math.Max(0, update.ConsecutivePeriodOverrunCount).ToString(CultureInfo.InvariantCulture));
+                Set("LastPeriodOverrunUtc", update.LastPeriodOverrunUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+                if (update.PermanentAlarmLatched)
+                    Set("Status", EpbTestStatus.Alarm.ToString());
+                else if (string.Equals(
+                             target.SelectSingleNode("Status")?.InnerText,
+                             EpbTestStatus.Alarm.ToString(),
+                             StringComparison.OrdinalIgnoreCase))
+                    Set("Status", EpbTestStatus.NotStarted.ToString());
+            }
+
+            var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                doc.Save(tmp);
+                if (File.Exists(path)) File.Replace(tmp, path, null);
+                else File.Move(tmp, path);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
             }
         }
     }
@@ -1742,6 +1894,14 @@ public static class ConfigLoader
     {
         var s = n.SelectSingleNode(xpath)?.InnerText?.Trim();
         return int.TryParse(s, out var v) ? v : dft;
+    }
+
+    private static long GetLong(XmlNode n, string xpath, long dft)
+    {
+        var s = n.SelectSingleNode(xpath)?.InnerText?.Trim();
+        return long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : dft;
     }
 
     private static string GetString(XmlNode n, string xpath, string dft)

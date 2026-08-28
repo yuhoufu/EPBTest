@@ -55,6 +55,14 @@ namespace Controller.Adaptive
         SoftwareRecovery = 4
     }
 
+    public enum PeriodOverrunKind
+    {
+        None = 0,
+        CompletedOverrun = 1,
+        ConsecutiveLimitReached = 2,
+        HardLimitReached = 3
+    }
+
     public sealed class EpbCycleOutcome
     {
         public EpbCycleOutcomeKind Kind { get; set; }
@@ -62,6 +70,13 @@ namespace Controller.Adaptive
         public string Reason { get; set; }
         public int ForwardElapsedMs { get; set; }
         public int ReverseElapsedMs { get; set; }
+        /// <summary>正式计时器回调总耗时，仅供诊断，不用于卡钳超限归因。</summary>
+        public long CallbackElapsedMs { get; set; }
+        /// <summary>卡钳自身从上电到最终电机OFF的动作耗时，不含共享协调和写盘等待。</summary>
+        public long PhysicalActionElapsedMs { get; set; }
+        /// <summary>同槽液压、电源及全局屏障等待耗时。</summary>
+        public long SharedCoordinationWaitMs { get; set; }
+        public PeriodOverrunKind PeriodOverrunKind { get; set; }
         /// <summary>2kHz 全数据峰值；保留 PeakCurrentA 名称以兼容既有结果消费者。</summary>
         public double PeakCurrentA { get; set; }
         public double ControlPeakCurrentA { get; set; }

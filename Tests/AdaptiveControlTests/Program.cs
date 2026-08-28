@@ -325,6 +325,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--formal-slot-barrier", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += FormalBatchSlotCoordinatorTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--stagger-plan", StringComparison.OrdinalIgnoreCase))
                 {
                     Run("错峰部分通道保持固定首中尾身份", StaggerPartialSelection);
@@ -459,6 +466,7 @@ namespace AdaptiveControlTests
                 _passed += StopWatchdogHardeningTests.RunAll();
                 _passed += StopSafetyProductionSeamTests.RunUnitTests();
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
+                _passed += FormalBatchSlotCoordinatorTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
