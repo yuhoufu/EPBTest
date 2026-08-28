@@ -311,6 +311,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--daq-pause-policy", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run("批次暂停DAQ恢复终态必须晚于电源OFF确认", DaqRecoveryRespectsBatchPausePolicy);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--epb-record-normalization", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += EpbRecordNormalizationTests.RunAll();
@@ -318,9 +325,23 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--alarm-policy", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += NonRecoverableAlarmPolicyTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--hydraulic-coordination", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += HydraulicGroupCoordinatorTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--formal-slot-barrier", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += FormalBatchSlotCoordinatorTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -459,6 +480,7 @@ namespace AdaptiveControlTests
                 _passed += StopWatchdogHardeningTests.RunAll();
                 _passed += StopSafetyProductionSeamTests.RunUnitTests();
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
+                _passed += FormalBatchSlotCoordinatorTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
@@ -470,7 +492,10 @@ namespace AdaptiveControlTests
                 Run("正向低平台200ms立即断电并软预警", ForwardCurrentRiseStallWarnsAndCutsPower);
                 Run("14.6A近目标平台200ms软完成", NearTargetPlateauCompletesWithWarning);
                 Run("EPB10第85993圈首样本越阈值不再误报高位平台", Epb10Cycle85993RapidLoadRiseReplay);
-                Run("2.13.0.16现场中段平台不得提前断电", RapidLoadRiseMidTravelPlateauDoesNotCutPower);
+                Run("10.8A高负载平台200ms立即断电", RapidLoadRiseMidTravelPlateauCutsPower);
+                Run("历史短峰后10.8A持续平台仍在一个窗口断电",
+                    HistoricalPeakCannotMaskHighLoadPlateau);
+                Run("高负载短过渡不足确认窗不误切", ShortHighLoadTransitionDoesNotCutPower);
                 Run("13.9A短平台恢复后不误停", LowPlateauRecoversBeforeFaultWindow);
                 Run("13.9A持续平台按低目标预警完成", Sustained139AmpPlateauWarns);
                 Run("EPB10第28圈全数据峰值回放", Epb10Cycle28FullRatePeakReplay);
@@ -515,6 +540,7 @@ namespace AdaptiveControlTests
                 Run("软预警按通道类别保留30次且Unlimited不删除", WarningSnapshotRetentionModes);
                 Run("软预警完整证据按通道类别执行600秒限频", WarningSnapshotFullEvidenceIntervalIsEnforced);
                 Run("软预警默认轻量JSONL且包含完整运行身份", WarningScalarEvidenceIsDefaultAndAuditable);
+                Run("项目运行身份原子写入固定Config文件", ProjectRuntimeBuildIdentityIsWrittenAtomically);
                 Run("软预警千次风暴仅允许一个运行一个等待并合并重复", WarningSnapshotFloodIsStrictlyBounded);
                 Run("普通故障按尝试圈连续3次确认且单圈去重", GenericFaultConfirmationUsesAttemptCycles);
                 Run("普通故障成功圈清零且通道故障码隔离", GenericFaultConfirmationResetsAndIsolates);
@@ -1164,7 +1190,7 @@ namespace AdaptiveControlTests
                 "85993快速负载回放未保留可审计诊断或安全等待状态。");
         }
 
-        private static void RapidLoadRiseMidTravelPlateauDoesNotCutPower()
+        private static void RapidLoadRiseMidTravelPlateauCutsPower()
         {
             var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
             machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
@@ -1191,18 +1217,61 @@ namespace AdaptiveControlTests
                 ms => Math.Min(10.8, 2.318 + (ms - 109) * 0.04));
             var midTravelPlateau = Feed(machine, 369, 699, 10, _ => 10.8);
             Assert(
-                !midTravelPlateau.ClampReached && !midTravelPlateau.HardFault,
-                $"10.8A中段平台被提前断电：{midTravelPlateau.Reason}");
+                midTravelPlateau.HardFault &&
+                !midTravelPlateau.ClampReached &&
+                midTravelPlateau.Reason.Contains("ForwardUnderTargetHighLoadStall") &&
+                midTravelPlateau.WindowSpanMs >= 200 &&
+                midTravelPlateau.WindowSpanMs <= 240,
+                $"10.8A高负载平台未在一个确认窗内安全断电：{midTravelPlateau.Reason}");
+        }
+
+        private static void HistoricalPeakCannotMaskHighLoadPlateau()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+            Feed(machine, 0, 100, 10, _ => 1.0);
+            Feed(machine, 110, 360, 10,
+                ms => Math.Min(14.5, 1.0 + (ms - 100) * 0.06));
+
+            // 历史累计峰值14.5A只是诊断信息；当前确认窗口已回落并停在10.8A时，
+            // 仍必须按持续堵转平台切断，不得被早先短峰屏蔽。
+            machine.OnSample(Tick(370), 10.8);
+            var terminal = Feed(machine, 380, 700, 10, _ => 10.8);
+            Assert(terminal.HardFault &&
+                   terminal.Reason.Contains("ForwardUnderTargetHighLoadStall") &&
+                   terminal.WindowSpanMs >= 200 && terminal.WindowSpanMs <= 240,
+                $"历史短峰屏蔽了10.8A持续高负载平台：{terminal.Reason}");
+        }
+
+        private static void ShortHighLoadTransitionDoesNotCutPower()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+
+            Feed(machine, 0, 100, 10, _ => 1.0);
+            Feed(
+                machine,
+                110,
+                330,
+                10,
+                ms => Math.Min(10.8, 1.0 + (ms - 100) * 0.05));
+
+            // 10.8A只停留150ms，低于200ms确认窗；随后继续正常上升。
+            // 这条用例约束保护必须依据连续平台，而不能对短促过渡或孤立尖峰过敏。
+            var shortTransition = Feed(machine, 340, 480, 10, _ => 10.8);
+            Assert(
+                !shortTransition.HardFault && !shortTransition.ClampReached,
+                $"不足确认窗的高负载过渡被误切：{shortTransition.Reason}");
 
             var completed = Feed(
                 machine,
-                709,
-                1300,
+                490,
+                900,
                 10,
-                ms => Math.Min(15.0, 10.8 + (ms - 699) * 0.012));
+                ms => Math.Min(15.0, 10.8 + (ms - 480) * 0.025));
             Assert(
                 completed.ClampReached && !completed.HardFault,
-                $"中段平台恢复上升后未能达到目标：{completed.Reason}");
+                $"短暂高负载过渡恢复上升后未能达到目标：{completed.Reason}");
         }
 
         private static void FullRateRapidClampBeforeLoadRiseIsAccepted()
@@ -3390,6 +3459,48 @@ namespace AdaptiveControlTests
                 "软预警JSONL缺少lag、队列深度或可审计运行身份");
         }
 
+        private static void ProjectRuntimeBuildIdentityIsWrittenAtomically()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "epb-runtime-identity-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var config = Path.Combine(root, "Config");
+                var identity = RuntimeBuildIdentity.Capture();
+                Assert(identity.TryWriteProjectJson(
+                        config,
+                        "10358-029a",
+                        root,
+                        out var path,
+                        out var error),
+                    "首次写入项目运行身份失败：" + error);
+                Assert(Path.GetFileName(path) == "runtime-build-identity.json" && File.Exists(path),
+                    "项目运行身份没有写入固定 Config 文件");
+                var first = File.ReadAllText(path);
+                Assert(first.Contains("\"schemaVersion\": 1") &&
+                       first.Contains("\"projectName\": \"10358-029a\"") &&
+                       first.Contains("\"productVersion\": \"") &&
+                       first.Contains("\"executableSha256\": \"") &&
+                       first.Contains("\"capturedUtc\": \""),
+                    "项目运行身份缺少版本、项目或审计字段");
+
+                Assert(identity.TryWriteProjectJson(
+                        config,
+                        "10358-029a",
+                        root,
+                        out var replacedPath,
+                        out error),
+                    "原子替换项目运行身份失败：" + error);
+                Assert(string.Equals(path, replacedPath, StringComparison.OrdinalIgnoreCase),
+                    "重复写入改变了项目运行身份固定路径");
+                Assert(!Directory.EnumerateFiles(config, "*.tmp-*", SearchOption.TopDirectoryOnly).Any(),
+                    "原子写入遗留了临时文件");
+            }
+            finally
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
         private static void WarningSnapshotFloodIsStrictlyBounded()
         {
             var gate = new WarningSnapshotWorkGate();
@@ -4243,6 +4354,16 @@ namespace AdaptiveControlTests
             Assert(EpbManager.GetDaqRecoveredHeldRuntimeState(BatchPauseState.ResumeChecking) ==
                    ChannelRuntimeState.ResumeChecking,
                 "恢复预检时DAQ恢复后的通道状态错误");
+            Assert(!EpbManager.CanCommitDaqRecoveredHeldTerminal(
+                       holdForBatchPause: true,
+                       powerOffConfirmed: false) &&
+                   EpbManager.CanCommitDaqRecoveredHeldTerminal(
+                       holdForBatchPause: true,
+                       powerOffConfirmed: true) &&
+                   EpbManager.CanCommitDaqRecoveredHeldTerminal(
+                       holdForBatchPause: false,
+                       powerOffConfirmed: false),
+                "DAQ暂停终态未严格晚于对应电源OFF确认");
         }
 
         private static void ChannelAlarmResumePolicy()
@@ -6250,6 +6371,10 @@ namespace AdaptiveControlTests
 
         private sealed class TransactionalRunner : IEpbCycleRunner
         {
+            public long PhysicalActionGeneration => 1;
+
+            public bool IsPhysicalActionTerminal(long generation) => generation == 1;
+
             private EpbAdaptiveProfile _profile;
 
             public TransactionalRunner(EpbAdaptiveProfile profile)

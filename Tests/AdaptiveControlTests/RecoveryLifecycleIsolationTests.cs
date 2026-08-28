@@ -161,6 +161,8 @@ namespace AdaptiveControlTests
 
         private static void LearningWarningCannotRouteToFormalRejoin()
         {
+            var runId = Guid.NewGuid();
+            var ownerId = Guid.NewGuid();
             var learning = new ChannelRuntimeStateChangedEvent
             {
                 State = ChannelRuntimeState.Learning,
@@ -174,10 +176,29 @@ namespace AdaptiveControlTests
                 FormalPhaseCommitted = true,
                 RecoveryTargetPhase = RecoveryTargetPhase.Formal
             };
+            var formalRecovering = new ChannelRuntimeStateChangedEvent
+            {
+                State = ChannelRuntimeState.Recovering,
+                FormalPhaseCommitted = true,
+                RunId = runId,
+                RunEpoch = 29,
+                RecoveryOwnerKind = RecoveryOwnerKind.FormalTimer,
+                RecoveryOwnerId = ownerId,
+                RecoveryOwnerGeneration = 29,
+                RecoveryTargetPhase = RecoveryTargetPhase.Formal
+            };
+            var orphanRecovering = formalRecovering.Clone();
+            orphanRecovering.RecoveryOwnerId = Guid.Empty;
             Assert(!EpbManager.CanRouteRecoverableWarningToFormalRejoin(learning, false),
                 "学习阶段软预警仍可进入正式节拍重入");
             Assert(EpbManager.CanRouteRecoverableWarningToFormalRejoin(formal, true),
                 "正式运行阶段软预警被错误拒绝");
+            Assert(EpbManager.CanRouteRecoverableWarningToFormalRejoin(
+                       formalRecovering, true),
+                "已登记FormalTimer owner的Recovering状态被错误拒绝重入");
+            Assert(!EpbManager.CanRouteRecoverableWarningToFormalRejoin(
+                       orphanRecovering, true),
+                "缺失显式owner的Recovering状态仍可进入正式重入");
         }
 
         private static void RecoveryIncidentDedupeUsesStateRevision()

@@ -22,7 +22,25 @@ namespace AdaptiveControlTests
             Run("旧Runner退出前异步等待且退出后允许新attempt", ExecutionQuiescenceWaitsThenAllowsNextAttempt, ref passed);
             Run("旧execution迟到完成不得清除新tombstone", StaleExecutionCompletionCannotClearNewTombstone, ref passed);
             Run("启动供电与恢复预释放均受execution门保护", HardwareActionsWaitForExecutionQuiescence, ref passed);
+            Run("已开始圈的异常fallback必须等待耐久封圈",
+                FormalFallbackRequiresDurableTerminal, ref passed);
             return passed;
+        }
+
+        private static void FormalFallbackRequiresDurableTerminal()
+        {
+            Assert(EpbManager.ResolveFormalFallbackPersistence(null, out var notStartedRequired) &&
+                   !notStartedRequired,
+                "尚未开始圈的安全退出被误要求持久化");
+
+            using var started = NewContext(channel: 4, attemptId: 9001, cycle: 77);
+            Assert(!EpbManager.ResolveFormalFallbackPersistence(started, out var startedRequired) &&
+                   startedRequired,
+                "已开始但未封圈的attempt通过了fallback");
+            Assert(started.AbortOnce(() => true, _ => { }), "测试attempt未能持久作废");
+            Assert(EpbManager.ResolveFormalFallbackPersistence(started, out startedRequired) &&
+                   startedRequired,
+                "已明确耐久作废的attempt仍阻塞fallback");
         }
 
         private static void AttemptVisibleBeforeRecorderBeginReturns()

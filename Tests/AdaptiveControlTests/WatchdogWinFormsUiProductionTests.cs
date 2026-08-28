@@ -105,6 +105,13 @@ namespace AdaptiveControlTests
 
         private static void WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard()
         {
+            Assert(WinFormsWatchdogUiCloseCoordinator.ShouldCoordinateMainClose(
+                       hasActiveEvidence: false,
+                       mdiChildCount: 1) &&
+                   !WinFormsWatchdogUiCloseCoordinator.ShouldCoordinateMainClose(
+                       hasActiveEvidence: false,
+                       mdiChildCount: 0),
+                "人工停止释放Watchdog后，主窗X没有继续收口仍存活的MDI子窗");
             Assert(!WinFormsWatchdogUiCloseCoordinator.ShouldApplyLegacyMdiGuard(
                        watchdogCloseAuthorized: true,
                        mdiChildCount: 1),
@@ -126,6 +133,13 @@ namespace AdaptiveControlTests
             Assert(WatchdogRuntime.SelectShutdownMessageTypeForRetention(true) ==
                    WatchdogMessageType.ShutdownExpected,
                 "正式应用退出没有启用Sidecar主PID退出监督");
+            Assert(WatchdogRuntime.SelectShutdownMessageTypeForRetention(
+                       RuntimeShutdownIntent.WatchdogTakeoverExit) ==
+                   WatchdogMessageType.WatchdogTakeoverExit,
+                "Watchdog接管退出仍被错误归类为人工ShutdownExpected");
+            Assert(!WatchdogLifecyclePolicy.IsTerminalMessage(
+                       WatchdogMessageType.WatchdogTakeoverExit),
+                "Watchdog接管退出错误撤销了仍待消费的自动恢复许可");
         }
 
         private static void WinFormsTargetPostsOnStaMessagePump()

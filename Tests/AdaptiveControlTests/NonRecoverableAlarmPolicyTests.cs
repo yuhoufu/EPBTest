@@ -18,8 +18,11 @@ namespace AdaptiveControlTests
             Run("已完成永久报警使用不可变触发圈号", CompletedAlarmKeepsConfirmedTerminalCycle, ref passed);
             Run("反向或落盘失败不得提交异常圈", IncompleteCycleCannotCommitEvidence, ref passed);
             Run("四类客户报警使用持久禁用策略", CustomerFaultsDisableWithoutRecovery, ref passed);
+            Run("高负载停滞只允许人工完整重学习", HighLoadStallRequiresOperatorRelearning, ref passed);
             Run("持久禁用只改Enabled且保留已落盘圈数", PersistentDisablePreservesDiskProgress, ref passed);
             Run("共享故障组一次原子禁用且失败不部分提交", PersistentDisableGroupIsAtomic, ref passed);
+            Run("重复XML通道记录在锁存与清除后保持一致",
+                DuplicateAlarmRecordsUpdateTogether, ref passed);
             return passed;
         }
 
@@ -141,6 +144,22 @@ namespace AdaptiveControlTests
                 "输出控制链故障被错误锁存为卡钳硬件故障");
         }
 
+        private static void HighLoadStallRequiresOperatorRelearning()
+        {
+            Assert(EpbManager.RequiresOperatorFullRelearning(
+                    "ForwardUnderTargetHighLoadStall",
+                    "Peak=10.8A"),
+                "稳定故障码未进入人工完整重学习门禁");
+            Assert(EpbManager.RequiresOperatorFullRelearning(
+                    "ChannelFault",
+                    "Reason=ForwardUnderTargetHighLoadStall"),
+                "嵌套故障原因未进入人工完整重学习门禁");
+            Assert(!EpbManager.RequiresOperatorFullRelearning(
+                    "DaqSampleStale",
+                    "software transient"),
+                "纯软件瞬态被错误升级为人工完整重学习");
+        }
+
         private static void PersistentDisablePreservesDiskProgress()
         {
             var directory = Path.Combine(
@@ -234,6 +253,85 @@ namespace AdaptiveControlTests
             {
                 Directory.Delete(directory, true);
             }
+        }
+
+        private static void DuplicateAlarmRecordsUpdateTogether()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "epb-duplicate-alarm-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "TestConfig.xml");
+            try
+            {
+                var source = Path.GetFullPath(Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    "..", "..", "..", "..", "MTTfTest", "Config", "TestConfig.xml"));
+                File.Copy(source, path);
+                var xml = new XmlDocument();
+                xml.Load(path);
+                var original = xml.SelectSingleNode(
+                    "/TestConfig/EpbRecords/Record[Id='4']") as XmlElement;
+                Assert(original != null, "基准配置缺少EPB4");
+                original.ParentNode.AppendChild(original.CloneNode(true));
+                xml.Save(path);
+
+                ConfigLoader.UpdateTestEpbAlarmState(path, new[]
+                {
+                    new EpbAlarmPersistenceUpdate
+                    {
+                        Channel = 4,
+                        Enabled = false,
+                        PermanentAlarmLatched = true,
+                        PermanentAlarmCode = "DuplicateLatch",
+                        PermanentAlarmReason = "test",
+                        PermanentAlarmUtc = DateTime.UtcNow,
+                        PermanentAlarmCorrelationId = Guid.NewGuid(),
+                        ConsecutivePeriodOverrunCount = 8,
+                        LastPeriodOverrunUtc = DateTime.UtcNow
+                    }
+                });
+                AssertDuplicateAlarmState(path, true, false, 8, "DuplicateLatch");
+
+                ConfigLoader.UpdateTestEpbAlarmState(path, new[]
+                {
+                    new EpbAlarmPersistenceUpdate
+                    {
+                        Channel = 4,
+                        Enabled = true,
+                        PermanentAlarmLatched = false,
+                        ConsecutivePeriodOverrunCount = 0
+                    }
+                });
+                AssertDuplicateAlarmState(path, false, true, 0, string.Empty);
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void AssertDuplicateAlarmState(
+            string path,
+            bool latched,
+            bool enabled,
+            int streak,
+            string code)
+        {
+            var xml = new XmlDocument();
+            xml.Load(path);
+            var nodes = xml.SelectNodes("/TestConfig/EpbRecords/Record[Id='4']");
+            Assert(nodes != null && nodes.Count == 2, "重复EPB4测试记录丢失");
+            foreach (XmlNode node in nodes)
+                Assert(
+                    string.Equals(node.SelectSingleNode("PermanentAlarmLatched")?.InnerText,
+                        latched ? "True" : "False", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(node.SelectSingleNode("Enabled")?.InnerText,
+                        enabled ? "True" : "False", StringComparison.OrdinalIgnoreCase) &&
+                    node.SelectSingleNode("ConsecutivePeriodOverrunCount")?.InnerText ==
+                    streak.ToString() &&
+                    (node.SelectSingleNode("PermanentAlarmCode")?.InnerText ?? string.Empty) == code,
+                    "同一通道的重复XML记录状态不一致");
         }
 
         private static EpbCycleOutcome SuccessfulOutcome(

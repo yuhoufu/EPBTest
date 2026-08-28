@@ -19,6 +19,11 @@ namespace AdaptiveControlTests
             Run("并发Ensure仍保持十二通道唯一", ConcurrentEnsureIsIdempotent, ref passed);
             Run("归一化后恶意重复插入仍不能污染启动计划",
                 DuplicateReinsertionCannotCorruptStartPlan, ref passed);
+            Run("永久报警与连续超限次数保存后可恢复", PermanentAlarmRoundTrips, ref passed);
+            Run("完整重学习门禁跨进程往返并可原子清除",
+                OperatorFullRelearningGateRoundTrips, ref passed);
+            Run("零正式圈永久报警初始化后仍保持报警", ZeroRunPermanentAlarmSurvivesInitialization, ref passed);
+            Run("旧项目仅禁用报警状态迁移为永久报警", LegacyDisabledAlarmMigrationIsNarrow, ref passed);
             return passed;
         }
 
@@ -143,6 +148,161 @@ namespace AdaptiveControlTests
                        .SequenceEqual(Enumerable.Range(1, 12)) &&
                    plan[4] == 99679,
                 "原子StartPlan存在重复/缺失键或没有保留单调完成证据");
+        }
+
+        private static void PermanentAlarmRoundTrips()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var path = Path.Combine(dir, "TestConfig.xml");
+                File.WriteAllText(path, "<TestConfig />");
+                var config = new TestConfig
+                {
+                    TestName = "alarm-roundtrip",
+                    StoreDir = dir,
+                    TestTarget = 100
+                };
+                config.EnsureEpbRecords(12);
+                var correlationId = Guid.NewGuid();
+                var record = config.GetEpbRecord(3);
+                record.ConsecutivePeriodOverrunCount = 7;
+                record.LastPeriodOverrunUtc = new DateTime(2026, 8, 28, 1, 2, 3, DateTimeKind.Utc);
+                record.LatchPermanentAlarm(
+                    "ConsecutivePeriodOverrun",
+                    "连续8次超限",
+                    new DateTime(2026, 8, 28, 1, 3, 4, DateTimeKind.Utc),
+                    correlationId);
+
+                ConfigLoader.SaveTest(path, config);
+                var reloaded = ConfigLoader.LoadTest(path, NullLogger.Instance);
+                var actual = reloaded.GetEpbRecord(3);
+                Assert(actual.PermanentAlarmLatched && !actual.Enabled &&
+                       actual.PermanentAlarmCode == "ConsecutivePeriodOverrun" &&
+                       actual.PermanentAlarmCorrelationId == correlationId &&
+                       actual.ConsecutivePeriodOverrunCount == 7 &&
+                       actual.LastPeriodOverrunUtc.HasValue,
+                    "永久报警或连续超限字段未完整往返");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void OperatorFullRelearningGateRoundTrips()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var path = Path.Combine(dir, "TestConfig.xml");
+                File.WriteAllText(path, "<TestConfig />");
+                var config = new TestConfig
+                {
+                    TestName = "relearning-roundtrip",
+                    StoreDir = dir,
+                    TestTarget = 100
+                };
+                config.EnsureEpbRecords(12);
+                var correlationId = Guid.NewGuid();
+                var utc = new DateTime(2026, 8, 28, 2, 3, 4, DateTimeKind.Utc);
+                config.GetEpbRecord(12).RequireOperatorFullRelearning(
+                    "ForwardUnderTargetHighLoadStall",
+                    utc,
+                    correlationId);
+
+                ConfigLoader.SaveTest(path, config);
+                var loaded = ConfigLoader.LoadTest(path, NullLogger.Instance);
+                var actual = loaded.GetEpbRecord(12);
+                Assert(actual.OperatorFullRelearningRequired &&
+                       actual.OperatorFullRelearningReason.Contains(
+                           "ForwardUnderTargetHighLoadStall") &&
+                       actual.OperatorFullRelearningCorrelationId == correlationId,
+                    "完整重学习门禁未跨保存/加载恢复");
+
+                ConfigLoader.UpdateTestEpbAlarmState(path, new[]
+                {
+                    new EpbAlarmPersistenceUpdate
+                    {
+                        Channel = 12,
+                        PermanentAlarmLatched = actual.PermanentAlarmLatched,
+                        PermanentAlarmCode = actual.PermanentAlarmCode,
+                        PermanentAlarmReason = actual.PermanentAlarmReason,
+                        PermanentAlarmUtc = actual.PermanentAlarmUtc,
+                        PermanentAlarmCorrelationId = actual.PermanentAlarmCorrelationId,
+                        OperatorFullRelearningRequired = false,
+                        ConsecutivePeriodOverrunCount =
+                            actual.ConsecutivePeriodOverrunCount,
+                        LastPeriodOverrunUtc = actual.LastPeriodOverrunUtc
+                    }
+                });
+                var cleared = ConfigLoader.LoadTest(path, NullLogger.Instance)
+                    .GetEpbRecord(12);
+                Assert(!cleared.OperatorFullRelearningRequired &&
+                       string.IsNullOrEmpty(cleared.OperatorFullRelearningReason) &&
+                       cleared.OperatorFullRelearningCorrelationId == Guid.Empty,
+                    "资格通过后的原子更新未清除完整重学习门禁");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void LegacyDisabledAlarmMigrationIsNarrow()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var path = Path.Combine(dir, "TestConfig.xml");
+                File.WriteAllText(
+                    path,
+                    "<TestConfig><Basic><TestName>legacy</TestName><TestTarget>10</TestTarget>" +
+                    "<IsSameCycleForAllEpb>true</IsSameCycleForAllEpb><TestCycle>15</TestCycle>" +
+                    "<LearnCycle>10</LearnCycle><StoreDir>C:\\Temp</StoreDir></Basic>" +
+                    "<EpbRecords>" +
+                    RecordXmlWithStatus(1, false, "Alarm") +
+                    RecordXmlWithStatus(2, false, "NotStarted") +
+                    RecordXmlWithStatus(3, true, "Alarm") +
+                    "</EpbRecords></TestConfig>");
+
+                var loaded = ConfigLoader.LoadTest(path, NullLogger.Instance);
+                Assert(loaded.GetEpbRecord(1).PermanentAlarmLatched &&
+                       loaded.GetEpbRecord(1).PermanentAlarmCode == "LegacyDisabledAlarm",
+                    "Enabled=false + Alarm 未迁移");
+                Assert(!loaded.GetEpbRecord(2).PermanentAlarmLatched,
+                    "普通未启用通道被错误反推为永久报警");
+                Assert(!loaded.GetEpbRecord(3).PermanentAlarmLatched,
+                    "仍启用的旧报警状态不应迁移为禁用永久报警");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void ZeroRunPermanentAlarmSurvivesInitialization()
+        {
+            var record = EpbTestRecord.CreateDefault(1, 100);
+            record.Enabled = true;
+            record.LatchPermanentAlarm(
+                "StartupPositioningFault",
+                "启动定位硬件故障",
+                DateTime.UtcNow,
+                Guid.NewGuid());
+
+            record.InitializeOnLoad(DateTime.Now);
+
+            Assert(record.RunCount == 0 && record.PermanentAlarmLatched &&
+                   !record.Enabled && record.Status == EpbTestStatus.Alarm,
+                "零正式圈永久报警被加载初始化降级为未开始");
+        }
+
+        private static string RecordXmlWithStatus(int id, bool enabled, string status)
+        {
+            return $"<Record><Id>{id}</Id><Enabled>{enabled}</Enabled>" +
+                   "<RunTime>0.00:00:00</RunTime><TotalCount>10</TotalCount>" +
+                   $"<RunCount>0</RunCount><Status>{status}</Status></Record>";
         }
 
         private static string BuildDuplicateConfigXml()

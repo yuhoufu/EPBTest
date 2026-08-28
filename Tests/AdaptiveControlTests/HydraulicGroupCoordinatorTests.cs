@@ -49,6 +49,7 @@ namespace AdaptiveControlTests
             Run("首次保压下降仅触发软件自愈", FirstPressureLossIsRecoverable, ref passed);
             Run("保压连续三代次下降才确认硬件报警", ThirdPressureLossConfirmsHardwareFault, ref passed);
             Run("压力样本陈旧只触发软件自愈", StalePressureLossIsRecoverable, ref passed);
+            Run("液压压力异常输出稳定分型故障码", PressureLossUsesStableFaultCodes, ref passed);
             Run("液压任务取消不得确认硬件报警", CanceledHydraulicWorkIsNotHardware, ref passed);
             Run("未知液压异常不得绕过连续确认", UnknownHydraulicFaultIsNotHardware, ref passed);
             Run("报警电源组仅在无兄弟通道活动时关闭", PowerGroupIdlePredicateIsScoped, ref passed);
@@ -114,6 +115,25 @@ namespace AdaptiveControlTests
             Assert(result.MotorDeadlineUtc.Value >
                    result.MotorAnchorUtc.Value.AddMilliseconds(160),
                 "公共截止点未覆盖尾批相位。");
+        }
+
+        private static void PressureLossUsesStableFaultCodes()
+        {
+            Assert(new HydraulicPressureLostException(
+                    1, 1, double.NaN, 60,
+                    HydraulicPressureFailureReason.StaleSample, 500).FaultCode ==
+                   "HydraulicSampleStale",
+                "陈旧样本故障码不稳定");
+            Assert(new HydraulicPressureLostException(
+                    1, 1, double.NaN, 60,
+                    HydraulicPressureFailureReason.NoSample, double.PositiveInfinity).FaultCode ==
+                   "HydraulicSampleUnavailable",
+                "无样本故障码不稳定");
+            Assert(new HydraulicPressureLostException(
+                    1, 1, 42, 60,
+                    HydraulicPressureFailureReason.BelowMinimum, 5, 3, 3).FaultCode ==
+                   "HydraulicPressureBelowMinimum",
+                "真实低压故障码不稳定");
         }
 
         private static void GlobalSlotMembershipIsImmutable()
@@ -970,7 +990,7 @@ namespace AdaptiveControlTests
                    hydraulic.EffectiveHoldDropConfirmMs == 1000,
                 "旧保压参数未提升到建压容差与1秒确认下限。");
             Assert(publishedFault != null &&
-                   publishedFault.Code == "PressureSampleUnavailable" &&
+                   publishedFault.Code == "HydraulicSampleStale" &&
                    publishedFault.Classification == FaultClassification.SystemFault,
                 "陈旧压力样本仍被错误发布成硬件保压丢失。");
         }

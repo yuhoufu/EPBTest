@@ -2954,16 +2954,36 @@ namespace AdaptiveControlTests
                 var largeSend = Task.Run(() => harness.Engine.Send(large));
                 Assert(WaitUntil(() => !largeSend.IsCompleted, 1000),
                     "大消息没有进入真实发送路径；iteration=" + iteration);
-                var busySends = Enumerable.Range(0, 32)
-                    .Select(_ => Task.Run(() => harness.Engine.Send(
-                        new WatchdogMessage
-                        {
-                            ProtocolVersion = WatchdogProtocol.Version,
-                            Type = WatchdogMessageType.RunStopped,
-                            SessionId = before.SessionId,
-                            Reason = "busy-probe"
-                        })))
-                    .ToArray();
+                Task<WatchdogSendDisposition>[] busySends;
+                using (var ready = new CountdownEvent(32))
+                using (var start = new ManualResetEventSlim(false))
+                {
+                    busySends = Enumerable.Range(0, 32)
+                        .Select(_ => Task.Factory.StartNew(
+                            () =>
+                            {
+                                ready.Signal();
+                                start.Wait();
+                                return harness.Engine.TrySendForSessionWithDisposition(
+                                    new WatchdogMessage
+                                    {
+                                        ProtocolVersion = WatchdogProtocol.Version,
+                                        Type = WatchdogMessageType.RunStopped,
+                                        SessionId = before.SessionId,
+                                        Reason = "busy-probe"
+                                    },
+                                    before.SessionId,
+                                    before.SessionGeneration,
+                                    before.ActiveSessionLease);
+                            },
+                            CancellationToken.None,
+                            TaskCreationOptions.LongRunning,
+                            TaskScheduler.Default))
+                        .ToArray();
+                    Assert(ready.Wait(5000),
+                        "SendBusy并发调用未全部到达启动屏障；iteration=" + iteration);
+                    start.Set();
+                }
                 // The production writer deadline is 500ms.  Release the
                 // server barrier independently so the test never converts a
                 // scheduling delay into a transport timeout.
@@ -2972,15 +2992,11 @@ namespace AdaptiveControlTests
                     await Task.Delay(150).ConfigureAwait(false);
                     harness.ReleaseReadBlock();
                 });
-                Assert(WaitUntil(() => harness.CountCallbacksAfterContaining(
-                                   "send-busy-" + iteration, 0, "SendBusy") > 0,
-                               1000),
-                    "未观察到真实SendBusy诊断；iteration=" + iteration +
-                    ";stats=" + harness.ServerStats);
                 Assert(busySends.All(task => task.Wait(3000)),
                     "SendBusy并发调用没有在有界时间内返回；iteration=" + iteration);
-                Assert(busySends.Any(task => !task.Result),
-                    "SendBusy并发调用没有返回AdmissionBusy=false；iteration=" + iteration);
+                Assert(busySends.Any(task =>
+                           task.Result == WatchdogSendDisposition.AdmissionBusy),
+                    "生命周期保留队列饱和后没有返回AdmissionBusy；iteration=" + iteration);
 
                 // Release before the production 500ms write deadline.  The
                 // held send may then complete; it must not make the healthy
@@ -2988,6 +3004,16 @@ namespace AdaptiveControlTests
                 harness.ReleaseReadBlock();
                 Assert(largeSend.Wait(5000),
                     "大消息释放后仍未完成；iteration=" + iteration);
+                var successfulBusySends = busySends.Count(task =>
+                    task.Result == WatchdogSendDisposition.Sent);
+                Assert(WaitUntil(
+                           () => harness.CountReceivedReason("busy-probe") ==
+                                 successfulBusySends,
+                           3000),
+                    "已返回AdmissionBusy的请求仍在队列中迟到写出；" +
+                    "iteration=" + iteration +
+                    ";successful=" + successfulBusySends +
+                    ";received=" + harness.CountReceivedReason("busy-probe"));
                 Assert(WaitUntil(() =>
                 {
                     var current = harness.Snapshot();
@@ -3412,6 +3438,9 @@ namespace AdaptiveControlTests
             internal Task ArmReadBlockAfterAttach() => _server.ArmReadBlockAfterAttach();
 
             internal void ReleaseReadBlock() => _server.ReleaseReadBlock();
+
+            internal int CountReceivedReason(string reason) =>
+                _server.CountReceivedReason(reason);
 
             internal string ServerStats
             {
@@ -3983,6 +4012,8 @@ namespace AdaptiveControlTests
             private int _attachCount;
             private int _attachedWriteCount;
             private readonly List<DateTime> _heartbeatTimes = new List<DateTime>();
+            private readonly Dictionary<string, int> _receivedReasons =
+                new Dictionary<string, int>(StringComparer.Ordinal);
             private int _heartbeatAckEnabled = 1;
             private int _serveErrorCount;
             private string _serveErrorDetail;
@@ -4023,6 +4054,14 @@ namespace AdaptiveControlTests
             internal DateTime[] HeartbeatTimesSnapshot()
             {
                 lock (_gate) return _heartbeatTimes.ToArray();
+            }
+
+            internal int CountReceivedReason(string reason)
+            {
+                lock (_gate)
+                    return _receivedReasons.TryGetValue(reason ?? string.Empty, out var count)
+                        ? count
+                        : 0;
             }
 
             internal void SetHeartbeatAckEnabled(bool enabled)
@@ -4395,6 +4434,16 @@ namespace AdaptiveControlTests
                             line = await reader.ReadLineAsync().ConfigureAwait(false);
                             if (line == null) return;
                             var message = WatchdogProtocol.Deserialize(line);
+                            if (message != null && !string.IsNullOrEmpty(message.Reason))
+                            {
+                                lock (_gate)
+                                {
+                                    _receivedReasons.TryGetValue(
+                                        message.Reason,
+                                        out var receivedCount);
+                                    _receivedReasons[message.Reason] = receivedCount + 1;
+                                }
+                            }
                             if (message?.Type == WatchdogMessageType.Heartbeat)
                             {
                                 lock (_gate) _heartbeatTimes.Add(DateTime.UtcNow);

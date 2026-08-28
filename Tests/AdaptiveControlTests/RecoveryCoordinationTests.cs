@@ -59,7 +59,53 @@ namespace AdaptiveControlTests
             Run("自动重启子进程必须确认全部授权通道已启动", UnattendedChildStartRequiresCompleteCohort, ref passed);
             Run("自动重启按耐久成功圈续跑且不得重启已完成通道", UnattendedRestartUsesDurableRemainingCycles, ref passed);
             Run("DAQ恢复阶段完整单调序列并在SafeIdle后拒绝回退", DaqRecoveryPhaseSequenceIsMonotonic, ref passed);
+            Run("启动熔断只隔离有通道身份的失败卡钳", BatchStartCircuitFailureIsChannelScoped, ref passed);
             return passed;
+        }
+
+        private static void BatchStartCircuitFailureIsChannelScoped()
+        {
+            var selected = new[] { 4, 5, 11, 12 };
+            var channelFailure = new SoftwareSelfHealingExhaustedException(
+                "StartupPositioning",
+                3,
+                new InvalidOperationException("Positioning failed"),
+                12);
+            Assert(EpbManager.ResolveBatchStartFailureChannels(
+                       channelFailure,
+                       Array.Empty<ChannelStartFault>(),
+                       selected).SequenceEqual(new[] { 12 }),
+                "EPB12启动定位熔断仍扩大为整批启动受阻");
+
+            var recordedFaults = new[]
+            {
+                new ChannelStartFault(
+                    11,
+                    "Learning",
+                    "Channel learning failed",
+                    FaultScope.Channel)
+            };
+            Assert(EpbManager.ResolveBatchStartFailureChannels(
+                       null,
+                       recordedFaults,
+                       selected).SequenceEqual(new[] { 11 }),
+                "已有通道级启动故障证据仍扩大为整批失败");
+
+            Assert(EpbManager.ResolveBatchStartFailureChannels(
+                       channelFailure,
+                       recordedFaults,
+                       selected).SequenceEqual(new[] { 11, 12 }),
+                "通道熔断覆盖了熔断前已累积的启动故障");
+
+            var globalFailure = new SoftwareSelfHealingExhaustedException(
+                "DaqStartPreflight",
+                3,
+                new InvalidOperationException("DAQ unavailable"));
+            Assert(EpbManager.ResolveBatchStartFailureChannels(
+                       globalFailure,
+                       Array.Empty<ChannelStartFault>(),
+                       selected).SequenceEqual(selected),
+                "无通道身份的DAQ基础设施故障未保持整批作用域");
         }
 
         private static void DaqRecoveryPhaseSequenceIsMonotonic()
