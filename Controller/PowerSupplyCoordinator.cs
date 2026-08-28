@@ -1123,8 +1123,8 @@ namespace Controller
 
         private async Task MonitorLoopAsync(int groupId, CancellationToken token)
         {
-            DateTime? ccSince = null;
-            DateTime? lowVoltageSince = null;
+            long? ccSinceTicks = null;
+            long? lowVoltageSinceTicks = null;
             while (!token.IsCancellationRequested && _activeGroups.ContainsKey(groupId))
             {
                 var started = Stopwatch.GetTimestamp();
@@ -1188,8 +1188,10 @@ namespace Controller
                     }
 
                     var limited = snapshot.IsConstantCurrent || snapshot.IsCurrentLimited || snapshot.IsPowerLimited;
-                    ccSince = limited ? ccSince ?? DateTime.UtcNow : null;
-                    if (ccSince.HasValue && (DateTime.UtcNow - ccSince.Value).TotalMilliseconds >= _config.CcTripMs)
+                    var nowTicks = Stopwatch.GetTimestamp();
+                    ccSinceTicks = limited ? ccSinceTicks ?? nowTicks : null;
+                    if (ccSinceTicks.HasValue &&
+                        ElapsedMilliseconds(ccSinceTicks.Value, nowTicks) >= _config.CcTripMs)
                     {
                         RaiseFault(groupId, "SustainedCurrentLimit",
                             $"程控电源持续限流超过 {_config.CcTripMs}ms。", snapshot);
@@ -1197,9 +1199,9 @@ namespace Controller
                     }
 
                     var low = snapshot.MeasuredVoltage < supply.MinimumOutputVoltageV;
-                    lowVoltageSince = low ? lowVoltageSince ?? DateTime.UtcNow : null;
-                    if (lowVoltageSince.HasValue &&
-                        (DateTime.UtcNow - lowVoltageSince.Value).TotalMilliseconds >= _config.LowVoltageTripMs)
+                    lowVoltageSinceTicks = low ? lowVoltageSinceTicks ?? nowTicks : null;
+                    if (lowVoltageSinceTicks.HasValue &&
+                        ElapsedMilliseconds(lowVoltageSinceTicks.Value, nowTicks) >= _config.LowVoltageTripMs)
                     {
                         RaiseFault(groupId, "SustainedLowVoltage",
                             $"输出低压持续超过 {_config.LowVoltageTripMs}ms：" +
@@ -1635,7 +1637,9 @@ namespace Controller
                     Port = supply.Port,
                     Terminator = supply.Terminator
                 },
-                new AppPswLog(_log));
+                new AppPswLog(_log),
+                connectTimeoutMs: Math.Max(1500, _config.TelemetryCallTimeoutMs),
+                commandTimeoutMs: _config.TelemetryCallTimeoutMs);
         }
 
         private PowerSupplyDeviceConfig RequiredSupply(int groupId) =>

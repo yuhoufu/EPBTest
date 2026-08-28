@@ -164,6 +164,30 @@ namespace Config
                     65536,
                     path,
                     log);
+                cfg.WarningSnapshots.SoftWarningMaintenanceWindowCycles = ParseBoundedIntAttr(
+                    warningNode,
+                    "SoftWarningMaintenanceWindowCycles",
+                    cfg.WarningSnapshots.SoftWarningMaintenanceWindowCycles,
+                    10,
+                    100000,
+                    path,
+                    log);
+                cfg.WarningSnapshots.SoftWarningMaintenanceRate = Math.Max(
+                    0.001,
+                    Math.Min(
+                        1.0,
+                        GetDoubleAttr(
+                            warningNode,
+                            "SoftWarningMaintenanceRate",
+                            cfg.WarningSnapshots.SoftWarningMaintenanceRate)));
+                cfg.WarningSnapshots.SoftWarningMaintenanceConsecutiveWindows = ParseBoundedIntAttr(
+                    warningNode,
+                    "SoftWarningMaintenanceConsecutiveWindows",
+                    cfg.WarningSnapshots.SoftWarningMaintenanceConsecutiveWindows,
+                    1,
+                    100,
+                    path,
+                    log);
             }
 
             log?.Info(
@@ -177,6 +201,9 @@ namespace Config
                 $"EvidenceInterval={cfg.WarningSnapshots.FullEvidenceMinimumIntervalSeconds}s " +
                 $"EvidenceQueue={cfg.WarningSnapshots.FullEvidenceQueueCapacity} " +
                 $"ScalarQueue={cfg.WarningSnapshots.ScalarEvidenceQueueCapacity} " +
+                $"MaintenanceWindow={cfg.WarningSnapshots.SoftWarningMaintenanceWindowCycles} " +
+                $"MaintenanceRate={cfg.WarningSnapshots.SoftWarningMaintenanceRate:P1} " +
+                $"MaintenanceConsecutive={cfg.WarningSnapshots.SoftWarningMaintenanceConsecutiveWindows} " +
                 $"Path={path}",
                 "配置");
 

@@ -123,5 +123,8 @@
     DiskFreeWarningMb="10240"
     FullEvidenceMinimumIntervalSeconds="600"
     FullEvidenceQueueCapacity="1"
-    ScalarEvidenceQueueCapacity="4096" />
+    ScalarEvidenceQueueCapacity="4096"
+    SoftWarningMaintenanceWindowCycles="100"
+    SoftWarningMaintenanceRate="0.10"
+    SoftWarningMaintenanceConsecutiveWindows="2" />
 </AlarmConfig>

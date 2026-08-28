@@ -100,6 +100,18 @@ namespace Controller
 
         private readonly int _sampleMs;
 
+        private long _physicalActionGeneration;
+        private long _physicalActionTerminalGeneration;
+
+        public long PhysicalActionGeneration =>
+            Interlocked.Read(ref _physicalActionGeneration);
+
+        public bool IsPhysicalActionTerminal(long generation)
+        {
+            return generation > 0 &&
+                   Interlocked.Read(ref _physicalActionTerminalGeneration) == generation;
+        }
+
 
         // —— 在类中加：保存最近几个采样点 —— //
         private readonly Queue<(double I, long Tick)> _slopeWindow = new();
@@ -531,7 +543,8 @@ namespace Controller
                         startupAttempt,
                         new SoftwareSelfHealingRetryException(
                             $"EPB[{_channel}] 学习启动定位连续{startupAttempt}次软件瞬态未通过。" +
-                            $"Code={startup.Code} Reason={startup.Reason}"));
+                            $"Code={startup.Code} Reason={startup.Reason}"),
+                        _channel);
 
                 var delayMs = EpbManager.GetDaqSelfMaintenanceDelayMs(startupAttempt);
                 _log.Warn(
@@ -1137,6 +1150,12 @@ namespace Controller
                     Reason = _adaptiveSoftWarningSeen ? "LegacyCompletedWithAdaptiveShadowWarning" : "LegacyCompleted",
                     ForwardElapsedMs = fwdJudgeElapsedMs,
                     ReverseElapsedMs = tRevPeakDecayMs,
+                    PhysicalActionElapsedMs = Math.Max(0, _peakIgnoreMs) +
+                                              Math.Max(0, fwdJudgeElapsedMs) +
+                                              Math.Max(0, _holdMs) +
+                                              Math.Max(0, _peakIgnoreMs) +
+                                              Math.Max(0, tRevPeakDecayMs) +
+                                              Math.Max(0, run7),
                     PeakCurrentA = _adaptiveForwardPeakA,
                     ControlPeakCurrentA = _adaptiveForwardControlPeakA
                 };

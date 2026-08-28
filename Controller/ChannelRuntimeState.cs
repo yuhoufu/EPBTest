@@ -22,7 +22,9 @@ namespace Controller
         SystemFault = 12,
         PausePending = 13,
         ResumeChecking = 14,
-        Qualification = 15
+        Qualification = 15,
+        /// <summary>自身输出已关闭，正在等待同一全局正式槽的其它参与者安全收口。</summary>
+        WaitingForSlotBarrier = 16
     }
 
     /// <summary>
@@ -123,6 +125,12 @@ namespace Controller
 
     public sealed class BatchPauseStateChangedEvent
     {
+        /// <summary>
+        /// Monotonic pause-intent generation.  PausePending through the
+        /// matching resume share one generation, allowing recovery workers to
+        /// reject a late running-state rejoin from an older pause boundary.
+        /// </summary>
+        public long Generation { get; set; }
         public BatchPauseState State { get; set; }
         public int[] Channels { get; set; } = Array.Empty<int>();
         public DateTime TimestampUtc { get; set; }
@@ -191,6 +199,10 @@ namespace Controller
         public bool TimerActive { get; set; }
         public bool RunnerActive { get; set; }
         public bool Energized { get; set; }
+        public bool PermanentAlarmLatched { get; set; }
+        public string PermanentAlarmCode { get; set; } = string.Empty;
+        public DateTime? PermanentAlarmUtc { get; set; }
+        public int ConsecutivePeriodOverrunCount { get; set; }
         public RecoveryOwnerKind RecoveryOwnerKind { get; set; }
         public Guid RecoveryOwnerId { get; set; }
         public long RecoveryOwnerGeneration { get; set; }
@@ -218,6 +230,10 @@ namespace Controller
                 TimerActive = TimerActive,
                 RunnerActive = RunnerActive,
                 Energized = Energized,
+                PermanentAlarmLatched = PermanentAlarmLatched,
+                PermanentAlarmCode = PermanentAlarmCode,
+                PermanentAlarmUtc = PermanentAlarmUtc,
+                ConsecutivePeriodOverrunCount = ConsecutivePeriodOverrunCount,
                 RecoveryOwnerKind = RecoveryOwnerKind,
                 RecoveryOwnerId = RecoveryOwnerId,
                 RecoveryOwnerGeneration = RecoveryOwnerGeneration,

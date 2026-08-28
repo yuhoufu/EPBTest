@@ -78,6 +78,7 @@
     <Compile Include="Alarm\M7055dSerialClient.cs" />
     <Compile Include="EpbCycleRunner.Advance.Sync.cs" />
     <Compile Include="EpbCycleRunner.cs" />
+    <Compile Include="FormalBatchSlotCoordinator.cs" />
     <Compile Include="FaultIsolatedPhaseWork.cs" />
     <Compile Include="DoControlTrace.cs" />
     <Compile Include="DaqIncidentLatch.cs" />
@@ -110,6 +111,7 @@
     <Compile Include="EpbManager.BatchStart.cs" />
     <Compile Include="EpbManager.CycleAttempts.cs" />
     <Compile Include="EpbManager.PauseResume.cs" />
+    <Compile Include="EpbManager.PeriodOverrun.cs" />
     <Compile Include="EpbManager.DaqRecoveryState.cs" />
     <Compile Include="EpbManager.RecoveryCoordination.cs" />
     <Compile Include="EpbManager.WarningSnapshots.cs" />

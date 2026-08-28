@@ -72,6 +72,88 @@ namespace Controller
             File.WriteAllText(path, ToJson(), new UTF8Encoding(false));
         }
 
+        public bool TryWriteProjectJson(
+            string projectConfigDirectory,
+            string projectName,
+            string projectRoot,
+            out string path,
+            out string error)
+        {
+            path = string.Empty;
+            error = string.Empty;
+            string temporaryPath = null;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(projectConfigDirectory))
+                    throw new ArgumentException("项目 Config 目录不能为空。", nameof(projectConfigDirectory));
+                if (string.IsNullOrWhiteSpace(projectName))
+                    throw new ArgumentException("项目名称不能为空。", nameof(projectName));
+
+                var configDirectory = Path.GetFullPath(projectConfigDirectory);
+                Directory.CreateDirectory(configDirectory);
+                path = Path.Combine(configDirectory, "runtime-build-identity.json");
+                temporaryPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
+                using (var stream = new FileStream(
+                           temporaryPath,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.Read,
+                           4096,
+                           FileOptions.WriteThrough))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                {
+                    writer.Write(ToProjectJson(projectName, projectRoot));
+                    writer.Flush();
+                    stream.Flush(true);
+                }
+
+                if (File.Exists(path))
+                    File.Replace(temporaryPath, path, null, true);
+                else
+                    File.Move(temporaryPath, path);
+                temporaryPath = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(temporaryPath))
+                {
+                    try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
+                    catch { }
+                }
+            }
+        }
+
+        public string ToProjectJson(string projectName, string projectRoot)
+        {
+            return "{\n" +
+                   "  \"schemaVersion\": 1,\n" +
+                   $"  \"projectName\": \"{Escape(projectName)}\",\n" +
+                   $"  \"projectRoot\": \"{Escape(projectRoot)}\",\n" +
+                   $"  \"productVersion\": \"{Escape(ProductVersion)}\",\n" +
+                   $"  \"assemblyVersion\": \"{Escape(AssemblyVersion)}\",\n" +
+                   $"  \"executablePath\": \"{Escape(ExecutablePath)}\",\n" +
+                   $"  \"executableSha256\": \"{Escape(ExecutableSha256)}\",\n" +
+                   $"  \"configSha256\": \"{Escape(ConfigSha256)}\",\n" +
+                   $"  \"releaseConfigSha256\": \"{Escape(ReleaseConfigSha256)}\",\n" +
+                   $"  \"processBitness\": {ProcessBitness},\n" +
+                   $"  \"processId\": {ProcessId},\n" +
+                   $"  \"gitCommit\": \"{Escape(GitCommit)}\",\n" +
+                   $"  \"gitDirty\": \"{Escape(GitDirty)}\",\n" +
+                   $"  \"buildUtc\": \"{Escape(BuildUtc)}\",\n" +
+                   $"  \"releasePackageVerified\": {ReleasePackageVerified.ToString().ToLowerInvariant()},\n" +
+                   $"  \"releasePackageCode\": \"{Escape(ReleasePackageCode)}\",\n" +
+                   $"  \"releasePackageDetail\": \"{Escape(ReleasePackageDetail)}\",\n" +
+                   $"  \"releasePackageFileCount\": {ReleasePackageFileCount},\n" +
+                   $"  \"capturedUtc\": \"{CapturedUtc:O}\"\n" +
+                   "}\n";
+        }
+
         public string ToJson()
         {
             return "{\n" +

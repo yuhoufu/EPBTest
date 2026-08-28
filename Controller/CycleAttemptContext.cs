@@ -53,6 +53,8 @@ namespace Controller
         private int _registryRemoved;
         private readonly TaskCompletionSource<bool> _executionCompletion =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _durableCompletion =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public CycleAttemptContext(
             Guid runId,
@@ -94,6 +96,7 @@ namespace Controller
         public bool IsExecutionStarted => Volatile.Read(ref _executionStarted) != 0;
         public bool IsExecutionCompleted => Volatile.Read(ref _executionCompleted) != 0;
         public Task ExecutionCompletion => _executionCompletion.Task;
+        public Task DurableCompletion => _durableCompletion.Task;
 
         public void MarkBeginSucceeded()
         {
@@ -278,6 +281,7 @@ namespace Controller
                 Volatile.Write(ref _durablyCommitted, 1);
                 _terminalActionOwned = 0;
             }
+            _durableCompletion.TrySetResult(true);
             return RetryTerminalCleanup(onDurableCommit);
         }
 

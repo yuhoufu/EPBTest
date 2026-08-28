@@ -395,7 +395,7 @@ namespace Controller
             double sampleAgeMs,
             int confirmationStreak = 0,
             int confirmationThreshold = 3)
-            : base($"HydraulicPressureLost Hydraulic={hydraulicId} Generation={generationId} " +
+            : base($"{ResolveFaultCode(failureReason)} Hydraulic={hydraulicId} Generation={generationId} " +
                    $"Reason={failureReason} Actual={actualBar:F3}bar Minimum={minimumBar:F3}bar " +
                    $"AgeMs={sampleAgeMs:F1}" +
                    (confirmationStreak > 0
@@ -403,16 +403,30 @@ namespace Controller
                        : string.Empty))
         {
             FailureReason = failureReason;
+            FaultCode = ResolveFaultCode(failureReason);
             SampleAgeMs = sampleAgeMs;
             ConfirmationStreak = Math.Max(0, confirmationStreak);
             ConfirmationThreshold = Math.Max(3, confirmationThreshold);
         }
 
         public HydraulicPressureFailureReason FailureReason { get; }
+        public string FaultCode { get; }
         public double SampleAgeMs { get; }
         public int ConfirmationStreak { get; }
         public int ConfirmationThreshold { get; }
         public bool IsConfirmed => ConfirmationStreak >= ConfirmationThreshold;
+
+        private static string ResolveFaultCode(HydraulicPressureFailureReason reason)
+        {
+            return reason switch
+            {
+                HydraulicPressureFailureReason.StaleSample => "HydraulicSampleStale",
+                HydraulicPressureFailureReason.NoSample => "HydraulicSampleUnavailable",
+                HydraulicPressureFailureReason.InvalidValue => "HydraulicSampleUnavailable",
+                HydraulicPressureFailureReason.BelowMinimum => "HydraulicPressureBelowMinimum",
+                _ => "HydraulicSampleUnavailable"
+            };
+        }
     }
 
     public sealed class HydraulicBarrierTimeoutException : TimeoutException
@@ -672,9 +686,14 @@ namespace Controller
                     state.Key.TestRunId);
 
             var item = GetHydraulicItem(lease.Key.HydraulicId);
-            var timeoutMs = item.BarrierTimeoutMs > 0
-                ? item.BarrierTimeoutMs
-                : Math.Max(1, _test.PeriodMs);
+            // 成员到达屏障的等待包含“慢卡钳仍在完成自身动作”的正常共享等待。
+            // 它不能再直接等于设定周期，否则 15 秒周期中 16 秒完成的成员会把
+            // 健康同组误报为 HydraulicBarrierTimeout。真正释压仍由独立的
+            // ReleaseTimeoutMs 约束；这里至少覆盖 2×Period 硬截止及取消收口裕量。
+            var normalSharedWaitMs = checked(
+                Math.Max(1, _test.PeriodMs) * 2 +
+                Math.Max(1000, item.ReleaseTimeoutMs));
+            var timeoutMs = Math.Max(item.BarrierTimeoutMs, normalSharedWaitMs);
             var completed = await Task.WhenAny(
                     state.BarrierReached.Task,
                     Task.Delay(timeoutMs))
@@ -1275,10 +1294,8 @@ namespace Controller
                     exception is HydraulicBarrierTimeoutException ? "HydraulicBarrierTimeout" :
                     exception is OperationCanceledException ? "HydraulicOperationCanceled" :
                     exception is HydraulicReleaseTimeoutException ? "HydraulicReleaseTimeout" :
-                    exception is HydraulicPressureLostException pressureLost &&
-                        pressureLost.FailureReason != HydraulicPressureFailureReason.BelowMinimum
-                        ? "PressureSampleUnavailable" :
-                    exception is HydraulicPressureLostException ? "HydraulicPressureLost" :
+                    exception is HydraulicPressureLostException pressureLost
+                        ? pressureLost.FaultCode :
                     exception is HydraulicBuildTimeoutException ? "HydraulicBuildTimeout" :
                     "HydraulicFault",
                     exception.Message,

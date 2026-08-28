@@ -17,7 +17,8 @@ namespace Controller
         public SoftwareSelfHealingExhaustedException(
             string stage,
             int attempts,
-            Exception innerException)
+            Exception innerException,
+            int? failedChannel = null)
             : base(
                 $"SoftwareSelfHealingExhausted Stage={stage ?? "Unknown"} " +
                 $"Attempts={Math.Max(1, attempts)} Error={innerException?.Message}",
@@ -25,10 +26,12 @@ namespace Controller
         {
             Stage = stage ?? "Unknown";
             Attempts = Math.Max(1, attempts);
+            FailedChannel = failedChannel;
         }
 
         public string Stage { get; }
         public int Attempts { get; }
+        public int? FailedChannel { get; }
     }
 
     /// <summary>

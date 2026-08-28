@@ -196,11 +196,12 @@ namespace Controller
             private readonly object _gate = new();
             private readonly HashSet<string> _phases = new(StringComparer.OrdinalIgnoreCase);
             private readonly List<DaqIncidentEvidenceSubmission> _derived = new();
-            private int _exportedDerivedCount;
-            private DaqIncidentEvidenceSubmission _trigger;
-            private DaqIncidentEvidenceSubmission _terminal;
-            private bool _triggerExported;
-            private bool _terminalExported;
+            private readonly Dictionary<string, DaqIncidentEvidenceSubmission> _triggers =
+                new(StringComparer.OrdinalIgnoreCase);
+            private readonly Dictionary<string, DaqIncidentEvidenceSubmission> _terminals =
+                new(StringComparer.OrdinalIgnoreCase);
+            private readonly HashSet<string> _exportedPhases =
+                new(StringComparer.OrdinalIgnoreCase);
             private string _sessionKey;
             private Guid _sessionId;
             private Guid _storageSessionId;
@@ -218,7 +219,7 @@ namespace Controller
                 rejectionReason = string.Empty;
                 lock (_gate)
                 {
-                    if (_terminalExported)
+                    if (IsCompleteUnsafe())
                     {
                         rejectionReason = "TerminalAlreadyExported";
                         return false;
@@ -263,10 +264,13 @@ namespace Controller
                         var normalized = IncidentSessionPolicy.NormalizeDevice(expected);
                         if (!string.IsNullOrWhiteSpace(normalized)) _expectedDevices.Add(normalized);
                     }
-                    if (_phases.Contains(phase)) return true;
+                    var device = IncidentSessionPolicy.NormalizeDevice(submission.Device);
+                    if (string.IsNullOrWhiteSpace(device)) device = "UnknownDevice";
+                    var phaseIdentity = device + ":" + phase;
+                    if (_phases.Contains(phaseIdentity)) return true;
                     // terminal 注册后仍允许因线程调度较晚到达的 trigger 补齐根事故；
                     // 普通派生症状不得越过终态继续追加。
-                    if (_terminal != null && !submission.IsTerminal && !submission.IsTrigger)
+                    if (_terminals.Count > 0 && !submission.IsTerminal && !submission.IsTrigger)
                     {
                         rejectionReason = "TerminalAlreadyRegistered";
                         return false;
@@ -274,19 +278,17 @@ namespace Controller
 
                     if (submission.IsTrigger)
                     {
-                        if (_trigger != null) return true;
-                        _trigger = submission;
+                        _triggers[device] = submission;
                     }
                     else if (submission.IsTerminal)
                     {
-                        if (_terminal != null) return true;
-                        _terminal = submission;
+                        _terminals[device] = submission;
                     }
                     else
                     {
                         _derived.Add(submission);
                     }
-                    _phases.Add(phase);
+                    _phases.Add(phaseIdentity);
                     return true;
                 }
             }
@@ -301,24 +303,38 @@ namespace Controller
                 get
                 {
                     lock (_gate)
-                        return _trigger != null &&
-                               ((!_triggerExported && _trigger != null) ||
-                                (!_terminalExported && _terminal != null));
+                        return _triggers.Count > 0 &&
+                               _triggers.Values.Concat(_terminals.Values).Concat(_derived)
+                                   .Any(item => !_exportedPhases.Contains(PhaseIdentity(item)));
                 }
             }
 
             internal bool IsComplete
             {
-                get { lock (_gate) return _terminalExported; }
+                get { lock (_gate) return IsCompleteUnsafe(); }
             }
 
             internal DaqIncidentEvidenceBatch Snapshot()
             {
                 lock (_gate)
                 {
-                    var trigger = _triggerExported ? null : _trigger;
-                    var terminal = _terminalExported ? null : _terminal;
-                    var derived = _derived.Skip(_exportedDerivedCount).ToArray();
+                    var pendingTriggers = _triggers.Values
+                        .Where(item => !_exportedPhases.Contains(PhaseIdentity(item)))
+                        .OrderBy(item => item.Device, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    var pendingTerminals = _terminals.Values
+                        .Where(item => !_exportedPhases.Contains(PhaseIdentity(item)))
+                        .OrderBy(item => item.Device, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    var pendingDerived = _derived
+                        .Where(item => !_exportedPhases.Contains(PhaseIdentity(item)))
+                        .ToArray();
+                    var trigger = pendingTriggers.FirstOrDefault();
+                    var terminal = pendingTerminals.FirstOrDefault();
+                    var derived = pendingTriggers.Skip(1)
+                        .Concat(pendingDerived)
+                        .Concat(pendingTerminals.Skip(1))
+                        .ToArray();
                     if (trigger == null && terminal == null && derived.Length == 0) return null;
                     return new DaqIncidentEvidenceBatch
                     {
@@ -334,14 +350,30 @@ namespace Controller
                 if (batch == null) return;
                 lock (_gate)
                 {
-                    if (batch.Trigger != null && ReferenceEquals(batch.Trigger, _trigger))
-                        _triggerExported = true;
-                    _exportedDerivedCount = Math.Min(
-                        _derived.Count,
-                        _exportedDerivedCount + (batch.Derived?.Length ?? 0));
-                    if (batch.Terminal != null && ReferenceEquals(batch.Terminal, _terminal))
-                        _terminalExported = true;
+                    foreach (var item in batch.OrderedSubmissions().Where(item => item != null))
+                        _exportedPhases.Add(PhaseIdentity(item));
                 }
+            }
+
+            private bool IsCompleteUnsafe()
+            {
+                if (_triggers.Count == 0 || _terminals.Count == 0) return false;
+                var expected = _expectedDevices.Count > 0
+                    ? _expectedDevices
+                    : new HashSet<string>(_triggers.Keys, StringComparer.OrdinalIgnoreCase);
+                return expected.All(device =>
+                    _triggers.TryGetValue(device, out var trigger) &&
+                    _exportedPhases.Contains(PhaseIdentity(trigger)) &&
+                    _terminals.TryGetValue(device, out var terminal) &&
+                    _exportedPhases.Contains(PhaseIdentity(terminal)));
+            }
+
+            private static string PhaseIdentity(DaqIncidentEvidenceSubmission submission)
+            {
+                if (submission == null) return string.Empty;
+                var device = IncidentSessionPolicy.NormalizeDevice(submission.Device);
+                if (string.IsNullOrWhiteSpace(device)) device = "UnknownDevice";
+                return device + ":" + (submission.PhaseKey ?? string.Empty).Trim();
             }
         }
 
@@ -410,14 +442,9 @@ namespace Controller
             }
             if (!submission.IsTrigger && !submission.IsTerminal) return true;
             if (EnsureQueued(state)) return true;
-            if (created)
-            {
-                _contexts.TryRemove(submission.ContextKey, out _);
-                rejectionReason = "GlobalEvidenceQueueCapacity";
-                return false;
-            }
-            // 已获准的根事故绝不能因全局 pending 槽短暂占满而丢 terminal；
-            // 唯一 worker 在当前工作完成后会扫描并补排，不创建额外 Task。
+            // 容量只限制重型导出任务，不拒绝根事故。当前 worker 完成后会扫描
+            // 所有 Deferred 上下文并补排；trigger/terminal 已在内存中可靠登记。
+            rejectionReason = "DeferredByEvidenceCapacity";
             return true;
         }
 
@@ -559,6 +586,16 @@ namespace Controller
         private readonly ConcurrentDictionary<string, object> _warningSnapshotCategoryGates =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentQueue<WarningScalarEvidence> _warningScalarQueue = new();
+        private sealed class SoftWarningMaintenanceState
+        {
+            internal readonly object Gate = new();
+            internal readonly HashSet<int> WarningCycles = new();
+            internal int CompletedCycles;
+            internal int ConsecutiveHotWindows;
+            internal bool MaintenanceActive;
+        }
+        private readonly ConcurrentDictionary<int, SoftWarningMaintenanceState>
+            _softWarningMaintenance = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryPendingCycles = new();
@@ -670,6 +707,8 @@ namespace Controller
             var hasCycle = _currentCycleNumberByChannel.TryGetValue(
                 warning.Channel,
                 out var cycleNumber) && cycleNumber != 0;
+            if (warning.Channel == 5 && hasCycle && cycleNumber > 0)
+                RecordSoftWarningCycle(warning.Channel, cycleNumber);
             QueueWarningScalarEvidence(warning, hasCycle ? cycleNumber : 0, cfg);
             if (!cfg.FullEvidenceEnabled) return;
 
@@ -764,6 +803,7 @@ namespace Controller
             try
             {
                 QueuePendingWarningSnapshotsForCycle(channel, cycleNumber);
+                RecordSoftWarningCompletedCycle(channel, cycleNumber);
             }
             catch (Exception ex)
             {
@@ -780,6 +820,59 @@ namespace Controller
                     "落盘");
             }
             return true;
+        }
+
+        private void RecordSoftWarningCycle(int channel, int cycleNumber)
+        {
+            var state = _softWarningMaintenance.GetOrAdd(
+                channel,
+                _ => new SoftWarningMaintenanceState());
+            lock (state.Gate) state.WarningCycles.Add(cycleNumber);
+        }
+
+        private void RecordSoftWarningCompletedCycle(int channel, int cycleNumber)
+        {
+            if (channel != 5 || cycleNumber <= 0) return;
+            var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
+            var windowSize = Math.Max(10, cfg.SoftWarningMaintenanceWindowCycles);
+            var state = _softWarningMaintenance.GetOrAdd(
+                channel,
+                _ => new SoftWarningMaintenanceState());
+            lock (state.Gate)
+            {
+                state.CompletedCycles++;
+                if (state.CompletedCycles < windowSize) return;
+                var warningCount = state.WarningCycles.Count;
+                var rate = warningCount / (double)state.CompletedCycles;
+                var hot = rate >= cfg.SoftWarningMaintenanceRate;
+                state.ConsecutiveHotWindows = hot
+                    ? state.ConsecutiveHotWindows + 1
+                    : 0;
+                var active = state.ConsecutiveHotWindows >=
+                             Math.Max(1, cfg.SoftWarningMaintenanceConsecutiveWindows);
+                _log.Info(
+                    $"EPB[{channel}] 软预警维护窗口汇总：" +
+                    $"FormalCycles={state.CompletedCycles} WarningCycles={warningCount} " +
+                    $"Rate={rate:P1} Threshold={cfg.SoftWarningMaintenanceRate:P1} " +
+                    $"Consecutive={state.ConsecutiveHotWindows}/" +
+                    $"{cfg.SoftWarningMaintenanceConsecutiveWindows}。",
+                    "EPB");
+                if (active != state.MaintenanceActive)
+                {
+                    state.MaintenanceActive = active;
+                    if (active)
+                        _log.Warn(
+                            $"EPB[{channel}] 软预警率连续达到维护阈值；" +
+                            "请计划检查电源回路、继电器/端子温升和机械负载。保护门槛未改变。",
+                            "EPB");
+                    else
+                        _log.Info(
+                            $"EPB[{channel}] 软预警率已恢复到维护阈值以下。",
+                            "EPB");
+                }
+                state.CompletedCycles = 0;
+                state.WarningCycles.Clear();
+            }
         }
 
         private void QueuePendingWarningSnapshotsForCycle(int channel, int cycleNumber)

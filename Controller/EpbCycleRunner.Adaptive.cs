@@ -1783,7 +1783,10 @@ namespace Controller
             var finalReason = classification.Classification == FastPathTripClassification.NotApplicable
                 ? decision.Reason
                 : $"{classification.Code} {classification.Reason} Original={decision.Reason}";
-            _log?.Error($"EPB[{_channel}] 快速保护最终归因：{finalReason}", "EPB");
+            // 这里仅完成单圈证据归因；是否达到 3/3 永久故障门槛由
+            // EpbManager 的 FaultConfirmationTracker 决定。单圈立即 OFF
+            // 保持不变，但在管理层确认前不得先写成 ERROR 误导现场。
+            _log?.Warn($"EPB[{_channel}] 快速保护单圈归因：{finalReason}", "EPB");
             NotifyAlarmSafely("AdaptiveHardFault " + finalReason);
             return finalReason;
         }
@@ -2351,6 +2354,9 @@ namespace Controller
                     Reason = _adaptiveSoftWarningSeen ? "CompletedWithSoftWarning" : "Completed",
                     ForwardElapsedMs = _adaptiveForwardElapsedMs,
                     ReverseElapsedMs = _adaptiveReverseElapsedMs,
+                    PhysicalActionElapsedMs = Math.Max(0, _adaptiveForwardElapsedMs) +
+                                              Math.Max(0, _holdMs) +
+                                              Math.Max(0, _adaptiveReverseElapsedMs),
                     PeakCurrentA = _adaptiveForwardPeakA,
                     ControlPeakCurrentA = _adaptiveForwardControlPeakA,
                     TargetCurrentA = _posThrA,

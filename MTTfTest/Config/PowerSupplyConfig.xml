@@ -7,6 +7,7 @@
 <PowerSupplyConfig Enabled="true"
                    PollIntervalMs="100"
                    TelemetryDelayWarnMs="500"
+                   TelemetryCallTimeoutMs="1500"
                    TelemetryStaleMs="500"
                    CommunicationAlarmConfirmCycles="8"
                    CommunicationAlarmMaxMs="120000"

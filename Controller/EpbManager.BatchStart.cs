@@ -199,6 +199,8 @@ namespace Controller
         private ElectricalStaggerPlan _activeStaggerPlan;
         private readonly GlobalHydraulicSlotCoordinator _globalHydraulicSlots =
             new GlobalHydraulicSlotCoordinator();
+        private readonly FormalBatchSlotCoordinator _formalBatchSlots =
+            new FormalBatchSlotCoordinator();
         private readonly int _globalFormalSlotAdmissionWindowMs;
         private readonly ConcurrentDictionary<
             GlobalHydraulicSlotKey,
@@ -1454,7 +1456,8 @@ namespace Controller
             int qualificationCycles,
             bool reuseStableProfiles,
             CancellationToken token,
-            RunChainIdentity chainIdentity = null)
+            RunChainIdentity chainIdentity = null,
+            bool operatorFullRelearningAuthorized = false)
         {
             return await _batchLifecycleGate.RunAsync(
                     () => StartBatchCoreUnderLifecycleGateAsync(
@@ -1463,6 +1466,7 @@ namespace Controller
                         qualificationCycles,
                         reuseStableProfiles,
                         chainIdentity,
+                        operatorFullRelearningAuthorized,
                         token),
                     token)
                 .ConfigureAwait(false);
@@ -1474,6 +1478,7 @@ namespace Controller
             int qualificationCycles,
             bool reuseStableProfiles,
             RunChainIdentity chainIdentity,
+            bool operatorFullRelearningAuthorized,
             CancellationToken token)
         {
             ThrowIfProcessRestartRequired();
@@ -1488,6 +1493,14 @@ namespace Controller
                 .Except(alreadyTargetCompleted)
                 .OrderBy(x => x)
                 .ToArray();
+            var operatorBlocked = selected
+                .Where(channel => _operatorFullRelearningRequired.ContainsKey(channel))
+                .ToArray();
+            if (operatorBlocked.Length > 0 && !operatorFullRelearningAuthorized)
+                throw new InvalidOperationException(
+                    $"EPB[{string.Join(",", operatorBlocked)}] 已耐久锁存完整重学习门禁；" +
+                    "必须从报警恢复入口由操作员确认，并完成空模型完整学习和2圈资格复核，" +
+                    "普通开始或无人值守恢复不得绕过。");
             if (selected.Length == 0)
             {
                 foreach (var completedChannel in alreadyTargetCompleted)
@@ -2005,6 +2018,11 @@ namespace Controller
                 var failedRunId = _activeBatchId == Guid.Empty ? Guid.NewGuid() : _activeBatchId;
                 var circuitFailure = FindInnerException<SoftwareSelfHealingExhaustedException>(ex);
                 var circuitOpen = circuitFailure != null;
+                var failureChannels = ResolveBatchStartFailureChannels(
+                    circuitFailure,
+                    startFaults,
+                    selected);
+                var failureSet = new HashSet<int>(failureChannels);
                 var expectedCancellation = IsExpectedBatchCancellation(
                     ex,
                     sessionToken.IsCancellationRequested,
@@ -2041,12 +2059,28 @@ namespace Controller
                         }
                         else
                         {
-                            PublishStartBlockedAfterCleanup(
-                                channel,
-                                "StartFailed",
-                                ex.Message,
-                                failedRunId,
-                                selected);
+                            if (failureSet.Contains(channel))
+                            {
+                                PublishStartBlockedAfterCleanup(
+                                    channel,
+                                    "StartFailed",
+                                    ex.Message,
+                                    failedRunId,
+                                    failureChannels);
+                            }
+                            else
+                            {
+                                StopChannelForInternalCleanup(channel);
+                                PublishChannelRuntimeState(
+                                    channel,
+                                    ChannelRuntimeState.ManualStopped,
+                                    "StartPeerFailedSafeStopped",
+                                    $"同批故障通道[{string.Join(",", failureChannels)}]启动失败；" +
+                                    "本通道无失败证据，已安全停止并保留再次启动资格。",
+                                    affectedChannels: failureChannels,
+                                    correlationId: failedRunId,
+                                    allowTerminalReset: true);
+                            }
                         }
                     }
                     catch (Exception stopEx)
@@ -2079,13 +2113,15 @@ namespace Controller
                 {
                     await ExportSoftwareRecoveryCircuitDiagnosticOnceAsync(
                             circuitFailure,
-                            selected)
+                            failureChannels)
                         .ConfigureAwait(false);
                     var fault = new ControlFault(
                         "SoftwareRecoveryCircuitOpen",
                         ex.Message,
-                        FaultScope.Global,
-                        selected,
+                        failureChannels.Length == selected.Length
+                            ? FaultScope.Global
+                            : FaultScope.Channel,
+                        failureChannels,
                         null,
                         DateTime.UtcNow,
                         Guid.NewGuid(),
@@ -2100,6 +2136,45 @@ namespace Controller
 
                 throw;
             }
+        }
+
+        internal static bool ResolveFormalFallbackPersistence(
+            CycleAttemptContext attempt,
+            out bool persistenceRequired)
+        {
+            persistenceRequired = attempt != null;
+            return !persistenceRequired || attempt.IsDurablyCommitted;
+        }
+
+        internal static int[] ResolveBatchStartFailureChannels(
+            SoftwareSelfHealingExhaustedException circuitFailure,
+            IEnumerable<ChannelStartFault> startFaults,
+            IEnumerable<int> selectedChannels)
+        {
+            var selected = (selectedChannels ?? Enumerable.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var evidenced = (startFaults ?? Enumerable.Empty<ChannelStartFault>())
+                .Select(fault => fault.Channel)
+                .Where(selected.Contains)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (circuitFailure?.FailedChannel is int failedChannel &&
+                selected.Contains(failedChannel))
+                return evidenced
+                    .Concat(new[] { failedChannel })
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray();
+
+            // A circuit without a channel identity (DAQ/global power/startup
+            // infrastructure) is genuinely batch-scoped. For non-circuit
+            // failures, retain any channel-specific evidence already collected.
+            if (circuitFailure != null) return selected;
+            return evidenced.Length > 0 ? evidenced : selected;
         }
 
         private async Task EnsureDaqReadyBeforeStartAsync(
@@ -2871,6 +2946,7 @@ namespace Controller
 
             Interlocked.Exchange(ref _batchSessionActive, 0);
             Interlocked.Exchange(ref _formalPhaseCommitted, 0);
+            _formalBatchSlots.ClearRun(_activeBatchId);
             _globalHydraulicSlots.ClearRun(_activeBatchId);
             ClearDaqMechanicalRequalificationFences();
             foreach (var key in _globalHydraulicParticipantSnapshots.Keys
@@ -3064,6 +3140,83 @@ namespace Controller
                             // cycleIndex 是本计时器的逻辑圈序号；所有组员使用共同首槽，
                             // 因而即使实际回调有毫秒级抖动，也不会在周期边界两侧分槽。
                             var phaseSlot = firstFormalSlot + cycleIndex - 1L;
+                            var callbackStopwatch = Stopwatch.StartNew();
+                            CycleAttemptContext formalCycleAttempt = null;
+                            FormalBatchSlotScope formalSlotScope;
+                            try
+                            {
+                                var slotParticipants = CaptureGlobalFormalParticipants(
+                                        _activeBatchId,
+                                        staggerPlan,
+                                        phaseSlot)
+                                    .Values
+                                    .SelectMany(members => members ?? Array.Empty<int>())
+                                    .Distinct()
+                                    .OrderBy(member => member)
+                                    .ToArray();
+                                formalSlotScope = await _formalBatchSlots.EnterAsync(
+                                        _activeBatchId,
+                                        phaseSlot,
+                                        ch,
+                                        slotParticipants,
+                                        t0,
+                                        PeriodMs,
+                                        () => PublishChannelRuntimeState(
+                                            ch,
+                                            ChannelRuntimeState.WaitingForSlotBarrier,
+                                            "WaitingForSlotBarrier",
+                                            "本卡钳已关闭输出，等待同一正式周期槽安全收尾"),
+                                        token,
+                                        () =>
+                                        {
+                                            var fallbackMotorOff = !IsChannelEnergized(ch);
+                                            var fallbackHydraulicReleased =
+                                                !_hydraulicLeaseByChannel.TryGetValue(
+                                                    ch,
+                                                    out var fallbackLease) ||
+                                                fallbackLease.IsClosed;
+                                            var fallbackPersistenceCommitted =
+                                                ResolveFormalFallbackPersistence(
+                                                    formalCycleAttempt,
+                                                    out var fallbackPersistenceRequired);
+                                            if (!fallbackMotorOff ||
+                                                !fallbackHydraulicReleased ||
+                                                !fallbackPersistenceCommitted)
+                                                ReportFormalSlotSafetyBoundaryFailure(
+                                                    ch,
+                                                    phaseSlot,
+                                                    fallbackMotorOff,
+                                                    fallbackHydraulicReleased,
+                                                    fallbackPersistenceCommitted);
+                                            return new FormalBatchParticipantTerminal
+                                            {
+                                                Channel = ch,
+                                                MotorOffConfirmed = fallbackMotorOff,
+                                                HydraulicMemberReleased = fallbackHydraulicReleased,
+                                                PersistenceBoundaryRequired =
+                                                    fallbackPersistenceRequired,
+                                                PersistenceCommitted =
+                                                    fallbackPersistenceCommitted,
+                                                Result = "CallbackExitedBeforeFormalCycleBoundary",
+                                                CallbackElapsedMs =
+                                                    callbackStopwatch.ElapsedMilliseconds,
+                                                SharedCoordinationWaitMs = 0,
+                                                CompletedUtc = DateTime.UtcNow
+                                            };
+                                        })
+                                    .ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                throw;
+                            }
+                            using var batchSlotScope = formalSlotScope;
+                            PublishChannelRuntimeState(
+                                ch,
+                                ChannelRuntimeState.Running,
+                                "SlotBarrierReleased",
+                                "全局正式周期屏障已放行");
 
                             if (!await WaitForPreviousCycleExecutionAsync(ch, token)
                                     .ConfigureAwait(false))
@@ -3173,6 +3326,7 @@ namespace Controller
                                 ReleaseCyclePauseCts(ch, cyclePauseCts);
                                 return false;
                             }
+                            formalCycleAttempt = cycleAttempt;
 
                             if (!cycleAttempt.MarkExecutionStarted())
                             {
@@ -3190,17 +3344,46 @@ namespace Controller
 
                             // 3) 跑一圈（对齐外壳版）
                             var ok = false;
+                            var periodHardLimitReached = false;
                             Adaptive.EpbCycleOutcome cycleOutcome;
                             try
                             {
-                                ok = await runner.RunOneAlignedAsync(
+                                var runnerTask = runner.RunOneAlignedAsync(
                                     PeriodMs,
                                     T8BaseMs,
                                     phase,
                                     T8MinMs,
                                     deadlineUtc,
                                     cycleAttempt.AttemptCts.Token
-                                ).ConfigureAwait(false);
+                                );
+                                var physicalActionGeneration =
+                                    runner.PhysicalActionGeneration;
+                                var hardDeadline = Task.Delay(
+                                    checked(PeriodMs * 2),
+                                    CancellationToken.None);
+                                var completed = await Task.WhenAny(runnerTask, hardDeadline)
+                                    .ConfigureAwait(false);
+                                if (completed == runnerTask)
+                                {
+                                    ok = await runnerTask.ConfigureAwait(false);
+                                }
+                                else
+                                {
+                                    var sharedCoordinationWait =
+                                        IsSharedCoordinationWaitAtHardDeadline(
+                                            runner.IsPhysicalActionTerminal(
+                                                physicalActionGeneration),
+                                            IsChannelEnergized(ch));
+                                    periodHardLimitReached = !sharedCoordinationWait;
+                                    ok = await HandleFormalPeriodHardLimitAsync(
+                                            ch,
+                                            cycleNumber,
+                                            cycleAttempt,
+                                            timer,
+                                            runnerTask,
+                                            sharedCoordinationWait)
+                                        .ConfigureAwait(false);
+                                }
                             }
                             catch (OperationCanceledException)
                             {
@@ -3214,7 +3397,17 @@ namespace Controller
                             {
                                 // 必须在释放 execution tombstone 前取得本圈不可变引用；
                                 // 下一圈获准复用 Runner 后会替换 LastCycleOutcome。
-                                cycleOutcome = runner.LastCycleOutcome;
+                                cycleOutcome = periodHardLimitReached
+                                    ? Adaptive.EpbCycleOutcome.HardFault(
+                                        Adaptive.EpbCurrentStage.Faulted,
+                                        "PeriodOverrunHardLimit")
+                                    : runner.LastCycleOutcome;
+                                if (periodHardLimitReached)
+                                {
+                                    cycleOutcome.PhysicalActionElapsedMs = PeriodMs * 2L;
+                                    cycleOutcome.PeriodOverrunKind =
+                                        Adaptive.PeriodOverrunKind.HardLimitReached;
+                                }
                                 if (_hydraulicLeaseByChannel.TryGetValue(ch, out var activeScope) &&
                                     !activeScope.IsClosed)
                                     await AbortHydraulicLeaseForChannelAsync(
@@ -3225,6 +3418,13 @@ namespace Controller
                             var controlSucceeded = IsFormalControlSucceeded(
                                 ok,
                                 cycleOutcome.IsSuccess);
+                            cycleOutcome.CallbackElapsedMs = callbackStopwatch.ElapsedMilliseconds;
+                            cycleOutcome.SharedCoordinationWaitMs = Math.Max(
+                                formalSlotScope.SharedWaitMs,
+                                Math.Max(
+                                    0L,
+                                    cycleOutcome.CallbackElapsedMs -
+                                    Math.Max(0L, cycleOutcome.PhysicalActionElapsedMs)));
                             if (controlSucceeded)
                                 _watchdogConsecutiveSoftwareAborts[ch] = 0;
                             var mechanicalTargetReached = false;
@@ -3281,7 +3481,15 @@ namespace Controller
                                     goto CyclePersistenceFinished;
                                 }
                                 var finalN = recorder?.GetCurrentCycleSampleCount(ch) ?? 0;
-                                if (IsAlarmStopRequested(ch))
+                                if (IsAlarmStopRequested(ch) &&
+                                    cycleOutcome.PeriodOverrunKind ==
+                                    Adaptive.PeriodOverrunKind.HardLimitReached)
+                                    AbortFormalCycleAttempt(
+                                        cycleAttempt,
+                                        recorder,
+                                        DateTime.UtcNow,
+                                        "alarm");
+                                else if (IsAlarmStopRequested(ch))
                                 {
                                     // 报警后台流程会在确认当前圈 CSV/BIN 快照存在后封为 alarm；
                                     // 若快照失败则封为 failed。这里保持活动身份，避免先写无文件的 alarm。
@@ -3331,14 +3539,22 @@ namespace Controller
                             {
                                 var committedCycles = Interlocked.Increment(ref successfulCycles);
                                 var nonRecoverableAlarm =
-                                    OnFormalCycleCommittedAndEvaluateClampFault(
-                                        runner,
-                                         ch,
-                                         cycleNumber,
-                                         committedCycles,
-                                         phaseSlot,
-                                         cycleAttempt,
-                                         cycleOutcome);
+                                    await EvaluateCommittedPeriodOverrunAsync(
+                                            ch,
+                                            cycleNumber,
+                                            cycleOutcome,
+                                            timer)
+                                        .ConfigureAwait(false);
+                                if (!nonRecoverableAlarm)
+                                    nonRecoverableAlarm =
+                                        OnFormalCycleCommittedAndEvaluateClampFault(
+                                            runner,
+                                             ch,
+                                             cycleNumber,
+                                             committedCycles,
+                                             phaseSlot,
+                                             cycleAttempt,
+                                             cycleOutcome);
                                 if (!nonRecoverableAlarm && mechanicalTargetReached)
                                 {
                                     FinalizeChannelAfterNaturalCompletion(ch, cycleNumber);
@@ -3353,12 +3569,79 @@ namespace Controller
                                 timer.Stop();
                             }
 
+                            var motorOffConfirmed = !IsChannelEnergized(ch);
+                            var hydraulicReleased =
+                                !_hydraulicLeaseByChannel.TryGetValue(ch, out var finalLease) ||
+                                finalLease.IsClosed;
+                            var persistenceBoundaryClosed = cycleAttempt.IsDurablyCommitted;
+                            if (!motorOffConfirmed || !hydraulicReleased ||
+                                (!persistenceBoundaryClosed && !IsAlarmStopRequested(ch)))
+                                ReportFormalSlotSafetyBoundaryFailure(
+                                    ch,
+                                    phaseSlot,
+                                    motorOffConfirmed,
+                                    hydraulicReleased,
+                                    persistenceBoundaryClosed);
+                            formalSlotScope.Complete(new FormalBatchParticipantTerminal
+                            {
+                                Channel = ch,
+                                MotorOffConfirmed = motorOffConfirmed,
+                                MechanicalCycleCompleted = cycleOutcome.MechanicalCycleCompleted,
+                                HydraulicMemberReleased = hydraulicReleased,
+                                ControlSucceeded = controlSucceeded,
+                                PersistenceBoundaryRequired = !IsAlarmStopRequested(ch),
+                                PersistenceCommitted = persistenceBoundaryClosed,
+                                PermanentlyIsolated = IsAlarmStopRequested(ch),
+                                CallbackElapsedMs = callbackStopwatch.ElapsedMilliseconds,
+                                PhysicalActionElapsedMs = cycleOutcome.PhysicalActionElapsedMs,
+                                SharedCoordinationWaitMs =
+                                    cycleOutcome.SharedCoordinationWaitMs,
+                                Result = cycleOutcome.Reason,
+                                CompletedUtc = DateTime.UtcNow
+                            });
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return controlSucceeded && persistenceCommitted;
 
                         }), "BatchChannelTimer", ch);
                 }
             }
+        }
+
+        private void ReportFormalSlotSafetyBoundaryFailure(
+            int channel,
+            long slot,
+            bool motorOffConfirmed,
+            bool hydraulicReleased,
+            bool persistenceBoundaryClosed)
+        {
+            var reason =
+                $"FormalSlotSafetyBoundaryFailed Slot={slot} EPB={channel} " +
+                $"MotorOff={motorOffConfirmed} HydraulicReleased={hydraulicReleased} " +
+                $"Persistence={persistenceBoundaryClosed}";
+            _log?.Error(reason, "周期屏障");
+            RevokeExecutionForExternalRecovery(reason);
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.SystemFault,
+                "FormalSlotSafetyBoundaryFailed",
+                "正式周期槽安全边界未闭合，已撤销整批执行授权并启动安全停止",
+                channel,
+                new[] { channel },
+                Guid.NewGuid(),
+                allowSystemFaultReset: false);
+            ObserveBackgroundTask(
+                StopAllAsync(
+                    new StopContext
+                    {
+                        Source = StopSource.SystemFault,
+                        Reason = reason,
+                        Initiator = nameof(ReportFormalSlotSafetyBoundaryFailure),
+                        CorrelationId = Guid.NewGuid().ToString("N"),
+                        RequestedUtc = DateTime.UtcNow
+                    },
+                    CancellationToken.None),
+                "FormalSlotSafetyBoundaryStopAll",
+                channel);
         }
 
         internal static long CalculateFirstFutureFormalSlot(
@@ -4143,8 +4426,9 @@ namespace Controller
             finally
             {
                 recoveryIncident.CompleteAfterTerminal(contract =>
-                    CommitRecoveryIncidentStateForRelease(
+                    CommitRecoveryIncidentStateForRetry(
                         contract,
+                        ChannelRuntimeState.Learning,
                         "LearningPersistenceRetryReady",
                         "学习圈失败尝试已安全封存，准备重做同一逻辑学习圈。"));
             }
@@ -5277,6 +5561,12 @@ namespace Controller
     {
         /// <summary>最近一次正式单圈的结构化结果。</summary>
         Adaptive.EpbCycleOutcome LastCycleOutcome { get; }
+
+        /// <summary>当前单圈物理动作代次。</summary>
+        long PhysicalActionGeneration { get; }
+
+        /// <summary>本代次所有可能上电阶段是否已终止。</summary>
+        bool IsPhysicalActionTerminal(long generation);
 
         /// <summary>正式圈落盘成功后提交本圈卡钳异常候选，并返回是否达到永久报警门槛。</summary>
         Adaptive.FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(

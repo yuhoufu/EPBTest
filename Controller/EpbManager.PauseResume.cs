@@ -10,6 +10,18 @@ using Timing;
 
 namespace Controller
 {
+    internal sealed class BatchPauseSnapshot
+    {
+        internal BatchPauseSnapshot(BatchPauseState state, long generation)
+        {
+            State = state;
+            Generation = generation;
+        }
+
+        internal BatchPauseState State { get; }
+        internal long Generation { get; }
+    }
+
     internal sealed class DaqDataContinuityCompromisedException : InvalidOperationException
     {
         internal DaqDataContinuityCompromisedException(string message) : base(message) { }
@@ -20,7 +32,9 @@ namespace Controller
         private readonly SemaphoreSlim _pauseResumeGate = new SemaphoreSlim(1, 1);
         private readonly ConcurrentDictionary<int, DateTime> _channelPausedUtc =
             new ConcurrentDictionary<int, DateTime>();
-        private int _batchPauseStateValue = (int)BatchPauseState.Idle;
+        private readonly object _batchPauseStateGate = new object();
+        private BatchPauseSnapshot _batchPauseSnapshot =
+            new BatchPauseSnapshot(BatchPauseState.Idle, 0);
         private DateTime _batchPausedUtc = DateTime.MinValue;
         private int[] _batchPausedChannels = Array.Empty<int>();
         private long _qualificationGeneration;
@@ -40,7 +54,13 @@ namespace Controller
         }
 
         public BatchPauseState CurrentBatchPauseState =>
-            (BatchPauseState)Volatile.Read(ref _batchPauseStateValue);
+            Volatile.Read(ref _batchPauseSnapshot).State;
+
+        public long CurrentBatchPauseGeneration =>
+            Volatile.Read(ref _batchPauseSnapshot).Generation;
+
+        internal BatchPauseSnapshot CaptureBatchPauseSnapshot() =>
+            Volatile.Read(ref _batchPauseSnapshot);
 
         public bool IsBatchPaused => CurrentBatchPauseState == BatchPauseState.Paused;
 
@@ -225,6 +245,7 @@ namespace Controller
                 var resumeToken = resumeCts.Token;
 
                 SetBatchPauseState(BatchPauseState.ResumeChecking, channels, "正在执行恢复安全预检");
+                var resumePauseGeneration = CurrentBatchPauseGeneration;
                 ResetTransientFaultStateForRestart(channels, "BatchResume");
                 foreach (var channel in channels)
                     PublishChannelRuntimeState(
@@ -235,6 +256,12 @@ namespace Controller
                         affectedChannels: channels,
                         correlationId: _activeBatchId);
 
+                // 暂停态 DAQ 自愈拥有自己的终态事务。“继续试验”必须先加入该事务，
+                // 不能与仍在重建/断电确认的 Dev1/Dev2 恢复并行上电。
+                await Task.WhenAll(channels
+                        .Select(channel => WaitForDaqRecoveryAsync(channel, resumeToken)))
+                    .ConfigureAwait(false);
+                EnsureBatchResumeGenerationUnchanged(resumePauseGeneration);
                 await EnsureDaqReadyBeforeStartAsync(channels, resumeToken).ConfigureAwait(false);
                 EnsureStrictCurveControl(channels);
                 EnsureAdaptiveProfilesReady(channels);
@@ -242,6 +269,10 @@ namespace Controller
                 // DAQ健康回调只证明采集硬件仍在工作，不能消除已锁存的
                 // 工程/Raw数据空洞。上电前再检一次，封住预检期间的迟到故障。
                 EnsureNoPermanentDataContinuityGap("批次恢复上电门禁");
+                await Task.WhenAll(channels
+                        .Select(channel => WaitForDaqRecoveryAsync(channel, resumeToken)))
+                    .ConfigureAwait(false);
+                EnsureBatchResumeGenerationUnchanged(resumePauseGeneration);
 
                 var plan = GetCompatibleStaggerPlan(channels);
                 RejoinFormalChannelsAtSharedFutureSlot(
@@ -334,6 +365,17 @@ namespace Controller
                 resumeCts?.Dispose();
                 _pauseResumeGate.Release();
             }
+        }
+
+        private void EnsureBatchResumeGenerationUnchanged(long expectedGeneration)
+        {
+            var snapshot = CaptureBatchPauseSnapshot();
+            if (snapshot.Generation != expectedGeneration ||
+                snapshot.State != BatchPauseState.ResumeChecking)
+                throw new InvalidOperationException(
+                    "批次暂停代次在DAQ恢复期间已变化，拒绝提交旧恢复结果。" +
+                    $" Expected={expectedGeneration}/ResumeChecking" +
+                    $" Actual={snapshot.Generation}/{snapshot.State}");
         }
 
         public async Task PauseChannelGracefullyAsync(int channel, CancellationToken token = default)
@@ -1055,9 +1097,29 @@ namespace Controller
 
         private void SetBatchPauseState(BatchPauseState state, int[] channels, string reason)
         {
-            Interlocked.Exchange(ref _batchPauseStateValue, (int)state);
+            BatchPauseSnapshot snapshot;
+            // 与DAQ恢复终态提交共用收口门：暂停代次一旦发布，恢复事务必须
+            // 先确认电源OFF；反之已取得提交门的事务完成后，暂停流程会立即
+            // 看到其终态并按正常暂停路径断能。
+            lock (_daqRecoveryCommitGate)
+            {
+                lock (_batchPauseStateGate)
+                {
+                    var previous = _batchPauseSnapshot;
+                    var generation = previous.Generation;
+                    if (state == BatchPauseState.PausePending &&
+                        previous.State != BatchPauseState.PausePending &&
+                        previous.State != BatchPauseState.Paused &&
+                        previous.State != BatchPauseState.ResumeChecking &&
+                        previous.State != BatchPauseState.Qualification)
+                        generation++;
+                    snapshot = new BatchPauseSnapshot(state, generation);
+                    Volatile.Write(ref _batchPauseSnapshot, snapshot);
+                }
+            }
             var update = new BatchPauseStateChangedEvent
             {
+                Generation = snapshot.Generation,
                 State = state,
                 Channels = channels?.Distinct().OrderBy(x => x).ToArray() ?? Array.Empty<int>(),
                 TimestampUtc = DateTime.UtcNow,
@@ -1065,7 +1127,8 @@ namespace Controller
                 RunId = _activeBatchId
             };
             _log?.Info(
-                $"批次暂停状态={state} Channels=[{string.Join(",", update.Channels)}] Reason={update.Reason}",
+                $"批次暂停状态={state} Generation={update.Generation} " +
+                $"Channels=[{string.Join(",", update.Channels)}] Reason={update.Reason}",
                 "EPB");
             NonCriticalObserver.Invoke(
                 BatchPauseStateChanged,
@@ -1199,6 +1262,10 @@ namespace Controller
                     "单通道恢复不得越过批次协调器创建正式Timer。");
             if (unattendedRecovery && _nonRecoverableChannelFaultLatch.ContainsKey(channel))
                 throw new InvalidOperationException("卡钳硬件故障已锁存，禁止无人值守自动拉起。");
+            if (unattendedRecovery && _operatorFullRelearningRequired.ContainsKey(channel))
+                throw new InvalidOperationException(
+                    "ForwardUnderTargetHighLoadStall 已锁存，禁止无人值守自动拉起；" +
+                    "必须由操作员确认并完成完整重学习与两圈资格复核。");
 
             var runId = _activeBatchId;
             var runEpoch = Interlocked.Read(ref _runEpoch);
@@ -1321,6 +1388,11 @@ namespace Controller
                     "单通道恢复不得越过批次协调器创建正式Timer。");
             if (unattendedRecovery && _nonRecoverableChannelFaultLatch.ContainsKey(channel))
                 throw new InvalidOperationException("卡钳硬件故障已锁存，禁止无人值守自动拉起。");
+            var requiresFullRelearning =
+                _operatorFullRelearningRequired.ContainsKey(channel);
+            if (unattendedRecovery && requiresFullRelearning)
+                throw new InvalidOperationException(
+                    "ForwardUnderTargetHighLoadStall 已锁存，禁止无人值守自动拉起。");
             if (!unattendedRecovery)
             {
                 _manualStopRequestedChannels.TryRemove(channel, out _);
@@ -1374,15 +1446,38 @@ namespace Controller
                 if (!IsBatchSessionActive)
                 {
                     EpbTestCycle[channel] = remaining;
+                    if (requiresFullRelearning)
+                        ResetAdaptiveProfileForOperatorRelearning(channel);
+                    var learnCycles = requiresFullRelearning
+                        ? Math.Max(5, _cfg.Test?.LearnCycles ?? 5)
+                        : 0;
                     await RecoveryStageDeadline.RunAsync(
                             "AlarmResumeFreshBatch",
                             RecoveryGroupHardDeadlineMs,
-                            ct => StartBatchFromGracefulCheckpointAsync(
-                                new[] { channel },
-                                2,
-                                ct),
+                            ct => requiresFullRelearning
+                                ? StartBatchCoreAsync(
+                                    new[] { channel },
+                                    learnCycles,
+                                    qualificationCycles: 2,
+                                    reuseStableProfiles: false,
+                                    ct,
+                                    chainIdentity: null,
+                                    operatorFullRelearningAuthorized: true)
+                                : StartBatchFromGracefulCheckpointAsync(
+                                    new[] { channel },
+                                    2,
+                                    ct),
                             recoveryToken)
                         .ConfigureAwait(false);
+                    if (requiresFullRelearning &&
+                        !PersistOperatorFullRelearningState(
+                            channel,
+                            required: false,
+                            reason: string.Empty,
+                            utc: DateTime.UtcNow,
+                            correlationId: recoveryCorrelation))
+                        throw new InvalidOperationException(
+                            $"EPB[{channel}] 重学习已通过，但门禁持久化清除失败，保持安全停机。");
                     ClearAlarmIndicatorAfterRecoveryBestEffort(channel);
                     return;
                 }
@@ -1434,6 +1529,45 @@ namespace Controller
                         $"EPB[{channel}] 恢复定位失败：{positioningFailures[0].Code}/" +
                         positioningFailures[0].Reason);
 
+                if (requiresFullRelearning)
+                {
+                    var learnCycles = Math.Max(5, _cfg.Test?.LearnCycles ?? 5);
+                    ResetAdaptiveProfileForOperatorRelearning(channel);
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.Learning,
+                        "OperatorConfirmedFullRelearning",
+                        $"操作员已确认，正在执行完整{learnCycles}圈重学习",
+                        correlationId: _activeBatchId);
+                    var learningGroups = GroupByPressure(new[] { channel });
+                    var learningAnchor = CeilToBoundary(
+                        DateTime.UtcNow.AddMilliseconds(Math.Max(2, AnchorWarmupMs)),
+                        PeriodMs);
+                    var learningAnchors = learningGroups.Keys.ToDictionary(
+                        hydraulicId => hydraulicId,
+                        _ => learningAnchor);
+                    int[] learningFailed = null;
+                    await RecoveryStageDeadline.RunAsync(
+                            "AlarmResumeFullRelearning",
+                            RecoveryGroupHardDeadlineMs,
+                            async ct =>
+                            {
+                                learningFailed = await RunLearningPhaseAsync(
+                                        learningGroups,
+                                        learningAnchors,
+                                        learnCycles,
+                                        plan,
+                                        ct)
+                                    .ConfigureAwait(false);
+                            },
+                            resumeToken)
+                        .ConfigureAwait(false);
+                    if (learningFailed.Contains(channel))
+                        throw new InvalidOperationException(
+                            $"EPB[{channel}] 完整重学习失败，保持报警停机和输出OFF。");
+                    EnsureAdaptiveProfilesReady(new[] { channel });
+                }
+
                 PublishChannelRuntimeState(
                     channel,
                     ChannelRuntimeState.Qualification,
@@ -1457,6 +1591,15 @@ namespace Controller
                 if (qualificationFailed.Contains(channel))
                     throw new InvalidOperationException(
                         $"EPB[{channel}] 资格复核确认仍有实时故障，保持报警停机。");
+                if (requiresFullRelearning &&
+                    !PersistOperatorFullRelearningState(
+                        channel,
+                        required: false,
+                        reason: string.Empty,
+                        utc: DateTime.UtcNow,
+                        correlationId: recoveryCorrelation))
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] 重学习资格已通过，但门禁持久化清除失败，保持安全停机。");
                 RejoinFormalChannelsAtSharedFutureSlot(
                     new[] { channel },
                     plan,
@@ -1524,6 +1667,19 @@ namespace Controller
                         recoveryRunEpoch,
                         RecoveryTargetPhase.Formal)
                     .ConfigureAwait(false);
+        }
+
+        private void ResetAdaptiveProfileForOperatorRelearning(int channel)
+        {
+            var empty = new EpbAdaptiveProfile { Channel = channel };
+            if (_adaptiveProfileStore == null)
+                throw new InvalidOperationException("自适应模型存储未初始化，不能执行完整重学习。");
+            _adaptiveProfileStore.SaveWithReceipt(empty);
+            if (_runnerCache.TryGetValue(channel, out var runner))
+                runner.RestoreAdaptiveProfile(empty);
+            _log.Warn(
+                $"EPB[{channel}] 已清除旧自适应模型；完整学习与资格复核成功前禁止正式重入。",
+                "EPB");
         }
 
         private void ClearAlarmIndicatorAfterRecoveryBestEffort(int channel)

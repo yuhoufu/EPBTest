@@ -87,6 +87,34 @@ namespace Config
         /// </summary>
         public EpbTestStatus Status { get; set; } = EpbTestStatus.NotStarted;
 
+        /// <summary>需要人工确认后才能清除的永久报警锁存。</summary>
+        public bool PermanentAlarmLatched { get; set; }
+
+        public string PermanentAlarmCode { get; set; } = string.Empty;
+
+        public string PermanentAlarmReason { get; set; } = string.Empty;
+
+        public DateTime? PermanentAlarmUtc { get; set; }
+
+        public Guid PermanentAlarmCorrelationId { get; set; }
+
+        /// <summary>
+        /// 高负载正向失速的人工完整重学习门禁。该事实独立于永久报警，
+        /// 进程重启后仍必须阻止普通开始/无人值守恢复复用旧模型。
+        /// </summary>
+        public bool OperatorFullRelearningRequired { get; set; }
+
+        public string OperatorFullRelearningReason { get; set; } = string.Empty;
+
+        public DateTime? OperatorFullRelearningUtc { get; set; }
+
+        public Guid OperatorFullRelearningCorrelationId { get; set; }
+
+        /// <summary>同一项目内连续完成但超过目标周期的正式圈数。</summary>
+        public int ConsecutivePeriodOverrunCount { get; set; }
+
+        public DateTime? LastPeriodOverrunUtc { get; set; }
+
         #endregion
 
         #region 内部字段
@@ -122,6 +150,17 @@ namespace Config
                 RunCount = 0,
                 MechanicalCycleCount = 0,
                 Status = EpbTestStatus.NotStarted,
+                PermanentAlarmLatched = false,
+                PermanentAlarmCode = string.Empty,
+                PermanentAlarmReason = string.Empty,
+                PermanentAlarmUtc = null,
+                PermanentAlarmCorrelationId = Guid.Empty,
+                OperatorFullRelearningRequired = false,
+                OperatorFullRelearningReason = string.Empty,
+                OperatorFullRelearningUtc = null,
+                OperatorFullRelearningCorrelationId = Guid.Empty,
+                ConsecutivePeriodOverrunCount = 0,
+                LastPeriodOverrunUtc = null,
                 _lastElapsedBaseUtc = null
             };
         }
@@ -184,6 +223,15 @@ namespace Config
                 Status = EpbTestStatus.NotStarted;
 
                 _lastElapsedBaseUtc = LatestStartTime;
+            }
+
+            // 永久报警是比历史正式圈数更强的安全事实。启动定位、学习或首个
+            // 正式圈提交前也可能锁存报警，此时 RunCount 仍为 0，不能被上面的
+            // “全新记录”初始化降级成 NotStarted。
+            if (PermanentAlarmLatched)
+            {
+                Enabled = false;
+                Status = EpbTestStatus.Alarm;
             }
         }
 
@@ -335,6 +383,55 @@ namespace Config
             Status = EpbTestStatus.Alarm;
         }
 
+        public void LatchPermanentAlarm(
+            string code,
+            string reason,
+            DateTime utc,
+            Guid correlationId)
+        {
+            PermanentAlarmLatched = true;
+            PermanentAlarmCode = code ?? string.Empty;
+            PermanentAlarmReason = reason ?? string.Empty;
+            PermanentAlarmUtc = utc.Kind == DateTimeKind.Utc ? utc : utc.ToUniversalTime();
+            PermanentAlarmCorrelationId = correlationId;
+            Enabled = false;
+            Status = EpbTestStatus.Alarm;
+        }
+
+        public void ClearPermanentAlarm()
+        {
+            PermanentAlarmLatched = false;
+            PermanentAlarmCode = string.Empty;
+            PermanentAlarmReason = string.Empty;
+            PermanentAlarmUtc = null;
+            PermanentAlarmCorrelationId = Guid.Empty;
+            ConsecutivePeriodOverrunCount = 0;
+            LastPeriodOverrunUtc = null;
+            if (Status == EpbTestStatus.Alarm)
+                Status = EpbTestStatus.NotStarted;
+        }
+
+        public void RequireOperatorFullRelearning(
+            string reason,
+            DateTime utc,
+            Guid correlationId)
+        {
+            OperatorFullRelearningRequired = true;
+            OperatorFullRelearningReason = reason ?? string.Empty;
+            OperatorFullRelearningUtc = utc.Kind == DateTimeKind.Utc
+                ? utc
+                : utc.ToUniversalTime();
+            OperatorFullRelearningCorrelationId = correlationId;
+        }
+
+        public void ClearOperatorFullRelearning()
+        {
+            OperatorFullRelearningRequired = false;
+            OperatorFullRelearningReason = string.Empty;
+            OperatorFullRelearningUtc = null;
+            OperatorFullRelearningCorrelationId = Guid.Empty;
+        }
+
         /// <summary>
         /// 将记录重置为默认状态（保留 Id 与 TotalCount）。
         /// </summary>
@@ -346,6 +443,8 @@ namespace Config
             RunCount = 0;
             MechanicalCycleCount = 0;
             Status = EpbTestStatus.NotStarted;
+            ClearPermanentAlarm();
+            ClearOperatorFullRelearning();
             _lastElapsedBaseUtc = null;
         }
 
@@ -418,6 +517,27 @@ namespace Config
 
 
         #endregion
+    }
+
+    /// <summary>
+    /// 项目 TestConfig.xml 中单通道报警/超限事实的原子更新载荷。
+    /// Enabled 为 null 时只更新报警和超限字段。
+    /// </summary>
+    public sealed class EpbAlarmPersistenceUpdate
+    {
+        public int Channel { get; set; }
+        public bool? Enabled { get; set; }
+        public bool PermanentAlarmLatched { get; set; }
+        public string PermanentAlarmCode { get; set; } = string.Empty;
+        public string PermanentAlarmReason { get; set; } = string.Empty;
+        public DateTime? PermanentAlarmUtc { get; set; }
+        public Guid PermanentAlarmCorrelationId { get; set; }
+        public bool? OperatorFullRelearningRequired { get; set; }
+        public string OperatorFullRelearningReason { get; set; } = string.Empty;
+        public DateTime? OperatorFullRelearningUtc { get; set; }
+        public Guid OperatorFullRelearningCorrelationId { get; set; }
+        public int ConsecutivePeriodOverrunCount { get; set; }
+        public DateTime? LastPeriodOverrunUtc { get; set; }
     }
 
     /// <summary>

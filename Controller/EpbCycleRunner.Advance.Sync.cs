@@ -762,11 +762,18 @@ namespace Controller
             DateTime deadlineUtc, CancellationToken token)
         {
             var sw = Stopwatch.StartNew();
+            var physicalActionGeneration =
+                Interlocked.Increment(ref _physicalActionGeneration);
 
             // —— 1) 执行你现有“正式一圈” —— //
             // 如果你的旧方法是 RunOneAsync(periodMs, token[, ...])，此处直接调用即可。
             // 关键点：旧方法里若还有①/⑧的等待，不影响我们“外壳”收尾，后面的 deadline 仍会统一结束点。
             var ok = await RunOneAsync(periodMs, token).ConfigureAwait(false);
+            // RunOneAsync 已经返回，说明本代次不再存在后续正/反向上电阶段。
+            // 这不代表物理 OFF 已确认；管理器在硬截止点仍必须独立校验输出状态。
+            Interlocked.Exchange(
+                ref _physicalActionTerminalGeneration,
+                physicalActionGeneration);
 
             // 正式完成事件由 EpbManager 在控制成功且圈数据可靠提交后发布。
             // 此处只能证明物理动作完成，不能提前增加 UI/检查点正式次数。
@@ -775,6 +782,8 @@ namespace Controller
             // 理解：假设旧流程内部已经用掉了 (periodMs - 旧T8) 的时间（粗略近似），我们在⑧中要扣回 phase，
             // 如果旧流程“忙得更久”，需要把迟到量计进⑧，避免超过 deadline。
             var elapsedMs = (int)sw.ElapsedMilliseconds;
+            if (LastCycleOutcome != null)
+                LastCycleOutcome.CallbackElapsedMs = elapsedMs;
             var expectedBeforeTail = periodMs - tailBaseMs;
             var lateness = Math.Max(0, elapsedMs - expectedBeforeTail);
 

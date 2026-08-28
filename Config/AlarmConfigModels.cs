@@ -33,6 +33,9 @@ namespace Config
         // 单 worker 之外最多只允许一个完整证据任务等待。
         public int FullEvidenceQueueCapacity { get; set; } = 1;
         public int ScalarEvidenceQueueCapacity { get; set; } = 4096;
+        public int SoftWarningMaintenanceWindowCycles { get; set; } = 100;
+        public double SoftWarningMaintenanceRate { get; set; } = 0.10;
+        public int SoftWarningMaintenanceConsecutiveWindows { get; set; } = 2;
     }
 
     public sealed class AlarmSerialConfig

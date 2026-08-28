@@ -13,6 +13,8 @@ namespace Config
         public int PollIntervalMs { get; set; } = 100;
         /// <summary>成功轮询超过该耗时时只记录慢查询预警，不触发电源故障。</summary>
         public int TelemetryDelayWarnMs { get; set; } = 500;
+        /// <summary>单次电源遥测/SCPI事务的有界超时；旧配置缺失时默认1500ms。</summary>
+        public int TelemetryCallTimeoutMs { get; set; } = 1500;
         /// <summary>兼容旧配置及安全证据判鲜；新代码不再用它单次锁存通信故障。</summary>
         public int TelemetryStaleMs { get; set; } = 500;
         /// <summary>连续多少个电源组正式动作槽无成功通信才确认通信故障。</summary>
@@ -69,6 +71,7 @@ namespace Config
                 Enabled = BoolAttr(root, "Enabled", true),
                 PollIntervalMs = IntAttr(root, "PollIntervalMs", 100),
                 TelemetryDelayWarnMs = IntAttr(root, "TelemetryDelayWarnMs", legacyTelemetryStaleMs),
+                TelemetryCallTimeoutMs = IntAttr(root, "TelemetryCallTimeoutMs", 1500),
                 TelemetryStaleMs = legacyTelemetryStaleMs,
                 CommunicationAlarmConfirmCycles = IntAttr(root, "CommunicationAlarmConfirmCycles", 8),
                 CommunicationAlarmMaxMs = IntAttr(root, "CommunicationAlarmMaxMs", 120000),
@@ -116,6 +119,11 @@ namespace Config
             if (config.PollIntervalMs < 50) errors.Add("PollIntervalMs 不能小于 50ms。");
             if (config.TelemetryDelayWarnMs < config.PollIntervalMs * 2)
                 errors.Add("TelemetryDelayWarnMs 至少应为轮询周期的两倍。");
+            if (config.TelemetryCallTimeoutMs < config.TelemetryDelayWarnMs ||
+                config.TelemetryCallTimeoutMs > config.CommunicationAlarmMaxMs)
+                errors.Add(
+                    "TelemetryCallTimeoutMs 必须不小于 TelemetryDelayWarnMs，" +
+                    "且不大于 CommunicationAlarmMaxMs。");
             if (config.TelemetryStaleMs < config.PollIntervalMs * 2)
                 errors.Add("TelemetryStaleMs 至少应为轮询周期的两倍。");
             if (config.CommunicationAlarmConfirmCycles < 1 ||
