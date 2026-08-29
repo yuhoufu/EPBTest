@@ -50,9 +50,57 @@ if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached' }
 $buildUtc = [DateTime]::UtcNow.ToString('O')
 $gitDirtyText = $isDirty.ToString().ToLowerInvariant()
 
+function Get-SourceSnapshotFingerprint {
+    $status = @(git status --porcelain=v1 --untracked-files=all 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw '无法读取源码快照状态。'
+    }
+    $changedPaths = @(
+        @(git diff --name-only HEAD -- 2>&1)
+        @(git ls-files --others --exclude-standard 2>&1)
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw '无法枚举源码快照文件。'
+    }
+
+    $builder = New-Object Text.StringBuilder
+    foreach ($line in @($status | Sort-Object)) {
+        [void]$builder.Append("STATUS\t").Append([string]$line).Append("`n")
+    }
+    foreach ($relativePath in @($changedPaths |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique)) {
+        $normalized = ([string]$relativePath).Replace('\', '/')
+        $fullPath = [IO.Path]::GetFullPath((Join-Path $repo $relativePath))
+        $repoPrefix = $repo.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if (-not $fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "源码快照文件越界：$relativePath"
+        }
+        if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            $hash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            [void]$builder.Append("FILE\t").Append($normalized).Append("\t").Append($hash).Append("`n")
+        }
+        else {
+            [void]$builder.Append("MISSING\t").Append($normalized).Append("`n")
+        }
+    }
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($builder.ToString())
+        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
+$sourceSnapshotFingerprint = Get-SourceSnapshotFingerprint
+
 function Assert-SourceSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedFingerprint,
         [Parameter(Mandatory = $true)][string]$Stage
     )
 
@@ -68,12 +116,13 @@ function Assert-SourceSnapshot {
         throw "$Stage：源码 HEAD 已变化，Start=$ExpectedCommit Current=$currentCommit"
     }
 
-    $currentDirty = @(git status --porcelain 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Stage：无法复核 Git 状态。"
-    }
-    if ($currentDirty.Count -ne 0) {
-        throw "$Stage：源码树不是干净状态，拒绝继续生成正式候选。`n$($currentDirty -join "`n")"
+    $currentFingerprint = Get-SourceSnapshotFingerprint
+    if (-not [string]::Equals(
+            $currentFingerprint,
+            $ExpectedFingerprint,
+            [StringComparison]::Ordinal)) {
+        $currentDirty = @(git status --porcelain 2>&1)
+        throw "$Stage：源码变更快照已变化，拒绝使用混合源码生成候选。`n$($currentDirty -join "`n")"
     }
 }
 
@@ -291,7 +340,9 @@ if ($actualAssemblyName -ne $expectedAssemblyName) {
 
 # 编译/还原可能持续较久。进入更长的回归前重新读取 Git，而不是沿用脚本启动时
 # 的结论，避免构建期间切换提交或编辑源码后仍把旧 commit 写进正式身份。
-Assert-SourceSnapshot -ExpectedCommit $commit -Stage '回归测试前源码快照校验'
+Assert-SourceSnapshot -ExpectedCommit $commit `
+    -ExpectedFingerprint $sourceSnapshotFingerprint `
+    -Stage '回归测试前源码快照校验'
 
 # 正式候选不能只证明主程序“能编译”。以下回归全部成功后才允许写入
 # FORMAL_RELEASE_CANDIDATE；任何一项失败都在复制发布目录之前终止。
@@ -416,7 +467,9 @@ finally {
 
 # 回归期间也可能发生源码切换或编辑；identity 只能在第二次快照仍与开头一致且
 # 工作树完全干净时写入。该门禁有意不受 -AllowDirtyCandidate 绕过。
-Assert-SourceSnapshot -ExpectedCommit $commit -Stage '写入构建身份前源码快照校验'
+Assert-SourceSnapshot -ExpectedCommit $commit `
+    -ExpectedFingerprint $sourceSnapshotFingerprint `
+    -Stage '写入构建身份前源码快照校验'
 
 $verification = [ordered]@{
     solutionRebuild = 'PASS'

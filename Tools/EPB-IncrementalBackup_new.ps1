@@ -10,8 +10,13 @@
     #   V2.13.0.28
     # --------------------------------------------------------
     # 留空时自动读取当前 MTTFTest.exe 的 ProductVersion。
-    # 手动传入时会与指定/自动找到的 EXE 版本交叉核对。
+    # 手动传入时会与项目身份、指定/自动找到的 EXE 版本交叉核对；
+    # 若不一致，脚本会要求选择本次备份使用的版本。
     [string]$Version = "",
+
+    # 当宿主无法提供交互输入时，可显式指定冲突时采用的版本。
+    # 该值必须是项目身份、EXE 或 -Version 提供的候选版本之一。
+    [string]$VersionOnConflict = "",
 
     # 可选：指定当前运行的 MTTFTest.exe，用于自动识别版本。
     [string]$ApplicationExecutable = "",
@@ -163,6 +168,148 @@ function Read-ProjectRuntimeIdentity {
 }
 
 
+function Resolve-BackupVersion {
+    param(
+        [string]$RequestedVersion,
+
+        [string]$ConflictVersion,
+
+        [Parameter(Mandatory)]
+        [PSCustomObject]$ApplicationIdentity
+    )
+
+    $Candidates = @()
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedVersion)) {
+        $Candidates += [PSCustomObject]@{
+            Version = ConvertTo-NormalizedVersion `
+                -Value $RequestedVersion `
+                -SourceDescription "-Version 参数"
+            Source = "-Version 参数"
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ApplicationIdentity.ProductVersion)) {
+        $Candidates += [PSCustomObject]@{
+            Version = ConvertTo-NormalizedVersion `
+                -Value $ApplicationIdentity.ProductVersion `
+                -SourceDescription "MTTFTest.exe"
+            Source = "EXE 版本"
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ApplicationIdentity.ProjectVersion)) {
+        $Candidates += [PSCustomObject]@{
+            Version = ConvertTo-NormalizedVersion `
+                -Value $ApplicationIdentity.ProjectVersion `
+                -SourceDescription "项目运行身份"
+            Source = "项目身份"
+        }
+    }
+
+    if ($Candidates.Count -eq 0) {
+        throw "未获得可用于备份的版本号。请传入 -Version Vx.x.x.x。"
+    }
+
+    $DistinctVersions = @($Candidates.Version | Select-Object -Unique)
+    if ($DistinctVersions.Count -eq 1) {
+        return [PSCustomObject]@{
+            Version = $DistinctVersions[0]
+            Source = ($Candidates.Source | Select-Object -Unique) -join "、"
+        }
+    }
+
+    $VersionChoices = @(
+        foreach ($CandidateVersion in $DistinctVersions) {
+            [PSCustomObject]@{
+                Version = $CandidateVersion
+                Source = (@(
+                    $Candidates |
+                        Where-Object { $_.Version -ieq $CandidateVersion } |
+                        Select-Object -ExpandProperty Source -Unique
+                ) -join "、")
+            }
+        }
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConflictVersion)) {
+        $NormalizedConflictVersion = ConvertTo-NormalizedVersion `
+            -Value $ConflictVersion `
+            -SourceDescription "-VersionOnConflict 参数"
+        $Selected = @(
+            $VersionChoices |
+                Where-Object { $_.Version -ieq $NormalizedConflictVersion }
+        ) | Select-Object -First 1
+
+        if ($null -eq $Selected) {
+            throw @"
+-VersionOnConflict 指定的版本不在本次候选版本中：$NormalizedConflictVersion
+候选版本：$($DistinctVersions -join '、')
+"@
+        }
+
+        return [PSCustomObject]@{
+            Version = $Selected.Version
+            Source = "冲突处理参数：$($Selected.Source)"
+        }
+    }
+
+    Write-Host ""
+    Write-Host "检测到备份版本不一致，请选择本次备份使用的版本：" -ForegroundColor Yellow
+    for ($CandidateIndex = 0; $CandidateIndex -lt $VersionChoices.Count; $CandidateIndex++) {
+        $Candidate = $VersionChoices[$CandidateIndex]
+        $ChoiceDescription = "{0}：{1}（{2}）" -f `
+            ($CandidateIndex + 1), $Candidate.Version, $Candidate.Source
+        Write-Host "  $ChoiceDescription"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ApplicationIdentity.Path)) {
+        Write-Host "  EXE 路径：$($ApplicationIdentity.Path)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ApplicationIdentity.ProjectIdentityPath)) {
+        Write-Host "  身份文件：$($ApplicationIdentity.ProjectIdentityPath)"
+    }
+
+    while ($true) {
+        # powershell.exe -File 启动的子进程中，Read-Host 可能读到空的
+        # 管道输入；Console.ReadLine 直接读取当前控制台，现场命令可正常输入。
+        [Console]::Write("请输入序号（输入 Q 取消备份）：")
+        $Selection = [Console]::ReadLine()
+        if ($Selection -match '^[Qq]$') {
+            throw "用户取消备份：未选择冲突版本。"
+        }
+
+        # 某些远程/自动化终端既不提供 stdin，也禁止显示桌面对话框。
+        # 此时不能猜测版本，输出所有可用参数并安全停止。
+        if ([string]::IsNullOrWhiteSpace($Selection)) {
+            $ConflictArguments = @(
+                $DistinctVersions |
+                    ForEach-Object { '  -VersionOnConflict "{0}"' -f $_ }
+            ) -join "`n"
+            throw @"
+当前终端不支持交互输入，无法在运行中选择版本。
+请重新执行原命令，并在末尾添加以下任意一个参数：
+$ConflictArguments
+"@
+        }
+
+        [int]$SelectedIndex = 0
+        $ValidSelection = [int]::TryParse($Selection, [ref]$SelectedIndex) -and
+            $SelectedIndex -ge 1 -and $SelectedIndex -le $VersionChoices.Count
+        if ($ValidSelection) {
+            break
+        }
+
+        Write-Host "输入无效，请输入 1 至 $($VersionChoices.Count)，或输入 Q 取消。" -ForegroundColor Yellow
+    }
+
+    $Selected = $VersionChoices[$SelectedIndex - 1]
+    return [PSCustomObject]@{
+        Version = $Selected.Version
+        Source = "交互选择：$($Selected.Source)"
+    }
+}
+
+
 function Resolve-ApplicationIdentity {
     param(
         [Parameter(Mandatory)]
@@ -254,11 +401,12 @@ $($ResolvedCandidates -join "`n")
     if ($ResolvedCandidates.Count -eq 0 -and $null -ne $ProjectIdentity) {
         return [PSCustomObject]@{
             Path = $null
-            ProductVersion = $ProjectIdentity.ProductVersion
+            ProductVersion = $null
             FileVersion = $ProjectIdentity.AssemblyVersion
             VersionSource = "项目 Config\runtime-build-identity.json"
             ProjectIdentityPath = $ProjectIdentity.Path
             ProjectIdentityCapturedUtc = $ProjectIdentity.CapturedUtc
+            ProjectVersion = $ProjectIdentity.ProductVersion
         }
     }
 
@@ -280,6 +428,7 @@ $($ResolvedCandidates -join "`n")
             VersionSource = "手工参数"
             ProjectIdentityPath = $null
             ProjectIdentityCapturedUtc = $null
+            ProjectVersion = $null
         }
     }
 
@@ -297,17 +446,6 @@ $($ResolvedCandidates -join "`n")
     $NormalizedDetectedVersion = ConvertTo-NormalizedVersion `
         -Value $DetectedVersion `
         -SourceDescription $ExecutablePath
-    if ($null -ne $ProjectIdentity -and
-        $NormalizedDetectedVersion -ine $ProjectIdentity.ProductVersion) {
-        throw @"
-项目运行身份与当前 EXE 版本不一致，已停止备份：
-  项目身份：$($ProjectIdentity.ProductVersion)
-  EXE 版本：$NormalizedDetectedVersion
-  EXE 路径：$ExecutablePath
-  身份文件：$($ProjectIdentity.Path)
-"@
-    }
-
     if ($null -ne $ProjectIdentity -and
         -not [string]::IsNullOrWhiteSpace($ProjectIdentity.ExecutablePath) -and
         [IO.Path]::GetFullPath($ExecutablePath) -ieq [IO.Path]::GetFullPath($ProjectIdentity.ExecutablePath) -and
@@ -328,6 +466,9 @@ $($ResolvedCandidates -join "`n")
         ProjectIdentityPath = if ($null -ne $ProjectIdentity) { $ProjectIdentity.Path } else { $null }
         ProjectIdentityCapturedUtc = if ($null -ne $ProjectIdentity) {
             $ProjectIdentity.CapturedUtc
+        } else { $null }
+        ProjectVersion = if ($null -ne $ProjectIdentity) {
+            $ProjectIdentity.ProductVersion
         } else { $null }
     }
 }
@@ -386,32 +527,12 @@ $ProjectName = Split-Path $SourceDir -Leaf
 # ============================================================
 
 $ApplicationIdentity = Resolve-ApplicationIdentity -SourceDirectory $SourceDir
-
-if ([string]::IsNullOrWhiteSpace($Version)) {
-    $Version = ConvertTo-NormalizedVersion `
-        -Value $ApplicationIdentity.ProductVersion `
-        -SourceDescription "MTTFTest.exe"
-}
-else {
-    $Version = ConvertTo-NormalizedVersion `
-        -Value $Version `
-        -SourceDescription "-Version 参数"
-
-    if (-not [string]::IsNullOrWhiteSpace($ApplicationIdentity.ProductVersion)) {
-        $DetectedVersion = ConvertTo-NormalizedVersion `
-            -Value $ApplicationIdentity.ProductVersion `
-            -SourceDescription "MTTFTest.exe"
-
-        if ($Version -ine $DetectedVersion) {
-            throw @"
-手工指定的版本与当前 MTTFTest.exe 不一致：
-  -Version：$Version
-  EXE 版本：$DetectedVersion
-  EXE 路径：$($ApplicationIdentity.Path)
-"@
-        }
-    }
-}
+$VersionResolution = Resolve-BackupVersion `
+    -RequestedVersion $Version `
+    -ConflictVersion $VersionOnConflict `
+    -ApplicationIdentity $ApplicationIdentity
+$Version = $VersionResolution.Version
+$ApplicationIdentity.VersionSource = $VersionResolution.Source
 
 
 # ============================================================
