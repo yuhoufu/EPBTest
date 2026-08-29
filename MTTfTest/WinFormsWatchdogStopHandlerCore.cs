@@ -14,9 +14,14 @@ namespace MTEmbTest
     /// </summary>
     internal interface IWinFormsWatchdogStopSafetyPort
     {
-        Task<StopSafetyResult> PrepareForFreshRestartAsync(StopContext context);
+        WatchdogTakeoverHandoffReceipt PrepareWatchdogTakeoverHandoff(
+            string sessionId,
+            string correlationId);
+        Task<StopSafetyResult> PrepareForWatchdogTakeoverAsync(StopContext context);
         void NotifyStopCompleted(WatchdogStopSummary summary, string reason);
-        void RequestWatchdogOwnedExit(string reason);
+        void RequestWatchdogOwnedExit(
+            string reason,
+            RuntimeShutdownIntent shutdownIntent);
     }
 
     internal static class WinFormsWatchdogStopHandlerCore
@@ -41,7 +46,24 @@ namespace MTEmbTest
             var correlation = string.IsNullOrWhiteSpace(envelope.CorrelationId)
                 ? Guid.NewGuid().ToString("N")
                 : envelope.CorrelationId;
-            var safety = await port.PrepareForFreshRestartAsync(
+            WatchdogTakeoverHandoffReceipt handoff;
+            try
+            {
+                handoff = port.PrepareWatchdogTakeoverHandoff(
+                    context.SessionId,
+                    correlation);
+            }
+            catch (Exception ex)
+            {
+                handoff = new WatchdogTakeoverHandoffReceipt
+                {
+                    SessionId = context.SessionId,
+                    CorrelationId = correlation,
+                    Error = "CheckpointPrepareException:" + ex.GetBaseException().Message
+                };
+            }
+
+            var safety = await port.PrepareForWatchdogTakeoverAsync(
                     new StopContext
                     {
                         Source = StopSource.SystemFault,
@@ -58,8 +80,13 @@ namespace MTEmbTest
                     (safety?.StageError ?? "StopSafetyResultUnavailable"));
 
             port.NotifyStopCompleted(ToWatchdogStopSummary(safety), envelope.ReasonCode);
+            if (handoff?.Prepared != true)
+                throw new InvalidOperationException(
+                    "Watchdog接管检查点未完成持久化回读，设备已安全停止但主程序保持可见：" +
+                    (handoff?.Error ?? "HandoffReceiptUnavailable"));
             port.RequestWatchdogOwnedExit(
-                "WatchdogStopAllCompleted:" + correlation);
+                "WatchdogStopAllCompleted:" + correlation,
+                RuntimeShutdownIntent.WatchdogTakeoverExit);
         }
 
         internal static WatchdogStopSummary ToWatchdogStopSummary(

@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MTTFTest.Watchdog;
 using MTTFTest.Watchdog.Protocol;
 
 namespace AdaptiveControlTests
@@ -30,6 +32,24 @@ namespace AdaptiveControlTests
                 AuthorityIdentityRequiresCompleteEvidence, ref passed);
             Run("传输阶段常量与SessionAttach预算保持单一策略值",
                 TransportPolicyBudgetsAreExplicit, ref passed);
+            Run("心跳超时但UI响应时只退休管道且不接管",
+                ResponsiveUiSuppressesHeartbeatTakeover, ref passed);
+            Run("0.5/3/6秒传输延迟矩阵仅在6秒启用UI证据",
+                TransportDelayMatrixUsesIndependentUiEvidence, ref passed);
+            Run("UI连续三次无响应才确认心跳接管",
+                UiProbeRequiresThreeFailures, ref passed);
+            Run("同一进程代次的UI失活确认只发布一次",
+                UiFailureConfirmationIsLatchedPerProcess, ref passed);
+            Run("进程退出与PID身份失配均立即确认接管",
+                ProcessExitAndIdentityMismatchAreImmediate, ref passed);
+            Run("MainUiReady前保留15秒启动宽限",
+                StartupGracePreventsEarlyTakeover, ref passed);
+            Run("MainUiReady和UI失败证据跨同进程管道重连保留",
+                MainUiReadySurvivesConnectionReconnect, ref passed);
+            Run("Host发送队列生命周期消息优先且与普通流量隔离",
+                HostSendQueuePrioritizesLifecycleMessages, ref passed);
+            Run("Host连续100代发送队列精确隔离",
+                HundredSendQueueGenerationsAreIsolated, ref passed);
             Run("重连退避固定为250/500/1000/2000/5000且最多8次",
                 ReconnectBackoffIsBounded, ref passed);
             Run("旧权威死亡后只允许一个新pending helper",
@@ -51,6 +71,227 @@ namespace AdaptiveControlTests
             return passed;
         }
 
+        private static void ResponsiveUiSuppressesHeartbeatTakeover()
+        {
+            var probe = new ControlledUiProbe(
+                WatchdogUiProbeStatus.Responsive,
+                WatchdogUiProbeStatus.Responsive);
+            var supervisor = new WatchdogApplicationLivenessSupervisor(probe);
+            supervisor.ResetForNewProcess(7, 1000);
+            supervisor.ObserveMainUiReady(7);
+            var first = supervisor.Evaluate(
+                6, true, 42, 100, 7, 3, 7000, 1000);
+            var second = supervisor.Evaluate(
+                7, true, 42, 100, 7, 3, 8000, 1000);
+            Assert(first.SuppressHeartbeatTakeover && first.RetireConnection &&
+                   !first.HeartbeatUnresponsiveConfirmed &&
+                   second.SuppressHeartbeatTakeover && !second.RetireConnection,
+                "UI响应未抑制心跳误接管，或同一连接被重复退休");
+            Assert(WatchdogTakeoverPolicy.ShouldTakeover(
+                    false, false, false, true, 0,
+                    false, false, false, 90, true,
+                    formalProgressStalled: true),
+                "UI存活证据错误抑制了正式机械进度停滞接管");
+        }
+
+        private static void TransportDelayMatrixUsesIndependentUiEvidence()
+        {
+            var supervisor = new WatchdogApplicationLivenessSupervisor(
+                new ControlledUiProbe(WatchdogUiProbeStatus.Responsive));
+            supervisor.ResetForNewProcess(8, 1000);
+            supervisor.ObserveMainUiReady(8);
+            var halfSecond = supervisor.Evaluate(
+                0.5, true, 42, 100, 8, 1, 1500, 1000);
+            var threeSeconds = supervisor.Evaluate(
+                3, true, 42, 100, 8, 1, 4000, 1000);
+            var sixSeconds = supervisor.Evaluate(
+                6, true, 42, 100, 8, 1, 7000, 1000);
+            Assert(halfSecond.ProbeStatus == WatchdogUiProbeStatus.NotRequired &&
+                   threeSeconds.ProbeStatus == WatchdogUiProbeStatus.NotRequired &&
+                   !halfSecond.HeartbeatUnresponsiveConfirmed &&
+                   !threeSeconds.HeartbeatUnresponsiveConfirmed &&
+                   sixSeconds.ProbeStatus == WatchdogUiProbeStatus.Responsive &&
+                   sixSeconds.SuppressHeartbeatTakeover &&
+                   sixSeconds.RetireConnection,
+                "传输延迟矩阵未将5秒前心跳怀疑与5秒后独立UI证据分层");
+        }
+
+        private static void UiProbeRequiresThreeFailures()
+        {
+            var probe = new ControlledUiProbe(
+                WatchdogUiProbeStatus.Unresponsive,
+                WatchdogUiProbeStatus.Unresponsive,
+                WatchdogUiProbeStatus.Unresponsive);
+            var supervisor = new WatchdogApplicationLivenessSupervisor(probe);
+            supervisor.ResetForNewProcess(9, 1000);
+            supervisor.ObserveMainUiReady(9);
+            var first = supervisor.Evaluate(6, true, 42, 100, 9, 1, 7000, 1000);
+            var second = supervisor.Evaluate(7, true, 42, 100, 9, 1, 8000, 1000);
+            var third = supervisor.Evaluate(8, true, 42, 100, 9, 1, 9000, 1000);
+            Assert(first.SuppressHeartbeatTakeover && second.SuppressHeartbeatTakeover &&
+                   !first.HeartbeatUnresponsiveConfirmed &&
+                   !second.HeartbeatUnresponsiveConfirmed &&
+                   third.HeartbeatUnresponsiveConfirmed &&
+                   third.ConsecutiveFailures == 3,
+                "UI探针未严格执行连续三次失败门禁");
+        }
+
+        private static void UiFailureConfirmationIsLatchedPerProcess()
+        {
+            var supervisor = new WatchdogApplicationLivenessSupervisor(
+                new ControlledUiProbe(
+                    WatchdogUiProbeStatus.Unresponsive,
+                    WatchdogUiProbeStatus.Unresponsive,
+                    WatchdogUiProbeStatus.Unresponsive,
+                    WatchdogUiProbeStatus.Unresponsive));
+            supervisor.ResetForNewProcess(90, 1000);
+            supervisor.ObserveMainUiReady(90);
+            supervisor.Evaluate(6, true, 42, 100, 90, 1, 7000, 1000);
+            supervisor.Evaluate(7, true, 42, 100, 90, 1, 8000, 1000);
+            var confirmed = supervisor.Evaluate(8, true, 42, 100, 90, 1, 9000, 1000);
+            var repeated = supervisor.Evaluate(9, true, 42, 100, 90, 1, 10000, 1000);
+            Assert(confirmed.HeartbeatUnresponsiveConfirmed && confirmed.ReportEvent &&
+                   repeated.HeartbeatUnresponsiveConfirmed && !repeated.ReportEvent &&
+                   repeated.ConsecutiveFailures == 3,
+                "HeartbeatUnresponsiveConfirmed在同一进程代次被重复发布");
+        }
+
+        private static void ProcessExitAndIdentityMismatchAreImmediate()
+        {
+            var exited = new WatchdogApplicationLivenessSupervisor(
+                new ControlledUiProbe(WatchdogUiProbeStatus.Responsive));
+            exited.ResetForNewProcess(10, 1000);
+            var processExit = exited.Evaluate(
+                0.5, false, 42, 100, 10, 1, 1500, 1000);
+
+            var mismatch = new WatchdogApplicationLivenessSupervisor(
+                new ControlledUiProbe(WatchdogUiProbeStatus.IdentityMismatch));
+            mismatch.ResetForNewProcess(11, 1000);
+            mismatch.ObserveMainUiReady(11);
+            var identityMismatch = mismatch.Evaluate(
+                6, true, 42, 100, 11, 1, 7000, 1000);
+            Assert(processExit.HeartbeatUnresponsiveConfirmed &&
+                   processExit.ProbeStatus == WatchdogUiProbeStatus.ProcessExited &&
+                   identityMismatch.HeartbeatUnresponsiveConfirmed &&
+                   identityMismatch.ProbeStatus == WatchdogUiProbeStatus.IdentityMismatch,
+                "进程退出或PID启动时间身份失配未绕过三次普通UI失败门禁立即接管");
+        }
+
+        private static void StartupGracePreventsEarlyTakeover()
+        {
+            var probe = new ControlledUiProbe(
+                WatchdogUiProbeStatus.WindowMissing,
+                WatchdogUiProbeStatus.WindowMissing,
+                WatchdogUiProbeStatus.WindowMissing);
+            var supervisor = new WatchdogApplicationLivenessSupervisor(probe);
+            supervisor.ResetForNewProcess(11, 1000);
+            var grace = supervisor.Evaluate(6, true, 42, 100, 11, 1, 15000, 1000);
+            var first = supervisor.Evaluate(15, true, 42, 100, 11, 1, 16000, 1000);
+            var second = supervisor.Evaluate(16, true, 42, 100, 11, 1, 17000, 1000);
+            var third = supervisor.Evaluate(17, true, 42, 100, 11, 1, 18000, 1000);
+            Assert(grace.ProbeStatus == WatchdogUiProbeStatus.StartupGrace &&
+                   grace.SuppressHeartbeatTakeover &&
+                   !first.HeartbeatUnresponsiveConfirmed &&
+                   !second.HeartbeatUnresponsiveConfirmed &&
+                   third.HeartbeatUnresponsiveConfirmed,
+                "MainUiReady前启动宽限或宽限后的三次失败门禁不正确");
+        }
+
+        private static void MainUiReadySurvivesConnectionReconnect()
+        {
+            var supervisor = new WatchdogApplicationLivenessSupervisor(
+                new ControlledUiProbe(
+                    WatchdogUiProbeStatus.Unresponsive,
+                    WatchdogUiProbeStatus.Unresponsive,
+                    WatchdogUiProbeStatus.Unresponsive));
+            supervisor.ResetForNewProcess(12, 1000);
+            supervisor.ObserveMainUiReady(12);
+            var beforeReconnect = supervisor.Evaluate(
+                6, true, 42, 100, 12, 1, 7000, 1000);
+            var afterReconnect = supervisor.Evaluate(
+                7, true, 42, 100, 12, 2, 8000, 1000);
+            var confirmed = supervisor.Evaluate(
+                8, true, 42, 100, 12, 2, 9000, 1000);
+            Assert(beforeReconnect.ProbeStatus == WatchdogUiProbeStatus.Unresponsive &&
+                   afterReconnect.ProbeStatus == WatchdogUiProbeStatus.Unresponsive &&
+                   afterReconnect.ConsecutiveFailures == 2 &&
+                   confirmed.HeartbeatUnresponsiveConfirmed &&
+                   confirmed.ConsecutiveFailures == 3,
+                "同进程重连错误重置MainUiReady或连续UI失败证据");
+        }
+
+        private static void HostSendQueuePrioritizesLifecycleMessages()
+        {
+            using (var stream = new MemoryStream())
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, true))
+            {
+                var owner = new WatchdogHostSendQueueOwner(stream, writer, 5);
+                var normal = new WatchdogHostSendRequest("Ping", "normal", false);
+                var lifecycle = new WatchdogHostSendRequest(
+                    WatchdogMessageType.RequestStopAll,
+                    "lifecycle",
+                    true);
+                Assert(owner.TryEnqueue(normal) && owner.TryEnqueue(lifecycle),
+                    "Host发送队列拒绝正常容量内消息");
+                WatchdogHostSendRequest first;
+                WatchdogHostSendRequest second;
+                Assert(owner.TryDequeue(out first) && ReferenceEquals(first, lifecycle) &&
+                       owner.TryDequeue(out second) && ReferenceEquals(second, normal),
+                    "生命周期消息未越过普通流量优先发送");
+                owner.StopAccepting();
+                Assert(!owner.TryEnqueue(new WatchdogHostSendRequest("Ping", "late", false)),
+                    "连接退休后发送队列仍接纳新消息");
+            }
+        }
+
+        private static void HundredSendQueueGenerationsAreIsolated()
+        {
+            for (var generation = 1; generation <= 100; generation++)
+            {
+                using (var stream = new MemoryStream())
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, true))
+                {
+                    var owner = new WatchdogHostSendQueueOwner(stream, writer, generation);
+                    var request = new WatchdogHostSendRequest(
+                        "Ping",
+                        "generation-" + generation,
+                        false);
+                    Assert(owner.TryEnqueue(request),
+                        "发送队列在正常容量内拒绝代次" + generation);
+                    owner.StopAccepting();
+                    Assert(request.Completion.Task.IsCompleted &&
+                           !request.Completion.Task.GetAwaiter().GetResult() &&
+                           !owner.TryEnqueue(new WatchdogHostSendRequest(
+                               "Ping", "late-" + generation, false)),
+                        "退休代次仍接纳发送或未完成遗留请求：" + generation);
+                }
+            }
+        }
+
+        private sealed class ControlledUiProbe : IWatchdogUiProbe
+        {
+            private readonly Queue<WatchdogUiProbeStatus> _statuses;
+
+            internal ControlledUiProbe(params WatchdogUiProbeStatus[] statuses)
+            {
+                _statuses = new Queue<WatchdogUiProbeStatus>(statuses ?? Array.Empty<WatchdogUiProbeStatus>());
+            }
+
+            public WatchdogUiProbeResult Probe(
+                int processId,
+                long processStartUtcTicks,
+                int timeoutMs)
+            {
+                return new WatchdogUiProbeResult
+                {
+                    Status = _statuses.Count > 0
+                        ? _statuses.Dequeue()
+                        : WatchdogUiProbeStatus.Responsive,
+                    Detail = "Controlled"
+                };
+            }
+        }
+
         private static void TransportPolicyBudgetsAreExplicit()
         {
             Assert(WatchdogTransportPolicy.PipeConnect5000 == 5000 &&
@@ -61,7 +302,12 @@ namespace AdaptiveControlTests
                    WatchdogTransportPolicy.SidecarLaunchAllowance5000 == 5000 &&
                    WatchdogTransportPolicy.LaunchClosureJoin1000 == 1000 &&
                    WatchdogTransportPolicy.AttachDispatchGuard1000 == 1000 &&
-                   WatchdogTransportPolicy.ProcessExitJoin1000 == 1000,
+                   WatchdogTransportPolicy.ProcessExitJoin1000 == 1000 &&
+                   WatchdogTransportPolicy.HeartbeatSuspectMs == 3000 &&
+                   WatchdogTransportPolicy.HeartbeatTimeoutMs == 5000 &&
+                   WatchdogTransportPolicy.UiProbeTimeoutMs == 500 &&
+                   WatchdogTransportPolicy.ClientAckRetireJitterMs == 250 &&
+                   WatchdogTransportPolicy.ClientHeartbeatAckRetireMs == 5750,
                 "传输原子阶段常量发生漂移");
             Assert(WatchdogTransportPolicy.ConnectAttemptBudgetMs == 6500 &&
                    WatchdogTransportPolicy.GuardedConnectBudgetMs == 11100 &&

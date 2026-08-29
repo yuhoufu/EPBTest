@@ -7,6 +7,37 @@ using System.Threading.Tasks;
 
 namespace Controller
 {
+    /// <summary>
+    /// 正式阶段参与者的精确租约。退休、槽准入和异步安全确认只能作用于同一
+    /// Run/RunEpoch/ParticipantGeneration，禁止旧回调污染后来重新加入的通道。
+    /// </summary>
+    internal sealed class FormalBatchParticipantLease
+    {
+        internal FormalBatchParticipantLease(
+            Guid runId,
+            long runEpoch,
+            int channel,
+            long participantGeneration)
+        {
+            RunId = runId;
+            RunEpoch = runEpoch;
+            Channel = channel;
+            ParticipantGeneration = participantGeneration;
+        }
+
+        public Guid RunId { get; }
+        public long RunEpoch { get; }
+        public int Channel { get; }
+        public long ParticipantGeneration { get; }
+
+        internal bool SameIdentity(FormalBatchParticipantLease other) =>
+            other != null &&
+            RunId == other.RunId &&
+            RunEpoch == other.RunEpoch &&
+            Channel == other.Channel &&
+            ParticipantGeneration == other.ParticipantGeneration;
+    }
+
     internal sealed class FormalBatchParticipantTerminal
     {
         public int Channel { get; set; }
@@ -93,10 +124,12 @@ namespace Controller
         {
             internal readonly object Gate = new object();
             internal Guid RunId;
+            internal long RunEpoch;
             internal long SlotOrdinal;
             internal DateTime WallClockAnchorUtc;
             internal int PeriodMs;
             internal HashSet<int> Participants;
+            internal Dictionary<int, FormalBatchParticipantLease> ParticipantLeases;
             internal HashSet<int> Pending;
             internal HashSet<int> Entered;
             internal Dictionary<int, FormalBatchParticipantTerminal> Terminals;
@@ -114,6 +147,24 @@ namespace Controller
         private readonly ConcurrentDictionary<string, FormalBatchParticipantTerminal>
             _confirmedRetirements =
                 new ConcurrentDictionary<string, FormalBatchParticipantTerminal>();
+        private readonly ConcurrentDictionary<string, FormalBatchParticipantLease> _activeLeases =
+            new ConcurrentDictionary<string, FormalBatchParticipantLease>();
+        private long _participantGeneration;
+
+        public FormalBatchParticipantLease RegisterParticipant(
+            Guid runId,
+            long runEpoch,
+            int channel)
+        {
+            if (runId == Guid.Empty) throw new ArgumentException("正式参与者 RunId 不能为空。", nameof(runId));
+            if (runEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(runEpoch));
+            if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
+
+            var generation = Interlocked.Increment(ref _participantGeneration);
+            var lease = new FormalBatchParticipantLease(runId, runEpoch, channel, generation);
+            _activeLeases[CreateActiveLeaseKey(runId, runEpoch, channel)] = lease;
+            return lease;
+        }
 
         public async Task<FormalBatchSlotScope> EnterAsync(
             Guid runId,
@@ -126,37 +177,82 @@ namespace Controller
             CancellationToken token,
             Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null)
         {
-            if (runId == Guid.Empty) throw new ArgumentException("正式槽 RunId 不能为空。", nameof(runId));
-            if (slotOrdinal < 0) throw new ArgumentOutOfRangeException(nameof(slotOrdinal));
-            if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
-            if (periodMs <= 0) throw new ArgumentOutOfRangeException(nameof(periodMs));
-
-            var frozen = (participants ?? Array.Empty<int>())
+            var frozenChannels = (participants ?? Array.Empty<int>())
                 .Where(item => item > 0)
                 .Distinct()
                 .OrderBy(item => item)
                 .ToArray();
+            var frozenLeases = frozenChannels
+                .Select(item => GetOrRegisterLegacyLease(runId, item))
+                .ToArray();
+            var participantLease = frozenLeases.FirstOrDefault(item => item.Channel == channel) ??
+                                   GetOrRegisterLegacyLease(runId, channel);
+            return await EnterAsync(
+                    participantLease,
+                    slotOrdinal,
+                    frozenLeases,
+                    wallClockAnchorUtc,
+                    periodMs,
+                    waitingCallback,
+                    token,
+                    fallbackTerminalFactory)
+                .ConfigureAwait(false);
+        }
+
+        public async Task<FormalBatchSlotScope> EnterAsync(
+            FormalBatchParticipantLease participantLease,
+            long slotOrdinal,
+            IEnumerable<FormalBatchParticipantLease> participants,
+            DateTime wallClockAnchorUtc,
+            int periodMs,
+            Action waitingCallback,
+            CancellationToken token,
+            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null)
+        {
+            if (participantLease == null) throw new ArgumentNullException(nameof(participantLease));
+            var runId = participantLease.RunId;
+            var runEpoch = participantLease.RunEpoch;
+            var channel = participantLease.Channel;
+            if (runId == Guid.Empty) throw new ArgumentException("正式槽 RunId 不能为空。", nameof(participantLease));
+            if (runEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(participantLease));
+            if (slotOrdinal < 0) throw new ArgumentOutOfRangeException(nameof(slotOrdinal));
+            if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
+            if (periodMs <= 0) throw new ArgumentOutOfRangeException(nameof(periodMs));
+
+            var frozenLeases = (participants ?? Array.Empty<FormalBatchParticipantLease>())
+                .Where(item => item != null && item.RunId == runId && item.RunEpoch == runEpoch && item.Channel > 0)
+                .GroupBy(item => item.Channel)
+                .Select(group => group.Single())
+                .OrderBy(item => item.Channel)
+                .ToArray();
+            var frozen = frozenLeases.Select(item => item.Channel).ToArray();
             if (!frozen.Contains(channel))
                 throw new InvalidOperationException(
                     $"FormalBatchSlotMemberMissing Run={runId:N} Slot={slotOrdinal} EPB={channel}");
+            if (!IsLeaseCurrent(participantLease))
+                throw new InvalidOperationException(
+                    $"FormalBatchParticipantLeaseStale Run={runId:N} Epoch={runEpoch} " +
+                    $"Slot={slotOrdinal} EPB={channel} Generation={participantLease.ParticipantGeneration}");
 
             var normalizedAnchor = wallClockAnchorUtc.Kind == DateTimeKind.Utc
                 ? wallClockAnchorUtc
                 : wallClockAnchorUtc.ToUniversalTime();
-            var key = CreateKey(runId, slotOrdinal);
+            var key = CreateKey(runId, runEpoch, slotOrdinal);
             var candidate = new SlotEntry
             {
                 RunId = runId,
+                RunEpoch = runEpoch,
                 SlotOrdinal = slotOrdinal,
                 WallClockAnchorUtc = normalizedAnchor,
                 PeriodMs = periodMs,
                 Participants = new HashSet<int>(frozen),
+                ParticipantLeases = frozenLeases.ToDictionary(item => item.Channel),
                 Pending = new HashSet<int>(frozen),
                 Entered = new HashSet<int>(),
                 Terminals = new Dictionary<int, FormalBatchParticipantTerminal>()
             };
             var entry = _slots.GetOrAdd(key, candidate);
-            ValidateImmutable(entry, frozen, normalizedAnchor, periodMs);
+            ValidateImmutable(entry, frozenLeases, normalizedAnchor, periodMs);
             var completedByRetirement = false;
             string admissionFailure = null;
             lock (entry.Gate)
@@ -176,7 +272,7 @@ namespace Controller
             var waitStartedUtc = DateTime.UtcNow;
             try
             {
-                if (_slots.TryGetValue(CreateKey(runId, slotOrdinal - 1L), out var previous))
+                if (_slots.TryGetValue(CreateKey(runId, runEpoch, slotOrdinal - 1L), out var previous))
                 {
                     if (!previous.Completion.Task.IsCompleted)
                         waitingCallback?.Invoke();
@@ -213,7 +309,7 @@ namespace Controller
                 throw;
             }
 
-            TrimCompleted(runId, slotOrdinal);
+            TrimCompleted(runId, runEpoch, slotOrdinal);
             return new FormalBatchSlotScope(
                 this,
                 entry,
@@ -225,9 +321,14 @@ namespace Controller
         public bool RequestRetirement(Guid runId, int channel, string reason)
         {
             if (runId == Guid.Empty || channel <= 0) return false;
-            return _retirementRequests.TryAdd(
-                CreateRetirementKey(runId, channel),
-                reason ?? string.Empty);
+            var lease = FindActiveLease(runId, channel) ?? GetOrRegisterLegacyLease(runId, channel);
+            return RequestRetirement(lease, reason);
+        }
+
+        public bool RequestRetirement(FormalBatchParticipantLease lease, string reason)
+        {
+            if (!IsLeaseCurrent(lease)) return false;
+            return _retirementRequests.TryAdd(CreateRetirementKey(lease), reason ?? string.Empty);
         }
 
         public void ConfirmRetirement(
@@ -236,18 +337,32 @@ namespace Controller
             FormalBatchParticipantTerminal terminal)
         {
             if (runId == Guid.Empty || channel <= 0 || terminal == null) return;
-            if (!_retirementRequests.TryRemove(CreateRetirementKey(runId, channel), out var reason))
+            var lease = FindActiveLease(runId, channel);
+            if (lease == null) return;
+            ConfirmRetirement(lease, terminal);
+        }
+
+        public void ConfirmRetirement(
+            FormalBatchParticipantLease lease,
+            FormalBatchParticipantTerminal terminal)
+        {
+            if (lease == null || terminal == null || !IsLeaseCurrent(lease)) return;
+            if (!_retirementRequests.TryRemove(CreateRetirementKey(lease), out var reason))
                 return;
+            var channel = lease.Channel;
             var retirementTerminal = CloneRetirementTerminal(terminal, channel, reason);
-            _confirmedRetirements[CreateRetirementKey(runId, channel)] = retirementTerminal;
-            foreach (var entry in _slots.Values.Where(item => item.RunId == runId).ToArray())
+            _confirmedRetirements[CreateRetirementKey(lease)] = retirementTerminal;
+            foreach (var entry in _slots.Values.Where(item =>
+                         item.RunId == lease.RunId && item.RunEpoch == lease.RunEpoch).ToArray())
             {
                 var complete = false;
                 lock (entry.Gate)
                 {
                     // 已进入本槽的回调必须由自己的 scope 提交完整终态；退休
                     // 栅栏只代为关闭尚未进入、但已被兄弟通道预创建的未来槽。
-                    if (entry.Entered.Contains(channel) || !entry.Pending.Contains(channel))
+                    if (entry.Entered.Contains(channel) || !entry.Pending.Contains(channel) ||
+                        !entry.ParticipantLeases.TryGetValue(channel, out var entryLease) ||
+                        !entryLease.SameIdentity(lease))
                         continue;
                     complete = CompleteParticipantUnderLock(entry, retirementTerminal);
                 }
@@ -278,6 +393,10 @@ namespace Controller
                          .Where(key => key.StartsWith(runId.ToString("N") + ":", StringComparison.Ordinal))
                          .ToArray())
                 _confirmedRetirements.TryRemove(key, out _);
+            foreach (var key in _activeLeases.Keys
+                         .Where(key => key.StartsWith(runId.ToString("N") + ":", StringComparison.Ordinal))
+                         .ToArray())
+                _activeLeases.TryRemove(key, out _);
         }
 
         internal void CompleteParticipant(
@@ -301,7 +420,7 @@ namespace Controller
                 if (entry.Entered.Contains(channel) || !entry.Pending.Contains(channel))
                     continue;
                 if (_confirmedRetirements.TryGetValue(
-                        CreateRetirementKey(entry.RunId, channel),
+                        CreateRetirementKey(entry.ParticipantLeases[channel]),
                         out var terminal))
                     complete = CompleteParticipantUnderLock(entry, terminal) || complete;
             }
@@ -401,11 +520,45 @@ namespace Controller
             await task.ConfigureAwait(false);
         }
 
-        private static string CreateKey(Guid runId, long slotOrdinal) =>
-            $"{runId:N}:{slotOrdinal}";
+        private static string CreateKey(Guid runId, long runEpoch, long slotOrdinal) =>
+            $"{runId:N}:{runEpoch}:{slotOrdinal}";
 
-        private static string CreateRetirementKey(Guid runId, int channel) =>
-            $"{runId:N}:{channel}";
+        private static string CreateActiveLeaseKey(Guid runId, long runEpoch, int channel) =>
+            $"{runId:N}:{runEpoch}:{channel}";
+
+        private static string CreateRetirementKey(FormalBatchParticipantLease lease) =>
+            $"{lease.RunId:N}:{lease.RunEpoch}:{lease.Channel}:{lease.ParticipantGeneration}";
+
+        private FormalBatchParticipantLease GetOrRegisterLegacyLease(Guid runId, int channel)
+        {
+            if (runId == Guid.Empty || channel <= 0)
+                throw new ArgumentException("旧正式槽参与者身份无效。");
+            var key = CreateActiveLeaseKey(runId, 1, channel);
+            return _activeLeases.GetOrAdd(key, _ =>
+                new FormalBatchParticipantLease(
+                    runId,
+                    1,
+                    channel,
+                    Interlocked.Increment(ref _participantGeneration)));
+        }
+
+        private FormalBatchParticipantLease FindActiveLease(Guid runId, int channel)
+        {
+            return _activeLeases.Values
+                .Where(item => item.RunId == runId && item.Channel == channel)
+                .OrderByDescending(item => item.RunEpoch)
+                .ThenByDescending(item => item.ParticipantGeneration)
+                .FirstOrDefault();
+        }
+
+        private bool IsLeaseCurrent(FormalBatchParticipantLease lease)
+        {
+            if (lease == null) return false;
+            return _activeLeases.TryGetValue(
+                       CreateActiveLeaseKey(lease.RunId, lease.RunEpoch, lease.Channel),
+                       out var current) &&
+                   current.SameIdentity(lease);
+        }
 
         private static FormalBatchParticipantTerminal CloneRetirementTerminal(
             FormalBatchParticipantTerminal source,
@@ -434,20 +587,24 @@ namespace Controller
 
         private static void ValidateImmutable(
             SlotEntry entry,
-            IReadOnlyCollection<int> participants,
+            IReadOnlyCollection<FormalBatchParticipantLease> participants,
             DateTime anchorUtc,
             int periodMs)
         {
-            var sameMembers = entry.Participants.SetEquals(participants);
-            if (!sameMembers || entry.WallClockAnchorUtc != anchorUtc || entry.PeriodMs != periodMs)
+            var sameMembers = entry.Participants.SetEquals(participants.Select(item => item.Channel));
+            var sameLeases = sameMembers && participants.All(item =>
+                entry.ParticipantLeases.TryGetValue(item.Channel, out var frozen) &&
+                frozen.SameIdentity(item));
+            if (!sameLeases || entry.WallClockAnchorUtc != anchorUtc || entry.PeriodMs != periodMs)
                 throw new InvalidOperationException(
                     $"FormalBatchSlotImmutableMismatch Run={entry.RunId:N} Slot={entry.SlotOrdinal}");
         }
 
-        private void TrimCompleted(Guid runId, long currentSlot)
+        private void TrimCompleted(Guid runId, long runEpoch, long currentSlot)
         {
             foreach (var pair in _slots.Where(pair =>
                          pair.Value.RunId == runId &&
+                         pair.Value.RunEpoch == runEpoch &&
                          pair.Value.SlotOrdinal < currentSlot - 4L &&
                          pair.Value.Completion.Task.IsCompleted).ToArray())
                 _slots.TryRemove(pair.Key, out _);

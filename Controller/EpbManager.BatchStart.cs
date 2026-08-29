@@ -201,6 +201,8 @@ namespace Controller
             new GlobalHydraulicSlotCoordinator();
         private readonly FormalBatchSlotCoordinator _formalBatchSlots =
             new FormalBatchSlotCoordinator();
+        private readonly ConcurrentDictionary<int, FormalBatchParticipantLease> _formalParticipantLeases =
+            new ConcurrentDictionary<int, FormalBatchParticipantLease>();
         private readonly int _globalFormalSlotAdmissionWindowMs;
         private readonly ConcurrentDictionary<
             GlobalHydraulicSlotKey,
@@ -2947,6 +2949,10 @@ namespace Controller
             Interlocked.Exchange(ref _batchSessionActive, 0);
             Interlocked.Exchange(ref _formalPhaseCommitted, 0);
             _formalBatchSlots.ClearRun(_activeBatchId);
+            foreach (var pair in _formalParticipantLeases.Where(pair =>
+                         pair.Value != null && pair.Value.RunId == _activeBatchId).ToArray())
+                ((ICollection<KeyValuePair<int, FormalBatchParticipantLease>>)_formalParticipantLeases)
+                    .Remove(pair);
             _globalHydraulicSlots.ClearRun(_activeBatchId);
             ClearDaqMechanicalRequalificationFences();
             foreach (var key in _globalHydraulicParticipantSnapshots.Keys
@@ -3057,6 +3063,20 @@ namespace Controller
             // 全局液压槽不得绑定任一通道的暂停令牌；只有整批会话取消才可取消
             // 同槽的双液压建压/资格任务，避免单通道暂停拖垮另一健康压力组。
             var sessionToken = token;
+            // 正式参与者必须在任何一个 Timer 启动前一次性获得精确代次。学习/启动
+            // 基线只维护液压集合，不能产生正式退休事实；后续迟到的旧退休确认也
+            // 只能命中旧 ParticipantGeneration。
+            var formalChannels = groups.Values
+                .Where(list => list != null)
+                .SelectMany(list => list)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            foreach (var channel in formalChannels)
+            {
+                MarkHydraulicParticipant(channel);
+                RegisterFormalParticipantLease(channel);
+            }
             foreach (var kv in groups)
             {
                 var pg = kv.Key;
@@ -3097,8 +3117,7 @@ namespace Controller
                     var runner = GetRunner(ch);
                     PrepareRunnerForNoHeadAndTailCompensation(ch);
 
-                    // 标记为“参与液压判定”：本批次运行中将用于过滤建压锚点的 InFlight 登记
-                    MarkHydraulicParticipant(ch);
+                    var formalParticipantLease = CaptureFormalParticipantLease(ch);
 
                     // 本次启动为该通道刷新“硬停机”取消源
                     var stopCts = RenewStopCts(ch, out var stopToken);
@@ -3145,7 +3164,7 @@ namespace Controller
                             FormalBatchSlotScope formalSlotScope;
                             try
                             {
-                                var slotParticipants = CaptureGlobalFormalParticipants(
+                                var slotParticipantChannels = CaptureGlobalFormalParticipants(
                                         _activeBatchId,
                                         staggerPlan,
                                         phaseSlot)
@@ -3154,10 +3173,11 @@ namespace Controller
                                     .Distinct()
                                     .OrderBy(member => member)
                                     .ToArray();
+                                var slotParticipants = CaptureFormalParticipantLeases(
+                                    slotParticipantChannels);
                                 formalSlotScope = await _formalBatchSlots.EnterAsync(
-                                        _activeBatchId,
+                                        formalParticipantLease,
                                         phaseSlot,
-                                        ch,
                                         slotParticipants,
                                         t0,
                                         PeriodMs,

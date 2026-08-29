@@ -1216,14 +1216,15 @@ namespace AdaptiveControlTests
                             }));
 
                             var takeover = false;
-                            var deadline = DateTime.UtcNow.AddSeconds(8);
+                            var deadline = DateTime.UtcNow.AddSeconds(22);
                             while (DateTime.UtcNow < deadline && !takeover)
                             {
                                 var message = ReadMessage(reader, deadline - DateTime.UtcNow);
                                 if (message == null) break;
                                 takeover = message.Type == WatchdogMessageType.RequestStopAll;
                             }
-                            Assert(takeover, "主进程存活但心跳停止5秒后Sidecar未请求接管");
+                            Assert(takeover,
+                                "无窗口主进程越过15秒启动宽限并连续三次探测失败后Sidecar未请求接管");
                             WaitUntil(() =>
                             {
                                 sidecar.Refresh();
@@ -1253,8 +1254,10 @@ namespace AdaptiveControlTests
                                     File.ReadAllText(eventsPath, Encoding.UTF8).Contains("TakeoverRequested"),
                         TimeSpan.FromSeconds(5));
                     var events = File.ReadAllText(eventsPath, Encoding.UTF8);
-                    Assert(events.Contains("HeartbeatSuspect") && events.Contains("HeartbeatUnresponsive"),
-                        "Sidecar Journal没有完整记录3秒怀疑与5秒接管链");
+                    Assert(events.Contains("HeartbeatSuspect") &&
+                           events.Contains("HeartbeatUnresponsiveConfirmed") &&
+                           events.Contains("HeartbeatUnresponsive"),
+                        "Sidecar Journal没有完整记录心跳怀疑、三次UI探测确认与接管链");
                     Assert(dummy != null && !dummy.HasExited, "撤权后Sidecar仍错误终止了存活主进程");
                 }
                 finally

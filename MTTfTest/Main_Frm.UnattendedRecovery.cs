@@ -120,7 +120,9 @@ namespace MtEmbTest
                     // context.  Ask the Main-owned retention path to close it
                     // safely; it keeps the message pump alive until terminal.
                     if (WatchdogRuntime.CaptureTransportSnapshot()?.Context != null)
-                        RequestWatchdogOwnedExit("WatchdogIdleAttachRejected");
+                        RequestWatchdogOwnedExit(
+                            "WatchdogIdleAttachRejected",
+                            RuntimeShutdownIntent.WatchdogRecoveryExit);
                 }
                 catch { }
                 ProjectLogHub.Write(
@@ -168,7 +170,9 @@ namespace MtEmbTest
                             "独立看门狗",
                             notifyError);
                     }
-                    RequestWatchdogOwnedExit("RecoveryCheckpointRejected");
+                    RequestWatchdogOwnedExit(
+                        "RecoveryCheckpointRejected",
+                        RuntimeShutdownIntent.WatchdogRecoveryExit);
                     return;
                 }
                 recoveryRunId = checkpoint.RunId ?? string.Empty;
@@ -313,13 +317,33 @@ namespace MtEmbTest
                     "独立看门狗",
                     ex);
                 monitor?.PrepareForWatchdogRetryExit();
-                await WatchdogRuntime.NotifyRecoveryAttemptFailedAndAwaitReceiptAsync(
+                var handoff = await WatchdogRuntime.NotifyRecoveryAttemptFailedAndAwaitReceiptAsync(
                     classification.Code,
                     classification.Permanent,
                     "WatchdogRecoveryStartupFailed:" + baseError.Message,
                     ex.ToString(),
                     testConfigSha256).ConfigureAwait(true);
-                RequestWatchdogOwnedExit("RecoveryStartupFailed");
+                if (handoff?.WatchdogOwnsExit == true)
+                {
+                    RequestWatchdogOwnedExit(
+                        "RecoveryStartupFailed:" + handoff.Outcome,
+                        RuntimeShutdownIntent.WatchdogRecoveryExit);
+                }
+                else
+                {
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "恢复失败未取得 Watchdog 权威交接回执；主程序保持安全空闲且不退出。" +
+                        $"Outcome={handoff?.Outcome} Detail={handoff?.Detail}",
+                        "独立看门狗");
+                    ShowMainOperatorMessage(
+                        "恢复失败，但未取得看门狗的权威退出回执。\r\n" +
+                        "程序将保持安全空闲，不会自行退出；请保留日志并人工检查。\r\n" +
+                        (handoff?.Detail ?? "回执不可用"),
+                        "恢复交接未完成",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
             }
         }
 

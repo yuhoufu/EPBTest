@@ -2,9 +2,32 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Controller
 {
+    internal enum EmergencyPowerGroupCompletionStatus
+    {
+        Recovered = 0,
+        FailedSafe = 1,
+        Superseded = 2
+    }
+
+    internal sealed class EmergencyPowerGroupCompletion
+    {
+        internal EmergencyPowerGroupCompletion(
+            EmergencyPowerGroupCompletionStatus status,
+            string reason)
+        {
+            Status = status;
+            Reason = reason ?? string.Empty;
+        }
+
+        internal EmergencyPowerGroupCompletionStatus Status { get; }
+        internal string Reason { get; }
+        internal bool Recovered => Status == EmergencyPowerGroupCompletionStatus.Recovered;
+    }
+
     internal readonly struct EmergencyPowerGroupRegistration
     {
         internal EmergencyPowerGroupRegistration(
@@ -13,7 +36,8 @@ namespace Controller
             DateTime startedUtc,
             bool isFirst,
             int requestCount,
-            bool shouldPublishNonDaqFault)
+            bool shouldPublishNonDaqFault,
+            Task<EmergencyPowerGroupCompletion> completion)
         {
             CorrelationId = correlationId;
             Generation = generation;
@@ -21,6 +45,7 @@ namespace Controller
             IsFirst = isFirst;
             RequestCount = requestCount;
             ShouldPublishNonDaqFault = shouldPublishNonDaqFault;
+            Completion = completion;
         }
 
         internal Guid CorrelationId { get; }
@@ -29,6 +54,8 @@ namespace Controller
         internal bool IsFirst { get; }
         internal int RequestCount { get; }
         internal bool ShouldPublishNonDaqFault { get; }
+        internal Task<EmergencyPowerGroupCompletion> Completion { get; }
+        internal bool IsValid => CorrelationId != Guid.Empty && Completion != null;
     }
 
     /// <summary>
@@ -44,6 +71,9 @@ namespace Controller
             internal DateTime StartedUtc;
             internal int RequestCount;
             internal int NonDaqFaultPublished;
+            internal readonly TaskCompletionSource<EmergencyPowerGroupCompletion> Completion =
+                new TaskCompletionSource<EmergencyPowerGroupCompletion>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         private readonly ConcurrentDictionary<int, Entry> _entries = new();
@@ -81,7 +111,8 @@ namespace Controller
                 active.StartedUtc,
                 isFirst,
                 requestCount,
-                shouldPublishNonDaqFault);
+                shouldPublishNonDaqFault,
+                active.Completion.Task);
         }
 
         internal bool ContainsKey(int groupId)
@@ -91,7 +122,11 @@ namespace Controller
 
         internal bool TryRemove(int groupId)
         {
-            return _entries.TryRemove(groupId, out _);
+            if (!_entries.TryRemove(groupId, out var active)) return false;
+            active.Completion.TrySetResult(new EmergencyPowerGroupCompletion(
+                EmergencyPowerGroupCompletionStatus.Recovered,
+                "EmergencyPowerGroupRecovered"));
+            return true;
         }
 
         internal bool TryRemove(int groupId, Guid correlationId, long generation = 0)
@@ -100,13 +135,34 @@ namespace Controller
                 correlationId == Guid.Empty || active.CorrelationId != correlationId ||
                 (generation > 0 && active.Generation != generation))
                 return false;
-            return ((ICollection<KeyValuePair<int, Entry>>)_entries).Remove(
+            var removed = ((ICollection<KeyValuePair<int, Entry>>)_entries).Remove(
                 new KeyValuePair<int, Entry>(groupId, active));
+            if (removed)
+                active.Completion.TrySetResult(new EmergencyPowerGroupCompletion(
+                    EmergencyPowerGroupCompletionStatus.Recovered,
+                    "EmergencyPowerGroupRecovered"));
+            return removed;
+        }
+
+        internal bool TryFail(int groupId, Guid correlationId, string reason)
+        {
+            if (!_entries.TryGetValue(groupId, out var active) ||
+                correlationId == Guid.Empty || active.CorrelationId != correlationId)
+                return false;
+            return active.Completion.TrySetResult(new EmergencyPowerGroupCompletion(
+                EmergencyPowerGroupCompletionStatus.FailedSafe,
+                reason));
         }
 
         internal void Clear()
         {
-            _entries.Clear();
+            foreach (var pair in _entries)
+            {
+                if (((ICollection<KeyValuePair<int, Entry>>)_entries).Remove(pair))
+                    pair.Value.Completion.TrySetResult(new EmergencyPowerGroupCompletion(
+                        EmergencyPowerGroupCompletionStatus.Superseded,
+                        "EmergencyPowerGroupCleared"));
+            }
         }
     }
 }

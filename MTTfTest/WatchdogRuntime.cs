@@ -13,6 +13,30 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
+    internal enum RecoveryFailureHandoffOutcome
+    {
+        NoActiveSession = 0,
+        ReceiptUnavailable = 1,
+        RelaunchApproved = 2,
+        RelaunchAlreadyPending = 3,
+        CircuitOpen = 4,
+        IdentityConflict = 5,
+        SupersededByTakeover = 6
+    }
+
+    internal sealed class RecoveryFailureHandoffResult
+    {
+        internal RecoveryFailureHandoffOutcome Outcome { get; set; }
+        internal RecoveryFailureReceipt Receipt { get; set; }
+        internal string Detail { get; set; }
+        internal bool WatchdogOwnsExit =>
+            Outcome == RecoveryFailureHandoffOutcome.RelaunchApproved ||
+            Outcome == RecoveryFailureHandoffOutcome.RelaunchAlreadyPending ||
+            Outcome == RecoveryFailureHandoffOutcome.CircuitOpen ||
+            Outcome == RecoveryFailureHandoffOutcome.IdentityConflict ||
+            Outcome == RecoveryFailureHandoffOutcome.SupersededByTakeover;
+    }
+
     internal sealed class WatchdogRecoveryIntent
     {
         public string SessionId { get; set; }
@@ -1880,7 +1904,7 @@ namespace MTEmbTest
                 .GetResult();
         }
 
-        internal static Task<RecoveryFailureReceipt>
+        internal static Task<RecoveryFailureHandoffResult>
             NotifyRecoveryAttemptFailedAndAwaitReceiptAsync(
                 string failureCode,
                 bool permanent,
@@ -1896,7 +1920,7 @@ namespace MTEmbTest
                 contextSha256);
         }
 
-        private static async Task<RecoveryFailureReceipt>
+        private static async Task<RecoveryFailureHandoffResult>
             NotifyRecoveryAttemptFailedCoreAsync(
                 RecoveryFailureReport report,
                 bool permanent,
@@ -1905,7 +1929,12 @@ namespace MTEmbTest
                 string contextSha256)
         {
             var context = CaptureContext();
-            if (context == null) return null;
+            if (context == null)
+                return new RecoveryFailureHandoffResult
+                {
+                    Outcome = RecoveryFailureHandoffOutcome.NoActiveSession,
+                    Detail = "RuntimeTransportSessionMissing"
+                };
             report = RecoveryFailurePolicy.NormalizeReport(report);
             string takeoverCorrelationId;
             string takeoverReason;
@@ -1931,10 +1960,12 @@ namespace MTEmbTest
                     "RecoveryFailureSuperseded",
                     "CorrelationId=" + takeoverCorrelationId +
                     ";Reason=" + (takeoverReason ?? string.Empty));
-                Volatile.Write(ref context.State.SessionClosing, 1);
-                TryMarkSessionClosing(context);
                 FlushClientJournal(context);
-                return null;
+                return new RecoveryFailureHandoffResult
+                {
+                    Outcome = RecoveryFailureHandoffOutcome.SupersededByTakeover,
+                    Detail = "TakeoverCorrelationId=" + takeoverCorrelationId
+                };
             }
             report = RecoveryFailurePolicy.NormalizeReport(report);
             lock (context.State.Gate) context.State.LastFailureReport = report.Clone();
@@ -1974,7 +2005,8 @@ namespace MTEmbTest
                        WatchdogTransportPolicy.RecoveryFailureReceiptDeadlineMs)
                 {
                     if (waiter.Completion.Task.IsCompleted)
-                        return await waiter.Completion.Task.ConfigureAwait(false);
+                        return BuildRecoveryFailureHandoff(
+                            await waiter.Completion.Task.ConfigureAwait(false));
                     if (!ReferenceEquals(CaptureContext(), context))
                         throw new InvalidOperationException(
                             "RecoveryFailureContextReplacedBeforeReceipt");
@@ -2009,18 +2041,59 @@ namespace MTEmbTest
                                 WatchdogTransportPolicy.RecoveryFailureRequestRetryMs))
                         .ConfigureAwait(false);
                     if (ReferenceEquals(completed, waiter.Completion.Task))
-                        return await waiter.Completion.Task.ConfigureAwait(false);
+                        return BuildRecoveryFailureHandoff(
+                            await waiter.Completion.Task.ConfigureAwait(false));
                 }
                 throw new TimeoutException(
                     "Watchdog durable recovery failure receipt timeout.");
             }
+            catch (Exception ex)
+            {
+                RecordClientEvent(
+                    context,
+                    "RecoveryFailureHandoffUnavailable",
+                    ex.GetBaseException().Message);
+                return new RecoveryFailureHandoffResult
+                {
+                    Outcome = RecoveryFailureHandoffOutcome.ReceiptUnavailable,
+                    Detail = ex.GetBaseException().Message
+                };
+            }
             finally
             {
                 context.State.RemoveRecoveryFailureReceipt(waiter);
-                Volatile.Write(ref context.State.SessionClosing, 1);
-                TryMarkSessionClosing(context);
                 FlushClientJournal(context);
             }
+        }
+
+        private static RecoveryFailureHandoffResult BuildRecoveryFailureHandoff(
+            RecoveryFailureReceipt receipt)
+        {
+            var outcome = RecoveryFailureHandoffOutcome.ReceiptUnavailable;
+            switch (receipt?.Disposition)
+            {
+                case RecoveryFailureDispositions.RelaunchApproved:
+                    outcome = RecoveryFailureHandoffOutcome.RelaunchApproved;
+                    break;
+                case RecoveryFailureDispositions.RelaunchAlreadyPending:
+                    outcome = RecoveryFailureHandoffOutcome.RelaunchAlreadyPending;
+                    break;
+                case RecoveryFailureDispositions.CircuitOpen:
+                    outcome = RecoveryFailureHandoffOutcome.CircuitOpen;
+                    break;
+                case RecoveryFailureDispositions.IdentityConflict:
+                    outcome = RecoveryFailureHandoffOutcome.IdentityConflict;
+                    break;
+                case RecoveryFailureDispositions.Superseded:
+                    outcome = RecoveryFailureHandoffOutcome.SupersededByTakeover;
+                    break;
+            }
+            return new RecoveryFailureHandoffResult
+            {
+                Outcome = outcome,
+                Receipt = receipt?.Clone(),
+                Detail = receipt?.DetailCode ?? "RecoveryFailureReceiptMissing"
+            };
         }
 
         private static void ObserveRecoveryFailureReceipt(
@@ -2337,6 +2410,7 @@ namespace MTEmbTest
                 case RuntimeShutdownIntent.ApplicationExit:
                     return WatchdogMessageType.ShutdownExpected;
                 case RuntimeShutdownIntent.WatchdogTakeoverExit:
+                case RuntimeShutdownIntent.WatchdogRecoveryExit:
                     return WatchdogMessageType.WatchdogTakeoverExit;
                 default:
                     return WatchdogMessageType.ApplicationClosing;

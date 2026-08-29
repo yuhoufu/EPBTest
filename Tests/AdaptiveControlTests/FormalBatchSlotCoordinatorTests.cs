@@ -29,6 +29,8 @@ namespace AdaptiveControlTests
                 DuplicateParticipantAdmissionIsRejected, ref passed);
             Run("已确认退休事实关闭迟到创建的旧成员槽",
                 ConfirmedRetirementClosesLateStaleSlot, ref passed);
+            Run("旧代退休确认不能污染正式重入的新参与者",
+                LateRetirementCannotPoisonNewParticipantGeneration, ref passed);
             Run("周期超限策略区分普通连续与硬截止",
                 PeriodOverrunPolicyClassifiesBoundaries, ref passed);
             Run("2倍周期的瞬时OFF不能伪装动作终止",
@@ -283,6 +285,44 @@ namespace AdaptiveControlTests
             }
             catch (InvalidOperationException) { retiredRejected = true; }
             Assert(retiredRejected, "已确认退休通道仍可通过迟到槽重新准入");
+            coordinator.ClearRun(runId);
+        }
+
+        private static void LateRetirementCannotPoisonNewParticipantGeneration()
+        {
+            var coordinator = new FormalBatchSlotCoordinator();
+            var runId = Guid.NewGuid();
+            const long runEpoch = 9;
+            var firstChannel = coordinator.RegisterParticipant(runId, runEpoch, 1);
+            var retiredGeneration = coordinator.RegisterParticipant(runId, runEpoch, 2);
+            Assert(coordinator.RequestRetirement(retiredGeneration, "OldGenerationRetirement"),
+                "旧代退休请求未登记");
+
+            // 正式重入先发布新代次，随后才到达的旧安全栅栏确认必须被拒绝。
+            var rejoinedGeneration = coordinator.RegisterParticipant(runId, runEpoch, 2);
+            coordinator.ConfirmRetirement(retiredGeneration, SafeTerminal(2));
+
+            var anchor = DateTime.UtcNow.AddMilliseconds(-5);
+            var first = coordinator.EnterAsync(
+                    firstChannel,
+                    0,
+                    new[] { firstChannel, rejoinedGeneration },
+                    anchor,
+                    40,
+                    null,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var rejoined = coordinator.EnterAsync(
+                    rejoinedGeneration,
+                    0,
+                    new[] { firstChannel, rejoinedGeneration },
+                    anchor,
+                    40,
+                    null,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            first.Complete(SafeTerminal(1));
+            rejoined.Complete(SafeTerminal(2));
             coordinator.ClearRun(runId);
         }
 

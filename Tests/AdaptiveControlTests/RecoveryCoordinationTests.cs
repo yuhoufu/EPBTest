@@ -27,6 +27,8 @@ namespace AdaptiveControlTests
             Run("TaskCovered且owner投影暂缺时从不可变契约自修复", CoveredTaskRepairsMissingOwnerProjection, ref passed);
             Run("冗余断电矩阵只在DO成功且电源新鲜低电流时放行", RedundantPowerOffProofMatrixIsFailSafe, ref passed);
             Run("电源应急latch旧incident不得清除新generation", EmergencyPowerLatchRemovalIsExact, ref passed);
+            Run("启动OFF晚完成必须与同代组恢复共同终结", StartupOffLateCompletionJoinsGroupRecovery, ref passed);
+            Run("启动OFF恢复硬截止和旧run均保持失败安全", StartupOffJoinFailsClosed, ref passed);
             Run("同进程恢复持续进展越过30秒且仅60秒停滞或300秒总限接管", InProcessRecoveryLeaseUsesMaterialProgress, ref passed);
             Run("已完成未终态恢复任务有界返回且绝不热循环", CompletedWorkerWithoutTerminalReturnsImmediately, ref passed);
             Run("恢复任务清退取消令牌可到达内部等待", RecoveryDrainCancellationIsBounded, ref passed);
@@ -705,10 +707,25 @@ namespace AdaptiveControlTests
             var latch = new EmergencyPowerGroupLatch();
             var firstIncident = Guid.NewGuid();
             var first = latch.Register(4, firstIncident, DateTime.UtcNow);
+            var joined = latch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            var independent = latch.Register(5, Guid.NewGuid(), DateTime.UtcNow);
+            Assert(ReferenceEquals(first.Completion, joined.Completion) &&
+                   !ReferenceEquals(first.Completion, independent.Completion),
+                "同组请求未合并到唯一完成回执，或不同组被错误串行化");
             Assert(!latch.TryRemove(4, Guid.NewGuid(), first.Generation) &&
                    latch.ContainsKey(4) &&
                    latch.TryRemove(4, firstIncident, first.Generation),
                 "错误incident可清除活动电源latch，或精确身份无法释放");
+            Assert(first.Completion.GetAwaiter().GetResult().Recovered,
+                "精确释放未完成同组等待者的恢复回执");
+            Assert(latch.TryFail(
+                       5,
+                       independent.CorrelationId,
+                       "ControlledFailedSafe") &&
+                   !independent.Completion.GetAwaiter().GetResult().Recovered &&
+                   latch.ContainsKey(5),
+                "失败安全结果未唤醒等待者，或错误清除了安全latch");
+            latch.Clear();
             var secondIncident = Guid.NewGuid();
             var second = latch.Register(4, secondIncident, DateTime.UtcNow);
             Assert(second.Generation > first.Generation &&
@@ -716,6 +733,74 @@ namespace AdaptiveControlTests
                    latch.ContainsKey(4) &&
                    latch.TryRemove(4, secondIncident, second.Generation),
                 "旧incident/generation清除了新事务建立的电源latch");
+        }
+
+        private static void StartupOffLateCompletionJoinsGroupRecovery()
+        {
+            var exactOff = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var group = new TaskCompletionSource<EmergencyPowerGroupCompletion>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var joined = StartupPositioningOffRecoveryJoin.WaitAsync(
+                exactOff.Task,
+                group.Task,
+                1000,
+                () => true,
+                CancellationToken.None);
+
+            group.SetResult(new EmergencyPowerGroupCompletion(
+                EmergencyPowerGroupCompletionStatus.Recovered,
+                "ControlledRecovered"));
+            Assert(!joined.IsCompleted,
+                "组恢复先完成时未继续等待原始OFF命令终结");
+            exactOff.SetResult(true);
+            var result = joined.GetAwaiter().GetResult();
+            Assert(result.Recovered && exactOff.Task.IsCompleted,
+                "OFF晚成功与同代组恢复没有共同形成可重试回执");
+        }
+
+        private static void StartupOffJoinFailsClosed()
+        {
+            var timeoutOff = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var recovered = Task.FromResult(new EmergencyPowerGroupCompletion(
+                EmergencyPowerGroupCompletionStatus.Recovered,
+                "ControlledRecovered"));
+            var timedOut = false;
+            try
+            {
+                StartupPositioningOffRecoveryJoin.WaitAsync(
+                        timeoutOff.Task,
+                        recovered,
+                        20,
+                        () => true,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (TimeoutException)
+            {
+                timedOut = true;
+            }
+            Assert(timedOut, "原始OFF未终结时恢复硬截止未失败关闭");
+
+            var superseded = false;
+            try
+            {
+                StartupPositioningOffRecoveryJoin.WaitAsync(
+                        Task.CompletedTask,
+                        recovered,
+                        1000,
+                        () => false,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                superseded = true;
+            }
+            Assert(superseded, "旧run/epoch恢复错误获得重新上电许可");
         }
 
         private static void InProcessRecoveryLeaseUsesMaterialProgress()

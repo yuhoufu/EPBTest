@@ -6,11 +6,149 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
+using IO.NI;
 
 namespace Controller
 {
+    internal enum StartupPositioningOffState
+    {
+        CompletedWithinDeadline = 0,
+        CompletedLateAfterGroupIsolation = 1,
+        FailedCommandRecoveredByGroup = 2,
+        AdmissionRejectedRecoveredByGroup = 3
+    }
+
+    internal sealed class StartupPositioningOffReceipt
+    {
+        internal StartupPositioningOffState State { get; set; }
+        internal Guid CommandId { get; set; }
+        internal HighPriorityDoTelemetry Telemetry { get; set; }
+        internal Guid GroupCorrelationId { get; set; }
+    }
+
+    internal static class StartupPositioningOffRecoveryJoin
+    {
+        internal static async Task<EmergencyPowerGroupCompletion> WaitAsync(
+            Task exactOffCompletion,
+            Task<EmergencyPowerGroupCompletion> groupCompletion,
+            int hardDeadlineMs,
+            Func<bool> isRunCurrent,
+            CancellationToken token)
+        {
+            if (exactOffCompletion == null)
+                throw new ArgumentNullException(nameof(exactOffCompletion));
+            if (groupCompletion == null)
+                throw new ArgumentNullException(nameof(groupCompletion));
+            if (isRunCurrent == null)
+                throw new ArgumentNullException(nameof(isRunCurrent));
+
+            var joined = Task.WhenAll(exactOffCompletion, groupCompletion);
+            var deadline = Task.Delay(Math.Max(1, hardDeadlineMs), token);
+            var completed = await Task.WhenAny(joined, deadline).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(completed, joined))
+                throw new TimeoutException("StartupPositioningOffRecoveryHardDeadline");
+            await joined.ConfigureAwait(false);
+            if (!isRunCurrent())
+                throw new OperationCanceledException(
+                    "StartupPositioningOffRecoverySuperseded");
+            return await groupCompletion.ConfigureAwait(false);
+        }
+    }
+
     public sealed partial class EpbManager
     {
+        private async Task<StartupPositioningOffReceipt>
+            EnsureStartupPositioningOutputOffAsync(
+                int channel,
+                Guid runId,
+                long runEpoch,
+                string reason,
+                CancellationToken token)
+        {
+            var completion = new TaskCompletionSource<HighPriorityDoTelemetry>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            Guid commandId;
+            var accepted = _do.TrySubmitEpbOffHighPriority(
+                channel,
+                telemetry => completion.TrySetResult(telemetry),
+                out commandId);
+            if (accepted)
+            {
+                var immediate = await Task.WhenAny(
+                        completion.Task,
+                        Task.Delay(100, token))
+                    .ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                if (ReferenceEquals(immediate, completion.Task))
+                {
+                    var telemetry = await completion.Task.ConfigureAwait(false);
+                    if (telemetry?.Result == true)
+                    {
+                        SetChannelEnergized(channel, false);
+                        return new StartupPositioningOffReceipt
+                        {
+                            State = StartupPositioningOffState.CompletedWithinDeadline,
+                            CommandId = commandId,
+                            Telemetry = telemetry
+                        };
+                    }
+                }
+            }
+
+            var registration = RequestElectricalGroupEmergencyShutdown(
+                channel,
+                reason + (accepted
+                    ? " AcceptedOffPendingOrFailed"
+                    : " OffAdmissionRejected"));
+            if (!registration.IsValid)
+                throw new SoftwareSelfHealingRetryException(
+                    $"EPB[{channel}] 无法建立电源组失效安全恢复事务。Reason={reason}");
+
+            Task exactOffCompletion = accepted
+                ? completion.Task
+                : Task.CompletedTask;
+            EmergencyPowerGroupCompletion groupCompletion;
+            try
+            {
+                groupCompletion = await StartupPositioningOffRecoveryJoin.WaitAsync(
+                        exactOffCompletion,
+                        registration.Completion,
+                        RecoveryGroupHardDeadlineMs,
+                        () => _activeBatchId == runId &&
+                              Interlocked.Read(ref _runEpoch) == runEpoch,
+                        token)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                throw new SoftwareSelfHealingRetryException(
+                    $"EPB[{channel}] 电源组恢复超过{RecoveryGroupHardDeadlineMs}ms。" +
+                    $"CorrelationId={registration.CorrelationId:N}");
+            }
+            if (groupCompletion?.Recovered != true)
+                throw new SoftwareSelfHealingRetryException(
+                    $"EPB[{channel}] 电源组恢复未获得重新上电许可。" +
+                    $"Status={groupCompletion?.Status} Reason={groupCompletion?.Reason}");
+
+            var finalTelemetry = accepted
+                ? await completion.Task.ConfigureAwait(false)
+                : null;
+            if (finalTelemetry?.Result == true)
+                SetChannelEnergized(channel, false);
+            return new StartupPositioningOffReceipt
+            {
+                State = !accepted
+                    ? StartupPositioningOffState.AdmissionRejectedRecoveredByGroup
+                    : finalTelemetry?.Result == true
+                        ? StartupPositioningOffState.CompletedLateAfterGroupIsolation
+                        : StartupPositioningOffState.FailedCommandRecoveredByGroup,
+                CommandId = commandId,
+                Telemetry = finalTelemetry,
+                GroupCorrelationId = registration.CorrelationId
+            };
+        }
+
         /// <summary>
         /// A RetryReady transition must preserve these resources. If a legacy
         /// terminal path revoked them, repair only while the same startup
@@ -99,15 +237,16 @@ namespace Controller
             string offReason)
         {
             var runEpoch = Interlocked.Read(ref _runEpoch);
+            await EnsureStartupPositioningOutputOffAsync(
+                    channel,
+                    runId,
+                    runEpoch,
+                    offReason,
+                    token)
+                .ConfigureAwait(false);
             if (_channelRuntimeStateStore.Get(channel)?.State ==
                 ChannelRuntimeState.Recovering)
             {
-                if (!TryEnsureSoftwareRecoveryOutputOff(channel, offReason))
-                {
-                    RequestElectricalGroupEmergencyShutdown(channel, offReason);
-                    throw new SoftwareSelfHealingRetryException(
-                        $"EPB[{channel}] 启动定位断电尚未确认。");
-                }
                 await Task.Delay(delayMs, token).ConfigureAwait(false);
                 return;
             }
@@ -118,12 +257,6 @@ namespace Controller
             {
                 return async () =>
                 {
-                    if (!TryEnsureSoftwareRecoveryOutputOff(channel, offReason))
-                    {
-                        RequestElectricalGroupEmergencyShutdown(channel, offReason);
-                        throw new SoftwareSelfHealingRetryException(
-                            $"EPB[{channel}] 启动定位断电尚未确认。");
-                    }
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
                 };
             }

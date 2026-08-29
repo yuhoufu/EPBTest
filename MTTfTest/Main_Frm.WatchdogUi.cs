@@ -104,7 +104,7 @@ namespace MtEmbTest
         private readonly object _watchdogExitGate = new object();
         private int _watchdogOwnedExitRequested;
         private int _watchdogAllowClose;
-        private int _watchdogTakeoverExitRequested;
+        private int _watchdogExitIntent = (int)RuntimeShutdownIntent.ApplicationExit;
         private Task _watchdogCloseTask;
         private Task<RuntimeShutdownReceipt> _watchdogShutdownTask;
 
@@ -164,24 +164,36 @@ namespace MtEmbTest
             var reason = decision.HasActiveEvidence
                 ? decision.Reason
                 : "MdiChildrenPendingClose";
-            RequestWatchdogOwnedExit("MainFormClosing:" + reason);
+            RequestWatchdogOwnedExit(
+                "MainFormClosing:" + reason,
+                RuntimeShutdownIntent.ApplicationExit);
             return true;
         }
 
-        internal void RequestWatchdogOwnedExit(string reason)
+        internal void RequestWatchdogOwnedExit(
+            string reason,
+            RuntimeShutdownIntent shutdownIntent)
         {
             if (IsDisposed || Disposing) return;
             if (InvokeRequired)
             {
-                try { BeginInvoke((Action)(() => RequestWatchdogOwnedExit(reason))); }
+                try
+                {
+                    BeginInvoke((Action)(() => RequestWatchdogOwnedExit(
+                        reason,
+                        shutdownIntent)));
+                }
                 catch { }
                 return;
             }
             Interlocked.Exchange(ref _watchdogOwnedExitRequested, 1);
-            if ((reason ?? string.Empty).StartsWith(
-                    "WatchdogStopAllCompleted:",
-                    StringComparison.Ordinal))
-                Interlocked.Exchange(ref _watchdogTakeoverExitRequested, 1);
+            Interlocked.Exchange(ref _watchdogExitIntent, (int)shutdownIntent);
+            if (shutdownIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
+                shutdownIntent == RuntimeShutdownIntent.WatchdogRecoveryExit)
+            {
+                foreach (var monitor in MdiChildren.OfType<FrmEpbMainMonitor>())
+                    monitor.PrepareForWatchdogRetryExit();
+            }
             BeginWatchdogClose(reason ?? "WatchdogOwnedExit");
         }
 
@@ -342,14 +354,19 @@ namespace MtEmbTest
 
             // Keep the sidecar and its authenticated PID identity alive while
             // child windows execute their bounded safety/DAQ cleanup.  Only at
-            // the final main-process boundary publish ShutdownExpected; its
-            // five-second observer therefore starts immediately before Close.
+            // the final main-process boundary publish the explicit typed exit
+            // intent. Operator exit uses ShutdownExpected; watchdog-owned
+            // recovery/takeover exits keep the sidecar authority alive.
             RuntimeShutdownReceipt receipt;
-            if (Volatile.Read(ref _watchdogTakeoverExitRequested) != 0)
+            var exitIntent = (RuntimeShutdownIntent)Volatile.Read(
+                ref _watchdogExitIntent);
+            if (exitIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
+                exitIntent == RuntimeShutdownIntent.WatchdogRecoveryExit)
             {
-                var takeoverReceipt =
-                    await ShutdownWatchdogForTakeoverExitAndReleaseUiAsync(reason);
-                receipt = takeoverReceipt?.ShutdownReceipt;
+                receipt = await GetOrCreateWatchdogShutdownTask(
+                        reason,
+                        exitIntent)
+                    .ConfigureAwait(true);
             }
             else
             {

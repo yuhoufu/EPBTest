@@ -20,7 +20,8 @@ namespace MTEmbTest
     {
         SessionClose = 0,
         ApplicationExit = 1,
-        WatchdogTakeoverExit = 2
+        WatchdogTakeoverExit = 2,
+        WatchdogRecoveryExit = 3
     }
 
     /// <summary>

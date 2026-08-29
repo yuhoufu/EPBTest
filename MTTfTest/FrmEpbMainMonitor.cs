@@ -2982,11 +2982,19 @@ namespace MTEmbTest
             if (!IsDisposed && !Disposing) Close();
         }
 
+        internal static StopSource ResolveMonitorCloseStopSource(bool watchdogOwnsExit)
+        {
+            return watchdogOwnsExit
+                ? StopSource.SystemFault
+                : StopSource.ApplicationClosing;
+        }
+
         private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseAsync(
             bool closeAfterPreparation)
         {
+                var watchdogOwnsExit = Volatile.Read(ref _watchdogTakeoverExit) != 0;
                 var wasExplicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0 ||
-                                           Volatile.Read(ref _watchdogTakeoverExit) != 0 ||
+                                           watchdogOwnsExit ||
                                            !(_epb?.IsBatchSessionActive ?? false);
                 StopSafetyResult safety;
                 var stopSessionTask = _stopSessionReceipt.CaptureTask();
@@ -3031,8 +3039,14 @@ namespace MTEmbTest
                             safety = await _epb.StopAllAsync(
                                 new StopContext
                                 {
-                                    Source = StopSource.ApplicationClosing,
-                                    Reason = "主窗体关闭",
+                                    // Watchdog takeover already persisted the restart handoff.
+                                    // Keep this final close in the SystemFault transaction so
+                                    // ApplicationClosing cannot revoke the armed checkpoint
+                                    // between WatchdogTakeoverExit and the replacement process.
+                                    Source = ResolveMonitorCloseStopSource(watchdogOwnsExit),
+                                    Reason = watchdogOwnsExit
+                                        ? "Watchdog 接管后的主窗体关闭收口"
+                                        : "主窗体关闭",
                                     Initiator = nameof(FrmEpbMainMonitor_FormClosing),
                                     CorrelationId = Guid.NewGuid().ToString("N"),
                                     RequestedUtc = DateTime.UtcNow

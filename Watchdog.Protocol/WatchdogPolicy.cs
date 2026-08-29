@@ -15,6 +15,14 @@ namespace MTTFTest.Watchdog.Protocol
         public const int SendGateWaitMs = 100;
         public const int SendWriteTimeoutMs = 500;
         public const int ReconnectMaxAttempts = 8;
+        public const int HeartbeatSuspectMs = 3000;
+        public const int HeartbeatTimeoutMs = 5000;
+        public const int UiProbeTimeoutMs = 500;
+        public const int ClientAckRetireJitterMs = 250;
+        // Host 在 5 秒边界开始做 500ms UI 探针。Client 必须晚于该判定窗口
+        // 才退休连接，否则双方同时拆管道会制造可避免的重连风暴。
+        public const int ClientHeartbeatAckRetireMs =
+            HeartbeatTimeoutMs + UiProbeTimeoutMs + ClientAckRetireJitterMs;
 
         // Keep the transport timing contract in one assembly.  These names
         // are deliberately descriptive rather than scattered literals in the

@@ -2027,6 +2027,10 @@ namespace MTTFTest.Watchdog.Client
                 reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, true);
                 writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
                 lifetime = new CancellationTokenSource();
+                // 令牌必须由这一代连接在 CTS 退休前冻结。异步 lambda 若在
+                // CloseTransportOnly 已 Dispose CTS 后才求值 lifetime.Token，
+                // 会产生 ObjectDisposedException 并成为未观察异常。
+                var lifetimeToken = lifetime.Token;
                 var attached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 lock (_gate)
                 {
@@ -2076,7 +2080,7 @@ namespace MTTFTest.Watchdog.Client
                 }
 
                 readerTask = Task.Run(() => ReaderLoopAsync(
-                    lifetime.Token,
+                    lifetimeToken,
                     reader,
                     sessionId,
                     connectionGeneration,
@@ -2183,7 +2187,7 @@ namespace MTTFTest.Watchdog.Client
                         WatchdogConnectFailureKind.TransportFailure,
                         "Attached 后首个Watchdog心跳发送失败。");
                 heartbeatTask = Task.Run(() => HeartbeatLoopAsync(
-                    lifetime.Token,
+                    lifetimeToken,
                     connectionGeneration,
                     sessionLease,
                     connectionIdentity));
@@ -2203,7 +2207,7 @@ namespace MTTFTest.Watchdog.Client
                 CleanupConnectionFailure(connectionGeneration, sessionLease, connectionIdentity, ex.Kind);
                 if (!connectionTransferred)
                 {
-                    TryCancel(lifetime);
+                    CancelNoDispose(lifetime);
                     TryDispose(reader);
                     TryDispose(writer);
                     TryDispose(pipe);
@@ -2211,6 +2215,7 @@ namespace MTTFTest.Watchdog.Client
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(pipeConnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
+                    TryDispose(lifetime);
                 }
                 else
                 {
@@ -2229,7 +2234,7 @@ namespace MTTFTest.Watchdog.Client
                 CleanupConnectionFailure(connectionGeneration, sessionLease, connectionIdentity, WatchdogConnectFailureKind.Cancelled);
                 if (!connectionTransferred)
                 {
-                    TryCancel(lifetime);
+                    CancelNoDispose(lifetime);
                     TryDispose(reader);
                     TryDispose(writer);
                     TryDispose(pipe);
@@ -2237,6 +2242,7 @@ namespace MTTFTest.Watchdog.Client
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(pipeConnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
+                    TryDispose(lifetime);
                 }
                 else
                 {
@@ -2257,7 +2263,7 @@ namespace MTTFTest.Watchdog.Client
                 CleanupConnectionFailure(connectionGeneration, sessionLease, connectionIdentity, kind);
                 if (!connectionTransferred)
                 {
-                    TryCancel(lifetime);
+                    CancelNoDispose(lifetime);
                     TryDispose(reader);
                     TryDispose(writer);
                     TryDispose(pipe);
@@ -2265,6 +2271,7 @@ namespace MTTFTest.Watchdog.Client
                     WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(pipeConnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
+                    TryDispose(lifetime);
                 }
                 else
                 {
@@ -3604,7 +3611,8 @@ namespace MTTFTest.Watchdog.Client
                         break;
                     var ackTicks = Interlocked.Read(ref _lastHeartbeatAckUtcTicks);
                     var age = DateTime.UtcNow - new DateTime(ackTicks, DateTimeKind.Utc);
-                    if (age < TimeSpan.FromSeconds(3)) continue;
+                    if (age.TotalMilliseconds < WatchdogTransportPolicy.ClientHeartbeatAckRetireMs)
+                        continue;
                     var authorityAlive = IsAuthorityAlive();
                     if (!IsCurrentMonitorWorker(
                             monitorGeneration,
@@ -4143,14 +4151,15 @@ namespace MTTFTest.Watchdog.Client
                 _attachedConnectionGeneration = 0;
             }
             sendOwner?.StopAccepting(SendDisposition.ScopeStale);
-            TryCancel(lifetime);
+            CancelNoDispose(lifetime);
+            TryDispose(pipe);
             TryDispose(reader);
             TryDispose(writer);
-            TryDispose(pipe);
             if (!fromSendWorker)
-                StopAndJoinSendOwner(sendOwner, 250);
-            WaitTaskBounded(readerTask, 250);
-            WaitTaskBounded(heartbeatTask, 250);
+                StopAndJoinSendOwner(sendOwner, WatchdogTransportPolicy.ConnectFailureJoin1000);
+            WaitTaskBounded(readerTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
+            WaitTaskBounded(heartbeatTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
+            TryDispose(lifetime);
             return true;
         }
 

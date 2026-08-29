@@ -31,6 +31,7 @@ namespace AdaptiveControlTests
                 RuntimeDependencyClosureIsComplete,
                 WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
                 ApplicationExitUsesDedicatedShutdownExpectedMessage,
+                WatchdogOwnedFinalClosePreservesRecoveryCheckpoint,
                 WinFormsTargetPostsOnStaMessagePump,
                 AcceptedPostSurvivesDispose,
                 BeginInvokeFaultIsReturned,
@@ -137,9 +138,32 @@ namespace AdaptiveControlTests
                        RuntimeShutdownIntent.WatchdogTakeoverExit) ==
                    WatchdogMessageType.WatchdogTakeoverExit,
                 "Watchdog接管退出仍被错误归类为人工ShutdownExpected");
+            Assert(WatchdogRuntime.SelectShutdownMessageTypeForRetention(
+                       RuntimeShutdownIntent.WatchdogRecoveryExit) ==
+                   WatchdogMessageType.WatchdogTakeoverExit,
+                "Watchdog恢复退出仍被错误归类为人工ShutdownExpected");
             Assert(!WatchdogLifecyclePolicy.IsTerminalMessage(
                        WatchdogMessageType.WatchdogTakeoverExit),
                 "Watchdog接管退出错误撤销了仍待消费的自动恢复许可");
+            Assert(new RecoveryFailureHandoffResult
+                   {
+                       Outcome = RecoveryFailureHandoffOutcome.CircuitOpen
+                   }.WatchdogOwnsExit &&
+                   !new RecoveryFailureHandoffResult
+                   {
+                       Outcome = RecoveryFailureHandoffOutcome.ReceiptUnavailable
+                   }.WatchdogOwnsExit,
+                "恢复交接回执不可用时仍允许主程序自杀式退出");
+        }
+
+        private static void WatchdogOwnedFinalClosePreservesRecoveryCheckpoint()
+        {
+            Assert(FrmEpbMainMonitor.ResolveMonitorCloseStopSource(true) ==
+                   StopSource.SystemFault,
+                "Watchdog接管后的窗体收口仍会以ApplicationClosing撤销恢复检查点");
+            Assert(FrmEpbMainMonitor.ResolveMonitorCloseStopSource(false) ==
+                   StopSource.ApplicationClosing,
+                "普通人工关闭被错误伪装成Watchdog系统故障接管");
         }
 
         private static void WinFormsTargetPostsOnStaMessagePump()
@@ -607,7 +631,9 @@ namespace AdaptiveControlTests
                 session.HandleStopEnvelopeAsync(envelope, port)
                     .GetAwaiter().GetResult();
                 Assert(port.PrepareCalls == 1 && port.NotifyCalls == 1 &&
+                       port.HandoffCalls == 1 &&
                        port.ExitCalls == 1 &&
+                       port.LastExitIntent == RuntimeShutdownIntent.WatchdogTakeoverExit &&
                        port.LastContext.CorrelationId == envelope.CorrelationId,
                     "Production stop handler did not preserve correlation or terminal exit ordering.");
 
@@ -629,6 +655,27 @@ namespace AdaptiveControlTests
                         StringComparison.Ordinal) >= 0,
                         "Faulting production stop port changed the original failure.");
                 }
+
+                var handoffRejected = new ControlledStopSafetyPort
+                {
+                    Result = CreateCompletedStopResult(),
+                    HandoffPrepared = false
+                };
+                var rejected = false;
+                try
+                {
+                    session.HandleStopEnvelopeAsync(envelope, handoffRejected)
+                        .GetAwaiter().GetResult();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    rejected = ex.Message.IndexOf(
+                        "接管检查点未完成",
+                        StringComparison.Ordinal) >= 0;
+                }
+                Assert(rejected && handoffRejected.PrepareCalls == 1 &&
+                       handoffRejected.NotifyCalls == 1 && handoffRejected.ExitCalls == 0,
+                    "接管检查点回读失败时未完成安全停止，或仍自杀式退出。");
                 Assert(fault.NotifyCalls == 0 && fault.ExitCalls == 0,
                     "Faulting stop handler published completion/exit despite safety failure.");
                 binding.HandlerLease.Dispose();
@@ -1375,12 +1422,29 @@ namespace AdaptiveControlTests
         {
             internal StopSafetyResult Result { get; set; }
             internal bool ThrowOnPrepare { get; set; }
+            internal bool HandoffPrepared { get; set; } = true;
+            internal int HandoffCalls;
             internal int PrepareCalls;
             internal int NotifyCalls;
             internal int ExitCalls;
             internal StopContext LastContext { get; private set; }
+            internal RuntimeShutdownIntent LastExitIntent { get; private set; }
 
-            public Task<StopSafetyResult> PrepareForFreshRestartAsync(
+            public WatchdogTakeoverHandoffReceipt PrepareWatchdogTakeoverHandoff(
+                string sessionId,
+                string correlationId)
+            {
+                Interlocked.Increment(ref HandoffCalls);
+                return new WatchdogTakeoverHandoffReceipt
+                {
+                    Prepared = HandoffPrepared,
+                    SessionId = sessionId,
+                    CorrelationId = correlationId,
+                    Error = HandoffPrepared ? string.Empty : "ControlledHandoffRejected"
+                };
+            }
+
+            public Task<StopSafetyResult> PrepareForWatchdogTakeoverAsync(
                 StopContext context)
             {
                 Interlocked.Increment(ref PrepareCalls);
@@ -1396,8 +1460,11 @@ namespace AdaptiveControlTests
                 Interlocked.Increment(ref NotifyCalls);
             }
 
-            public void RequestWatchdogOwnedExit(string reason)
+            public void RequestWatchdogOwnedExit(
+                string reason,
+                RuntimeShutdownIntent shutdownIntent)
             {
+                LastExitIntent = shutdownIntent;
                 Interlocked.Increment(ref ExitCalls);
             }
         }

@@ -26,6 +26,16 @@ namespace MTEmbTest
         public long ParentStartUtcTicks { get; set; }
     }
 
+    internal sealed class WatchdogTakeoverHandoffReceipt
+    {
+        internal bool Prepared { get; set; }
+        internal string SessionId { get; set; }
+        internal string RunId { get; set; }
+        internal string CorrelationId { get; set; }
+        internal long Revision { get; set; }
+        internal string Error { get; set; }
+    }
+
     internal sealed class UnattendedRunCheckpoint
     {
         public int SchemaVersion { get; set; } = 1;
@@ -219,6 +229,71 @@ namespace MTEmbTest
                 checkpoint.LastReason = "WatchdogSessionAttached";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 SaveUnsafe(checkpoint);
+            }
+        }
+
+        /// <summary>
+        /// 在任何破坏性清场之前持久化 Watchdog 接管所有权。只有回读仍为同一
+        /// Session/Run 且 Armed+RestartPending 的记录才算准备完成。
+        /// </summary>
+        internal static WatchdogTakeoverHandoffReceipt PrepareWatchdogTakeoverHandoff(
+            string sessionId,
+            string correlationId)
+        {
+            var receipt = new WatchdogTakeoverHandoffReceipt
+            {
+                SessionId = (sessionId ?? string.Empty).Trim(),
+                CorrelationId = (correlationId ?? string.Empty).Trim(),
+                Error = string.Empty
+            };
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null || !checkpoint.Armed)
+                {
+                    receipt.Error = "CheckpointNotArmed";
+                    return receipt;
+                }
+                if (string.IsNullOrWhiteSpace(receipt.SessionId) ||
+                    !string.Equals(
+                        checkpoint.WatchdogSessionId,
+                        receipt.SessionId,
+                        StringComparison.Ordinal))
+                {
+                    receipt.Error = "WatchdogSessionMismatch";
+                    return receipt;
+                }
+                if (!Guid.TryParse(checkpoint.RunId, out var runId) || runId == Guid.Empty)
+                {
+                    receipt.Error = "CheckpointRunIdMissing";
+                    return receipt;
+                }
+
+                checkpoint.RestartPending = true;
+                checkpoint.InProcessRecoveryPending = false;
+                checkpoint.RecoveryNonce = string.Empty;
+                checkpoint.ActiveFaultCorrelationId = receipt.CorrelationId;
+                checkpoint.LastReason = "WatchdogTakeoverHandoffPrepared";
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(checkpoint);
+
+                var persisted = LoadUnsafe();
+                if (persisted == null || !persisted.Armed || !persisted.RestartPending ||
+                    !string.Equals(
+                        persisted.WatchdogSessionId,
+                        receipt.SessionId,
+                        StringComparison.Ordinal) ||
+                    !EpbManager.AreSameNonEmptyRunIds(persisted.RunId, checkpoint.RunId) ||
+                    persisted.Revision < checkpoint.Revision)
+                {
+                    receipt.Error = "CheckpointDurableReadbackMismatch";
+                    return receipt;
+                }
+
+                receipt.Prepared = true;
+                receipt.RunId = persisted.RunId;
+                receipt.Revision = persisted.Revision;
+                return receipt;
             }
         }
 

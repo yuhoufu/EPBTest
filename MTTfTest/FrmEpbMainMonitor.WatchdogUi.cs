@@ -132,10 +132,24 @@ namespace MTEmbTest
                 .ConfigureAwait(true);
         }
 
-        Task<StopSafetyResult> IWinFormsWatchdogStopSafetyPort.PrepareForFreshRestartAsync(
+        WatchdogTakeoverHandoffReceipt
+            IWinFormsWatchdogStopSafetyPort.PrepareWatchdogTakeoverHandoff(
+                string sessionId,
+                string correlationId)
+        {
+            var receipt = UnattendedRunCheckpointStore.PrepareWatchdogTakeoverHandoff(
+                sessionId,
+                correlationId);
+            if (receipt.Prepared) PrepareForWatchdogRetryExit();
+            return receipt;
+        }
+
+        Task<StopSafetyResult> IWinFormsWatchdogStopSafetyPort.PrepareForWatchdogTakeoverAsync(
             StopContext context)
         {
-            return _epb.PrepareForFreshRestartAsync(context);
+            // Watchdog 已拥有后续拉起；这里只执行真实安全边界，禁止再进入会
+            // 清理恢复身份的同进程 FreshRestart 事务。
+            return _epb.StopAllAsync(context, CancellationToken.None);
         }
 
         void IWinFormsWatchdogStopSafetyPort.NotifyStopCompleted(
@@ -145,9 +159,12 @@ namespace MTEmbTest
         }
 
         void IWinFormsWatchdogStopSafetyPort.RequestWatchdogOwnedExit(
-            string reason)
+            string reason,
+            RuntimeShutdownIntent shutdownIntent)
         {
-            (MdiParent as Main_Frm)?.RequestWatchdogOwnedExit(reason);
+            (MdiParent as Main_Frm)?.RequestWatchdogOwnedExit(
+                reason,
+                shutdownIntent);
         }
     }
 }

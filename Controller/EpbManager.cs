@@ -1879,6 +1879,7 @@ namespace Controller
                 _firstEligibleFormalSlotByChannel[channel] = Math.Max(0, firstEligibleSlot);
                 _hydraulicParticipants[channel] = 0;
             }
+            RegisterFormalParticipantLease(channel);
         }
 
         /// <summary>
@@ -1896,17 +1897,14 @@ namespace Controller
         /// </remarks>
         private void UnmarkHydraulicParticipant(int channel)
         {
-            var runId = _activeBatchId;
-            var runEpoch = Interlocked.Read(ref _runEpoch);
+            _formalParticipantLeases.TryGetValue(channel, out var formalLease);
             lock (GetHydraulicParticipantGate(channel))
             {
                 _hydraulicParticipants.TryRemove(channel, out _);
                 _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
             }
             RequestFormalParticipantRetirement(
-                runId,
-                runEpoch,
-                channel,
+                formalLease,
                 "HydraulicParticipantRemoved");
         }
 
@@ -1932,6 +1930,7 @@ namespace Controller
             string reason,
             bool logRejected = true)
         {
+            FormalBatchParticipantLease formalLease = null;
             lock (GetHydraulicParticipantGate(channel))
             {
                 var participantExists = _hydraulicParticipants.ContainsKey(channel);
@@ -1952,45 +1951,78 @@ namespace Controller
 
                 _hydraulicParticipants.TryRemove(channel, out _);
                 _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
+                _formalParticipantLeases.TryGetValue(channel, out formalLease);
                 RequestFormalParticipantRetirement(
-                    _activeBatchId,
-                    Interlocked.Read(ref _runEpoch),
-                    channel,
+                    formalLease,
                     reason);
                 return true;
             }
         }
 
+        private FormalBatchParticipantLease RegisterFormalParticipantLease(int channel)
+        {
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            if (runId == Guid.Empty || runEpoch <= 0)
+                throw new InvalidOperationException(
+                    $"FormalParticipantRegistrationRejected EPB={channel} Run={runId:N} Epoch={runEpoch}");
+            var lease = _formalBatchSlots.RegisterParticipant(runId, runEpoch, channel);
+            _formalParticipantLeases[channel] = lease;
+            return lease;
+        }
+
+        private FormalBatchParticipantLease CaptureFormalParticipantLease(int channel)
+        {
+            if (!_formalParticipantLeases.TryGetValue(channel, out var lease) ||
+                lease == null || lease.RunId != _activeBatchId ||
+                lease.RunEpoch != Interlocked.Read(ref _runEpoch))
+                throw new InvalidOperationException(
+                    $"FormalParticipantLeaseMissing EPB={channel} Run={_activeBatchId:N} " +
+                    $"Epoch={Interlocked.Read(ref _runEpoch)}");
+            return lease;
+        }
+
+        private FormalBatchParticipantLease[] CaptureFormalParticipantLeases(
+            IEnumerable<int> channels)
+        {
+            return (channels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .Select(CaptureFormalParticipantLease)
+                .ToArray();
+        }
+
         private void RequestFormalParticipantRetirement(
-            Guid runId,
-            long runEpoch,
-            int channel,
+            FormalBatchParticipantLease lease,
             string reason)
         {
-            if (runId == Guid.Empty || runEpoch <= 0) return;
-            if (!_formalBatchSlots.RequestRetirement(runId, channel, reason)) return;
+            if (lease == null) return;
+            if (!_formalBatchSlots.RequestRetirement(lease, reason)) return;
             ObserveSafetyTask(
                 CompleteFormalParticipantRetirementFenceAsync(
-                    runId,
-                    runEpoch,
-                    channel,
+                    lease,
                     reason),
                 "FormalParticipantRetirementFence",
-                channel);
+                lease.Channel);
         }
 
         private async Task CompleteFormalParticipantRetirementFenceAsync(
-            Guid runId,
-            long runEpoch,
-            int channel,
+            FormalBatchParticipantLease participantLease,
             string reason)
         {
+            if (participantLease == null) return;
+            var runId = participantLease.RunId;
+            var runEpoch = participantLease.RunEpoch;
+            var channel = participantLease.Channel;
             var requestedTimeoutMs = Math.Max(1L, PeriodMs) * 2L + 5000L;
             var timeoutMs = (int)Math.Max(5000L, Math.Min(60000L, requestedTimeoutMs));
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
             while (DateTime.UtcNow < deadline)
             {
                 if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch)
+                    return;
+                if (!_formalParticipantLeases.TryGetValue(channel, out var currentLease) ||
+                    !participantLease.SameIdentity(currentLease))
                     return;
 
                 var attemptClosed = true;
@@ -2020,8 +2052,7 @@ namespace Controller
                 if (attemptClosed && motorOff && hydraulicReleased && executionRevoked)
                 {
                     _formalBatchSlots.ConfirmRetirement(
-                        runId,
-                        channel,
+                        participantLease,
                         new FormalBatchParticipantTerminal
                         {
                             Channel = channel,
@@ -2052,8 +2083,7 @@ namespace Controller
             var finalExecutionRevoked =
                 !_channelExecutionFence.Capture(channel).Authorized;
             _formalBatchSlots.ConfirmRetirement(
-                runId,
-                channel,
+                participantLease,
                 new FormalBatchParticipantTerminal
                 {
                     Channel = channel,
@@ -10183,13 +10213,16 @@ namespace Controller
                             if (startupPositioningOwner)
                             {
                                 foreach (var channel in channels.Where(IsChannelEnabled))
-                                    PublishRecoveryIncidentState(
+                                    PublishChannelRuntimeState(
                                         channel,
-                                        ChannelRuntimeState.Recovering,
+                                        ChannelRuntimeState.Starting,
                                         "PowerSupplyRecoveredForStartup",
-                                        "电源控制链已恢复；启动定位原流程继续重试，禁止提前进入正式节律。",
+                                        "电源控制链已恢复；返回启动定位重试态，禁止提前进入正式节律。",
                                         affectedChannels: channels,
-                                        correlationId: controlFault.CorrelationId);
+                                        correlationId: controlFault.CorrelationId,
+                                        allowTerminalReset: true,
+                                        allowSystemFaultReset: true,
+                                        runIdOverride: recoveryRunId);
                                 _emergencyPowerGroupLatch.TryRemove(
                                     groupId,
                                     controlFault.CorrelationId);
@@ -10351,6 +10384,13 @@ namespace Controller
                         }
                     }
 
+                    _emergencyPowerGroupLatch.TryFail(
+                        groupId,
+                        controlFault.CorrelationId,
+                        hardDeadlineReached
+                            ? "PowerRecoveryHardDeadline"
+                            : "PowerRecoveryTerminalWithoutRejoin");
+
                     recoveryIncident?.CompleteAfterTerminal(contract =>
                         CommitRecoveryIncidentStateForRelease(
                             contract,
@@ -10390,6 +10430,10 @@ namespace Controller
             if (!started)
             {
                 _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
+                _emergencyPowerGroupLatch.TryFail(
+                    groupId,
+                    controlFault.CorrelationId,
+                    "PowerRecoveryIncidentRegistrationRejected");
                 return;
             }
             try
@@ -10412,6 +10456,10 @@ namespace Controller
                         $"程控电源软件自愈任务登记失败，已保持安全终态：{observeError.Message}");
                 });
                 _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
+                _emergencyPowerGroupLatch.TryFail(
+                    groupId,
+                    controlFault.CorrelationId,
+                    "PowerRecoveryObserveFailed");
                 return;
             }
             if (!recoveryIncident.Start())
@@ -10426,6 +10474,10 @@ namespace Controller
                         "程控电源软件自愈启动许可被拒绝，已保持安全终态。 ");
                 });
                 _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
+                _emergencyPowerGroupLatch.TryFail(
+                    groupId,
+                    controlFault.CorrelationId,
+                    "PowerRecoveryStartRejected");
             }
         }
 
@@ -12302,7 +12354,9 @@ namespace Controller
                    Math.Abs(measuredCurrentA) <= thresholdA;
         }
 
-        internal void RequestElectricalGroupEmergencyShutdown(int sourceChannel, string reason)
+        internal EmergencyPowerGroupRegistration RequestElectricalGroupEmergencyShutdown(
+            int sourceChannel,
+            string reason)
         {
             var groupId = GetElectricalGroupId(sourceChannel);
             if (groupId <= 0)
@@ -12310,7 +12364,7 @@ namespace Controller
                 ObserveBackgroundTask(Task.Run(() => _log.Error(
                     $"EPB[{sourceChannel}] 请求电源组紧急关闭，但未找到电气组映射。Reason={reason}",
                     "程控电源")), "EmergencyShutdownMissingGroup", sourceChannel);
-                return;
+                return default;
             }
             var members = _cfg.Test.Groups
                 .FirstOrDefault(x => x.Id == groupId)?
@@ -12496,6 +12550,7 @@ namespace Controller
                 () => ScheduleRejectedOffFallbacks(
                     rejectedOff,
                     "ElectricalGroupEmergencyImmediateOffFallback"));
+            return registration;
         }
 
         internal static LogicalRecoveryCounts BuildLogicalRecoveryCounts(
@@ -13104,6 +13159,7 @@ namespace Controller
                         var detectMs = Math.Max(1, runner.DefaultPreReleaseDetectTimeoutMs);
                         var attempt = 0;
                         var executionRepairAttempt = 0;
+                        var powerReadinessRepairAttempt = 0;
                         while (true)
                         {
                             if (!TryEnsureStartupPositioningExecutionResources(
@@ -13136,6 +13192,62 @@ namespace Controller
                                 continue;
                             }
                             executionRepairAttempt = 0;
+                            try
+                            {
+                                await EnsurePowerSupplyReadyForChannelsAsync(
+                                        new[] { ch },
+                                        ct)
+                                    .ConfigureAwait(false);
+                                EnsurePowerSupplyEnergizationPermit(ch);
+                            }
+                            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                            {
+                                powerReadinessRepairAttempt++;
+                                if (ShouldEscalateSoftwareRecovery(powerReadinessRepairAttempt))
+                                    throw new SoftwareSelfHealingExhaustedException(
+                                        "StartupPositioningPowerPermit",
+                                        powerReadinessRepairAttempt,
+                                        new SoftwareSelfHealingRetryException(
+                                            $"EPB[{ch}] 启动定位电源恢复期间执行许可被刷新。"),
+                                        ch);
+                                var powerPermitDelayMs = GetDaqSelfMaintenanceDelayMs(powerReadinessRepairAttempt);
+                                await RunStartupPositioningRetryIncidentAsync(
+                                        ch,
+                                        runId,
+                                        powerReadinessRepairAttempt,
+                                        "StartupPositioningPowerPermitRefresh",
+                                        $"电源恢复刷新了执行许可；{powerPermitDelayMs}ms后重新建立启动框架，不占用机械尝试次数。",
+                                        powerPermitDelayMs,
+                                        ct,
+                                        "StartupPositioningPowerPermitRefreshOff")
+                                    .ConfigureAwait(false);
+                                continue;
+                            }
+                            catch (Exception ex)
+                            {
+                                powerReadinessRepairAttempt++;
+                                if (ShouldEscalateSoftwareRecovery(powerReadinessRepairAttempt))
+                                    throw new SoftwareSelfHealingExhaustedException(
+                                        "StartupPositioningPowerReadiness",
+                                        powerReadinessRepairAttempt,
+                                        new SoftwareSelfHealingRetryException(
+                                            $"EPB[{ch}] 启动定位电源资格连续未恢复。{ex.Message}",
+                                            ex),
+                                        ch);
+                                var powerReadinessDelayMs = GetDaqSelfMaintenanceDelayMs(powerReadinessRepairAttempt);
+                                await RunStartupPositioningRetryIncidentAsync(
+                                        ch,
+                                        runId,
+                                        powerReadinessRepairAttempt,
+                                        "StartupPositioningPowerReadinessRepair",
+                                        $"电源资格未就绪；{powerReadinessDelayMs}ms后恢复重试，不占用机械尝试次数。{ex.Message}",
+                                        powerReadinessDelayMs,
+                                        ct,
+                                        "StartupPositioningPowerReadinessOff")
+                                    .ConfigureAwait(false);
+                                continue;
+                            }
+                            powerReadinessRepairAttempt = 0;
                             attempt++;
                             StartupPositioningResult result;
                             try
@@ -13152,51 +13264,6 @@ namespace Controller
                                 // 启动定位返回值会携带真实过流等现场证据；直接抛出的异常通常是
                                 // 通信、状态机或旧任务残留等软件瞬态。不要让它冒泡为整批启动失败，
                                 // 先关闭本通道并按同一次人工启动意图持续重试。
-                                var offSucceeded = false;
-                                try { offSucceeded = CommandEpbOffSafetyImmediate(ch); } catch { }
-                                if (!offSucceeded)
-                                {
-                                    RequestElectricalGroupEmergencyShutdown(
-                                        ch,
-                                        "StartupPositioningOutputOffCommandFailed");
-                                    if (ShouldEscalateSoftwareRecovery(attempt))
-                                        throw new SoftwareSelfHealingExhaustedException(
-                                            "StartupPositioningOutputOff",
-                                            attempt,
-                                            new SoftwareSelfHealingRetryException(
-                                                $"EPB[{ch}] 启动定位断电连续{attempt}次未确认。",
-                                                ex),
-                                            ch);
-                                    var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
-                                    try
-                                    {
-                                        await RunStartupPositioningRetryIncidentAsync(
-                                                ch,
-                                                runId,
-                                                attempt,
-                                                "StartupPositioningOutputOffSelfHealing",
-                                                $"启动定位断电尚未确认，{offDelayMs}ms后有界重试；三次失败将整批重建。",
-                                                offDelayMs,
-                                                ct,
-                                                "StartupPositioningOutputOffCommandFailed")
-                                            .ConfigureAwait(false);
-                                    }
-                                    catch (SoftwareSelfHealingRetryException retryEx)
-                                    {
-                                        _log.Warn(
-                                            $"EPB[{ch}] 启动定位断电恢复worker未通过，继续重试：{retryEx.Message}",
-                                            "EPB");
-                                    }
-                                    continue;
-                                }
-                                if (ShouldEscalateSoftwareRecovery(attempt))
-                                    throw new SoftwareSelfHealingExhaustedException(
-                                        "StartupPositioningException",
-                                        attempt,
-                                        new SoftwareSelfHealingRetryException(
-                                            $"EPB[{ch}] 启动定位连续{attempt}次软件异常。",
-                                            ex),
-                                        ch);
                                 var exceptionDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                                 _log.Warn(
                                     $"EPB[{ch}] 启动定位抛出软件异常，自动重试且不标记启动受阻。" +
@@ -13213,15 +13280,25 @@ namespace Controller
                                             $"启动定位软件异常，第{attempt}次有界自愈，{exceptionDelayMs}ms后重试。",
                                             exceptionDelayMs,
                                             ct,
-                                            "StartupPositioningOutputOffCommandFailed")
+                                        "StartupPositioningOutputOffCommandFailed")
                                         .ConfigureAwait(false);
                                 }
                                 catch (SoftwareSelfHealingRetryException retryEx)
                                 {
-                                    _log.Warn(
-                                        $"EPB[{ch}] 启动定位异常恢复worker未通过，继续重试：{retryEx.Message}",
-                                        "EPB");
+                                    throw new SoftwareSelfHealingExhaustedException(
+                                        "StartupPositioningOutputOff",
+                                        attempt,
+                                        retryEx,
+                                        ch);
                                 }
+                                if (ShouldEscalateSoftwareRecovery(attempt))
+                                    throw new SoftwareSelfHealingExhaustedException(
+                                        "StartupPositioningException",
+                                        attempt,
+                                        new SoftwareSelfHealingRetryException(
+                                            $"EPB[{ch}] 启动定位连续{attempt}次软件异常。",
+                                            ex),
+                                        ch);
                                 continue;
                             }
                             if (result.Succeeded) break;
@@ -13232,50 +13309,6 @@ namespace Controller
                                 break;
                             }
 
-                            var retryOffSucceeded = false;
-                            try { retryOffSucceeded = CommandEpbOffSafetyImmediate(ch); } catch { }
-                            if (!retryOffSucceeded)
-                            {
-                                RequestElectricalGroupEmergencyShutdown(
-                                    ch,
-                                    "StartupPositioningOutputOffCommandFailed");
-                                if (ShouldEscalateSoftwareRecovery(attempt))
-                                    throw new SoftwareSelfHealingExhaustedException(
-                                        "StartupPositioningOutputOff",
-                                        attempt,
-                                        new SoftwareSelfHealingRetryException(
-                                            $"EPB[{ch}] 启动定位重试前断电连续{attempt}次未确认。"),
-                                        ch);
-                                var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
-                                try
-                                {
-                                    await RunStartupPositioningRetryIncidentAsync(
-                                            ch,
-                                            runId,
-                                            attempt,
-                                            "StartupPositioningOutputOffSelfHealing",
-                                            $"启动定位重试前断电尚未确认，{offDelayMs}ms后有界重试；三次失败将整批重建。",
-                                            offDelayMs,
-                                            ct,
-                                            "StartupPositioningOutputOffCommandFailed")
-                                        .ConfigureAwait(false);
-                                }
-                                catch (SoftwareSelfHealingRetryException retryEx)
-                                {
-                                    _log.Warn(
-                                        $"EPB[{ch}] 启动定位重试前断电worker未通过，继续重试：{retryEx.Message}",
-                                        "EPB");
-                                }
-                                continue;
-                            }
-                            if (ShouldEscalateSoftwareRecovery(attempt))
-                                throw new SoftwareSelfHealingExhaustedException(
-                                    "StartupPositioning",
-                                    attempt,
-                                    new SoftwareSelfHealingRetryException(
-                                        $"EPB[{ch}] 启动定位连续{attempt}次软件瞬态未通过。" +
-                                        $"Code={result.Code} Reason={result.Reason}"),
-                                    ch);
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                             _log.Warn(
                                 $"EPB[{ch}] 启动定位软件瞬态自动重试，不标记启动受阻。" +
@@ -13296,10 +13329,20 @@ namespace Controller
                             }
                             catch (SoftwareSelfHealingRetryException retryEx)
                             {
-                                _log.Warn(
-                                    $"EPB[{ch}] 启动定位恢复worker未通过，继续重试：{retryEx.Message}",
-                                    "EPB");
+                                throw new SoftwareSelfHealingExhaustedException(
+                                    "StartupPositioningOutputOff",
+                                    attempt,
+                                    retryEx,
+                                    ch);
                             }
+                            if (ShouldEscalateSoftwareRecovery(attempt))
+                                throw new SoftwareSelfHealingExhaustedException(
+                                    "StartupPositioning",
+                                    attempt,
+                                    new SoftwareSelfHealingRetryException(
+                                        $"EPB[{ch}] 启动定位连续{attempt}次软件瞬态未通过。" +
+                                        $"Code={result.Code} Reason={result.Reason}"),
+                                    ch);
                         }
                     },
                     token).ConfigureAwait(false);

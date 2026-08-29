@@ -552,13 +552,12 @@ namespace MTTFTest.Watchdog
         private readonly int _sidecarProcessId;
         private readonly long _sidecarProcessStartUtcTicks;
         private readonly string _sidecarInstanceNonce;
-        private readonly object _sendGate = new object();
-        private const int SendGateWaitMs = WatchdogTransportPolicy.SendGateWaitMs;
         private const int SendWriteTimeoutMs = WatchdogTransportPolicy.SendWriteTimeoutMs;
         private const string OperatorTransitionStopMarkerReason =
             "OperatorCanceledAutomaticRecoveryFromTransitionWindow";
-        private Stream _activePipe;
-        private StreamWriter _writer;
+        private WatchdogHostSendQueueOwner _sendOwner;
+        private readonly WatchdogApplicationLivenessSupervisor _applicationLiveness =
+            new WatchdogApplicationLivenessSupervisor(new WindowsWatchdogUiProbe());
         private WatchdogJournal _journal;
         private long _lastHeartbeatTimestamp = Stopwatch.GetTimestamp();
         private long _lastProgressTimestamp = Stopwatch.GetTimestamp();
@@ -778,15 +777,11 @@ namespace MTTFTest.Watchdog
                 }
                 catch (Exception ex)
                 {
-                    // A client-side reconnect intentionally tears down the
-                    // current pipe while ReadLine/WriteLine may still be
-                    // completing.  Windows can surface that race as
-                    // ObjectDisposedException/InvalidOperationException,
-                    // not only IOException.  The helper is session authority
-                    // and must keep its process/mutex alive for the next
-                    // connection instead of letting one transport exception
-                    // cause a replacement helper launch.
-                    Record("PipeLoopError", ex.GetBaseException().Message);
+                    var root = ex.GetBaseException();
+                    if (root is ObjectDisposedException || root is InvalidOperationException)
+                        RecordEvent("PipeDisconnected", root.Message);
+                    else
+                        Record("PipeLoopError", root.Message);
                     if (_stop.IsCancellationRequested) break;
                     await Task.Delay(250).ConfigureAwait(false);
                 }
@@ -801,12 +796,17 @@ namespace MTTFTest.Watchdog
             using (var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true })
             {
                 long connectionGeneration;
+                WatchdogHostSendQueueOwner sendOwner;
                 lock (_gate)
                 {
                     connectionGeneration = ++_connectionGeneration;
-                    _activePipe = pipe;
-                    _writer = writer;
+                    sendOwner = new WatchdogHostSendQueueOwner(
+                        pipe,
+                        writer,
+                        connectionGeneration);
+                    _sendOwner = sendOwner;
                 }
+                sendOwner.WorkerTask = Task.Run(() => RunSendQueueAsync(sendOwner));
                 try
                 {
                     while (!token.IsCancellationRequested)
@@ -861,9 +861,28 @@ namespace MTTFTest.Watchdog
                 {
                     lock (_gate)
                     {
-                        if (ReferenceEquals(_writer, writer)) _writer = null;
-                        if (ReferenceEquals(_activePipe, pipe)) _activePipe = null;
+                        if (ReferenceEquals(_sendOwner, sendOwner))
+                            _sendOwner = null;
                     }
+                    sendOwner.StopAccepting();
+                    try { pipe.Dispose(); } catch { }
+                    var worker = sendOwner.WorkerTask;
+                    if (worker != null)
+                    {
+                        var joined = await Task.WhenAny(
+                                worker,
+                                Task.Delay(SendWriteTimeoutMs + 250))
+                            .ConfigureAwait(false);
+                        if (!ReferenceEquals(joined, worker))
+                            RecordEvent(
+                                "HostTransportWriterJoinTimeout",
+                                "ConnectionGeneration=" + connectionGeneration);
+                        else
+                            try { await worker.ConfigureAwait(false); } catch { }
+                    }
+                    RecordEvent(
+                        "HostTransportConnectionRetired",
+                        "ConnectionGeneration=" + connectionGeneration);
                 }
             }
         }
@@ -976,6 +995,13 @@ namespace MTTFTest.Watchdog
                     {
                         _attachedConnectionGeneration = connectionGeneration;
                     }
+                    // A validated attach proves that the exact process can
+                    // still execute the client transport path.  Start a fresh
+                    // transport grace window so a same-authority reconnect is
+                    // not retired again before its first heartbeat reaches the
+                    // single-writer queue.  This does not reset UI readiness or
+                    // suppress any formal progress / StopAll safety deadline.
+                    Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                     if (!sameAuthorityReconnect)
                     {
                         CancelAutomaticTakeover("ValidatedNewProcessAttached");
@@ -989,8 +1015,10 @@ namespace MTTFTest.Watchdog
                         Interlocked.Exchange(ref _lastFormalProgressTimestamp, Stopwatch.GetTimestamp());
                         _journal.OrphanPauseTriggered = false;
                         _journal.PowerDisableTriggered = false;
-                        Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                         var validatedAttachEpoch = Interlocked.Increment(ref _validatedAttachEpoch);
+                        _applicationLiveness.ResetForNewProcess(
+                            validatedAttachEpoch,
+                            Stopwatch.GetTimestamp());
                         Interlocked.Exchange(ref _expectedExitObserverEpoch, 0);
                         _stopSafetyMonitor.NotifyValidatedAttached(
                             _args.SessionId,
@@ -1052,6 +1080,8 @@ namespace MTTFTest.Watchdog
                         RecordEvent("MainUiReadyRejectedByDurableBlock", message.Reason);
                     else
                         Record("MainUiReady", message.Reason ?? "MainWindowShown");
+                    _applicationLiveness.ObserveMainUiReady(
+                        Volatile.Read(ref _validatedAttachEpoch));
                     if (!_journal.RecoveryBlocked &&
                         Interlocked.CompareExchange(ref _transitionActive, 0, 0) != 0)
                     {
@@ -1071,6 +1101,7 @@ namespace MTTFTest.Watchdog
                     }
                     _attached = true;
                     Interlocked.Exchange(ref _heartbeatSuspectLogged, 0);
+                    _applicationLiveness.ObserveHeartbeat();
                     message.Heartbeat.AttachEpoch = Volatile.Read(
                         ref _validatedAttachEpoch);
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
@@ -1683,6 +1714,51 @@ namespace MTTFTest.Watchdog
                     var heartbeat = _journal.LastHeartbeat;
                     var eligibleChannels = GetRecoveryEligibleChannels(heartbeat);
                     var processAlive = IsCurrentProcessAlive();
+                    int currentProcessId;
+                    long currentProcessStartUtcTicks;
+                    lock (_journalGate)
+                    {
+                        currentProcessId = _journal.CurrentPid;
+                        currentProcessStartUtcTicks = _journal.CurrentProcessStartUtcTicks;
+                    }
+                    WatchdogHostSendQueueOwner activeSendOwner;
+                    lock (_gate) activeSendOwner = _sendOwner;
+                    var attachEpoch = Volatile.Read(ref _validatedAttachEpoch);
+                    var liveness = _applicationLiveness.Evaluate(
+                        heartbeatAge,
+                        processAlive,
+                        currentProcessId,
+                        currentProcessStartUtcTicks,
+                        attachEpoch,
+                        activeSendOwner?.ConnectionGeneration ?? 0,
+                        Stopwatch.GetTimestamp(),
+                        Stopwatch.Frequency);
+                    if (liveness.RetireConnection && activeSendOwner != null)
+                    {
+                        RecordEvent(
+                            "HeartbeatTransportDegraded",
+                            $"HeartbeatAgeSeconds={heartbeatAge:F3};" +
+                            $"Probe={liveness.ProbeStatus};Detail={liveness.Detail};" +
+                            $"ConnectionGeneration={activeSendOwner.ConnectionGeneration}");
+                        RetireConnection(activeSendOwner, "ResponsiveUiHeartbeatTransportDegraded");
+                    }
+                    else if (heartbeatAge >=
+                             WatchdogApplicationLivenessSupervisor.HeartbeatTakeoverSeconds &&
+                             liveness.ReportEvent &&
+                             liveness.ProbeStatus != WatchdogUiProbeStatus.Throttled &&
+                             liveness.ProbeStatus != WatchdogUiProbeStatus.NotRequired)
+                    {
+                        RecordEvent(
+                            liveness.HeartbeatUnresponsiveConfirmed
+                                ? "HeartbeatUnresponsiveConfirmed"
+                                : "HeartbeatUiProbe",
+                            $"HeartbeatAgeSeconds={heartbeatAge:F3};" +
+                            $"Probe={liveness.ProbeStatus};Failures={liveness.ConsecutiveFailures};" +
+                            $"Detail={liveness.Detail}");
+                    }
+                    var heartbeatAgeForTakeover = liveness.SuppressHeartbeatTakeover
+                        ? 0
+                        : heartbeatAge;
                     var nowUtc = DateTime.UtcNow;
                     var manualPauseCommanded = heartbeat != null &&
                         WatchdogTakeoverPolicy.IsManualPauseCommanded(
@@ -1817,7 +1893,7 @@ namespace MTTFTest.Watchdog
                     _stopSafetyMonitor.EvaluateTick(
                         nowUtc,
                         processAlive,
-                        heartbeatAge,
+                        heartbeatAgeForTakeover,
                         sessionRevoked,
                         _journal.ManualStopRequested,
                         alreadyTakingOver,
@@ -1838,7 +1914,7 @@ namespace MTTFTest.Watchdog
                         _journal.ManualStopRequested,
                         Interlocked.CompareExchange(ref _takeoverStarted, 0, 0) != 0,
                         processAlive,
-                        heartbeatAge,
+                        heartbeatAgeForTakeover,
                         WatchdogRecoveryTelemetryPolicy.ShouldTreatAsRecoveryActive(heartbeat),
                         heartbeat?.OrphanPaused == true,
                         heartbeat?.PowerOffUnconfirmed == true,
@@ -1859,8 +1935,8 @@ namespace MTTFTest.Watchdog
                         0);
                     if (shouldTakeover)
                     {
-                        var reason = !processAlive || heartbeatAge >= 5
-                            ? (heartbeatAge >= 5 ? "HeartbeatUnresponsive" : "ProcessExitedUnexpectedly")
+                        var reason = !processAlive || heartbeatAgeForTakeover >= 5
+                            ? (heartbeatAgeForTakeover >= 5 ? "HeartbeatUnresponsive" : "ProcessExitedUnexpectedly")
                             : heartbeat?.PowerOffUnconfirmed == true && stageAgeSeconds >= 5
                                 ? "PowerOffUnconfirmedTimeout"
                                 : heartbeat?.OrphanPaused == true && stageAgeSeconds >= 5
@@ -3533,74 +3609,133 @@ namespace MTTFTest.Watchdog
 
         private void Send(WatchdogMessage message)
         {
-            StreamWriter writer;
+            WatchdogHostSendQueueOwner owner;
             lock (_gate)
             {
-                writer = _writer;
+                owner = _sendOwner;
             }
-            if (writer == null) return;
+            if (owner == null) return;
             try
             {
                 var payload = WatchdogProtocol.Serialize(message);
-                if (!Monitor.TryEnter(_sendGate, SendGateWaitMs))
+                var request = new WatchdogHostSendRequest(
+                    message?.Type,
+                    WatchdogWireFrame.Encode(payload),
+                    IsLifecycleSend(message?.Type));
+                if (!owner.TryEnqueue(request))
                 {
-                    BreakConnection(writer);
-                    Record(
-                        "SendFailed",
-                        $"{message?.Type ?? "Unknown"}:发送锁超过{SendGateWaitMs}ms，已断开陈旧管道。");
+                    RecordEvent(
+                        "HostTransportAdmissionBusy",
+                        $"Type={message?.Type ?? "Unknown"};ConnectionGeneration={owner.ConnectionGeneration}");
+                    if (request.Lifecycle)
+                        RetireConnection(owner, "LifecycleAdmissionBusy:" + request.MessageType);
                     return;
                 }
-                try
+                var waitMs = SendWriteTimeoutMs + WatchdogTransportPolicy.SendGateWaitMs;
+                if (!request.Completion.Task.Wait(waitMs))
                 {
-                    lock (_gate)
-                    {
-                        if (!ReferenceEquals(_writer, writer)) return;
-                    }
-                    var writeTask = writer.WriteLineAsync(WatchdogWireFrame.Encode(payload));
-                    var completed = Task.WhenAny(
-                            writeTask,
-                            Task.Delay(SendWriteTimeoutMs))
-                        .GetAwaiter()
-                        .GetResult();
-                    if (!ReferenceEquals(completed, writeTask))
-                    {
-                        BreakConnection(writer);
-                        throw new TimeoutException(
-                            $"命名管道写入超过{SendWriteTimeoutMs}ms。");
-                    }
-                    writeTask.GetAwaiter().GetResult();
+                    RetireConnection(owner, "SendCompletionTimeout:" + request.MessageType);
+                    RecordEvent(
+                        "HostTransportWriteTimeout",
+                        $"Type={request.MessageType};ConnectionGeneration={owner.ConnectionGeneration}");
+                    return;
                 }
-                finally
-                {
-                    Monitor.Exit(_sendGate);
-                }
+                if (!request.Completion.Task.Result)
+                    RecordEvent(
+                        "HostTransportSendRejected",
+                        $"Type={request.MessageType};ConnectionGeneration={owner.ConnectionGeneration}");
             }
             catch (Exception ex)
             {
-                // A failed write is a transport state transition, not a
-                // best-effort notification.  The main process has its own
-                // ACK monitor; recording here makes the sidecar failure
-                // diagnosable even when the pipe is already gone.
                 Record("SendFailed", (message?.Type ?? "Unknown") + ":" + ex.GetBaseException().Message);
-                BreakConnection(writer);
+                RetireConnection(owner, "SendFailed:" + (message?.Type ?? "Unknown"));
             }
         }
 
-        private void BreakConnection(StreamWriter expectedWriter)
+        private async Task RunSendQueueAsync(WatchdogHostSendQueueOwner owner)
         {
-            Stream pipe = null;
+            try
+            {
+                while (!owner.Lifetime.IsCancellationRequested)
+                {
+                    WatchdogHostSendRequest request;
+                    if (!owner.TryDequeue(out request))
+                    {
+                        await owner.Signal.WaitAsync(owner.Lifetime.Token).ConfigureAwait(false);
+                        continue;
+                    }
+                    lock (_gate)
+                    {
+                        if (!ReferenceEquals(_sendOwner, owner))
+                        {
+                            request.Completion.TrySetResult(false);
+                            continue;
+                        }
+                    }
+
+                    var queueWaitMs = (Stopwatch.GetTimestamp() - request.EnqueuedTimestamp) *
+                                      1000.0 / Stopwatch.Frequency;
+                    var writeTask = owner.Writer.WriteLineAsync(request.Payload);
+                    owner.InflightWriteTask = writeTask;
+                    var completed = await Task.WhenAny(
+                            writeTask,
+                            Task.Delay(SendWriteTimeoutMs, owner.Lifetime.Token))
+                        .ConfigureAwait(false);
+                    if (!ReferenceEquals(completed, writeTask))
+                    {
+                        request.Completion.TrySetResult(false);
+                        RecordEvent(
+                            "HostTransportWriteTimeout",
+                            $"Type={request.MessageType};ConnectionGeneration={owner.ConnectionGeneration};" +
+                            $"QueueWaitMs={queueWaitMs:F3}");
+                        RetireConnection(owner, "WriterTimeout:" + request.MessageType);
+                        return;
+                    }
+                    await writeTask.ConfigureAwait(false);
+                    owner.InflightWriteTask = null;
+                    request.Completion.TrySetResult(true);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Exact connection retirement.
+            }
+            catch (Exception ex)
+            {
+                RecordEvent(
+                    "HostTransportWriteFailed",
+                    $"ConnectionGeneration={owner.ConnectionGeneration};{ex.GetBaseException().Message}");
+                RetireConnection(owner, "WriterFailed");
+            }
+            finally
+            {
+                owner.StopAccepting();
+            }
+        }
+
+        private static bool IsLifecycleSend(string messageType)
+        {
+            return string.Equals(messageType, WatchdogMessageType.Attached, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.RecoveryAttemptFailedReceipt, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.RequestStopAll, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ExternalRecoveryRequired, StringComparison.Ordinal);
+        }
+
+        private void RetireConnection(
+            WatchdogHostSendQueueOwner expectedOwner,
+            string reason)
+        {
+            if (expectedOwner == null) return;
             lock (_gate)
             {
-                if (!ReferenceEquals(_writer, expectedWriter)) return;
-                _writer = null;
-                pipe = _activePipe;
-                _activePipe = null;
+                if (!ReferenceEquals(_sendOwner, expectedOwner)) return;
+                _sendOwner = null;
             }
-            if (pipe != null)
-                _ = Task.Run(() =>
-                {
-                    try { pipe.Dispose(); } catch { }
-                });
+            expectedOwner.StopAccepting();
+            RecordEvent(
+                "HostTransportConnectionRetireRequested",
+                $"ConnectionGeneration={expectedOwner.ConnectionGeneration};Reason={reason}");
+            try { expectedOwner.Pipe.Dispose(); } catch { }
         }
 
         private void Record(string state, string reason)
