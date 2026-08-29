@@ -40,7 +40,9 @@ Unless specified otherwise, create documents as Markdown (`.md`). With no reques
 
 ## Commit & Pull Request Guidelines
 
-History follows Conventional Commit-style subjects such as `fix(watchdog): ...`, `feat: ...`, `test: ...`, `docs: ...`, and `chore: ...`. Keep commits focused and use an optional subsystem scope. Pull requests should explain the goal, safety or data-integrity impact, configuration changes, and verification commands. Link issues or incident documents; include UI screenshots and hardware-dependent field evidence. Never commit credentials, site secrets, large runtime logs, or build outputs.
+History follows Conventional Commit-style subjects. Keep type keywords such as `feat`, `fix`, `test`, `docs`, and `chore`, plus an optional subsystem scope, in their conventional form; write the remaining commit description in Chinese. Examples: `fix(watchdog): 修复恢复拉起失败链路` and `docs: 补充现场验收记录`. Keep commits focused. Pull requests should explain the goal, safety or data-integrity impact, configuration changes, and verification commands. Link issues or incident documents; include UI screenshots and hardware-dependent field evidence. Never commit credentials, site secrets, large runtime logs, or build outputs.
+
+> 中文提示：所有提交提示语除类型关键词、可选作用域和必要的代码标识外，均使用中文；不要使用纯英文提交说明。
 
 ## Agent Tooling
 
