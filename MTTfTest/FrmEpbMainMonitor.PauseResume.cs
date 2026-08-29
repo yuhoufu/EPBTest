@@ -76,6 +76,11 @@ namespace MTEmbTest
                 case BatchPauseState.Paused:
                     ApplyBatchActionButton("继续试验", Volatile.Read(ref _batchStartUiGuard) == 0, false);
                     break;
+                case BatchPauseState.PauseHolding:
+                    ApplyBatchActionButton("暂停中：恢复校验…", false, true);
+                    if (!string.IsNullOrWhiteSpace(reason))
+                        PostSafetyStatus("暂停保持中：" + reason, false);
+                    break;
                 case BatchPauseState.ResumeChecking:
                 case BatchPauseState.Qualification:
                     ApplyBatchActionButton("正在恢复…", false, true);

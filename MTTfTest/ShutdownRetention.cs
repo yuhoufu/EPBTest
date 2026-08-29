@@ -52,7 +52,18 @@ namespace MTEmbTest
         JournalDispose = 6,
         TerminalCandidate = 7,
         RetainedFailure = 8,
-        Terminal = 9
+        Terminal = 9,
+        // Safety has been proven and only non-safety housekeeping remains.
+        // Keep it append-only because retained journal snapshots are read by
+        // later process starts.
+        DetachedRetained = 10
+    }
+
+    internal enum RuntimeShutdownDisposition
+    {
+        Terminal = 0,
+        DetachedRetained = 1,
+        BlockingFailure = 2
     }
 
     internal interface IRuntimeTransportShutdownPort

@@ -2242,11 +2242,30 @@ namespace MTEmbTest
             {
                 RaiseTransportError(context, "RecoveryBatchCommitContext", ex.Message);
             }
-            try { WatchdogRecoveryCommitMarker.WriteLocal(context.SessionId, commitGeneration, reason); }
+            try
+            {
+                WatchdogRecoveryCommitMarker.WriteLocal(
+                    context.SessionId,
+                    commitGeneration,
+                    reason,
+                    heartbeat?.RunId,
+                    heartbeat?.RunEpoch ?? 0,
+                    heartbeat?.RecoveryStage);
+            }
             catch (Exception ex) { RaiseTransportError(context, "RecoveryCommitMarkerLocal", ex.Message); }
             _ = Task.Run(() =>
             {
-                try { WatchdogRecoveryCommitMarker.WriteProject(context.JournalDirectory, context.SessionId, commitGeneration, reason); }
+                try
+                {
+                    WatchdogRecoveryCommitMarker.WriteProject(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        commitGeneration,
+                        reason,
+                        heartbeat?.RunId,
+                        heartbeat?.RunEpoch ?? 0,
+                        heartbeat?.RecoveryStage);
+                }
                 catch (Exception ex) { RaiseTransportError(context, "RecoveryCommitMarkerProject", ex.Message); }
             });
             RecordClientEvent(context, "RecoveryBatchCommitted", reason);

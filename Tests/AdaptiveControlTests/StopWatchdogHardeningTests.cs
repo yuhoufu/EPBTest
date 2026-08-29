@@ -132,7 +132,15 @@ namespace AdaptiveControlTests
                     TimerCount = 10,
                     RunnerCount = 10,
                     LogicalSourceVersion = 17,
-                    LogicalCapturedUtcTicks = 7654321
+                    LogicalCapturedUtcTicks = 7654321,
+                    DiagnosticSinkAcceptedVersion = 23,
+                    DiagnosticSinkFlushedVersion = 21,
+                    DiagnosticSinkLastSuccessUtcTicks = 7000000,
+                    DiagnosticSinkStalled = true,
+                    DiagnosticSinkEmergencySpool = true,
+                    DiagnosticSinkQueueDepth = 2,
+                    DiagnosticSinkDroppedRecords = 3,
+                    DiagnosticSinkFailure = "disk-offline"
                 }
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
@@ -155,14 +163,23 @@ namespace AdaptiveControlTests
                     roundTrip.Heartbeat.TimerCount == 10 &&
                     roundTrip.Heartbeat.ActiveCycleCount == 5 &&
                     roundTrip.Heartbeat.LogicalSourceVersion == 17 &&
-                    roundTrip.Heartbeat.LogicalCapturedUtcTicks == 7654321,
+                    roundTrip.Heartbeat.LogicalCapturedUtcTicks == 7654321 &&
+                    roundTrip.Heartbeat.DiagnosticSinkAcceptedVersion == 23 &&
+                    roundTrip.Heartbeat.DiagnosticSinkFlushedVersion == 21 &&
+                    roundTrip.Heartbeat.DiagnosticSinkStalled &&
+                    roundTrip.Heartbeat.DiagnosticSinkEmergencySpool &&
+                    roundTrip.Heartbeat.DiagnosticSinkQueueDepth == 2 &&
+                    roundTrip.Heartbeat.DiagnosticSinkDroppedRecords == 3 &&
+                    roundTrip.Heartbeat.DiagnosticSinkFailure == "disk-offline",
                  "v2停止字段未能序列化往返");
 
             var v1 = WatchdogProtocol.Deserialize(
                 "{\"ProtocolVersion\":1,\"Type\":\"Heartbeat\",\"SessionId\":\"v1\"," +
                 "\"Heartbeat\":{\"Sequence\":3,\"RunActive\":false}}");
             Assert(v1.ProtocolVersion == 1 && v1.Heartbeat.Sequence == 3 &&
-                   !v1.Heartbeat.StopAllActive,
+                   !v1.Heartbeat.StopAllActive &&
+                   !v1.Heartbeat.DiagnosticSinkStalled &&
+                   v1.Heartbeat.DiagnosticSinkAcceptedVersion == 0,
                 "v1心跳不能由v2协议模型兼容反序列化");
 
             var uiReady = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(

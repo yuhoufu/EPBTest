@@ -269,8 +269,9 @@ namespace Controller
         private const int RecoveryStageTimeoutMs = 15_000;
         private const int RecoveryMechanicalReleaseTimeoutMs = 20_000;
         internal const int RecoveryGroupHardDeadlineMs = 60_000;
-        // 电源OFF是物理安全动作，必须比数据恢复硬期限更短并独立留证。
-        internal const int PowerDisableHardDeadlineMs = 5_000;
+        // 仅作为阶段无进度诊断；DaqAutoRecoveryContext 的60秒
+        // HardDeadlineUtc 才是唯一允许取消恢复上下文的总截止。
+        internal const int PowerDisableHardDeadlineMs = 10_000;
         internal const int SoftwareRecoveryEscalationAttempts = 3;
         public const int UnattendedProcessRestartBudget = 3;
 

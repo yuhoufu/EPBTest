@@ -65,10 +65,10 @@ namespace AdaptiveControlTests
                 DetailDoesNotRenewProgress, ref passed);
             Run("Stop runner caller cancellation does not cancel safety core",
                 CallerCancellationDoesNotCancelSafety, ref passed);
-            Run("Stop runner hard timeout caches result and permits one orphan only",
-                HardTimeoutIsStickyAndSingleOrphan, ref passed);
-            Run("Stop stage deadline is sticky and keeps one late-stage orphan",
-                StageDeadlineIsStickyAndSingleOrphan, ref passed);
+            Run("Stop runner hard timeout starts a fresh request transaction while isolating the orphan",
+                HardTimeoutStartsFreshTransaction, ref passed);
+            Run("Stop stage deadline starts a fresh request transaction while isolating the orphan",
+                StageDeadlineStartsFreshTransaction, ref passed);
             Run("Stop runner aggregate projection dispatches inactive timeout once",
                 AggregateProjectionDispatchesOnce, ref passed);
             Run("硬件安全等待仅抑制非活动粘滞Stop终态且保留接管边界",
@@ -259,6 +259,7 @@ namespace AdaptiveControlTests
             }
             var expected = new[]
             {
+                StopSafetyStage.AdmitAndSubmitSafety,
                 StopSafetyStage.FreezeActiveWork,
                 StopSafetyStage.RevokeExecutionAuthorization,
                 StopSafetyStage.SubmitPhysicalOff,
@@ -452,18 +453,21 @@ namespace AdaptiveControlTests
                 var writesAtTerminal = writer.BatchWriteCount;
                 var reentry = fixture.Manager.StopAllAsync(NewContext())
                     .GetAwaiter().GetResult();
-                Assert(reentry.ReusedPreviousResult &&
-                       writer.BatchWriteCount == writesAtTerminal,
-                    "DO物理失败后StopAll重入创建了第二个生产core。");
+                Assert(!reentry.ReusedPreviousResult &&
+                       reentry.SafetyTransactionId != result.SafetyTransactionId &&
+                       writer.BatchWriteCount > writesAtTerminal,
+                    "DO物理失败后的新请求没有建立新代次重做幂等OFF。");
+                var writesAfterReentry = writer.BatchWriteCount;
                 var finalExit = fixture.Manager.StopAllAsync(new StopContext
                 {
                     Source = StopSource.ProgramExit,
                     CorrelationId = Guid.NewGuid().ToString("N"),
                     Reason = "physical-failure-final-exit"
                 }).GetAwaiter().GetResult();
-                Assert(finalExit.ReusedPreviousResult &&
-                       writer.BatchWriteCount == writesAtTerminal,
-                    "物理失败后的FinalExit未复用缓存，产生新增IO。");
+                Assert(!finalExit.ReusedPreviousResult &&
+                       finalExit.SafetyTransactionId != reentry.SafetyTransactionId &&
+                       writer.BatchWriteCount > writesAfterReentry,
+                    "物理失败后的FinalExit没有取得本次安全事务结果。");
             }
         }
 
@@ -592,15 +596,15 @@ namespace AdaptiveControlTests
                 var powerFailure = powerTask.GetAwaiter().GetResult();
                 var failureReleaseOrder = failingPower.FailureReleaseOrder;
                 Assert(powerFailure.RequiresProcessRestart &&
-                       powerFailure.LastStage == StopSafetyStage.StartPowerDisable &&
-                       powerFailure.StageError.IndexOf("StageFailure:StartPowerDisable",
+                       powerFailure.LastStage == StopSafetyStage.AdmitAndSubmitSafety &&
+                       powerFailure.StageError.IndexOf("StageFailure:AdmitAndSubmitSafety",
                            StringComparison.Ordinal) >= 0 &&
                        firstRoundReceiptOrders.All(item => item < failureReleaseOrder) &&
                        !failingPower.LastConfirmedOff &&
                        powerFixture.Receipts.Count(item => item != null &&
                                                           item.Result &&
                                                           item.CommandId != Guid.Empty) >= 2,
-                    "PSU硬件失败未在StartPowerDisable阶段由outer runner收口，或DO receipt未先成功：" +
+                    "PSU硬件失败未在立即安全提交阶段由outer runner收口，或DO receipt未先成功：" +
                     $"Stage={powerFailure.LastStage};PSU={failingPower.DisableCallCount};" +
                     $"ConfirmedOff={failingPower.LastConfirmedOff};" +
                     $"Error={powerFailure.StageError};" +
@@ -612,9 +616,13 @@ namespace AdaptiveControlTests
                     powerStages = powerProgress.Select(item => item.Stage).ToArray();
                 var powerStageIndex = Array.IndexOf(
                     powerStages,
-                    StopSafetyStage.StartPowerDisable);
+                    StopSafetyStage.AdmitAndSubmitSafety);
                 var forbiddenAfterPower = new HashSet<StopSafetyStage>
                 {
+                    StopSafetyStage.FreezeActiveWork,
+                    StopSafetyStage.RevokeExecutionAuthorization,
+                    StopSafetyStage.SubmitPhysicalOff,
+                    StopSafetyStage.StartPowerDisable,
                     StopSafetyStage.ClearTimerAndRunner,
                     StopSafetyStage.ClearRecoveryOwners,
                     StopSafetyStage.ReleaseHydraulics,
@@ -637,7 +645,7 @@ namespace AdaptiveControlTests
                        !powerProjection.Active &&
                        powerProjection.TakeoverRequired &&
                        powerProjection.TerminalReason.IndexOf(
-                           "StageFailure:StartPowerDisable",
+                           "StageFailure:AdmitAndSubmitSafety",
                            StringComparison.Ordinal) >= 0,
                     "PSU失败未先发布带身份的terminal aggregate/projection。");
                 var powerMonitor = new WatchdogHostStopMonitor("power-failure");
@@ -685,11 +693,13 @@ namespace AdaptiveControlTests
                     CorrelationId = Guid.NewGuid().ToString("N"),
                     Reason = "psu-failure-final-exit"
                 }).GetAwaiter().GetResult();
-                Assert(powerReentry.ReusedPreviousResult &&
-                       powerFinalExit.ReusedPreviousResult &&
-                       writer.BatchWriteCount == powerWrites &&
-                       failingPower.DisableCallCount == powerCalls,
-                    "PSU失败后的Stop/FinalExit重入产生了新增DO/PSU IO。");
+                Assert(!powerReentry.ReusedPreviousResult &&
+                       !powerFinalExit.ReusedPreviousResult &&
+                       powerReentry.SafetyTransactionId != powerFailure.SafetyTransactionId &&
+                       powerFinalExit.SafetyTransactionId != powerReentry.SafetyTransactionId &&
+                       writer.BatchWriteCount > powerWrites &&
+                       failingPower.DisableCallCount > powerCalls,
+                    "PSU失败后的Stop/FinalExit没有分别执行当前代幂等安全动作。");
             }
 
             var hangingPower = new FailingPowerSupply(fail: false);
@@ -895,47 +905,52 @@ namespace AdaptiveControlTests
                 var persistencePowerCalls = hangingPower.DisableCallCount;
                 var persistenceTerminal =
                     hangingFixture.Manager.CaptureStopSafetyProgress();
-                var persistenceReentry = hangingFixture.Manager.StopAllAsync(NewContext())
-                    .GetAwaiter().GetResult();
-                var persistenceFinalExit = hangingFixture.Manager.StopAllAsync(new StopContext
+                var persistenceReentryTask = hangingFixture.Manager.StopAllAsync(NewContext());
+                Assert(SpinWait.SpinUntil(
+                           () => hangingPower.DisableCallCount > persistencePowerCalls &&
+                                 Volatile.Read(ref hangingFlushCallCount) > persistenceFlushes &&
+                                 hangingFixture.Manager.CaptureStopSafetyProgress().TransactionId !=
+                                     persistenceTerminal.TransactionId,
+                           2000),
+                    "旧orphan存在时新请求没有重新提交幂等安全动作。" +
+                    $" DO={writer.BatchWriteCount}/{persistenceWrites};" +
+                    $"PSU={hangingPower.DisableCallCount}/{persistencePowerCalls};" +
+                    $"Flush={Volatile.Read(ref hangingFlushCallCount)}/{persistenceFlushes};" +
+                    $"Progress={hangingFixture.Manager.CaptureStopSafetyProgress().TransactionId}/" +
+                    $"{persistenceTerminal.TransactionId}:" +
+                    hangingFixture.Manager.CaptureStopSafetyProgress().Stage);
+                var persistenceFinalExitTask = hangingFixture.Manager.StopAllAsync(new StopContext
                 {
                     Source = StopSource.ProgramExit,
                     CorrelationId = Guid.NewGuid().ToString("N"),
                     Reason = "persistence-hang-final-exit"
-                }).GetAwaiter().GetResult();
-                Assert(persistenceReentry.ReusedPreviousResult &&
-                       persistenceFinalExit.ReusedPreviousResult &&
-                       writer.BatchWriteCount == persistenceWrites &&
-                       Volatile.Read(ref hangingFlushCallCount) == persistenceFlushes &&
-                       hangingPower.DisableCallCount == persistencePowerCalls,
-                    "Persistence terminal重入产生了新增Stop core/flush/DO/PSU IO。");
+                });
                 releaseFlush.TrySetResult(true);
+                var persistenceReentry = persistenceReentryTask.GetAwaiter().GetResult();
+                var persistenceFinalExit = persistenceFinalExitTask.GetAwaiter().GetResult();
+                Assert(!persistenceReentry.ReusedPreviousResult &&
+                       !persistenceFinalExit.ReusedPreviousResult &&
+                       persistenceReentry.SafetyTransactionId != persistenceTerminal.TransactionId &&
+                       persistenceFinalExit.SafetyTransactionId == persistenceReentry.SafetyTransactionId,
+                    "旧orphan后的新请求未建新代次，或活动请求没有加入同一物理事务。");
                 var orphanSettled = SpinWait.SpinUntil(() =>
                 {
                     var late = hangingFixture.Manager.CaptureStopSafetyProgress();
                     return !hangingFixture.Manager.HasOrphanCore &&
-                           late.Stage == StopSafetyStage.TimedOut &&
-                           !late.Active && late.TakeoverRequired &&
-                           late.TransactionId == persistenceTerminal.TransactionId &&
-                           late.ProgressVersion == persistenceTerminal.ProgressVersion;
+                           late.Stage == StopSafetyStage.Completed &&
+                           !late.Active && !late.TakeoverRequired &&
+                           late.TransactionId == persistenceReentry.SafetyTransactionId;
                 }, 2000);
                 var lateTerminal = hangingFixture.Manager.CaptureStopSafetyProgress();
                 Assert(orphanSettled && !hangingFixture.Manager.HasOrphanCore &&
-                       lateTerminal.Stage == StopSafetyStage.TimedOut &&
-                       !lateTerminal.Active && lateTerminal.TakeoverRequired &&
-                       lateTerminal.TransactionId == persistenceTerminal.TransactionId &&
-                       lateTerminal.Generation == persistenceTerminal.Generation &&
-                       lateTerminal.ProgressVersion == persistenceTerminal.ProgressVersion &&
-                       string.Equals(lateTerminal.TerminalReason,
-                           persistenceTimeoutReason, StringComparison.Ordinal) &&
-                       writer.BatchWriteCount == persistenceWrites &&
-                       Volatile.Read(ref hangingFlushCallCount) == persistenceFlushes &&
-                       hangingPower.DisableCallCount == persistencePowerCalls,
-                    "释放持久化TCS后的迟到完成未收口，或清除了terminal/启动了新事务：" +
+                       lateTerminal.Stage == StopSafetyStage.Completed &&
+                       !lateTerminal.Active && !lateTerminal.TakeoverRequired &&
+                       lateTerminal.TransactionId == persistenceReentry.SafetyTransactionId,
+                    "旧Persistence orphan迟到回写覆盖了新代安全终态：" +
                     $"OrphanSettled={orphanSettled};Stage={lateTerminal.Stage};" +
                     $"Tx={lateTerminal.TransactionId};Generation={lateTerminal.Generation};" +
-                    $"Progress={lateTerminal.ProgressVersion}/{persistenceTerminal.ProgressVersion};" +
-                    $"Reason={lateTerminal.TerminalReason}/{persistenceTerminal.TerminalReason};" +
+                    $"Progress={lateTerminal.ProgressVersion};" +
+                    $"Reason={lateTerminal.TerminalReason};" +
                     $"Flush={Volatile.Read(ref hangingFlushCallCount)};" +
                     $"PSU={hangingPower.DisableCallCount}");
             }
@@ -1251,6 +1266,7 @@ namespace AdaptiveControlTests
             var entered = port.EnteredStages.ToArray();
             var expected = new[]
             {
+                StopSafetyStage.AdmitAndSubmitSafety,
                 StopSafetyStage.FreezeActiveWork,
                 StopSafetyStage.RevokeExecutionAuthorization,
                 StopSafetyStage.SubmitPhysicalOff,
@@ -1282,12 +1298,15 @@ namespace AdaptiveControlTests
                 "阶段Failure已发布终态但异步SafeIdle未在有界窗口内执行。");
             var executeCount = port.ExecuteCount;
             var reentry = runner.StopAsync(NewContext()).GetAwaiter().GetResult();
+            Assert(SpinWait.SpinUntil(() => port.SafeIdleCount == 2, 2000),
+                "第二次失败事务没有形成自己的SafeIdle收口。");
             Assert(result.RequiresProcessRestart &&
                    result.LastStage == StopSafetyStage.StartPowerDisable &&
-                   port.SafeIdleCount == 1 &&
-                   reentry.ReusedPreviousResult &&
-                   port.ExecuteCount == executeCount,
-                "DO/Power阶段失败没有进入粘性单次SafeIdle/缓存终态。");
+                   port.SafeIdleCount == 2 &&
+                   !reentry.ReusedPreviousResult &&
+                   reentry.SafetyTransactionId != result.SafetyTransactionId &&
+                   port.ExecuteCount > executeCount,
+                "DO/Power阶段失败后的新请求没有建立独立安全事务。");
             var snapshot = runner.CaptureProgress();
             Assert(!snapshot.Active && snapshot.TakeoverRequired &&
                    !snapshot.TimedOut &&
@@ -1339,7 +1358,7 @@ namespace AdaptiveControlTests
             }
         }
 
-        private static void HardTimeoutIsStickyAndSingleOrphan()
+        private static void HardTimeoutStartsFreshTransaction()
         {
             var clock = new ManualClock();
             var port = new FakePort { Hang = true };
@@ -1361,17 +1380,23 @@ namespace AdaptiveControlTests
                     ";Orphan=" + runner.HasOrphanCore +
                     ";Stage=" + timeout.LastStage);
                 var calls = port.ExecuteCount;
-                var second = runner.StopAsync(NewContext()).GetAwaiter().GetResult();
-                Assert(second.TimedOut && second.ReusedPreviousResult &&
-                       port.ExecuteCount == calls,
-                    "TimedOut后重入创建了新的core。");
+                port.Hang = false;
+                var receipt = runner.StopWithReceiptAsync(NewContext()).GetAwaiter().GetResult();
+                var second = receipt.Result;
+                Assert(!second.TimedOut && !second.ReusedPreviousResult &&
+                       second.SafetyTransactionId != timeout.SafetyTransactionId &&
+                       receipt.PhysicalTransactionId == second.SafetyTransactionId &&
+                       receipt.PreviousTransactionId == timeout.SafetyTransactionId &&
+                       !receipt.JoinedActiveTransaction &&
+                       port.ExecuteCount > calls,
+                    "TimedOut后新请求没有执行新的幂等安全事务/返回请求级回执。");
                 port.ReleaseHungStage();
                 SpinWait.SpinUntil(() => !runner.HasOrphanCore, 2000);
                 Assert(port.SafeIdleCount == 1, "迟到core重复执行SafeIdle。");
             }
         }
 
-        private static void StageDeadlineIsStickyAndSingleOrphan()
+        private static void StageDeadlineStartsFreshTransaction()
         {
             var clock = new ManualClock();
             var port = new FakePort { HangStage = StopSafetyStage.ReleaseHydraulics };
@@ -1391,10 +1416,14 @@ namespace AdaptiveControlTests
                    port.SafeIdleCount == 1 && runner.HasOrphanCore,
                 "阶段硬截止未形成粘性TimedOut/TakeoverRequired与唯一orphan。");
             var calls = port.ExecuteCount;
-            var second = runner.StopAsync(NewContext()).GetAwaiter().GetResult();
-            Assert(second.TimedOut && second.ReusedPreviousResult &&
-                   port.ExecuteCount == calls,
-                "阶段超时重入没有复用缓存结果。");
+            port.HangStage = null;
+            var receipt = runner.StopWithReceiptAsync(NewContext()).GetAwaiter().GetResult();
+            var second = receipt.Result;
+            Assert(!second.TimedOut && !second.ReusedPreviousResult &&
+                   second.SafetyTransactionId != timeout.SafetyTransactionId &&
+                   receipt.PreviousTransactionId == timeout.SafetyTransactionId &&
+                   port.ExecuteCount > calls,
+                "阶段超时后的请求没有建立新代次并重做安全动作。");
             port.ReleaseHungStage();
             Assert(SpinWait.SpinUntil(() => !runner.HasOrphanCore, 2000),
                 "迟到阶段任务未被观察并收回orphan槽。");
@@ -2038,6 +2067,19 @@ namespace AdaptiveControlTests
                 int electricalGroupId,
                 string reason,
                 CancellationToken token) => Task.CompletedTask;
+
+            public Task<PowerSafetyDisableResult> DisableGroupForSafetyAsync(
+                int electricalGroupId,
+                string reason,
+                CancellationToken token) => Task.FromResult(new PowerSafetyDisableResult
+                {
+                    ElectricalGroupId = electricalGroupId,
+                    OperationGeneration = 1,
+                    Outcome = PowerSafetyDisableOutcome.ConfirmedOff,
+                    ConfirmedOff = true,
+                    StartedUtc = DateTime.UtcNow,
+                    CompletedUtc = DateTime.UtcNow
+                });
 
             public Task DisableAllAsync(
                 string reason,

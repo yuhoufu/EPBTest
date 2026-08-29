@@ -615,7 +615,8 @@ namespace Controller
             var previous = _channelRuntimeStateStore.Get(channel);
             var manualPauseOwned = _channelPausedUtc.ContainsKey(channel) ||
                                    CurrentBatchPauseState == BatchPauseState.PausePending ||
-                                   CurrentBatchPauseState == BatchPauseState.Paused;
+                                   CurrentBatchPauseState == BatchPauseState.Paused ||
+                                   CurrentBatchPauseState == BatchPauseState.PauseHolding;
             if (previous != null &&
                 ShouldRejectRecoveryPauseOverride(
                     previous.State,
@@ -1170,16 +1171,42 @@ namespace Controller
             public Task[] PowerDisableTasks = Array.Empty<Task>();
             // 保留电源组到关闭任务的映射；仅保存 Task[] 会丢失“哪一组”卡在
             // DisableCore/Gate 的证据，而 runtime telemetry 可能尚未反映 pending。
-            public Dictionary<int, Task> PowerDisableTasksByGroup =
-                new Dictionary<int, Task>();
+            public Dictionary<int, Task<(bool ok, string error)>> PowerDisableTasksByGroup =
+                new Dictionary<int, Task<(bool ok, string error)>>();
+            // Runtime telemetry may lag an accepted OFF command.  Keep the
+            // exact recovery-epoch receipt so pending OFF is not misclassified
+            // as a hard failure from a stale status bitmap.
+            public readonly ConcurrentDictionary<int, DaqRecoveryPowerOffReceipt>
+                PowerOffReceipts = new ConcurrentDictionary<int, DaqRecoveryPowerOffReceipt>();
             public long PowerDisableStartedTicks;
             public long PowerDisableStartedUtcTicks;
             public int PowerDisableDeadlineLogged;
+            // A pending OFF receipt is recovery progress, not a failed DAQ
+            // attempt.  It therefore has its own diagnostic/retry markers
+            // and must not consume the software-maintenance retry budget.
+            public int PowerOffPendingPublished;
+            public int PowerOffPendingRetryScheduled;
             public int BoundaryContradiction;
             public string BoundaryContradictionReason;
             public int CutoffCyclesFinalized;
             public readonly object CutoffCyclesFinalizationGate = new object();
             public TaskCompletionSource<bool> CutoffCyclesFinalizationCompletion;
+        }
+
+        private sealed class DaqRecoveryPowerOffReceipt
+        {
+            public int GroupId;
+            public long RecoveryEpoch;
+            public long PowerOperationEpoch;
+            public DateTime SubmittedUtc;
+            public DateTime TaskCompletedUtc;
+            public DateTime StateObservedUtc;
+            public DateTime LastTelemetryUtc;
+            public bool TaskCompleted;
+            public bool OutputConfirmedOff;
+            public bool PowerOffPending;
+            public string Failure = string.Empty;
+            public SafetyOffReceipt Evidence;
         }
 
         internal sealed class RecoveryIncidentHandle
@@ -6231,7 +6258,22 @@ namespace Controller
                             commandId,
                             accepted,
                             false,
-                            accepted ? string.Empty : "DaqOffAdmissionRejected");
+                            accepted ? string.Empty : "DaqOffAdmissionRejected",
+                            new SafetyOffReceipt
+                            {
+                                CommandId = commandId,
+                                CorrelationId = context.CorrelationId,
+                                TargetKind = SafetyOffTargetKind.DigitalOutput,
+                                TargetId = channel,
+                                RunEpoch = context.RunEpoch,
+                                OperationGeneration = context.RecoveryEpoch,
+                                SubmittedUtc = DateTime.UtcNow,
+                                Status = accepted
+                                    ? SafetyOffEvidenceStatus.Submitted
+                                    : SafetyOffEvidenceStatus.Rejected,
+                                EvidenceSource = "HighPriorityDoWorker",
+                                Error = accepted ? string.Empty : "DaqOffAdmissionRejected"
+                            });
                     },
                     PublishPhase = phase =>
                     {
@@ -6337,7 +6379,7 @@ namespace Controller
                             if (PublishDaqSafeTerminalStates(
                                     context,
                                     "DaqRecoveryTransactionSafeTerminal",
-                                    ChannelRuntimeState.StartBlocked,
+                                    SelectDaqRecoverySafeTerminalState(context),
                                     requested))
                                 return requested;
                         }
@@ -6471,7 +6513,7 @@ namespace Controller
                 .ToArray();
             context.PowerDisableTasksByGroup = powerDisableTasks
                 .Where(pair => pair.Key > 0 && pair.Value != null)
-                .ToDictionary(pair => pair.Key, pair => (Task)pair.Value);
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
             Interlocked.Exchange(
                 ref context.PowerDisableStartedUtcTicks,
                 DateTime.UtcNow.Ticks);
@@ -6876,8 +6918,16 @@ namespace Controller
 
                 if (!IsCurrentRecovery(context)) return;
 
-                if (!TryEnsureDaqRecoveryGroupDeenergized(context))
+                if (!await EnsureDaqRecoveryGroupDeenergizedAsync(context)
+                        .ConfigureAwait(false))
                 {
+                    if (IsDaqRecoveryPowerOffPending(context))
+                    {
+                        ScheduleDaqPowerOffPendingRetry(
+                            context,
+                            "DaqOutputCutoffPowerOffPending");
+                        return;
+                    }
                     await EscalateDaqAutoRecoveryAsync(
                             device,
                             "DaqOutputCutoffUnconfirmed",
@@ -7445,6 +7495,20 @@ namespace Controller
                     heldPausePowerOffConfirmed = true;
                 }
                 ReleaseDaqRecoveryOwnerships(context);
+                if (holdForBatchPause && batchPauseState == BatchPauseState.PauseHolding)
+                {
+                    var currentPause = CaptureBatchPauseSnapshot();
+                    if (currentPause.State == BatchPauseState.PauseHolding &&
+                        currentPause.Generation == batchPauseSnapshot.Generation &&
+                        currentPause.CommandId == batchPauseSnapshot.CommandId)
+                    {
+                        SetBatchPauseState(
+                            BatchPauseState.Paused,
+                            currentPause.FrozenChannels,
+                            "DAQ健康恢复完成，保持安全暂停，可继续试验。");
+                        batchPauseState = BatchPauseState.Paused;
+                    }
+                }
                 if (holdForBatchPause)
                 {
                     foreach (var channel in rejoinChannels)
@@ -7880,16 +7944,154 @@ namespace Controller
                     "DaqRejoinRollbackImmediateOffFallback"));
         }
 
+        private void ScheduleDaqPowerOffPendingRetry(
+            DaqAutoRecoveryContext context,
+            string reason)
+        {
+            if (!IsCurrentRecovery(context)) return;
+            if (Interlocked.CompareExchange(
+                    ref context.PowerOffPendingRetryScheduled,
+                    1,
+                    0) != 0)
+                return;
+
+            ObserveNonRecoveryLifecycleTask(Task.Run(async () =>
+            {
+                try
+                {
+                    while (IsCurrentRecovery(context))
+                    {
+                        var remainingMs = GetDaqRecoveryRemainingMs(context);
+                        if (remainingMs <= 0)
+                        {
+                            var pause = CaptureBatchPauseSnapshot();
+                            if (ShouldHoldDaqRecoveryForPause(context, pause) &&
+                                HasDaqRecoverySafeOffEvidence(context))
+                                SetBatchPauseState(
+                                    BatchPauseState.PauseHolding,
+                                    pause.FrozenChannels,
+                                    "DAQ恢复达到60秒硬截止；已确认断电，保持暂停等待受控停止。");
+                            CompleteCancelledRecovery(
+                                context,
+                                "DaqPowerOffPendingHardDeadline; " +
+                                (reason ?? "unknown") + "; SafeIdleOnly");
+                            return;
+                        }
+
+                        await Task.Delay(Math.Min(1000, remainingMs), context.Cancellation.Token)
+                            .ConfigureAwait(false);
+                        if (!IsCurrentRecovery(context)) return;
+
+                        RetryDaqRecoveryPowerDisableTasks(context);
+                        if (!await EnsureDaqRecoveryGroupDeenergizedAsync(
+                                context,
+                                retryUnresolvedOff: true).ConfigureAwait(false))
+                            continue;
+
+                        // The original recovery body intentionally stopped at
+                        // the pending receipt.  Re-enter through the existing
+                        // maintenance path without consuming a failure attempt:
+                        // this is a late acknowledgement, not a failed DAQ
+                        // recovery generation.
+                        Interlocked.Exchange(ref context.PowerOffPendingPublished, 0);
+                        ScheduleDaqSelfMaintenance(
+                            context,
+                            "DaqPowerOffReceiptConfirmed",
+                            "当前恢复代际电源OFF回执已确认，继续DAQ恢复。",
+                            countAsFailure: false);
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    if (IsCurrentRecovery(context))
+                    {
+                        _log.Warn(
+                            $"DAQ恢复PowerOffPending重试异常 Device={context.Device}: {ex.Message}",
+                            "程控电源");
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref context.PowerOffPendingRetryScheduled, 0);
+                }
+            }), "DaqPowerOffPendingRetry");
+        }
+
+        private void RetryDaqRecoveryPowerDisableTasks(DaqAutoRecoveryContext context)
+        {
+            if (context == null || _powerSupply == null) return;
+            var groups = (context.AffectedChannels ?? Array.Empty<int>())
+                .Select(GetElectricalGroupId)
+                .Where(groupId => groupId > 0)
+                .Distinct()
+                .OrderBy(groupId => groupId)
+                .ToArray();
+            var retryGroups = groups.Where(groupId =>
+            {
+                if (context.PowerOffReceipts.TryGetValue(groupId, out var receipt) &&
+                    receipt.RecoveryEpoch == context.RecoveryEpoch &&
+                    receipt.TaskCompleted && receipt.OutputConfirmedOff)
+                    return false;
+                return context.PowerDisableTasksByGroup == null ||
+                       !context.PowerDisableTasksByGroup.TryGetValue(groupId, out var task) ||
+                       task == null || task.IsFaulted || task.IsCanceled;
+            }).ToArray();
+            if (retryGroups.Length == 0) return;
+
+            var retried = StartElectricalGroupSafetyDisables(
+                context.AffectedChannels,
+                $"DAQ恢复PowerOffPending重试 Device={context.Device} " +
+                $"RecoveryEpoch={context.RecoveryEpoch}",
+                "DaqPowerOffPendingRetry");
+            lock (context.ProgressGate)
+            {
+                var tasks = context.PowerDisableTasksByGroup ??
+                            new Dictionary<int, Task<(bool ok, string error)>>();
+                foreach (var groupId in retryGroups)
+                {
+                    if (!retried.TryGetValue(groupId, out var task) || task == null) continue;
+                    tasks[groupId] = task;
+                    var receipt = context.PowerOffReceipts.GetOrAdd(
+                        groupId,
+                        id => new DaqRecoveryPowerOffReceipt { GroupId = id });
+                    receipt.RecoveryEpoch = context.RecoveryEpoch;
+                    receipt.SubmittedUtc = DateTime.UtcNow;
+                    receipt.TaskCompleted = false;
+                    receipt.OutputConfirmedOff = false;
+                    receipt.PowerOffPending = true;
+                    receipt.Failure = "PowerOffRetrySubmitted";
+                    receipt.Evidence = new SafetyOffReceipt
+                    {
+                        CorrelationId = context.CorrelationId,
+                        TargetKind = SafetyOffTargetKind.PowerSupplyGroup,
+                        TargetId = groupId,
+                        RunEpoch = context.RunEpoch,
+                        OperationGeneration = context.RecoveryEpoch,
+                        SubmittedUtc = receipt.SubmittedUtc,
+                        Status = SafetyOffEvidenceStatus.Submitted,
+                        EvidenceSource = "PowerSupplySafetyDisable"
+                    };
+                }
+                context.PowerDisableTasksByGroup = tasks;
+                context.PowerDisableTasks = tasks.Values.Where(task => task != null).ToArray();
+            }
+        }
+
         private void ScheduleDaqSelfMaintenance(
             DaqAutoRecoveryContext context,
             string code,
-            string reason)
+            string reason,
+            bool countAsFailure = true)
         {
             if (!IsCurrentRecovery(context)) return;
             if (Interlocked.CompareExchange(ref context.MaintenanceScheduled, 1, 0) != 0) return;
 
-            var failureCount = context.FailureBackoff.RecordFailure();
-            if (failureCount >= SoftwareRecoveryEscalationAttempts)
+            var failureCount = countAsFailure
+                ? context.FailureBackoff.RecordFailure()
+                : context.FailureBackoff.Current;
+            if (countAsFailure && failureCount >= SoftwareRecoveryEscalationAttempts)
             {
                 // DAQ software maintenance is bounded per incident.  Reaching
                 // the budget is a single SafeIdle/Terminal outcome, not an
@@ -7900,7 +8102,9 @@ namespace Controller
                     $"Failure={failureCount}; Code={code}; SafeIdleOnly");
                 return;
             }
-            var delayMs = GetDaqSelfMaintenanceDelayMs(failureCount);
+            var delayMs = countAsFailure
+                ? GetDaqSelfMaintenanceDelayMs(failureCount)
+                : 0;
             foreach (var channel in context.AffectedChannels)
                 PublishRecoveryIncidentState(
                     channel,
@@ -7938,11 +8142,18 @@ namespace Controller
                     // Re-check the hard safety boundary on every unattended retry. If an OFF
                     // command did not take effect, retry OFF but never skip data or rebuild the
                     // DAQ while any mapped channel is still considered energized.
-                    if (!TryEnsureDaqRecoveryGroupDeenergized(
+                    if (!await EnsureDaqRecoveryGroupDeenergizedAsync(
                             context,
-                            retryUnresolvedOff: true))
+                            retryUnresolvedOff: true).ConfigureAwait(false))
                     {
                         Interlocked.Exchange(ref context.MaintenanceScheduled, 0);
+                        if (IsDaqRecoveryPowerOffPending(context))
+                        {
+                            ScheduleDaqPowerOffPendingRetry(
+                                context,
+                                "DaqSelfMaintenancePowerOffPending");
+                            return;
+                        }
                         ScheduleDaqSelfMaintenance(
                             context,
                             "DaqOutputCutoffUnconfirmed",
@@ -8174,7 +8385,7 @@ namespace Controller
             }), "DaqSelfMaintenance");
         }
 
-        private bool TryEnsureDaqRecoveryGroupDeenergized(
+        private async Task<bool> EnsureDaqRecoveryGroupDeenergizedAsync(
             DaqAutoRecoveryContext context,
             bool retryUnresolvedOff = false)
         {
@@ -8231,36 +8442,228 @@ namespace Controller
             var deenergized = !IsDaqDeviceControlActive(context.Device);
             if (deenergized && _powerSupply != null)
             {
-                var energizedGroups = (context.AffectedChannels ?? Array.Empty<int>())
+                var groups = (context.AffectedChannels ?? Array.Empty<int>())
                     .Select(GetElectricalGroupId)
                     .Where(id => id > 0)
                     .Distinct()
-                    .Where(id =>
-                    {
-                        var state = _powerSupply.GetRuntimeState(id);
-                        return state.ExpectedOutputEnabled ||
-                               state.TelemetryOutputEnabled ||
-                               state.Active;
-                    })
                     .OrderBy(id => id)
                     .ToArray();
-                if (energizedGroups.Length > 0)
+                foreach (var groupId in groups)
                 {
-                    deenergized = false;
-                    _log.Error(
-                        $"DAQ恢复电源组仍报告带电，禁止重建 Device={context.Device} " +
-                        $"Groups=[{string.Join(",", energizedGroups)}] " +
-                        $"CorrelationId={context.CorrelationId:N}",
-                        "程控电源");
+                    var state = _powerSupply.GetRuntimeState(groupId);
+                    var receipt = context.PowerOffReceipts.GetOrAdd(
+                        groupId,
+                        id => new DaqRecoveryPowerOffReceipt
+                        {
+                            GroupId = id,
+                            RecoveryEpoch = context.RecoveryEpoch,
+                            SubmittedUtc = DateTime.UtcNow,
+                            Evidence = new SafetyOffReceipt
+                            {
+                                CorrelationId = context.CorrelationId,
+                                TargetKind = SafetyOffTargetKind.PowerSupplyGroup,
+                                TargetId = id,
+                                RunEpoch = context.RunEpoch,
+                                OperationGeneration = context.RecoveryEpoch,
+                                SubmittedUtc = DateTime.UtcNow,
+                                Status = SafetyOffEvidenceStatus.Submitted,
+                                EvidenceSource = "PowerSupplySafetyDisable"
+                            }
+                        });
+                    receipt.RecoveryEpoch = context.RecoveryEpoch;
+                    receipt.PowerOperationEpoch = state.OperationEpoch;
+                    if (context.PowerDisableTasksByGroup == null ||
+                        !context.PowerDisableTasksByGroup.TryGetValue(groupId, out var disableTask) ||
+                        disableTask == null)
+                    {
+                        receipt.PowerOffPending = true;
+                        receipt.Failure = "PowerOffTaskMissingForRecoveryEpoch";
+                        receipt.StateObservedUtc = DateTime.UtcNow;
+                        receipt.LastTelemetryUtc = state.TelemetryUtc;
+                        PublishDaqPowerOffPending(context, groupId, receipt.Failure);
+                        deenergized = false;
+                        continue;
+                    }
+
+                    try
+                    {
+                        if (!disableTask.IsCompleted)
+                        {
+                            var remainingMs = GetDaqRecoveryRemainingMs(context);
+                            if (remainingMs <= 0)
+                            {
+                                receipt.PowerOffPending = true;
+                                receipt.Failure = "RecoveryHardDeadlineElapsedBeforePowerOffReceipt";
+                                return false;
+                            }
+                            var diagnosticBudgetMs = Math.Min(
+                                _daqPersistenceRecoveryTimeoutMs,
+                                remainingMs);
+                            var completed = await Task.WhenAny(
+                                    disableTask,
+                                    Task.Delay(diagnosticBudgetMs, context.Cancellation.Token))
+                                .ConfigureAwait(false);
+                            if (completed != disableTask)
+                            {
+                                context.Cancellation.Token.ThrowIfCancellationRequested();
+                                receipt.PowerOffPending = true;
+                                receipt.Failure = "PowerOffPending";
+                                receipt.StateObservedUtc = DateTime.UtcNow;
+                                receipt.LastTelemetryUtc = state.TelemetryUtc;
+                                PublishDaqPowerOffPending(context, groupId, receipt.Failure);
+                                deenergized = false;
+                                continue;
+                            }
+                        }
+                        var powerReceipt = await disableTask.ConfigureAwait(false);
+                        if (!powerReceipt.ok)
+                        {
+                            receipt.PowerOffPending = true;
+                            receipt.Failure = powerReceipt.error ?? "PowerOffUnconfirmed";
+                            receipt.Evidence.Status = SafetyOffEvidenceStatus.Failed;
+                            receipt.Evidence.Error = receipt.Failure;
+                            receipt.Evidence.CompletedUtc = DateTime.UtcNow;
+                            deenergized = false;
+                            continue;
+                        }
+                        receipt.TaskCompleted = true;
+                        receipt.TaskCompletedUtc = DateTime.UtcNow;
+                    }
+                    catch (OperationCanceledException) when (
+                        context.Cancellation.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        receipt.PowerOffPending = true;
+                        receipt.Failure = ex.GetBaseException().Message;
+                        receipt.StateObservedUtc = DateTime.UtcNow;
+                        receipt.LastTelemetryUtc = state.TelemetryUtc;
+                        PublishDaqPowerOffPending(context, groupId, receipt.Failure);
+                        deenergized = false;
+                        continue;
+                    }
+
+                    // The current recovery epoch's completed Disable task is
+                    // the OFF receipt.  Runtime Active/Expected/Telemetry can
+                    // lag by a few milliseconds, so retain them strictly as
+                    // diagnostics; they are never a second failure verdict.
+                    state = _powerSupply.GetRuntimeState(groupId);
+                    receipt.StateObservedUtc = DateTime.UtcNow;
+                    receipt.LastTelemetryUtc = state.TelemetryUtc;
+                    var reportedOn = state.ExpectedOutputEnabled ||
+                                     state.TelemetryOutputEnabled || state.Active;
+                    receipt.OutputConfirmedOff =
+                        IsCurrentDaqRecoveryPowerOffReceiptAuthoritative(
+                            receipt.TaskCompleted,
+                            reportedOn);
+                    receipt.Evidence = receipt.Evidence ?? new SafetyOffReceipt();
+                    receipt.Evidence.CorrelationId = context.CorrelationId;
+                    receipt.Evidence.TargetKind = SafetyOffTargetKind.PowerSupplyGroup;
+                    receipt.Evidence.TargetId = groupId;
+                    receipt.Evidence.RunEpoch = context.RunEpoch;
+                    receipt.Evidence.OperationGeneration = state.OperationEpoch;
+                    receipt.Evidence.SubmittedUtc = receipt.SubmittedUtc;
+                    receipt.Evidence.CompletedUtc = receipt.TaskCompletedUtc;
+                    receipt.Evidence.HardwareObservedUtc = receipt.StateObservedUtc;
+                    receipt.Evidence.Status = receipt.OutputConfirmedOff
+                        ? SafetyOffEvidenceStatus.ConfirmedOff
+                        : SafetyOffEvidenceStatus.Failed;
+                    receipt.Evidence.EvidenceSource = "PowerSupplyReadback";
+                    receipt.PowerOffPending = false;
+                    receipt.Failure = string.Empty;
+                    if (reportedOn)
+                    {
+                        _log.Warn(
+                            $"DAQ恢复收到当前代际电源OFF回执，但状态缓存尚未收敛；仅记录诊断。 " +
+                            $"Device={context.Device} Group={groupId} " +
+                            $"RecoveryEpoch={context.RecoveryEpoch} " +
+                            $"OperationEpoch={state.OperationEpoch} TelemetryUtc={state.TelemetryUtc:O}",
+                            "程控电源");
+                    }
                 }
             }
             if (!deenergized)
-                _log.Error(
-                    $"DAQ恢复断电确认失败 Device={context.Device} " +
+                _log.Warn(
+                    $"DAQ恢复断电仍待确认 Device={context.Device} " +
                     $"Affected=[{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}]；" +
-                    "禁止丢弃批次和重建DAQ。",
+                    "发布PowerOffPending，禁止丢弃批次和重建DAQ。",
                     "AI");
             return deenergized;
+        }
+
+        private void PublishDaqPowerOffPending(
+            DaqAutoRecoveryContext context,
+            int groupId,
+            string detail)
+        {
+            if (context == null) return;
+            if (Interlocked.Exchange(ref context.PowerOffPendingPublished, 1) != 0) return;
+            PublishRecoveryProgress(
+                context,
+                $"PowerOffPending Group={groupId}；等待当前恢复代际OFF回执。" +
+                $"Detail={detail ?? string.Empty}");
+            _log.Warn(
+                $"DAQ恢复电源OFF回执等待中 Device={context.Device} Group={groupId} " +
+                $"RecoveryEpoch={context.RecoveryEpoch} Detail={detail}",
+                "程控电源");
+        }
+
+        private static bool IsDaqRecoveryPowerOffPending(DaqAutoRecoveryContext context)
+        {
+            return context != null && GetDaqRecoveryRemainingMs(context) > 0 &&
+                   context.PowerOffReceipts.Values.Any(receipt =>
+                       receipt != null &&
+                       receipt.RecoveryEpoch == context.RecoveryEpoch &&
+                       receipt.PowerOffPending);
+        }
+
+        // A completed Disable task belongs to the current RecoveryEpoch and
+        // is the authoritative OFF acknowledgement.  The cached status bit is
+        // deliberately an input for diagnostics only; it must not turn the
+        // 4–100 ms publication race into StartBlocked.
+        internal static bool IsCurrentDaqRecoveryPowerOffReceiptAuthoritative(
+            bool disableTaskCompleted,
+            bool cachedRuntimeReportsOn)
+        {
+            return disableTaskCompleted;
+        }
+
+        internal static bool ShouldKeepDaqRecoveryPowerOffPending(
+            bool disableTaskCompleted,
+            int remainingHardDeadlineMs)
+        {
+            return !disableTaskCompleted && remainingHardDeadlineMs > 0;
+        }
+
+        private bool HasDaqRecoveryPowerOffReceipts(DaqAutoRecoveryContext context)
+        {
+            if (context == null || _powerSupply == null) return true;
+            var groups = (context.AffectedChannels ?? Array.Empty<int>())
+                .Select(GetElectricalGroupId)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToArray();
+            return groups.All(groupId => context.PowerOffReceipts.TryGetValue(groupId, out var receipt) &&
+                                        receipt.RecoveryEpoch == context.RecoveryEpoch &&
+                                        receipt.TaskCompleted && receipt.OutputConfirmedOff &&
+                                        receipt.Evidence?.ConfirmedOff == true);
+        }
+
+        private bool HasDaqRecoverySafeOffEvidence(DaqAutoRecoveryContext context)
+        {
+            return context != null &&
+                   !IsDaqDeviceControlActive(context.Device) &&
+                   HasDaqRecoveryPowerOffReceipts(context);
+        }
+
+        private static int GetDaqRecoveryRemainingMs(DaqAutoRecoveryContext context)
+        {
+            if (context == null || context.HardDeadlineUtc == default) return 0;
+            var remaining = context.HardDeadlineUtc - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero) return 0;
+            return (int)Math.Min(int.MaxValue, Math.Ceiling(remaining.TotalMilliseconds));
         }
 
         /// <summary>
@@ -8443,11 +8846,16 @@ namespace Controller
             try
             {
                 if (_powerSupply != null)
-                    await _powerSupply.DisableGroupAsync(
+                {
+                    var receipt = await _powerSupply.DisableGroupForSafetyAsync(
                             groupId,
                             reason ?? "SafetyIsolation",
                             CancellationToken.None)
                         .ConfigureAwait(false);
+                    return receipt != null && receipt.ConfirmedOff
+                        ? (true, string.Empty)
+                        : (false, receipt?.Error ?? "PowerOffReceiptMissing");
+                }
                 return (true, string.Empty);
             }
             catch (Exception ex)
@@ -11203,27 +11611,11 @@ namespace Controller
             {
                 if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
                 {
-                    if (IsFinalExitStopSource(context.Source))
-                    {
-                        if (_stopSafetyFinalExitTask != null &&
-                            !_stopSafetyFinalExitTask.IsCompleted)
-                            return _stopSafetyFinalExitTask;
-                        _stopSafetyFinalExitTask = ContinueWithFinalExitStopAsync(
-                            _stopSafetyTask,
-                            context,
-                            token);
-                        return _stopSafetyFinalExitTask;
-                    }
+                    // All callers join the same active physical transaction.
+                    // FinalExit is a request source, not authority to enqueue
+                    // a second core behind an already-running safety action.
                     return _stopSafetyTask;
                 }
-                // A physical failure/timeout is already a terminal safety
-                // decision.  Final-exit re-entry must consume that retained
-                // result instead of creating a second StopAll core and
-                // issuing another round of physical IO.
-                if (_lastStopSafetyResult != null &&
-                    (_lastStopSafetyResult.RequiresProcessRestart ||
-                     _lastStopSafetyResult.TimedOut))
-                    return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
                 if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
                     _lastStopSafetyResult.CanRestartInProcess &&
@@ -11239,6 +11631,35 @@ namespace Controller
                     _stopSafetyFinalExitTask = _stopSafetyTask;
                 return _stopSafetyTask;
             }
+        }
+
+        public async Task<StopRequestReceipt> StopAllWithReceiptAsync(
+            StopContext context,
+            CancellationToken token = default)
+        {
+            context ??= StopContext.Legacy(nameof(StopAllWithReceiptAsync));
+            var requestedUtc = DateTime.UtcNow;
+            StopSafetyResult previous;
+            bool joined;
+            lock (_stopSafetyGate)
+            {
+                previous = _lastStopSafetyResult?.Clone();
+                joined = _stopSafetyTask != null && !_stopSafetyTask.IsCompleted;
+            }
+            var result = await StopAllAsync(context, token).ConfigureAwait(false);
+            return new StopRequestReceipt
+            {
+                RequestId = Guid.NewGuid(),
+                Source = context.Source,
+                RequestedUtc = requestedUtc,
+                StartedUtc = result?.StartedUtc ?? requestedUtc,
+                CompletedUtc = DateTime.UtcNow,
+                PhysicalTransactionId = result?.SafetyTransactionId ?? Guid.Empty,
+                JoinedActiveTransaction = joined,
+                PreviousTransactionId = previous?.SafetyTransactionId ?? Guid.Empty,
+                PreviousOutcome = previous?.Outcome ?? StopSafetyOutcome.Unknown,
+                Result = result?.Clone()
+            };
         }
 
         private sealed class AlarmLiveDiagnosticsSnapshot
@@ -12990,7 +13411,8 @@ namespace Controller
                    state == BatchPauseState.Paused ||
                    state == BatchPauseState.ResumeChecking ||
                    state == BatchPauseState.Qualification ||
-                   state == BatchPauseState.Stopping;
+                   state == BatchPauseState.Stopping ||
+                   state == BatchPauseState.PauseHolding;
         }
 
         internal static bool CanCommitDaqRecoveredHeldTerminal(

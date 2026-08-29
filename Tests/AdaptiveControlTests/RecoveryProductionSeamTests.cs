@@ -25,7 +25,7 @@ namespace AdaptiveControlTests
             Run("Recovery reserve/factory/scheduler/bind/publish/observer故障均先OFF再安全终态",
                 AdmissionFailuresFailClosed,
                 ref passed);
-            Run("Recovery真实worker在显式Start前不执行且终态后释放合同租约",
+            Run("Recovery真实worker在显式Start前不执行且漏终态自动断电收口",
                 WorkerIsSuspendedUntilExplicitStart,
                 ref passed);
             Run("Recovery显式Start故障仍按OFF→安全终态收口",
@@ -51,6 +51,9 @@ namespace AdaptiveControlTests
                 ref passed);
             Run("Recovery 1.2秒窗口64并发不同correlation只创建一个incident",
                 ScopeBarrierDeduplicatesConcurrentSignals,
+                ref passed);
+            Run("Recovery 1000轮随机并发准入/Stop隔离/迟到终态无双owner或半恢复",
+                RandomizedAdmissionStopAndLateTerminalInterleavings,
                 ref passed);
             Run("DAQ事务最后一路准入阻塞时仍停留StaleDetected",
                 DaqLastAdmissionBlockedDoesNotPublishSubmitted,
@@ -581,6 +584,12 @@ namespace AdaptiveControlTests
                        true) &&
                    transaction.Phase == DaqRecoveryPhase.DoOffConfirmed,
                 "全部物理完成后未发布DoOffConfirmed。");
+            var confirmed = transaction.OffReceipts.ToArray();
+            Assert(confirmed.All(receipt => receipt.Evidence != null &&
+                                             receipt.Evidence.ConfirmedOff &&
+                                             receipt.Evidence.TargetKind ==
+                                                 SafetyOffTargetKind.DigitalOutput),
+                "DAQ断电完成未形成强类型ConfirmedOff硬件回执。");
         }
 
         private static void DaqDoOffConfirmedAlreadyCommittedIsNarrow()
@@ -1301,10 +1310,10 @@ namespace AdaptiveControlTests
             Assert(incident.Start(), "显式Start未获准执行真实worker。");
             AwaitWorker(incident.WorkerTask);
             Assert(bodyStarted == 1, "显式Start后真实body未且仅未执行一次。");
-            Assert(incident.CompleteAfterTerminal(seam.PublishTerminal),
-                "正常终态发布没有完成Recovery合同。");
-            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
-                "终态发布后contract/lease未释放。");
+            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0 &&
+                   seam.OffCount == 1 && seam.TerminalCount == seam.ChannelCount &&
+                   seam.LastTerminalReason == "RecoveryWorkerCompletedWithoutTerminal",
+                "漏终态worker未自动执行OFF→SafeIdleFault并释放contract/lease。");
         }
 
         private static void WorkerBodyFailuresFailClosed()
@@ -1336,7 +1345,7 @@ namespace AdaptiveControlTests
                 try { AwaitWorker(incident.WorkerTask); }
                 catch (Exception) { }
                 Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0 &&
-                       seam.TerminalCount == seam.ChannelCount,
+                       seam.TerminalCount == seam.ChannelCount && seam.OffCount >= 1,
                     $"{mode} body异常后未安全收口：Active={coordinator.ActiveCount}; " +
                     $"Lease={seam.Registry.ActiveCount}; Terminal={seam.TerminalCount}/{seam.ChannelCount}");
                 Assert(seam.LastTerminalReason?.StartsWith(
@@ -1376,24 +1385,30 @@ namespace AdaptiveControlTests
             {
                 var seam = new FakeSeam();
                 var coordinator = seam.CreateCoordinator();
+                RecoveryIncidentCoordinator.Incident current = null;
                 var result = Begin(
                     coordinator,
                     seam,
-                    _ => () => Task.CompletedTask,
+                    _ => () =>
+                    {
+                        var completed = current.CompleteAfterTerminal(contract =>
+                        {
+                            seam.Events.Enqueue("terminal-callback");
+                            if (mode == "throw")
+                                throw new InvalidOperationException("terminal callback");
+                            seam.MarkTerminal(contract, onlyFirst: true);
+                        });
+                        Assert(completed,
+                            $"终态{mode}回调没有由生产安全回退补齐。");
+                        return Task.CompletedTask;
+                    },
                     out var incident);
                 Assert(result == RecoveryIncidentCoordinator.BeginResult.Created,
                     $"终态{mode}测试未建立incident。");
+                current = incident;
                 Assert(incident.Start(), $"终态{mode}测试无法Start。");
                 AwaitWorker(incident.WorkerTask);
-
-                var completed = incident.CompleteAfterTerminal(contract =>
-                {
-                    seam.Events.Enqueue("terminal-callback");
-                    if (mode == "throw")
-                        throw new InvalidOperationException("terminal callback");
-                    seam.MarkTerminal(contract, onlyFirst: true);
-                });
-                Assert(completed && coordinator.ActiveCount == 0 &&
+                Assert(coordinator.ActiveCount == 0 &&
                        seam.Registry.ActiveCount == 0 &&
                        seam.TerminalCount == seam.ChannelCount,
                     $"终态{mode}没有由生产安全回退补齐：{seam.EventsText}");
@@ -1420,11 +1435,10 @@ namespace AdaptiveControlTests
                 "至少一个生产端口回调仍在协调gate内调用：" + seam.EventsText);
             Assert(incident.Start(), "回调gate外测试无法Start。");
             AwaitWorker(incident.WorkerTask);
-            Assert(incident.CompleteAfterTerminal(seam.PublishTerminal),
-                "回调gate外测试终态提交失败。");
             Assert(seam.ReentryTimeoutCount == 0 &&
                    coordinator.ActiveCount == 0 &&
-                   seam.Registry.ActiveCount == 0,
+                   seam.Registry.ActiveCount == 0 &&
+                   seam.TerminalCount == seam.ChannelCount,
                 "回调重入或终态收口残留：" + seam.EventsText);
         }
 
@@ -1506,10 +1520,9 @@ namespace AdaptiveControlTests
             Assert(first.Start() && second.Start(), "并行incident无法Start。");
             AwaitWorker(first.WorkerTask);
             AwaitWorker(second.WorkerTask);
-            Assert(first.CompleteAfterTerminal(seam.PublishTerminal) &&
-                   second.CompleteAfterTerminal(seam.PublishTerminal) &&
-                   coordinator.ActiveCount == 0 &&
-                   seam.Registry.ActiveCount == 0,
+            Assert(coordinator.ActiveCount == 0 &&
+                   seam.Registry.ActiveCount == 0 &&
+                   seam.TerminalCount == seam.ChannelCount,
                 "重叠门禁测试终态后仍残留contract/lease。");
         }
 
@@ -1537,8 +1550,8 @@ namespace AdaptiveControlTests
                 "禁用EPB10仍被登记为逻辑恢复owner，或物理整组范围丢失");
             Assert(incident.Start(), "拆分集合incident无法启动");
             AwaitWorker(incident.WorkerTask);
-            Assert(incident.CompleteAfterTerminal(seam.PublishTerminal) &&
-                   coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
+            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0 &&
+                   seam.TerminalCount == seam.ChannelCount,
                 "拆分集合incident终态后仍残留合同或租约");
 
             var failing = new FakeSeam { Failure = "publish" };
@@ -1605,10 +1618,85 @@ namespace AdaptiveControlTests
             var incident = seam.LastIncident;
             Assert(incident != null && incident.Start(), "唯一incident无法显式Start。");
             AwaitWorker(incident.WorkerTask);
-            Assert(incident.CompleteAfterTerminal(seam.PublishTerminal),
-                "唯一incident终态提交失败。");
-            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
+            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0 &&
+                   seam.TerminalCount == seam.ChannelCount,
                 "唯一incident终态后仍残留contract/lease。");
+        }
+
+        private static void RandomizedAdmissionStopAndLateTerminalInterleavings()
+        {
+            var random = new Random(20260829);
+            for (var round = 0; round < 1000; round++)
+            {
+                var seam = new FakeSeam();
+                var coordinator = seam.CreateCoordinator();
+                var runId = Guid.NewGuid();
+                var outcomes = new RecoveryIncidentCoordinator.BeginResult[2];
+                var incidents = new RecoveryIncidentCoordinator.Incident[2];
+                var mode = random.Next(3);
+                Func<RecoveryContractSnapshot, Func<Task>> workerFactory = _ =>
+                {
+                    if (mode == 1)
+                        return () => throw new InvalidOperationException("randomized-worker");
+                    if (mode == 2)
+                        return async () => await Task.Yield();
+                    return () => Task.CompletedTask;
+                };
+
+                Parallel.Invoke(
+                    () => outcomes[0] = Begin(
+                        coordinator,
+                        seam,
+                        workerFactory,
+                        out incidents[0],
+                        runId,
+                        Guid.NewGuid()),
+                    () => outcomes[1] = Begin(
+                        coordinator,
+                        seam,
+                        workerFactory,
+                        out incidents[1],
+                        runId,
+                        Guid.NewGuid()));
+
+                Assert(outcomes.Count(item =>
+                           item == RecoveryIncidentCoordinator.BeginResult.Created) == 1 &&
+                       outcomes.Count(item =>
+                           item == RecoveryIncidentCoordinator.BeginResult.ExistingSameScope) == 1 &&
+                       coordinator.ActiveCount == 1 &&
+                       seam.Registry.ActiveCount == 1 &&
+                       seam.RegisterCount == 1,
+                    "随机交错产生双owner或准入未原子化，round=" + round);
+
+                var incident = incidents.FirstOrDefault(item => item != null) ?? seam.LastIncident;
+                Assert(incident != null, "随机交错没有返回唯一incident，round=" + round);
+
+                // Model StopAll's epoch fence in roughly half the schedules.
+                // The old worker is still allowed to finish for audit, but its
+                // late terminal may not re-enter the active registry.
+                var superseded = random.Next(2) == 0;
+                if (superseded)
+                {
+                    var quarantine = seam.Registry.SupersedeThroughEpoch(
+                        1,
+                        "RandomizedStopFence");
+                    Assert(quarantine.Length == 1 && seam.Registry.ActiveCount == 0,
+                        "Stop代次栅栏未隔离唯一旧owner，round=" + round);
+                }
+
+                Assert(incident.Start(), "随机交错incident无法Start，round=" + round);
+                try { AwaitWorker(incident.WorkerTask); }
+                catch (InvalidOperationException) when (mode == 1) { }
+
+                Assert(coordinator.ActiveCount == 0 &&
+                       seam.Registry.ActiveCount == 0 &&
+                       seam.RegisteredIncident == null &&
+                       seam.TerminalCount == seam.ChannelCount &&
+                       seam.Recovering.Count == 0 &&
+                       seam.OffCount >= 1,
+                    "随机交错遗留owner/半恢复/非安全终态，round=" + round +
+                    ";superseded=" + superseded + ";events=" + seam.EventsText);
+            }
         }
 
         private static RecoveryIncidentCoordinator.BeginResult Begin(

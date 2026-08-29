@@ -51,6 +51,14 @@ namespace Controller
         internal DaqDataContinuityCompromisedException(string message) : base(message) { }
     }
 
+    internal sealed class BatchResumePreflight
+    {
+        internal BatchPauseSnapshot Pause { get; set; }
+        internal int[] Channels { get; set; } = Array.Empty<int>();
+        internal Dictionary<int, ChannelExecutionPermit> ExecutionPermits { get; set; } =
+            new Dictionary<int, ChannelExecutionPermit>();
+    }
+
     public sealed partial class EpbManager
     {
         private readonly SemaphoreSlim _pauseResumeGate = new SemaphoreSlim(1, 1);
@@ -103,6 +111,7 @@ namespace Controller
                 pause.CommandId == Guid.Empty ||
                 (pause.State != BatchPauseState.PausePending &&
                  pause.State != BatchPauseState.Paused &&
+                 pause.State != BatchPauseState.PauseHolding &&
                  pause.State != BatchPauseState.ResumeChecking))
                 return false;
             var capturedPause = pause;
@@ -114,7 +123,8 @@ namespace Controller
                    active.All(channel => capturedPause.FrozenChannels.Contains(channel));
         }
 
-        public bool IsBatchPaused => CurrentBatchPauseState == BatchPauseState.Paused;
+        public bool IsBatchPaused => CurrentBatchPauseState == BatchPauseState.Paused ||
+                                     CurrentBatchPauseState == BatchPauseState.PauseHolding;
 
         public DateTime? BatchPausedUtc => _batchPausedUtc == DateTime.MinValue
             ? (DateTime?)null
@@ -161,7 +171,8 @@ namespace Controller
             {
                 if (!IsBatchSessionActive)
                     throw new InvalidOperationException("当前没有可暂停的批量试验。");
-                if (CurrentBatchPauseState == BatchPauseState.Paused)
+                if (CurrentBatchPauseState == BatchPauseState.Paused ||
+                    CurrentBatchPauseState == BatchPauseState.PauseHolding)
                     return;
                 if (CurrentBatchPauseState != BatchPauseState.Running)
                     throw new InvalidOperationException(
@@ -285,25 +296,20 @@ namespace Controller
             await _pauseResumeGate.WaitAsync(token).ConfigureAwait(false);
             CancellationTokenSource resumeCts = null;
             var channels = Array.Empty<int>();
+            var powerEnableAttempted = false;
             try
             {
                 if (!IsBatchSessionActive || CurrentBatchPauseState != BatchPauseState.Paused)
                     throw new InvalidOperationException("当前没有处于安全暂停状态的批次。");
 
-                channels = _batchPausedChannels
-                    .Where(channel => _timers.ContainsKey(channel) && _runners.ContainsKey(channel))
-                    .Distinct()
-                    .OrderBy(channel => channel)
-                    .ToArray();
-                if (channels.Length == 0)
-                    throw new InvalidOperationException("暂停运行对象已丢失，不能快速恢复；请重新开始并完整学习。");
+                var preflight = CaptureBatchResumePreflight();
+                channels = preflight.Channels;
                 EnsureNoPermanentDataContinuityGap("批次恢复预检");
                 resumeCts = CreateResumeLinkedTokenSource(token, channels, includeBatchSession: true);
                 var resumeToken = resumeCts.Token;
 
                 SetBatchPauseState(BatchPauseState.ResumeChecking, channels, "正在执行恢复安全预检");
                 var resumePauseGeneration = CurrentBatchPauseGeneration;
-                ResetTransientFaultStateForRestart(channels, "BatchResume");
                 foreach (var channel in channels)
                     PublishChannelRuntimeState(
                         channel,
@@ -319,10 +325,10 @@ namespace Controller
                         .Select(channel => WaitForDaqRecoveryAsync(channel, resumeToken)))
                     .ConfigureAwait(false);
                 EnsureBatchResumeGenerationUnchanged(resumePauseGeneration);
+                EnsureBatchResumePreflightCurrent(preflight);
                 await EnsureDaqReadyBeforeStartAsync(channels, resumeToken).ConfigureAwait(false);
                 EnsureStrictCurveControl(channels);
                 EnsureAdaptiveProfilesReady(channels);
-                await EnsurePowerSupplyReadyBeforeStartAsync(channels, resumeToken).ConfigureAwait(false);
                 // DAQ健康回调只证明采集硬件仍在工作，不能消除已锁存的
                 // 工程/Raw数据空洞。上电前再检一次，封住预检期间的迟到故障。
                 EnsureNoPermanentDataContinuityGap("批次恢复上电门禁");
@@ -330,14 +336,22 @@ namespace Controller
                         .Select(channel => WaitForDaqRecoveryAsync(channel, resumeToken)))
                     .ConfigureAwait(false);
                 EnsureBatchResumeGenerationUnchanged(resumePauseGeneration);
+                EnsureBatchResumePreflightCurrent(preflight);
 
                 var plan = GetCompatibleStaggerPlan(channels);
+                // All structural, ownership and DAQ checks are complete before
+                // this first command that can energize a power group.
+                powerEnableAttempted = true;
+                await EnsurePowerSupplyReadyBeforeStartAsync(channels, resumeToken).ConfigureAwait(false);
+                EnsureBatchResumePreflightCurrent(preflight);
+                ResetTransientFaultStateForRestart(channels, "BatchResume");
                 RejoinFormalChannelsAtSharedFutureSlot(
                     channels,
                     plan,
                     "Resumed",
                     "批次已从安全暂停边界按当前公共节律槽重新加入",
                     allowTerminalReset: false);
+                powerEnableAttempted = false;
                 foreach (var channel in channels)
                     _channelPausedUtc.TryRemove(channel, out _);
 
@@ -349,6 +363,9 @@ namespace Controller
                 token.IsCancellationRequested ||
                 (resumeCts?.IsCancellationRequested ?? false))
             {
+                if (powerEnableAttempted)
+                    await DisableBatchResumePowerBestEffortAsync(channels, "BatchResumeCanceled")
+                        .ConfigureAwait(false);
                 if (TryGetPermanentDataContinuityGap(out var gapDetail))
                 {
                     var stop = await StopAllAsync(
@@ -383,6 +400,9 @@ namespace Controller
             }
             catch (Exception ex)
             {
+                if (powerEnableAttempted)
+                    await DisableBatchResumePowerBestEffortAsync(channels, "BatchResumeFailed")
+                        .ConfigureAwait(false);
                 var continuityCompromised =
                     ex is DaqDataContinuityCompromisedException ||
                     TryGetPermanentDataContinuityGap(out _);
@@ -433,6 +453,101 @@ namespace Controller
                     "批次暂停代次在DAQ恢复期间已变化，拒绝提交旧恢复结果。" +
                     $" Expected={expectedGeneration}/ResumeChecking" +
                     $" Actual={snapshot.Generation}/{snapshot.State}");
+        }
+
+        private BatchResumePreflight CaptureBatchResumePreflight()
+        {
+            var pause = CaptureBatchPauseSnapshot();
+            if (pause.State != BatchPauseState.Paused ||
+                pause.CommandId == Guid.Empty ||
+                pause.RunId != _activeBatchId ||
+                pause.RunEpoch != Interlocked.Read(ref _runEpoch))
+                throw new InvalidOperationException("批次暂停所有权或运行代际无效，拒绝在上电前继续试验。");
+            var channels = (pause.FrozenChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (channels.Length == 0)
+                throw new InvalidOperationException("暂停批次没有冻结通道，拒绝继续试验。");
+            if (!IsFormalPhaseCommitted)
+                throw new InvalidOperationException("正式批次尚未提交，拒绝继续试验。");
+
+            var permits = new Dictionary<int, ChannelExecutionPermit>();
+            foreach (var channel in channels)
+            {
+                if (!_timers.ContainsKey(channel) || !_runners.ContainsKey(channel))
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] 暂停运行对象缺失；未执行任何上电操作。");
+                var runtime = _channelRuntimeStateStore.Get(channel);
+                if (runtime == null || runtime.State != ChannelRuntimeState.Paused ||
+                    runtime.RunId != pause.RunId || runtime.RunEpoch != pause.RunEpoch)
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] 不处于同一暂停所有权；State={runtime?.State}，未执行任何上电操作。");
+                var permit = _channelExecutionFence.Capture(channel);
+                if (!IsChannelExecutionPermitCurrent(channel, permit))
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] 执行许可已撤销；未执行任何上电操作。");
+                permits[channel] = permit;
+            }
+            return new BatchResumePreflight
+            {
+                Pause = pause,
+                Channels = channels,
+                ExecutionPermits = permits
+            };
+        }
+
+        private void EnsureBatchResumePreflightCurrent(BatchResumePreflight preflight)
+        {
+            if (preflight == null) throw new InvalidOperationException("批次恢复预检凭证缺失。");
+            var pause = CaptureBatchPauseSnapshot();
+            if (!IsBatchSessionActive || !IsFormalPhaseCommitted ||
+                pause.State != BatchPauseState.ResumeChecking ||
+                pause.Generation != preflight.Pause.Generation ||
+                pause.CommandId != preflight.Pause.CommandId ||
+                pause.RunId != preflight.Pause.RunId ||
+                pause.RunEpoch != preflight.Pause.RunEpoch)
+                throw new InvalidOperationException("批次恢复预检期间暂停所有权已变化，拒绝上电。");
+            foreach (var channel in preflight.Channels)
+            {
+                if (!_timers.ContainsKey(channel) || !_runners.ContainsKey(channel) ||
+                    !preflight.ExecutionPermits.TryGetValue(channel, out var permit) ||
+                    !IsChannelExecutionPermitCurrent(channel, permit))
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] 恢复预检凭证已失效，拒绝上电。");
+                if (IsDaqRecoveryActiveForChannel(channel))
+                    throw new InvalidOperationException(
+                        $"EPB[{channel}] DAQ恢复尚未终态，拒绝上电。");
+            }
+        }
+
+        private async Task DisableBatchResumePowerBestEffortAsync(
+            IEnumerable<int> channels,
+            string reason)
+        {
+            if (_powerSupply == null) return;
+            var groups = (channels ?? Array.Empty<int>())
+                .Select(GetElectricalGroupId)
+                .Where(groupId => groupId > 0)
+                .Distinct()
+                .OrderBy(groupId => groupId)
+                .ToArray();
+            try
+            {
+                await Task.WhenAll(groups.Select(groupId =>
+                        _powerSupply.DisableGroupAsync(
+                            groupId,
+                            reason ?? "BatchResumeRollback",
+                            CancellationToken.None)))
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log?.Error(
+                    $"批次恢复失败后的电源回滚异常 Groups=[{string.Join(",", groups)}]: {ex.Message}",
+                    "程控电源",
+                    ex);
+            }
         }
 
         public async Task PauseChannelGracefullyAsync(int channel, CancellationToken token = default)

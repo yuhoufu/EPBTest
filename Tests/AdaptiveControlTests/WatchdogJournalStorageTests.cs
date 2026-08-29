@@ -1056,7 +1056,8 @@ namespace AdaptiveControlTests
                 {
                     WatchdogRecoveryCommitMarker.WriteLocal(session, 41, "LocalCommit");
                     WatchdogRecoveryCommitMarker.WriteProject(root, session, 42, "ProjectCommit");
-                    Assert(WatchdogRecoveryCommitMarker.TryRead(root, session, out var generation) &&
+                    long generation;
+                    Assert(WatchdogRecoveryCommitMarker.TryRead(root, session, out generation) &&
                            generation == 42,
                         "恢复提交没有从本机/项目双marker选择最大代次");
                     File.Delete(WatchdogJournalPaths.ProjectRecoveryCommitPath(root, session));
@@ -1065,8 +1066,38 @@ namespace AdaptiveControlTests
                                session,
                                out generation) && generation == 41,
                         "项目盘或命名管道不可用时本机恢复提交marker没有生效");
+                    var runId = Guid.NewGuid().ToString("N");
+                    WatchdogRecoveryCommitMarker.WriteLocal(
+                        session, 43, "Committed", runId, 9, "PersistenceClosed");
+                    Assert(WatchdogRecoveryCommitMarker.TryRead(
+                               root,
+                               session,
+                               out WatchdogRecoveryCommitEvidence evidence) &&
+                           evidence.SchemaVersion == 2 && !evidence.Legacy &&
+                           evidence.Generation == 43 && evidence.RunId == runId &&
+                           evidence.RunEpoch == 9 && evidence.Stage == "PersistenceClosed" &&
+                           evidence.ContentSha256.Length == 64,
+                        "新marker未携带Run/Epoch/Stage/生成代次/内容哈希");
+                    File.AppendAllText(local, "tamper", Encoding.UTF8);
+                    Assert(!WatchdogRecoveryCommitMarker.TryRead(root, session, out evidence),
+                        "内容哈希损坏的新marker仍被接受");
+                    WatchdogRecoveryCommitMarker.WriteLocal(
+                        session, 43, "Committed", runId, 9, "PersistenceClosed");
+                    WatchdogRecoveryCommitMarker.Archive(root, session, 43, "Accepted");
+                    Assert(!File.Exists(local) &&
+                           File.Exists(local + ".43.Accepted.processed"),
+                        "成功marker没有原子归档并停止重复消费");
                 }
-                finally { try { if (File.Exists(local)) File.Delete(local); } catch { } }
+                finally
+                {
+                    try { if (File.Exists(local)) File.Delete(local); } catch { }
+                    try
+                    {
+                        var archive = local + ".43.Accepted.processed";
+                        if (File.Exists(archive)) File.Delete(archive);
+                    }
+                    catch { }
+                }
             });
         }
 

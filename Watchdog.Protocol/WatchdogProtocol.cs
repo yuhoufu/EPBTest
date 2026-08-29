@@ -882,6 +882,16 @@ namespace MTTFTest.Watchdog.Protocol
         public string HardwareFailureDetail { get; set; }
         public int HardwareProbeAttempt { get; set; }
         public long HardwareNextProbeUtc { get; set; }
+        /// <summary>项目日志接收序号；旧端缺省为 0。</summary>
+        public long DiagnosticSinkAcceptedVersion { get; set; }
+        /// <summary>项目日志已耐久化序号；旧端缺省为 0。</summary>
+        public long DiagnosticSinkFlushedVersion { get; set; }
+        public long DiagnosticSinkLastSuccessUtcTicks { get; set; }
+        public bool DiagnosticSinkStalled { get; set; }
+        public bool DiagnosticSinkEmergencySpool { get; set; }
+        public int DiagnosticSinkQueueDepth { get; set; }
+        public long DiagnosticSinkDroppedRecords { get; set; }
+        public string DiagnosticSinkFailure { get; set; }
         public bool RunActive { get; set; }
     }
 

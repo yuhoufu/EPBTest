@@ -423,7 +423,8 @@ namespace MTEmbTest
                 flushCompleted && journalDisposed && closingTerminalPersisted;
             var finalReceipt = runtimeReceipt?.WithRetention(
                 finalVersion, !terminal, flushCompleted, journalDisposed,
-                runtimeReceipt?.PreviousRuntimeShutdownIncomplete == true);
+                runtimeReceipt?.PreviousRuntimeShutdownIncomplete == true,
+                sessionClosingPersisted: closingTerminalPersisted);
             if (terminal)
             {
                 lock (_executionGate)
@@ -444,7 +445,30 @@ namespace MTEmbTest
                 finalVersion, engineReceipt, finalReceipt, engineStarted,
                 skipEngineShutdown, flushCompleted, journalDisposed,
                 currentOwner.MarkOutcome, currentOwner.FailureKind,
-                RuntimeShutdownRetentionPhase.RetainedFailure);
+                finalReceipt?.Disposition == RuntimeShutdownDisposition.DetachedRetained
+                    ? RuntimeShutdownRetentionPhase.DetachedRetained
+                    : RuntimeShutdownRetentionPhase.RetainedFailure);
+            if (finalReceipt?.Disposition == RuntimeShutdownDisposition.DetachedRetained)
+            {
+                try
+                {
+                    _journal.Record(
+                        context,
+                        "DetachedRetained",
+                        string.Format(
+                            "Session={0};Attempt={1};Reason={2};Flush={3};Dispose={4};" +
+                            "PipelineTerminal={5};SafeExitAllowed={6};SessionClosingPersisted={7}",
+                            finalReceipt.SessionId,
+                            finalReceipt.ClosingAttempt,
+                            finalReceipt.TerminalReason,
+                            finalReceipt.JournalFlushCompleted,
+                            finalReceipt.JournalDisposed,
+                            finalReceipt.PipelineTerminal,
+                            finalReceipt.SafeExitAllowed,
+                            finalReceipt.SessionClosingPersisted));
+                }
+                catch { }
+            }
             if (!TryPublishOwnerStage(currentOwner, retainedFinalOwner))
                 return CaptureRetainedReceiptOr(finalReceipt, engineReceipt);
             return finalReceipt ?? CreateNoWorkReceipt(engineReceipt);

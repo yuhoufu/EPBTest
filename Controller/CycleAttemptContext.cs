@@ -98,6 +98,32 @@ namespace Controller
         public Task ExecutionCompletion => _executionCompletion.Task;
         public Task DurableCompletion => _durableCompletion.Task;
 
+        public CycleAttemptClosureReceipt CaptureClosureReceipt()
+        {
+            var terminal = TerminalState;
+            return new CycleAttemptClosureReceipt
+            {
+                RunId = RunId,
+                RunEpoch = RunEpoch,
+                Device = Device,
+                Channel = Channel,
+                AttemptId = AttemptId,
+                Cycle = Cycle,
+                Durable = IsDurablyCommitted,
+                DurabilityEvidence = IsDurablyCommitted
+                    ? "CycleAttemptTerminalDurablyCommitted"
+                    : "CycleAttemptTerminalNotDurable",
+                CapturedUtc = DateTime.UtcNow,
+                Disposition = terminal == CycleAttemptTerminalState.Completed
+                    ? CycleAttemptClosureDisposition.Committed
+                    : terminal == CycleAttemptTerminalState.Aborted
+                        ? CycleAttemptClosureDisposition.Aborted
+                        : terminal == CycleAttemptTerminalState.Alarmed
+                            ? CycleAttemptClosureDisposition.Alarmed
+                            : CycleAttemptClosureDisposition.Unknown
+            };
+        }
+
         public void MarkBeginSucceeded()
         {
             Interlocked.CompareExchange(

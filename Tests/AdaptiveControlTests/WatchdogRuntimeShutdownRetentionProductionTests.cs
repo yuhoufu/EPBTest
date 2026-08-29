@@ -37,6 +37,8 @@ namespace AdaptiveControlTests
                 ref passed, failures);
             Run("IdentityMismatch不调用Engine或pipeline", IdentityMismatchIsSticky,
                 ref passed, failures);
+            Run("墓碑持久化失败阻止DetachedRetained退出", TombstonePersistenceFailureBlocksDetachedExit,
+                ref passed, failures);
             Run("active replacement在owner期间被阻止", ActiveReplacementIsBlocked,
                 ref passed, failures);
             Run("version递增且身份冻结", VersionsIncreaseAndIdentityStaysFrozen,
@@ -92,6 +94,9 @@ namespace AdaptiveControlTests
                 var failed = session.ShutdownOrRetry();
                 Assert(!failed.IsTerminal && session.CaptureOwner() != null,
                     "Engine throw后没有保留同owner");
+                Assert(!failed.SafeExitAllowed &&
+                       failed.Disposition == RuntimeShutdownDisposition.BlockingFailure,
+                    "Engine安全证据不完整时错误允许DetachedRetained退出");
                 Assert(session.PipelineCalls == 0, "Engine失败不应进入pipeline");
                 var ownerIdentity = session.CaptureOwner();
                 Assert(!session.TryInstallReplacement(replacement.Context),
@@ -203,6 +208,10 @@ namespace AdaptiveControlTests
                 var first = session.ShutdownOrRetry();
                 Assert(!first.IsTerminal && session.CaptureOwner() != null,
                     "flush failure没有保留owner");
+                Assert(first.SafeExitAllowed &&
+                       first.Disposition == RuntimeShutdownDisposition.DetachedRetained &&
+                       first.IsCloseAuthorized,
+                    "仅日志flush失败但安全证据完整时未允许DetachedRetained退出");
                 Assert(session.TransportCalls == 1 && session.PipelineCalls == 1 &&
                        session.JournalFlushCalls == 1 && session.JournalDisposeCalls == 0,
                     "flush failure阶段调用错误");
@@ -222,6 +231,10 @@ namespace AdaptiveControlTests
                 var first = session.ShutdownOrRetry();
                 Assert(!first.IsTerminal && session.CaptureOwner() != null,
                     "dispose failure没有保留owner");
+                Assert(first.SafeExitAllowed &&
+                       first.Disposition == RuntimeShutdownDisposition.DetachedRetained &&
+                       first.IsCloseAuthorized,
+                    "仅日志dispose失败但安全证据完整时未允许DetachedRetained退出");
                 Assert(session.TransportCalls == 1 && session.PipelineCalls == 1 &&
                        session.JournalFlushCalls == 1 && session.JournalDisposeCalls == 1,
                     "dispose failure首阶段调用错误");
@@ -249,6 +262,21 @@ namespace AdaptiveControlTests
                     "IdentityMismatch retry被错误放行");
                 Assert(!session.EnsurePreviousTerminal(),
                     "IdentityMismatch owner不应被previous gate放行");
+            }
+        }
+
+        private static void TombstonePersistenceFailureBlocksDetachedExit()
+        {
+            using (var session = new RuntimeShutdownRetentionProductionTestSession())
+            {
+                session.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+                var receipt = session.ShutdownOrRetry();
+                Assert(receipt != null && !receipt.IsCloseAuthorized &&
+                       !receipt.SafeExitAllowed &&
+                       receipt.Disposition == RuntimeShutdownDisposition.BlockingFailure,
+                    "关闭墓碑未持久化时错误授权DetachedRetained退出");
+                Assert(session.TransportCalls == 0 && session.PipelineCalls == 0,
+                    "关闭墓碑未持久化时不应继续执行Engine或pipeline关闭");
             }
         }
 

@@ -169,6 +169,10 @@ namespace Controller
         Task PrepareAndEnableAsync(IEnumerable<int> selectedChannels, CancellationToken token);
         Task RevalidateEnabledAsync(IEnumerable<int> selectedChannels, CancellationToken token);
         Task DisableGroupAsync(int electricalGroupId, string reason, CancellationToken token);
+        Task<PowerSafetyDisableResult> DisableGroupForSafetyAsync(
+            int electricalGroupId,
+            string reason,
+            CancellationToken token);
         Task DisableAllAsync(string reason, CancellationToken token);
         Task<PowerSafetyDisableResult[]> DisableAllForSafetyAsync(
             string reason,
@@ -654,7 +658,7 @@ namespace Controller
             }).ToArray();
         }
 
-        private async Task<PowerSafetyDisableResult> DisableGroupForSafetyAsync(
+        public async Task<PowerSafetyDisableResult> DisableGroupForSafetyAsync(
             int groupId,
             string reason,
             CancellationToken callerToken)

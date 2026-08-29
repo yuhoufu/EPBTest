@@ -48,6 +48,10 @@ namespace AdaptiveControlTests
             Run("软预警完整证据限频按Run隔离", WarningSnapshotRateLimitIsRunScoped, ref passed);
             Run("项目日志写盘失败后降级并重试", WriteFailureRetriesInOrder, ref passed);
             Run("项目日志轮转失败后降级并重试", RotationFailureRetriesInOrder, ref passed);
+            Run("日志sink失败进入16MiB应急spool且恢复后按序回放",
+                DiagnosticSinkSpoolsAndReplays, ref passed);
+            Run("日志健康无流量不误报且仅失败积压超过5秒判停滞",
+                DiagnosticHealthDoesNotFlagIdleTraffic, ref passed);
             return passed;
         }
 
@@ -939,6 +943,83 @@ namespace AdaptiveControlTests
                 BindingFlags.Static | BindingFlags.NonPublic);
             Assert(field != null, "未找到项目日志中心 Store 字段");
             return (ProjectLogStore)field.GetValue(null);
+        }
+
+        private static void DiagnosticSinkSpoolsAndReplays()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                ProjectLogHub.Shutdown();
+                var failing = new ProjectLogStore(new ProjectLogOptions
+                {
+                    AppendStreamFactory = _ => throw new IOException("InjectedDiagnosticSinkFailure")
+                });
+                InstallHubStoreForTest(failing);
+                Assert(ProjectLogHub.Configure(dir), "故障sink测试目录配置失败");
+                Assert(!ProjectLogHub.Write(
+                           ProjectLogLevel.Error,
+                           "must-survive",
+                           "diagnostic-spool"),
+                    "故障sink写入错误返回成功");
+                var failed = ProjectLogHub.CaptureHealth();
+                Assert(failed.EmergencySpoolActive &&
+                       failed.EmergencySpoolBytes > 0 &&
+                       failed.AcceptedVersion > failed.FlushedVersion &&
+                       failed.LastError.Contains("InjectedDiagnosticSinkFailure"),
+                    "sink失败没有形成可观测积压和应急spool");
+                Assert(failed.EmergencySpoolBytes <= 16L * 1024L * 1024L,
+                    "应急spool超过16MiB上限");
+
+                InstallHubStoreForTest(new ProjectLogStore());
+                Assert(ProjectLogHub.Configure(dir), "健康sink重新配置失败");
+                Assert(ProjectLogHub.Flush(true), "应急spool恢复回放未耐久完成");
+                var recovered = ProjectLogHub.CaptureHealth();
+                Assert(!recovered.EmergencySpoolActive &&
+                       recovered.AcceptedVersion == recovered.FlushedVersion &&
+                       string.IsNullOrWhiteSpace(recovered.LastError),
+                    "sink恢复后spool/健康水位未收口");
+                // Durable flush only proves the bytes reached the configured sink; the
+                // store intentionally keeps its writer open for normal operation. Close
+                // it through the production shutdown barrier before inspecting the file
+                // so this assertion does not race the background writer's FileShare.None.
+                ProjectLogHub.Shutdown();
+                var warning = File.ReadAllText(
+                    Path.Combine(dir, "log", "warning.log"), Encoding.UTF8);
+                Assert(warning.Contains("must-survive") && warning.Contains("应急日志回放"),
+                    "应急spool没有按恢复链回放原始记录");
+            }
+            finally
+            {
+                ProjectLogHub.Shutdown();
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void DiagnosticHealthDoesNotFlagIdleTraffic()
+        {
+            var now = DateTime.UtcNow;
+            var idle = new ProjectLogHealthSnapshot
+            {
+                AcceptedVersion = 8,
+                FlushedVersion = 8,
+                LastSuccessfulSinkUtc = now.AddMinutes(-20)
+            };
+            Assert(!idle.IsStalled,
+                "无日志流量且无写入失败被误报DiagnosticSinkStalled");
+
+            var recentFailure = new ProjectLogHealthSnapshot
+            {
+                AcceptedVersion = 9,
+                FlushedVersion = 8,
+                LastFailureUtc = now.AddSeconds(-4),
+                LastError = "recent"
+            };
+            Assert(!recentFailure.IsStalled,
+                "不足5秒的短暂sink失败被提前升级");
+            recentFailure.LastFailureUtc = now.AddSeconds(-6);
+            Assert(recentFailure.IsStalled,
+                "有未耐久日志且写入失败超过5秒未报告停滞");
         }
 
         private static object GetStoreGate(ProjectLogStore store)

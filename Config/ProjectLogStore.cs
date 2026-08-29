@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Security.Cryptography;
 
 namespace Config
 {
@@ -38,6 +39,26 @@ namespace Config
         public ProjectLogLevel Level { get; internal set; }
         public string Category { get; internal set; }
         public string Message { get; internal set; }
+    }
+
+    public sealed class ProjectLogHealthSnapshot
+    {
+        public long AcceptedVersion { get; set; }
+        public long FlushedVersion { get; set; }
+        public DateTime LastSuccessfulSinkUtc { get; set; }
+        public DateTime LastFailureUtc { get; set; }
+        public int QueueDepth { get; set; }
+        public long DroppedRecords { get; set; }
+        public long EmergencySpoolRecords { get; set; }
+        public long EmergencySpoolBytes { get; set; }
+        public bool EmergencySpoolActive { get; set; }
+        public string LastError { get; set; } = string.Empty;
+
+        public bool HasUnflushedWork => AcceptedVersion > FlushedVersion || QueueDepth > 0;
+        public bool IsStalled =>
+            (HasUnflushedWork || !string.IsNullOrWhiteSpace(LastError)) &&
+            LastFailureUtc != default &&
+            DateTime.UtcNow - LastFailureUtc >= TimeSpan.FromSeconds(5);
     }
 
     /// <summary>
@@ -452,6 +473,7 @@ namespace Config
     {
         private sealed class AsyncWorkItem
         {
+            public long AcceptedLogVersion;
             public ProjectLogLevel Level;
             public string Message;
             public string Category;
@@ -467,6 +489,7 @@ namespace Config
 
         private const int AsyncQueueCapacity = 32768;
         private const int BackgroundFlushIntervalMs = 1000;
+        private const long EmergencySpoolMaxBytes = 16L * 1024L * 1024L;
         private static readonly object Gate = new object();
         private static readonly object ShutdownGate = new object();
         private static readonly BlockingCollection<AsyncWorkItem> AsyncQueue =
@@ -487,6 +510,10 @@ namespace Config
         private static long _coalescedFlushRequestCount;
         private static long _writeVersion;
         private static long _flushedWriteVersion;
+        private static long _nextLogSequence;
+        private static long _acceptedLogVersion;
+        private static long _processedLogVersion;
+        private static long _durableLogVersion;
         private static long _softFlushRequestVersion;
         private static long _softFlushProcessedVersion;
         private static int _durableFlushSignalQueued;
@@ -497,6 +524,11 @@ namespace Config
         private static bool _admissionOpen = true;
         private static bool _shutdownClosing;
         private static bool _shutdownBarrierFailed;
+        private static long _lastSuccessfulSinkUtcTicks = DateTime.UtcNow.Ticks;
+        private static long _lastFailureUtcTicks;
+        private static long _emergencySpoolRecords;
+        private static long _emergencySpoolBytes;
+        private static string _activeEmergencySpoolPath = string.Empty;
 
         static ProjectLogHub()
         {
@@ -659,6 +691,31 @@ namespace Config
 
         public static long CoalescedFlushRequestCount => Interlocked.Read(ref _coalescedFlushRequestCount);
 
+        public static ProjectLogHealthSnapshot CaptureHealth()
+        {
+            var failure = LastFailure;
+            var successTicks = Interlocked.Read(ref _lastSuccessfulSinkUtcTicks);
+            var failureTicks = Interlocked.Read(ref _lastFailureUtcTicks);
+            return new ProjectLogHealthSnapshot
+            {
+                AcceptedVersion = Interlocked.Read(ref _acceptedLogVersion),
+                FlushedVersion = Interlocked.Read(ref _durableLogVersion),
+                LastSuccessfulSinkUtc = successTicks > 0
+                    ? new DateTime(successTicks, DateTimeKind.Utc)
+                    : default,
+                LastFailureUtc = failureTicks > 0
+                    ? new DateTime(failureTicks, DateTimeKind.Utc)
+                    : default,
+                QueueDepth = AsyncQueue.Count,
+                DroppedRecords = Interlocked.Read(ref _droppedAsyncRecords),
+                EmergencySpoolRecords = Interlocked.Read(ref _emergencySpoolRecords),
+                EmergencySpoolBytes = Interlocked.Read(ref _emergencySpoolBytes),
+                EmergencySpoolActive = !string.IsNullOrWhiteSpace(
+                    Volatile.Read(ref _activeEmergencySpoolPath)),
+                LastError = failure?.GetBaseException().Message ?? string.Empty
+            };
+        }
+
         public static IReadOnlyList<ProjectLogMemoryRecord> GetMemorySnapshot()
         {
             return Volatile.Read(ref _store).GetMemorySnapshot();
@@ -774,18 +831,35 @@ namespace Config
                         // ProjectLogStore.Write(false) 已把原记录保留到待重试队列；无论本次
                         // 文件写入是否成功，该版本都必须保持为待刷新，不能无限漏刷。
                         Interlocked.Increment(ref _writeVersion);
+                        AdvanceWatermark(
+                            ref _processedLogVersion,
+                            item.AcceptedLogVersion);
                     }
                 }
 
                 if (item.Result)
+                {
                     Volatile.Write(ref _asyncFailure, null);
+                    Interlocked.Exchange(ref _lastSuccessfulSinkUtcTicks, DateTime.UtcNow.Ticks);
+                    Interlocked.Exchange(ref _lastFailureUtcTicks, 0);
+                    TryReplayEmergencySpool(Volatile.Read(ref _store));
+                }
                 else
+                {
                     Volatile.Write(ref _asyncFailure, Volatile.Read(ref _store).LastFailure);
+                    Interlocked.CompareExchange(
+                        ref _lastFailureUtcTicks,
+                        DateTime.UtcNow.Ticks,
+                        0);
+                    TryWriteEmergencySpool(item, Volatile.Read(ref _store));
+                }
             }
             catch (Exception ex)
             {
                 item.Result = false;
                 Volatile.Write(ref _asyncFailure, ex);
+                Interlocked.CompareExchange(ref _lastFailureUtcTicks, DateTime.UtcNow.Ticks, 0);
+                TryWriteEmergencySpool(item, Volatile.Read(ref _store));
             }
             finally
             {
@@ -809,13 +883,25 @@ namespace Config
             {
                 var flushed = ExecuteFlush(Volatile.Read(ref _store), false, null);
                 if (flushed)
+                {
                     Volatile.Write(ref _asyncFailure, null);
+                    Interlocked.Exchange(ref _lastSuccessfulSinkUtcTicks, DateTime.UtcNow.Ticks);
+                    Interlocked.Exchange(ref _lastFailureUtcTicks, 0);
+                    TryReplayEmergencySpool(Volatile.Read(ref _store));
+                }
                 else
+                {
                     Volatile.Write(ref _asyncFailure, Volatile.Read(ref _store).LastFailure);
+                    Interlocked.CompareExchange(
+                        ref _lastFailureUtcTicks,
+                        DateTime.UtcNow.Ticks,
+                        0);
+                }
             }
             catch (Exception ex)
             {
                 Volatile.Write(ref _asyncFailure, ex);
+                Interlocked.CompareExchange(ref _lastFailureUtcTicks, DateTime.UtcNow.Ticks, 0);
             }
         }
 
@@ -851,6 +937,9 @@ namespace Config
             if (!flushed) return false;
 
             AdvanceWatermark(ref _flushedWriteVersion, writeTarget);
+            AdvanceWatermark(
+                ref _durableLogVersion,
+                Interlocked.Read(ref _processedLogVersion));
             AdvanceWatermark(ref _softFlushProcessedVersion, softRequestTarget);
             if (durable)
                 AdvanceWatermark(ref _durableFlushProcessedVersion, durableTarget);
@@ -918,9 +1007,15 @@ namespace Config
             var added = false;
             try
             {
+                if (countRejectedRecord)
+                    item.AcceptedLogVersion = Interlocked.Increment(ref _nextLogSequence);
                 added = timeoutMs <= 0
                     ? AsyncQueue.TryAdd(item)
                     : AsyncQueue.TryAdd(item, timeoutMs);
+                if (added && countRejectedRecord)
+                    AdvanceWatermark(
+                        ref _acceptedLogVersion,
+                        item.AcceptedLogVersion);
                 if (!added)
                 {
                     if (countRejectedRecord) Interlocked.Increment(ref _droppedAsyncRecords);
@@ -994,6 +1089,94 @@ namespace Config
         private static void SetShutdownBarrierResult(bool succeeded)
         {
             lock (Gate) _shutdownBarrierFailed = !succeeded;
+        }
+
+        private static void TryWriteEmergencySpool(
+            AsyncWorkItem item,
+            ProjectLogStore store)
+        {
+            if (item == null || item.IsFlush || item.IsConfigure || item.IsShutdown) return;
+            var line = $"{DateTime.UtcNow:O}\t{item.Level}\t{item.Category}\t" +
+                       (item.Exception == null
+                           ? item.Message
+                           : item.Message + " | " + item.Exception);
+            foreach (var path in GetEmergencySpoolCandidates(store))
+            {
+                try
+                {
+                    var directory = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+                    var encoded = new UTF8Encoding(false).GetBytes(line + Environment.NewLine);
+                    if (encoded.LongLength > 64L * 1024L)
+                        encoded = encoded.Take(64 * 1024).ToArray();
+                    if (File.Exists(path) &&
+                        new FileInfo(path).Length + encoded.LongLength > EmergencySpoolMaxBytes)
+                    {
+                        File.Delete(path);
+                        Interlocked.Increment(ref _droppedAsyncRecords);
+                    }
+                    using (var stream = new FileStream(
+                               path,
+                               FileMode.Append,
+                               FileAccess.Write,
+                               FileShare.ReadWrite))
+                        stream.Write(encoded, 0, encoded.Length);
+                    Volatile.Write(ref _activeEmergencySpoolPath, path);
+                    Interlocked.Increment(ref _emergencySpoolRecords);
+                    Interlocked.Exchange(ref _emergencySpoolBytes, new FileInfo(path).Length);
+                    return;
+                }
+                catch
+                {
+                    // Try the isolated LocalAppData fallback. Never recurse
+                    // through ProjectLogStore while its sink is unhealthy.
+                }
+            }
+        }
+
+        private static void TryReplayEmergencySpool(ProjectLogStore store)
+        {
+            var path = Volatile.Read(ref _activeEmergencySpoolPath);
+            if (store == null || string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+            try
+            {
+                var lines = File.ReadAllLines(path, Encoding.UTF8);
+                foreach (var line in lines)
+                    if (!string.IsNullOrWhiteSpace(line))
+                        store.Write(ProjectLogLevel.Warning, line, "应急日志回放");
+                if (!store.Flush(true)) return;
+                AdvanceWatermark(
+                    ref _durableLogVersion,
+                    Interlocked.Read(ref _processedLogVersion));
+                File.Delete(path);
+                Volatile.Write(ref _activeEmergencySpoolPath, string.Empty);
+                Interlocked.Exchange(ref _emergencySpoolRecords, 0);
+                Interlocked.Exchange(ref _emergencySpoolBytes, 0);
+            }
+            catch
+            {
+                // The next successful writer turn retries in original order.
+            }
+        }
+
+        private static IEnumerable<string> GetEmergencySpoolCandidates(ProjectLogStore store)
+        {
+            var root = store?.ProjectRoot;
+            if (!string.IsNullOrWhiteSpace(root))
+                yield return Path.Combine(root, "log", "emergency-spool.log");
+
+            var identity = string.IsNullOrWhiteSpace(root) ? "unconfigured" : root;
+            string hash;
+            using (var sha = SHA256.Create())
+                hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(identity)))
+                    .Replace("-", string.Empty)
+                    .Substring(0, 16);
+            yield return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MT EpbTest",
+                "ProjectLogSpool",
+                hash,
+                "emergency-spool.log");
         }
     }
 }

@@ -424,6 +424,15 @@ namespace AdaptiveControlTests
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
+                if (args.Length == 1 &&
+                    args[0].Equals("--persistence-suppression-window", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run(
+                        "恢复准入将无限抑制窗口收敛为有限边界",
+                        DaqPersistenceCoordinatorTests.SuppressionEvidenceResetsPerWindowAndAccumulates);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 2 &&
                     args[0].Equals("--persistence-soak", StringComparison.OrdinalIgnoreCase))
                 {
@@ -4341,6 +4350,7 @@ namespace AdaptiveControlTests
                      {
                          BatchPauseState.PausePending,
                          BatchPauseState.Paused,
+                         BatchPauseState.PauseHolding,
                          BatchPauseState.ResumeChecking,
                          BatchPauseState.Qualification,
                          BatchPauseState.Stopping
@@ -4351,6 +4361,25 @@ namespace AdaptiveControlTests
             Assert(EpbManager.GetDaqRecoveredHeldRuntimeState(BatchPauseState.Paused) ==
                    ChannelRuntimeState.Paused,
                 "安全暂停时DAQ恢复后的通道状态错误");
+            Assert(EpbManager.GetDaqRecoveredHeldRuntimeState(BatchPauseState.PauseHolding) ==
+                   ChannelRuntimeState.Paused,
+                "暂停健康保持时DAQ恢复后的通道状态错误");
+            Assert(EpbManager.IsCurrentDaqRecoveryPowerOffReceiptAuthoritative(
+                       disableTaskCompleted: true,
+                       cachedRuntimeReportsOn: true) &&
+                   !EpbManager.IsCurrentDaqRecoveryPowerOffReceiptAuthoritative(
+                       disableTaskCompleted: false,
+                       cachedRuntimeReportsOn: false),
+                "当前恢复代际OFF回执没有压过陈旧带电缓存");
+            Assert(EpbManager.ShouldKeepDaqRecoveryPowerOffPending(
+                       disableTaskCompleted: false,
+                       remainingHardDeadlineMs: 50_000) &&
+                   !EpbManager.ShouldKeepDaqRecoveryPowerOffPending(
+                       disableTaskCompleted: false,
+                       remainingHardDeadlineMs: 0) &&
+                   EpbManager.PowerDisableHardDeadlineMs == 10_000 &&
+                   EpbManager.RecoveryGroupHardDeadlineMs == 60_000,
+                "DAQ恢复10秒诊断与60秒硬截止策略错误");
             Assert(EpbManager.GetDaqRecoveredHeldRuntimeState(BatchPauseState.ResumeChecking) ==
                    ChannelRuntimeState.ResumeChecking,
                 "恢复预检时DAQ恢复后的通道状态错误");

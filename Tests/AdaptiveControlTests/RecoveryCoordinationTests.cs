@@ -31,6 +31,7 @@ namespace AdaptiveControlTests
             Run("启动OFF恢复硬截止和旧run均保持失败安全", StartupOffJoinFailsClosed, ref passed);
             Run("同进程恢复持续进展越过30秒且仅60秒停滞或300秒总限接管", InProcessRecoveryLeaseUsesMaterialProgress, ref passed);
             Run("已完成未终态恢复任务有界返回且绝不热循环", CompletedWorkerWithoutTerminalReturnsImmediately, ref passed);
+            Run("旧RunEpoch恢复owner隔离后退出活动集合且迟到终态无效", SupersedeThroughEpochQuarantinesOldOwners, ref passed);
             Run("恢复任务清退取消令牌可到达内部等待", RecoveryDrainCancellationIsBounded, ref passed);
             Run("x86恢复内存熔断按600与800MiB分级", RecoveryMemoryCircuitBreakerIsDeterministic, ref passed);
             Run("液压硬件确认仅永久禁用故障组所选卡钳", ConfirmedHydraulicDisableIsScoped, ref passed);
@@ -876,6 +877,30 @@ namespace AdaptiveControlTests
                     "外层取消没有到达registry reservation等待");
             }
             lease.CompleteAfterTerminal();
+        }
+
+        private static void SupersedeThroughEpochQuarantinesOldOwners()
+        {
+            var registry = new RecoveryTaskRegistry();
+            var oldWorker = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var oldLease = registry.Reserve("TimerRuntimeSelfHealing", 31, 4);
+            var currentLease = registry.Reserve("PowerSupplySoftwareRecovery", 32, 10);
+            Assert(oldLease.TryBind(oldWorker.Task), "旧代恢复worker绑定失败");
+
+            var quarantined = registry.SupersedeThroughEpoch(31, "NewRunAdmission");
+            Assert(quarantined.Length == 1 && quarantined[0].RunEpoch == 31 &&
+                   quarantined[0].WorkerWasRunning && registry.QuarantinedCount == 1 &&
+                   registry.ActiveCount == 1 &&
+                   registry.HasActiveTaskForChannel(10, 32) &&
+                   !registry.HasActiveTaskForChannel(4, 31),
+                "SupersedeThroughEpoch没有只隔离旧代owner或污染当前代。");
+            Assert(!oldLease.CompleteAfterTerminal(),
+                "旧代迟到终态仍能修改已隔离活动集合。");
+            oldWorker.TrySetResult(true);
+            currentLease.CompleteAfterTerminal();
+            Assert(registry.ActiveCount == 0,
+                "当前代正常终态后registry仍有活动owner。");
         }
 
         private static void RecoveryMemoryCircuitBreakerIsDeterministic()

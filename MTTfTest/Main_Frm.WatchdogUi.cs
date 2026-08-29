@@ -269,8 +269,7 @@ namespace MtEmbTest
             // A transport terminal receipt is the sole close authorization,
             // regardless of whether it was obtained by manual stop, monitor
             // close, unattended completion, or the main-form close path.
-            if (receipt?.IsTerminal == true &&
-                shutdownIntent != RuntimeShutdownIntent.SessionClose)
+            if (receipt?.IsCloseAuthorized == true)
                 Interlocked.Exchange(ref _watchdogAllowClose, 1);
             return receipt;
         }
@@ -373,7 +372,7 @@ namespace MtEmbTest
                 receipt = await ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
                     reason);
             }
-            if (receipt == null || !receipt.IsTerminal)
+            if (receipt == null || !receipt.IsCloseAuthorized)
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                 UseWaitCursor = false;

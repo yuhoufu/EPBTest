@@ -540,6 +540,26 @@ namespace Controller
                         $"Recovery worker body returned null Task. Incident={incident.Contract.IncidentId:N}");
                 await bodyTask.ConfigureAwait(false);
                 incident.TaskLease.ReportProgress("WorkerCompleted");
+                if (incident.TerminalPublished == 0 &&
+                    !incident.TerminalStateCommitted &&
+                    !incident.IsAborting)
+                {
+                    // A normally-returning worker is not itself a terminal
+                    // fact.  Fail closed and release the registry owner only
+                    // after the authoritative state store confirms a safe
+                    // terminal.  This removes WorkerCompletedWithoutTerminal
+                    // as a permanent StopAll residue.
+                    incident.CompleteAfterTerminal(contract =>
+                    {
+                        const string reason = "RecoveryWorkerCompletedWithoutTerminal";
+                        _port.CommandOff?.Invoke(contract, reason);
+                        _port.PublishSafeTerminal?.Invoke(
+                            contract,
+                            reason,
+                            $"恢复 worker 已返回但未发布终态；已自动保持断电并收口。" +
+                            $" Incident={contract.IncidentId:N}");
+                    });
+                }
             }
             catch (TaskCanceledException) when (incident.IsAborting)
             {
@@ -555,7 +575,10 @@ namespace Controller
                     $"{baseError.Message};Incident={incident.Contract.IncidentId:N};" +
                     $"Scope={incident.Scope}";
                 incident.CompleteAfterTerminal(contract =>
-                    _port.PublishSafeTerminal?.Invoke(contract, reason, detail));
+                {
+                    _port.CommandOff?.Invoke(contract, reason);
+                    _port.PublishSafeTerminal?.Invoke(contract, reason, detail);
+                });
                 throw;
             }
         }

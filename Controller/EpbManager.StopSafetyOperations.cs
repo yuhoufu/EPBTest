@@ -218,6 +218,8 @@ namespace Controller
             var state = GetOrCreateStopSafetyProductionState(transaction);
             switch (stage)
             {
+                case StopSafetyStage.AdmitAndSubmitSafety:
+                    return await ExecuteImmediateStopSafetyBoundaryAsync(state).ConfigureAwait(false);
                 case StopSafetyStage.FreezeActiveWork:
                     return ExecuteStopFreezeStage(state);
                 case StopSafetyStage.RevokeExecutionAuthorization:
@@ -241,6 +243,27 @@ namespace Controller
                 default:
                     return StopSafetyPortResult.Success(stage.ToString());
             }
+        }
+
+        private async Task<StopSafetyPortResult> ExecuteImmediateStopSafetyBoundaryAsync(
+            StopSafetyProductionState state)
+        {
+            var revoke = ExecuteStopRevokeStage(state);
+            var off = ExecuteStopPhysicalOffStage(state);
+            var power = await ExecuteStopPowerDisableStageAsync(state).ConfigureAwait(false);
+            if (!revoke.Succeeded || !off.Succeeded || !power.Succeeded)
+                return StopSafetyPortResult.Failure(
+                    string.Join(";", new[] { revoke.Error, off.Error, power.Error }
+                        .Where(item => !string.IsNullOrWhiteSpace(item))),
+                    physicalOffSubmitted: off.PhysicalOffSubmitted,
+                    powerDisableStarted: power.PowerDisableStarted);
+            return StopSafetyPortResult.Success(
+                "已撤权并立即提交DO OFF及电源Disable；后续阶段仅负责证据收口。",
+                true,
+                "StopImmediateSafetyBoundary",
+                1,
+                physicalOffSubmitted: true,
+                powerDisableStarted: true);
         }
 
         private StopSafetyProductionState GetOrCreateStopSafetyProductionState(
@@ -357,6 +380,12 @@ namespace Controller
         private StopSafetyPortResult ExecuteStopRevokeStage(
             StopSafetyProductionState state)
         {
+            if (state.AuthorizationRevoked)
+                return StopSafetyPortResult.Success(
+                    "执行授权已由立即安全阶段撤销。",
+                    true,
+                    "StopRevoke",
+                    Math.Max(1, state.ForceAbortedHydraulicObjects + 1L));
             var context = state.Context;
             // 两秒快速隔离阶段只撤销准入和代次。EndBatchSession 会同步触发
             // CancellationToken 回调、清理全局液压槽和会话对象，现场四通道曾
@@ -371,6 +400,7 @@ namespace Controller
                 try { RevokeChannelExecutionPermit(channel, "StopSafetyTransaction"); }
                 catch (Exception ex) { state.Errors.Add($"EPB{channel}:撤权:{ex.Message}"); }
             }
+            state.AuthorizationRevoked = true;
             try
             {
                 state.ForceAbortedHydraulicObjects = _hydCoordinator?.ForceAbortRun(
@@ -393,6 +423,14 @@ namespace Controller
         private StopSafetyPortResult ExecuteStopPhysicalOffStage(
             StopSafetyProductionState state)
         {
+            if (state.OffSubmissionStarted)
+                return StopSafetyPortResult.Success(
+                    $"高优先级DO OFF已提交，Accepted={state.OffCompletions.Count}/{state.Channels.Length}",
+                    true,
+                    "StopPhysicalOff",
+                    Math.Max(1, state.OffCompletions.Count),
+                    physicalOffSubmitted: true);
+            state.OffSubmissionStarted = true;
             foreach (var channel in state.Channels)
             {
                 var completion = new TaskCompletionSource<HighPriorityDoTelemetry>(
@@ -566,8 +604,20 @@ namespace Controller
                 {
                     var residue = string.Join(",", drain.Residues.Select(item =>
                         $"{item.Operation}[{item.Kind};EPB={string.Join("/", item.Channels)}]"));
-                    return StopSafetyPortResult.Failure(
-                        "恢复owner未能在截止内退出: " + residue);
+                    var supersededHydraulicOwners = ownersExited
+                        ? 0
+                        : _recoveryOwnership.SupersedeAll(
+                            "StopSafetyRunEpochRevoked:" + state.RunEpoch);
+                    var quarantined = _recoveryTaskRegistry.SupersedeThroughEpoch(
+                        state.RunEpoch,
+                        "StopSafetyRunEpochRevoked");
+                    return StopSafetyPortResult.Success(
+                        "恢复owner已按旧RunEpoch隔离，不再阻塞安全收口。" +
+                        $" HydraulicOwners={supersededHydraulicOwners};" +
+                        $" RegistryLeases={quarantined.Length};Residue={residue}",
+                        true,
+                        "StopRecoveryOwnersSuperseded",
+                        Math.Max(1, quarantined.Length + supersededHydraulicOwners));
                 }
                 return StopSafetyPortResult.Success("DAQ与软件恢复owner已退出。", true, "StopRecoveryOwners", 1);
             }
@@ -992,6 +1042,8 @@ namespace Controller
             internal bool RawStorageFlushed { get; set; } = true;
             internal bool PersistenceBoundaryConfirmed { get; set; }
             internal bool CyclesSealed { get; set; } = true;
+            internal bool AuthorizationRevoked { get; set; }
+            internal bool OffSubmissionStarted { get; set; }
             internal bool RuntimeProducersFrozen { get; set; }
             internal bool RuntimeObjectsFrozen { get; set; }
             internal int ForceAbortedHydraulicObjects { get; set; }

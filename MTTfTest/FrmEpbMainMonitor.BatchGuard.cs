@@ -97,6 +97,8 @@ namespace MTEmbTest
                     BtnStartTest.Text = "正在暂停…";
                 else if (requestedState == Controller.BatchPauseState.Paused)
                     BtnStartTest.Text = "正在恢复…";
+                else if (requestedState == Controller.BatchPauseState.PauseHolding)
+                    BtnStartTest.Text = "暂停中：恢复校验…";
 
                 if (requestedState == Controller.BatchPauseState.Paused)
                 {
@@ -110,6 +112,13 @@ namespace MTEmbTest
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
                     ClearGracefulPauseCheckpoint("SameProcessResumed");
                     LogInfo($"批次已通过恢复预检并继续试验。CommandId={commandId}");
+                    return null;
+                }
+
+                if (requestedState == Controller.BatchPauseState.PauseHolding)
+                {
+                    LogInfo("DAQ恢复健康校验尚未完成，保持所有输出关闭，暂不允许继续试验。");
+                    PostSafetyStatus("暂停保持中：等待DAQ健康恢复完成。", false);
                     return null;
                 }
 

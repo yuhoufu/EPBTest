@@ -52,7 +52,7 @@ namespace MTEmbTest
 
         internal bool ReleaseAfterTerminal(RuntimeShutdownReceipt receipt)
         {
-            if (receipt == null || !receipt.IsTerminal)
+            if (receipt == null || !receipt.IsCloseAuthorized)
                 return false;
 
             RuntimeTransportSessionContext context;

@@ -598,6 +598,12 @@ namespace MTTFTest.Watchdog
         private long _eventSequence;
         private long _lastHeartbeatCheckpointTimestamp;
         private long _pendingCommitGenerationAwaitingRunIdentity;
+        private long _sameAuthorityReconnectAwaitingHeartbeatGeneration;
+        private int _controlRepairStopRequested;
+        private int _diagnosticSinkStallLogged;
+        private readonly object _recoveryCommitRetryGate = new object();
+        private readonly Dictionary<string, RecoveryCommitRetryState> _recoveryCommitRetries =
+            new Dictionary<string, RecoveryCommitRetryState>(StringComparer.Ordinal);
         private int _takeoverStarted;
         private int _relaunchStarted;
         private int _recoveryBlockedStopRequested;
@@ -628,6 +634,12 @@ namespace MTTFTest.Watchdog
         // stop monitor; a duplicate Attach on the same pipe is rejected.
         private long _connectionGeneration;
         private long _attachedConnectionGeneration;
+
+        private sealed class RecoveryCommitRetryState
+        {
+            internal int DeferredCount;
+            internal DateTime LastLoggedUtc;
+        }
 
         private WatchdogHost(WatchdogArguments args)
         {
@@ -1097,6 +1109,9 @@ namespace MTTFTest.Watchdog
                     }
                     else
                     {
+                        Interlocked.Exchange(
+                            ref _sameAuthorityReconnectAwaitingHeartbeatGeneration,
+                            connectionGeneration);
                         Record("AttachedReconnect",
                             "SameAuthority;ConnectionGeneration=" + connectionGeneration);
                     }
@@ -1152,6 +1167,20 @@ namespace MTTFTest.Watchdog
                             $"Start={message.Heartbeat.ProcessStartUtcTicks}");
                         break;
                     }
+                    if (Interlocked.CompareExchange(
+                            ref _sameAuthorityReconnectAwaitingHeartbeatGeneration,
+                            0,
+                            connectionGeneration) == connectionGeneration)
+                    {
+                        CancelAutomaticTakeover("SameAuthorityReconnectFreshHeartbeat");
+                        _channelProgressTracker.Reset();
+                        Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
+                        Interlocked.Exchange(ref _lastFormalProgressTimestamp, Stopwatch.GetTimestamp());
+                        Interlocked.Exchange(ref _controlRepairStopRequested, 0);
+                        RecordEvent(
+                            "AttachedReconnectValidated",
+                            "FreshHeartbeat;ConnectionGeneration=" + connectionGeneration);
+                    }
                     _attached = true;
                     Interlocked.Exchange(ref _heartbeatSuspectLogged, 0);
                     _applicationLiveness.ObserveHeartbeat();
@@ -1191,6 +1220,25 @@ namespace MTTFTest.Watchdog
                     _journal.LastHeartbeatSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatUtcTicks = DateTime.UtcNow.Ticks;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
+                    if (message.Heartbeat.DiagnosticSinkStalled)
+                    {
+                        if (Interlocked.CompareExchange(ref _diagnosticSinkStallLogged, 1, 0) == 0)
+                        {
+                            RecordEvent(
+                                "DiagnosticSinkStalled",
+                                $"Accepted={message.Heartbeat.DiagnosticSinkAcceptedVersion};" +
+                                $"Flushed={message.Heartbeat.DiagnosticSinkFlushedVersion};" +
+                                $"Queue={message.Heartbeat.DiagnosticSinkQueueDepth};" +
+                                $"Spool={message.Heartbeat.DiagnosticSinkEmergencySpool};" +
+                                $"Failure={message.Heartbeat.DiagnosticSinkFailure}");
+                        }
+                    }
+                    else if (Interlocked.Exchange(ref _diagnosticSinkStallLogged, 0) != 0)
+                    {
+                        RecordEvent(
+                            "DiagnosticSinkRecovered",
+                            $"Flushed={message.Heartbeat.DiagnosticSinkFlushedVersion}");
+                    }
                     if (WatchdogTakeoverPolicy.IsManualPauseCommanded(
                             message.Heartbeat.ManualPauseActive,
                             message.Heartbeat.ManualPausePending))
@@ -1699,7 +1747,15 @@ namespace MTTFTest.Watchdog
                     if (WatchdogRecoveryCommitMarker.TryRead(
                             _args.JournalDirectory,
                             _args.SessionId,
-                            out var durableCommitGeneration) &&
+                            out WatchdogRecoveryCommitEvidence marker) &&
+                        marker != null &&
+                        (marker.Legacy ||
+                         marker.RunEpoch > 0 &&
+                         !string.IsNullOrWhiteSpace(marker.RunId) &&
+                         !string.IsNullOrWhiteSpace(marker.Stage)) &&
+                        marker.Generation > 0 &&
+                        (marker.Legacy || marker.GeneratedUtcTicks > 0) &&
+                        marker.Generation is var durableCommitGeneration &&
                         durableCommitGeneration > _journal.LastRecoveryBatchCommitGeneration)
                     {
                         var commitHeartbeat = _journal.LastHeartbeat;
@@ -1708,7 +1764,11 @@ namespace MTTFTest.Watchdog
                         // generation and full new-run context before mutating the
                         // strict authority.
                         if (commitHeartbeat != null &&
-                            commitHeartbeat.RecoveryBatchCommitGeneration >= durableCommitGeneration)
+                            commitHeartbeat.RecoveryBatchCommitGeneration >= durableCommitGeneration &&
+                            (marker.Legacy ||
+                             string.Equals(marker.RunId, commitHeartbeat.RunId, StringComparison.OrdinalIgnoreCase) &&
+                             marker.RunEpoch == commitHeartbeat.RunEpoch &&
+                             string.Equals(marker.Stage, commitHeartbeat.RecoveryStage, StringComparison.Ordinal)))
                             TryAcceptRecoveryBatchCommit(
                                 durableCommitGeneration,
                                 "DurableMarker",
@@ -1794,6 +1854,9 @@ namespace MTTFTest.Watchdog
                             $"Probe={liveness.ProbeStatus};Detail={liveness.Detail};" +
                             $"ConnectionGeneration={activeSendOwner.ConnectionGeneration}");
                         RetireConnection(activeSendOwner, "ResponsiveUiHeartbeatTransportDegraded");
+                        _channelProgressTracker.Reset();
+                        Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
+                        Interlocked.Exchange(ref _lastFormalProgressTimestamp, Stopwatch.GetTimestamp());
                     }
                     else if (heartbeatAge >=
                              WatchdogApplicationLivenessSupervisor.HeartbeatTakeoverSeconds &&
@@ -1905,6 +1968,34 @@ namespace MTTFTest.Watchdog
                     var channelSupervisionReason = channelSupervision.TakeoverReason;
                     var channelSupervisionFailed =
                         !string.IsNullOrWhiteSpace(channelSupervisionReason);
+                    var applicationTakeoverConfirmed = !processAlive ||
+                        liveness.HeartbeatUnresponsiveConfirmed;
+                    var responsiveControlFault = processAlive &&
+                        !applicationTakeoverConfirmed &&
+                        (logicalResidue || inconsistentRecovery ||
+                         formalProgressStalled || channelSupervisionFailed);
+                    if (responsiveControlFault &&
+                        Interlocked.CompareExchange(ref _controlRepairStopRequested, 1, 0) == 0)
+                    {
+                        var repairReason = channelSupervisionFailed
+                            ? channelSupervisionReason
+                            : formalProgressStalled
+                                ? "FormalProgressStalled"
+                                : logicalResidue
+                                    ? "LogicalResidue"
+                                    : "InconsistentRecovery";
+                        RecordEvent(
+                            "ResponsiveApplicationControlRepairRequested",
+                            repairReason);
+                        Send(
+                            WatchdogMessageType.RequestStopAll,
+                            "ResponsiveApplicationControlRepair:" + repairReason,
+                            Guid.NewGuid().ToString("N"));
+                    }
+                    else if (!responsiveControlFault)
+                    {
+                        Interlocked.Exchange(ref _controlRepairStopRequested, 0);
+                    }
                     var manualPauseDeadlineUtc = heartbeat?.ManualPauseHardDeadlineUtc ?? 0;
                     if (manualPauseCommanded && manualPauseDeadlineUtc <= 0)
                     {
@@ -1974,9 +2065,10 @@ namespace MTTFTest.Watchdog
                         stageAgeSeconds,
                         eligibleChannels.Length > 0,
                         false,
-                        logicalResidue && !stopActive,
-                        inconsistentRecovery && !stopActive,
-                        (formalProgressStalled || channelSupervisionFailed) && !stopActive,
+                        logicalResidue && !stopActive && applicationTakeoverConfirmed,
+                        inconsistentRecovery && !stopActive && applicationTakeoverConfirmed,
+                        (formalProgressStalled || channelSupervisionFailed) && !stopActive &&
+                        applicationTakeoverConfirmed,
                         manualPauseCommanded,
                         manualPauseUnsafe,
                         heartbeat?.RecoveryHardDeadlineUtc ?? 0,
@@ -3267,7 +3359,9 @@ namespace MTTFTest.Watchdog
             if (result != null &&
                 result.TransitionStatus == DurableAuthorityTransitionStatus.Busy)
             {
-                Record("RecoveryBatchCommitDeferred",
+                RecordRecoveryCommitDeferred(
+                    commitGeneration,
+                    "Authority",
                     result.Reason ?? "AuthorityMutexBusy");
                 return false;
             }
@@ -3302,9 +3396,10 @@ namespace MTTFTest.Watchdog
                 heartbeat.RunEpoch <= 0 ||
                 string.IsNullOrWhiteSpace(heartbeat.RecoveryStage))
             {
-                Record(
-                    "RecoveryBatchCommitDeferred",
-                    $"Evidence={evidence};Generation={commitGeneration};ContextMissing");
+                RecordRecoveryCommitDeferred(
+                    commitGeneration,
+                    evidence,
+                    "ContextMissing");
                 return false;
             }
             var token = string.IsNullOrWhiteSpace(progressToken)
@@ -3317,19 +3412,75 @@ namespace MTTFTest.Watchdog
                     token,
                     commitGeneration))
             {
-                Record(
-                    "RecoveryBatchCommitRejected",
-                    $"Evidence={evidence};Generation={commitGeneration};" +
-                    $"RunId={heartbeat.RunId};RunEpoch={heartbeat.RunEpoch};" +
+                RecordRecoveryCommitDeferred(
+                    commitGeneration,
+                    evidence,
+                    $"Rejected;RunId={heartbeat.RunId};RunEpoch={heartbeat.RunEpoch};" +
                     $"Stage={heartbeat.RecoveryStage}");
                 return false;
             }
+            ClearRecoveryCommitRetry(commitGeneration, evidence);
             ObserveRecoveryBatchCommit(
                 commitGeneration,
                 evidence,
                 detail,
                 heartbeat.RunId);
+            WatchdogRecoveryCommitMarker.Archive(
+                _args.JournalDirectory,
+                _args.SessionId,
+                commitGeneration,
+                "Accepted");
             return true;
+        }
+
+        private void RecordRecoveryCommitDeferred(
+            long generation,
+            string evidence,
+            string reason)
+        {
+            var key = generation.ToString(CultureInfo.InvariantCulture) + "|" +
+                      (evidence ?? string.Empty);
+            var now = DateTime.UtcNow;
+            var shouldLog = false;
+            var count = 0;
+            lock (_recoveryCommitRetryGate)
+            {
+                if (!_recoveryCommitRetries.TryGetValue(key, out var state))
+                {
+                    state = new RecoveryCommitRetryState();
+                    _recoveryCommitRetries[key] = state;
+                }
+                state.DeferredCount++;
+                count = state.DeferredCount;
+                if (state.LastLoggedUtc == default ||
+                    now - state.LastLoggedUtc >= TimeSpan.FromMinutes(1))
+                {
+                    state.LastLoggedUtc = now;
+                    shouldLog = true;
+                }
+                if (_recoveryCommitRetries.Count > 128)
+                {
+                    foreach (var stale in _recoveryCommitRetries
+                                 .OrderBy(pair => pair.Value.LastLoggedUtc)
+                                 .Take(_recoveryCommitRetries.Count - 128)
+                                 .Select(pair => pair.Key)
+                                 .ToArray())
+                        _recoveryCommitRetries.Remove(stale);
+                }
+            }
+            if (shouldLog)
+                Record(
+                    "RecoveryBatchCommitDeferred",
+                    $"Evidence={evidence};Generation={generation};Reason={reason};" +
+                    $"DeferredCount={count};NextSummarySeconds=60");
+        }
+
+        private void ClearRecoveryCommitRetry(long generation, string evidence)
+        {
+            var key = generation.ToString(CultureInfo.InvariantCulture) + "|" +
+                      (evidence ?? string.Empty);
+            lock (_recoveryCommitRetryGate)
+                _recoveryCommitRetries.Remove(key);
         }
 
         private DurableRelaunchResult ExecuteAuthorityTransitionWithBusyRetry(
@@ -4113,7 +4264,21 @@ namespace MTTFTest.Watchdog
             _journal.RecoveryFailureMaxProcessRelaunches = record.MaximumProcessRelaunches;
             _journal.RecoveryFailureCode = record.LastFailureCode;
             _journal.RecoveryFailurePermanent = record.State == DurableRelaunchPermitState.Blocked;
-            if (!string.IsNullOrWhiteSpace(record.Fingerprint))
+            if (record.State == DurableRelaunchPermitState.RejectedNoWork)
+            {
+                // NoWork is a neutral terminal for one stale checkpoint
+                // identity.  It must close the relaunch permit without
+                // poisoning the still-live authority or suppressing its next
+                // in-process recovery commit.
+                _journal.RecoveryBlocked = false;
+                _journal.RecoveryFailurePermanent = false;
+                _journal.RecoveryFailureCode = string.Empty;
+                _journal.RecoveryFailureFingerprint = string.Empty;
+                _journal.RootCode = string.Empty;
+                Interlocked.Exchange(ref _pendingCommitGenerationAwaitingRunIdentity, 0);
+            }
+            if (record.State != DurableRelaunchPermitState.RejectedNoWork &&
+                !string.IsNullOrWhiteSpace(record.Fingerprint))
                 _journal.RecoveryFailureFingerprint = record.Fingerprint;
             if (!string.IsNullOrWhiteSpace(record.ProgressToken))
                 _journal.RecoveryProgressToken = record.ProgressToken;

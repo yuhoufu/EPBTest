@@ -143,6 +143,7 @@ namespace Controller
     {
         private static readonly StopSafetyStage[] DefaultStages =
         {
+            StopSafetyStage.AdmitAndSubmitSafety,
             StopSafetyStage.FreezeActiveWork,
             StopSafetyStage.RevokeExecutionAuthorization,
             StopSafetyStage.SubmitPhysicalOff,
@@ -280,6 +281,7 @@ namespace Controller
         private Task _orphanCore;
         private StopSafetyResult _cachedTerminalResult;
         private StopSafetyResult _cachedTimedOut;
+        private StopSafetyResult _lastTerminalResult;
         private StopSafetyProgressSnapshot _progress = new StopSafetyProgressSnapshot();
         private int _safeIdleIssued;
         private long _nextGeneration;
@@ -368,29 +370,58 @@ namespace Controller
         }
 
         /// <summary>
-        /// Starts or joins exactly one transaction.  A cached hard-timeout is
-        /// returned for all later calls; no second core is created.
+        /// Starts or joins the current physical transaction. Historical
+        /// terminal results are audit evidence only; a later request starts a
+        /// new idempotent generation.
         /// </summary>
-        public Task<StopSafetyResult> StopAsync(
+        public async Task<StopSafetyResult> StopAsync(
             StopContext context,
             CancellationToken callerCancellationToken = default(CancellationToken))
+        {
+            var receipt = await StopWithReceiptAsync(context, callerCancellationToken)
+                .ConfigureAwait(false);
+            return receipt.Result;
+        }
+
+        public async Task<StopRequestReceipt> StopWithReceiptAsync(
+            StopContext context,
+            CancellationToken callerCancellationToken = default(CancellationToken))
+        {
+            context = context ?? StopContext.Legacy(nameof(StopWithReceiptAsync));
+            var requestedUtc = _clock.UtcNow;
+            StopSafetyResult previous;
+            bool joined;
+            lock (_gate)
+            {
+                previous = _lastTerminalResult?.Clone();
+                joined = _activeTask != null && !_activeTask.IsCompleted;
+            }
+            var result = await GetOrStartStopTask(context, callerCancellationToken)
+                .ConfigureAwait(false);
+            return new StopRequestReceipt
+            {
+                RequestId = Guid.NewGuid(),
+                Source = context.Source,
+                RequestedUtc = requestedUtc,
+                StartedUtc = result?.StartedUtc ?? requestedUtc,
+                CompletedUtc = _clock.UtcNow,
+                PhysicalTransactionId = result?.SafetyTransactionId ?? Guid.Empty,
+                JoinedActiveTransaction = joined,
+                PreviousTransactionId = previous?.SafetyTransactionId ?? Guid.Empty,
+                PreviousOutcome = previous?.Outcome ?? StopSafetyOutcome.Unknown,
+                Result = result?.Clone()
+            };
+        }
+
+        private Task<StopSafetyResult> GetOrStartStopTask(
+            StopContext context,
+            CancellationToken callerCancellationToken)
         {
             context = context ?? StopContext.Legacy(nameof(StopAsync));
             lock (_gate)
             {
-                if (_cachedTerminalResult != null)
-                    return Task.FromResult(_cachedTerminalResult.Clone(reused: true));
                 if (_activeTask != null && !_activeTask.IsCompleted)
                     return _activeTask;
-                if (_orphanCore != null && !_orphanCore.IsCompleted)
-                {
-                    // The only valid re-entry while a non-cancellable core is
-                    // orphaned is the same cached timeout result.
-                    var blocked = BuildTimeoutResultLocked(
-                        "Stop transaction already has an orphan core; re-entry is blocked");
-                    _cachedTimedOut = blocked.Clone();
-                    return Task.FromResult(blocked.Clone(reused: true));
-                }
 
                 var generation = _generationProvider == null
                     ? ++_nextGeneration
@@ -412,6 +443,8 @@ namespace Controller
                     cts);
                 _lease = lease;
                 _safeIdleIssued = 0;
+                _cachedTerminalResult = null;
+                _cachedTimedOut = null;
                 _materialEvidence.Clear();
                 _progress = new StopSafetyProgressSnapshot
                 {
@@ -947,6 +980,8 @@ namespace Controller
                 _progress.Detail = _progress.TerminalReason;
                 _progress.ProgressVersion = Math.Max(1, _progress.ProgressVersion + 1);
                 _progress.LastMaterialProgressUtc = _clock.UtcNow;
+                if (result != null)
+                    _lastTerminalResult = result.Clone();
                 PublishProgressLocked();
             }
             if (stage == StopSafetyStage.Completed)

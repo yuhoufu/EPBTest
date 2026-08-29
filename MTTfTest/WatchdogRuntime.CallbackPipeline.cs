@@ -1117,6 +1117,13 @@ namespace MTEmbTest
         internal bool JournalDisposed { get; }
         internal bool PreviousRuntimeShutdownIncomplete { get; }
         /// <summary>
+        /// True only after the closing tombstone has been durably completed.
+        /// A detached transport alone is insufficient to authorize process
+        /// exit because a later startup could otherwise re-attach the old
+        /// session identity.
+        /// </summary>
+        internal bool SessionClosingPersisted { get; }
+        /// <summary>
         /// Fixture-only cleanup is deliberately distinguishable from a
         /// production terminal receipt.  It may release worker objects so a
         /// test process does not leak, but it never manufactures safety
@@ -1175,6 +1182,26 @@ namespace MTEmbTest
         internal bool IsTerminal => PipelineTerminal &&
             JournalFlushCompleted && JournalDisposed && !Retained && !TestAbandoned;
 
+        /// <summary>
+        /// Physical engine ownership, callback workers and the safety ledger
+        /// have all reached terminal state.  A journal retry may still be
+        /// retained, but it is no longer safe for it to hold the WinForms
+        /// process hostage: the closing session cannot receive or issue a
+        /// safety command again.
+        /// </summary>
+        internal bool SafeExitAllowed => !TestAbandoned &&
+            !PreviousRuntimeShutdownIncomplete && SessionClosingPersisted && PipelineTerminal &&
+            (SessionDetached || SessionLease == 0);
+
+        internal RuntimeShutdownDisposition Disposition => IsTerminal
+            ? RuntimeShutdownDisposition.Terminal
+            : SafeExitAllowed
+                ? RuntimeShutdownDisposition.DetachedRetained
+                : RuntimeShutdownDisposition.BlockingFailure;
+
+        internal bool IsCloseAuthorized => Disposition == RuntimeShutdownDisposition.Terminal ||
+            Disposition == RuntimeShutdownDisposition.DetachedRetained;
+
         internal RuntimeShutdownReceipt(long closingAttempt, ShutdownReceipt engineReceipt,
             RuntimeCallbackIngressDrainReceipt ingressReceipt, WatchdogStopAllDrainReceipt stopAllReceipt,
             WatchdogRuntimeCallbackDrainReceipt callbackReceipt, RuntimeCallbackPipelineState pipelineState,
@@ -1183,7 +1210,8 @@ namespace MTEmbTest
             long sessionGeneration = 0, long sessionLease = 0,
             bool retained = false, bool journalFlushCompleted = false,
             bool journalDisposed = false,
-            bool previousRuntimeShutdownIncomplete = false)
+            bool previousRuntimeShutdownIncomplete = false,
+            bool sessionClosingPersisted = true)
         {
             ClosingAttempt = closingAttempt;
             EngineReceipt = engineReceipt;
@@ -1201,6 +1229,7 @@ namespace MTEmbTest
             JournalFlushCompleted = journalFlushCompleted;
             JournalDisposed = journalDisposed;
             PreviousRuntimeShutdownIncomplete = previousRuntimeShutdownIncomplete;
+            SessionClosingPersisted = sessionClosingPersisted;
         }
 
         internal RuntimeShutdownReceipt AsTestAbandoned()
@@ -1211,19 +1240,21 @@ namespace MTEmbTest
                 TerminalReason, true, RetentionVersion, SessionId,
                 SessionGeneration, SessionLease, Retained,
                 JournalFlushCompleted, JournalDisposed,
-                PreviousRuntimeShutdownIncomplete);
+                PreviousRuntimeShutdownIncomplete, SessionClosingPersisted);
         }
 
         internal RuntimeShutdownReceipt WithRetention(long retentionVersion,
             bool retained, bool journalFlushCompleted, bool journalDisposed,
-            bool previousRuntimeShutdownIncomplete = false)
+            bool previousRuntimeShutdownIncomplete = false,
+            bool? sessionClosingPersisted = null)
         {
             return new RuntimeShutdownReceipt(ClosingAttempt, EngineReceipt,
                 IngressReceipt, StopAllReceipt, CallbackReceipt, PipelineState,
                 TerminalReason, TestAbandoned, retentionVersion, SessionId,
                 SessionGeneration, SessionLease, retained,
                 journalFlushCompleted, journalDisposed,
-                previousRuntimeShutdownIncomplete);
+                previousRuntimeShutdownIncomplete,
+                sessionClosingPersisted ?? SessionClosingPersisted);
         }
     }
 

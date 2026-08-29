@@ -7,6 +7,14 @@ using System.Threading.Tasks;
 
 namespace Controller
 {
+    internal enum FormalParticipantDisposition
+    {
+        LegacyUnknown = 0,
+        SafeCommitted = 1,
+        SafeAborted = 2,
+        SafetyUnproven = 3
+    }
+
     /// <summary>
     /// 正式阶段参与者的精确租约。退休、槽准入和异步安全确认只能作用于同一
     /// Run/RunEpoch/ParticipantGeneration，禁止旧回调污染后来重新加入的通道。
@@ -41,6 +49,7 @@ namespace Controller
     internal sealed class FormalBatchParticipantTerminal
     {
         public int Channel { get; set; }
+        public FormalParticipantDisposition Disposition { get; set; }
         public bool MotorOffConfirmed { get; set; }
         public bool MechanicalCycleCompleted { get; set; }
         public bool HydraulicMemberReleased { get; set; }
@@ -53,6 +62,7 @@ namespace Controller
         public long CallbackElapsedMs { get; set; }
         public long PhysicalActionElapsedMs { get; set; }
         public long SharedCoordinationWaitMs { get; set; }
+        public CycleAttemptClosureReceipt ClosureReceipt { get; set; }
         public string Result { get; set; } = string.Empty;
         public DateTime CompletedUtc { get; set; }
     }
@@ -104,6 +114,7 @@ namespace Controller
             Complete(terminal ?? new FormalBatchParticipantTerminal
             {
                 Channel = Channel,
+                Disposition = FormalParticipantDisposition.SafetyUnproven,
                 MotorOffConfirmed = false,
                 HydraulicMemberReleased = false,
                 PersistenceBoundaryRequired = true,
@@ -433,15 +444,53 @@ namespace Controller
         {
             if (!entry.Pending.Remove(terminal.Channel)) return false;
             entry.Terminals[terminal.Channel] = terminal;
-            if (!terminal.MotorOffConfirmed || !terminal.HydraulicMemberReleased ||
+            var disposition = terminal.Disposition;
+            if (disposition == FormalParticipantDisposition.LegacyUnknown)
+            {
+                // Compatibility for legacy callers: a durably closed boundary
+                // is safe even when the attempt was intentionally aborted.
+                disposition = terminal.MotorOffConfirmed && terminal.HydraulicMemberReleased &&
+                              (!terminal.PersistenceBoundaryRequired || terminal.PersistenceCommitted) &&
+                              (!terminal.RetirementBoundaryRequired || terminal.ExecutionPermitRevoked)
+                    ? terminal.ControlSucceeded
+                        ? FormalParticipantDisposition.SafeCommitted
+                        : FormalParticipantDisposition.SafeAborted
+                    : FormalParticipantDisposition.SafetyUnproven;
+                terminal.Disposition = disposition;
+            }
+            if (disposition == FormalParticipantDisposition.SafetyUnproven ||
+                !terminal.MotorOffConfirmed || !terminal.HydraulicMemberReleased ||
                 (terminal.PersistenceBoundaryRequired && !terminal.PersistenceCommitted) ||
                 (terminal.RetirementBoundaryRequired && !terminal.ExecutionPermitRevoked))
                 entry.SafetyFailure =
                     $"FormalSlotSafetyBoundaryFailed EPB={terminal.Channel} " +
+                    $"Disposition={disposition} " +
                     $"MotorOff={terminal.MotorOffConfirmed} " +
                     $"HydraulicReleased={terminal.HydraulicMemberReleased} " +
                     $"Persistence={terminal.PersistenceCommitted} " +
                     $"ExecutionRevoked={terminal.ExecutionPermitRevoked}";
+            var receipt = terminal.ClosureReceipt ?? new CycleAttemptClosureReceipt();
+            receipt.RunId = entry.RunId;
+            receipt.RunEpoch = entry.RunEpoch;
+            receipt.Channel = terminal.Channel;
+            receipt.FormalSlot = entry.SlotOrdinal;
+            receipt.Durable = terminal.PersistenceCommitted;
+            receipt.Disposition = disposition == FormalParticipantDisposition.SafeCommitted
+                ? CycleAttemptClosureDisposition.Committed
+                : disposition == FormalParticipantDisposition.SafeAborted
+                    ? CycleAttemptClosureDisposition.Aborted
+                    : CycleAttemptClosureDisposition.Unknown;
+            if (string.IsNullOrWhiteSpace(receipt.DurabilityEvidence))
+                receipt.DurabilityEvidence =
+                    $"MotorOff={terminal.MotorOffConfirmed};" +
+                    $"HydraulicReleased={terminal.HydraulicMemberReleased};" +
+                    $"PersistenceCommitted={terminal.PersistenceCommitted};" +
+                    $"Disposition={disposition}";
+            if (receipt.CapturedUtc == default)
+                receipt.CapturedUtc = terminal.CompletedUtc == default
+                    ? DateTime.UtcNow
+                    : terminal.CompletedUtc;
+            terminal.ClosureReceipt = receipt;
             var complete = entry.Pending.Count == 0;
             if (complete)
             {
@@ -568,6 +617,7 @@ namespace Controller
             return new FormalBatchParticipantTerminal
             {
                 Channel = channel,
+                Disposition = source.Disposition,
                 MotorOffConfirmed = source.MotorOffConfirmed,
                 MechanicalCycleCompleted = source.MechanicalCycleCompleted,
                 HydraulicMemberReleased = source.HydraulicMemberReleased,
@@ -580,6 +630,23 @@ namespace Controller
                 CallbackElapsedMs = source.CallbackElapsedMs,
                 PhysicalActionElapsedMs = source.PhysicalActionElapsedMs,
                 SharedCoordinationWaitMs = source.SharedCoordinationWaitMs,
+                ClosureReceipt = source.ClosureReceipt == null
+                    ? null
+                    : new CycleAttemptClosureReceipt
+                    {
+                        RunId = source.ClosureReceipt.RunId,
+                        RunEpoch = source.ClosureReceipt.RunEpoch,
+                        Device = source.ClosureReceipt.Device,
+                        Channel = channel,
+                        FormalSlot = source.ClosureReceipt.FormalSlot,
+                        AttemptId = source.ClosureReceipt.AttemptId,
+                        Cycle = source.ClosureReceipt.Cycle,
+                        Disposition = source.ClosureReceipt.Disposition,
+                        PersistenceVersion = source.ClosureReceipt.PersistenceVersion,
+                        Durable = source.ClosureReceipt.Durable,
+                        DurabilityEvidence = source.ClosureReceipt.DurabilityEvidence,
+                        CapturedUtc = source.ClosureReceipt.CapturedUtc
+                    },
                 Result = string.IsNullOrWhiteSpace(reason) ? source.Result : reason,
                 CompletedUtc = source.CompletedUtc == default ? DateTime.UtcNow : source.CompletedUtc
             };

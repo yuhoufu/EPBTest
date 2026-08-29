@@ -296,28 +296,54 @@ namespace MtEmbTest
             string reason,
             RuntimeShutdownIntent shutdownIntent = RuntimeShutdownIntent.SessionClose)
         {
-            Task<RuntimeShutdownReceipt> shutdown;
-            lock (_gate) shutdown = EnsureShutdownTaskLocked(shutdownIntent);
-
             RuntimeShutdownReceipt receipt;
-            try
+            var deadlineUtc = DateTime.UtcNow.AddSeconds(15);
+            do
             {
-                receipt = await shutdown.ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                ProjectLogHub.Write(ProjectLogLevel.Error,
-                    "Watchdog主窗体收口异常（" + (reason ?? "unknown") + "）：" +
-                    ex.GetBaseException().Message, "独立看门狗", ex);
-                return null;
-            }
+                Task<RuntimeShutdownReceipt> shutdown;
+                lock (_gate) shutdown = EnsureShutdownTaskLocked(shutdownIntent);
+                try
+                {
+                    receipt = await shutdown.ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    ProjectLogHub.Write(ProjectLogLevel.Error,
+                        "Watchdog主窗体收口异常（" + (reason ?? "unknown") + "）：" +
+                        ex.GetBaseException().Message, "独立看门狗", ex);
+                    return null;
+                }
 
-            if (receipt != null && receipt.IsTerminal)
-                ReleaseAfterTerminal(receipt);
-            else
+                if (receipt != null && receipt.Disposition == RuntimeShutdownDisposition.Terminal)
+                {
+                    ReleaseAfterTerminal(receipt);
+                    return receipt;
+                }
+                // Journal/archive cleanup is non-safety work only after the
+                // receipt proves SafeExitAllowed.  Retry it for a bounded
+                // window so ordinary transient I/O still reaches Terminal;
+                // only then detach the retained cleanup from the UI process.
+                if (receipt != null &&
+                    receipt.Disposition == RuntimeShutdownDisposition.DetachedRetained &&
+                    DateTime.UtcNow >= deadlineUtc)
+                {
+                    ReleaseAfterTerminal(receipt);
+                    return receipt;
+                }
+                if (DateTime.UtcNow < deadlineUtc)
+                    await Task.Delay(1000).ConfigureAwait(true);
+            }
+            while (DateTime.UtcNow < deadlineUtc);
+
+            if (receipt == null || !receipt.IsCloseAuthorized)
                 ProjectLogHub.Write(ProjectLogLevel.Warning,
                     "Watchdog会话尚未达到终态（" + (reason ?? "unknown") +
-                    "），保留主窗体资源等待同Owner重试。", "独立看门狗");
+                    "），关闭被安全阻止。Disposition=" +
+                    (receipt?.Disposition.ToString() ?? "NoReceipt") +
+                    "; Reason=" + (receipt?.TerminalReason ?? "unknown") +
+                    "; PipelineTerminal=" + (receipt?.PipelineTerminal ?? false) +
+                    "; JournalFlush=" + (receipt?.JournalFlushCompleted ?? false) +
+                    "; JournalDisposed=" + (receipt?.JournalDisposed ?? false), "独立看门狗");
             return receipt;
         }
 

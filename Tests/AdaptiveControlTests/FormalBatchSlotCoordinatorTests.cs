@@ -19,6 +19,10 @@ namespace AdaptiveControlTests
                 RetiredParticipantDoesNotBlockBarrier, ref passed);
             Run("退休安全证据失败必须阻断槽位",
                 UnsafeRetirementFailsClosed, ref passed);
+            Run("SafeAborted可靠封圈释放槽位且不计机械完成",
+                SafeAbortedReleasesSlot, ref passed);
+            Run("SafetyUnproven形式终态必须阻断后续槽位",
+                SafetyUnprovenBlocksSlot, ref passed);
             Run("墙钟边界计算禁止补跑历史槽",
                 FutureBoundaryNeverCatchesUp, ref passed);
             Run("迟到进入下一槽不会被二次顺延",
@@ -134,6 +138,81 @@ namespace AdaptiveControlTests
                 100);
             Assert(boundary == anchor.AddMilliseconds(500) && boundary > after,
                 "边界计算返回了当前或历史槽，可能补跑");
+        }
+
+        private static void SafeAbortedReleasesSlot()
+        {
+            var coordinator = new FormalBatchSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var anchor = DateTime.UtcNow.AddMilliseconds(-5);
+            var first = coordinator.EnterAsync(
+                    runId, 0, 4, new[] { 4 }, anchor, 30, null, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var abortedTerminal = new FormalBatchParticipantTerminal
+            {
+                Channel = 4,
+                Disposition = FormalParticipantDisposition.SafeAborted,
+                MotorOffConfirmed = true,
+                HydraulicMemberReleased = true,
+                ControlSucceeded = false,
+                PersistenceBoundaryRequired = true,
+                PersistenceCommitted = true,
+                ExecutionPermitRevoked = true,
+                MechanicalCycleCompleted = false,
+                Result = "SafeAborted",
+                CompletedUtc = DateTime.UtcNow
+            };
+            first.Complete(abortedTerminal);
+            Assert(abortedTerminal.ClosureReceipt != null &&
+                   abortedTerminal.ClosureReceipt.RunId == runId &&
+                   abortedTerminal.ClosureReceipt.RunEpoch == 1 &&
+                   abortedTerminal.ClosureReceipt.Channel == 4 &&
+                   abortedTerminal.ClosureReceipt.FormalSlot == 0 &&
+                   abortedTerminal.ClosureReceipt.Disposition ==
+                       CycleAttemptClosureDisposition.Aborted &&
+                   abortedTerminal.ClosureReceipt.Durable &&
+                   !string.IsNullOrWhiteSpace(
+                       abortedTerminal.ClosureReceipt.DurabilityEvidence),
+                "SafeAborted没有生成带Run/Epoch/Slot/耐久证据的关闭回执");
+
+            var next = coordinator.EnterAsync(
+                    runId, 1, 4, new[] { 4 }, anchor, 30, null, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            next.Complete(SafeTerminal(4));
+            coordinator.ClearRun(runId);
+        }
+
+        private static void SafetyUnprovenBlocksSlot()
+        {
+            var coordinator = new FormalBatchSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var anchor = DateTime.UtcNow.AddMilliseconds(-5);
+            var first = coordinator.EnterAsync(
+                    runId, 0, 5, new[] { 5 }, anchor, 30, null, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            first.Complete(new FormalBatchParticipantTerminal
+            {
+                Channel = 5,
+                Disposition = FormalParticipantDisposition.SafetyUnproven,
+                MotorOffConfirmed = true,
+                HydraulicMemberReleased = true,
+                PersistenceBoundaryRequired = true,
+                PersistenceCommitted = false,
+                ExecutionPermitRevoked = true,
+                Result = "PersistenceUnknown",
+                CompletedUtc = DateTime.UtcNow
+            });
+
+            var failed = false;
+            try
+            {
+                coordinator.EnterAsync(
+                        runId, 1, 5, new[] { 5 }, anchor, 30, null, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            catch (InvalidOperationException) { failed = true; }
+            Assert(failed, "SafetyUnproven仍放行了后续正式槽。");
+            coordinator.ClearRun(runId);
         }
 
         private static void PeriodOverrunPolicyClassifiesBoundaries()
@@ -348,6 +427,7 @@ namespace AdaptiveControlTests
             new FormalBatchParticipantTerminal
             {
                 Channel = channel,
+                Disposition = FormalParticipantDisposition.SafeCommitted,
                 MotorOffConfirmed = true,
                 HydraulicMemberReleased = true,
                 ControlSucceeded = true,

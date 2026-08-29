@@ -208,7 +208,8 @@ namespace MTEmbTest
             var stopProjection = StopSafetyWatchdogHeartbeatMapper.Map(aggregate);
             var storage = _epb?.CaptureWatchdogStorageSnapshot();
             var manualPauseActive =
-                _epb?.CurrentBatchPauseState == BatchPauseState.Paused;
+                _epb?.CurrentBatchPauseState == BatchPauseState.Paused ||
+                _epb?.CurrentBatchPauseState == BatchPauseState.PauseHolding;
             var manualPausePending =
                 _epb?.CurrentBatchPauseState == BatchPauseState.PausePending;
             var manualPauseCommanded =
@@ -255,6 +256,7 @@ namespace MTEmbTest
                 (logical?.BatchSessionActive ?? false) ? "Paused" : "Idle";
             var watchdogRunId = aggregate?.Infrastructure?.RunId ?? Guid.Empty;
             var watchdogRunEpoch = aggregate?.Infrastructure?.RunEpoch ?? 0;
+            var logHealth = ProjectLogHub.CaptureHealth();
             return new WatchdogHeartbeat
             {
                 RunId = watchdogRunId == Guid.Empty ? string.Empty : watchdogRunId.ToString("N"),
@@ -439,6 +441,14 @@ namespace MTEmbTest
                 HardwareFailureDetail = hardwareDetail,
                 HardwareProbeAttempt = hardwareAttempt,
                 HardwareNextProbeUtc = hardwareNextProbeUtc.Ticks,
+                DiagnosticSinkAcceptedVersion = logHealth.AcceptedVersion,
+                DiagnosticSinkFlushedVersion = logHealth.FlushedVersion,
+                DiagnosticSinkLastSuccessUtcTicks = logHealth.LastSuccessfulSinkUtc.Ticks,
+                DiagnosticSinkStalled = logHealth.IsStalled,
+                DiagnosticSinkEmergencySpool = logHealth.EmergencySpoolActive,
+                DiagnosticSinkQueueDepth = logHealth.QueueDepth,
+                DiagnosticSinkDroppedRecords = logHealth.DroppedRecords,
+                DiagnosticSinkFailure = logHealth.LastError,
                 RunActive = logical?.BatchSessionActive ?? false
             };
         }

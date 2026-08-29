@@ -410,9 +410,14 @@ namespace Controller
                 return false;
 
             var exactSafeState = state.State == ChannelRuntimeState.StartBlocked ||
-                                 state.State == ChannelRuntimeState.AlarmStopped ||
-                                 state.State == ChannelRuntimeState.InterlockStopped ||
-                                 state.State == ChannelRuntimeState.SystemFault;
+                                  state.State == ChannelRuntimeState.AlarmStopped ||
+                                  state.State == ChannelRuntimeState.InterlockStopped ||
+                                  state.State == ChannelRuntimeState.SystemFault ||
+                                  (state.State == ChannelRuntimeState.Paused &&
+                                   string.Equals(
+                                       state.ReasonCode,
+                                       "DaqRecoveryPauseHeldTerminal",
+                                       StringComparison.Ordinal));
             return exactSafeState &&
                    state.RecoveryOwnerKind == RecoveryOwnerKind.None &&
                    state.RecoveryTargetPhase == RecoveryTargetPhase.None &&
@@ -497,7 +502,9 @@ namespace Controller
                         PublishChannelRuntimeState(
                             channel,
                             terminalState,
-                            "DaqRecoverySafeTerminal",
+                            terminalState == ChannelRuntimeState.Paused
+                                ? "DaqRecoveryPauseHeldTerminal"
+                                : "DaqRecoverySafeTerminal",
                             reason ?? "DAQ恢复已安全停止。",
                             affectedChannels: channels,
                             correlationId: context.CorrelationId,
@@ -539,7 +546,9 @@ namespace Controller
                                 {
                                     Channel = channel,
                                     State = terminalState,
-                                    ReasonCode = "DaqRecoverySafeTerminalFallback",
+                                    ReasonCode = terminalState == ChannelRuntimeState.Paused
+                                        ? "DaqRecoveryPauseHeldTerminal"
+                                        : "DaqRecoverySafeTerminalFallback",
                                     ReasonText = reason ?? "DAQ恢复已安全停止。",
                                     AffectedChannels = channels,
                                     TimestampUtc = DateTime.UtcNow,
@@ -594,7 +603,10 @@ namespace Controller
                     reason ?? "DAQ恢复已安全停止。");
                 if (context.Transaction == null)
                 {
-                    if (!PublishDaqSafeTerminalStates(context, reason))
+                    if (!PublishDaqSafeTerminalStates(
+                            context,
+                            reason,
+                            SelectDaqRecoverySafeTerminalState(context)))
                     {
                         // Do not remove a DAQ owner while any affected
                         // channel is still Recovering.
@@ -724,7 +736,7 @@ namespace Controller
                 if (!PublishDaqSafeTerminalStates(
                         context,
                         "DAQ终态凭证耗尽，已安全闭锁：" + detail,
-                        ChannelRuntimeState.StartBlocked))
+                        SelectDaqRecoverySafeTerminalState(context)))
                 {
                     // Retaining the owner is the only safe fallback when the
                     // authoritative channel store itself cannot prove that
@@ -1102,22 +1114,54 @@ namespace Controller
             {
                 try
                 {
-                    // 看门狗必须在任何同步断电、写盘封存或诊断动作之前启动。
-                    // 这些步骤中的任意一个即使意外阻塞，也不能让通道永久停留在旧状态。
-                    await Task.Delay(_daqPersistenceRecoveryTimeoutMs, context.Cancellation.Token)
-                        .ConfigureAwait(false);
-                    if (!IsCurrentRecovery(context)) return;
-                    // This watchdog is intentionally incident-local.  A stalled
-                    // DAQ pipeline must enter one SafeIdle/Terminal outcome;
-                    // escalating it to the process watchdog used to create the
-                    // observed batch-recycle/restart loop.
-                    CompleteCancelledRecovery(
-                        context,
-                        $"DaqRecoveryPipelineStalled after {_daqPersistenceRecoveryTimeoutMs}ms; " +
-                        "SafeIdleOnly");
+                    var initialPause = CaptureBatchPauseSnapshot();
+                    if (context.AdmissionBatchPauseState == BatchPauseState.Paused &&
+                        initialPause.State == BatchPauseState.Paused &&
+                        ShouldHoldDaqRecoveryForPause(context, initialPause))
+                    {
+                        SetBatchPauseState(
+                            BatchPauseState.PauseHolding,
+                            initialPause.FrozenChannels,
+                            "暂停期间正在执行DAQ健康恢复，保持所有输出关闭。");
+                    }
+                    // HardDeadlineUtc is the one authoritative whole-recovery
+                    // deadline.  The 10 s persistence timeout is only a stage
+                    // budget and must never cancel a later legal stage.
+                    while (IsCurrentRecovery(context))
+                    {
+                        var remainingMs = GetDaqRecoveryRemainingMs(context);
+                        if (remainingMs <= 0)
+                        {
+                            var pause = CaptureBatchPauseSnapshot();
+                            if (ShouldHoldDaqRecoveryForPause(context, pause) &&
+                                HasDaqRecoverySafeOffEvidence(context))
+                            {
+                                SetBatchPauseState(
+                                    BatchPauseState.PauseHolding,
+                                    pause.FrozenChannels,
+                                    "DAQ恢复达到60秒硬截止；已保持断电，等待受控停止或诊断。");
+                            }
+                            CompleteCancelledRecovery(
+                                context,
+                                $"DaqRecoveryHardDeadlineExceeded Device={context.Device}; SafeIdleOnly");
+                            return;
+                        }
+                        await Task.Delay(Math.Min(1000, remainingMs), context.Cancellation.Token)
+                            .ConfigureAwait(false);
+                    }
                 }
                 catch (OperationCanceledException) { }
             }), "DaqRecoveryWatchdog");
+        }
+
+        private ChannelRuntimeState SelectDaqRecoverySafeTerminalState(
+            DaqAutoRecoveryContext context)
+        {
+            var pause = CaptureBatchPauseSnapshot();
+            return ShouldHoldDaqRecoveryForPause(context, pause) &&
+                   HasDaqRecoverySafeOffEvidence(context)
+                ? ChannelRuntimeState.Paused
+                : ChannelRuntimeState.SystemFault;
         }
 
         private void StartDaqPowerDisableDeadline(DaqAutoRecoveryContext context)
@@ -1142,7 +1186,7 @@ namespace Controller
                     if (context.Phase.Current >= DaqRecoveryPhase.CutoffCompleted) return;
 
                     var pendingGroups = (context.PowerDisableTasksByGroup ??
-                                         new Dictionary<int, Task>())
+                                         new Dictionary<int, Task<(bool ok, string error)>>())
                         .Where(pair => pair.Key > 0 &&
                                        pair.Value != null &&
                                        !pair.Value.IsCompleted)
@@ -1156,7 +1200,7 @@ namespace Controller
                         : (context.PowerDisableTasks ?? Array.Empty<Task>())
                             .Count(task => task != null && !task.IsCompleted);
                     var energizedGroups = (context.PowerDisableTasksByGroup ??
-                                           new Dictionary<int, Task>())
+                                           new Dictionary<int, Task<(bool ok, string error)>>())
                         .Where(pair => pair.Key > 0)
                         .Select(pair => pair.Key)
                         .Where(id =>
@@ -1172,26 +1216,25 @@ namespace Controller
 
                     if (Interlocked.Exchange(ref context.PowerDisableDeadlineLogged, 1) == 0)
                     {
-                        _log.Error(
-                            $"DaqPowerDisableDeadlineExceeded Device={context.Device} " +
+                        _log.Warn(
+                            $"DaqPowerOffPendingDiagnostic Device={context.Device} " +
                             $"RunId={context.RunId:N} RunEpoch={context.RunEpoch} " +
                             $"CorrelationId={context.CorrelationId:N} " +
                             $"PendingTasks={pendingTaskCount} " +
                             $"EnergizedGroups=[{string.Join(",", energizedGroups)}] " +
                             $"DeadlineMs={PowerDisableHardDeadlineMs}；" +
-                            "仅执行一次整组SafeIdle/Terminal，禁止批次回收或主进程重启。",
+                            "仅发布阶段无进度诊断并等待当前恢复代际OFF回执，" +
+                            "不得在全局60秒截止前收口恢复上下文。",
                             "程控电源");
                     }
 
-                    // A power-off deadline is an incident-local safety outcome.
-                    // Never turn it into a batch recycle/process restart: the
-                    // terminal gate below is the single idempotent owner of this
-                    // incident's SafeIdle transition.
-                    CompleteCancelledRecovery(
+                    PublishDaqPowerOffPending(
                         context,
-                        $"DaqPowerDisableDeadline Device={context.Device}; " +
-                        $"PendingTasks={pendingTaskCount}; " +
-                        $"EnergizedGroups=[{string.Join(",", energizedGroups)}]");
+                        energizedGroups.FirstOrDefault(),
+                        $"PendingTasks={pendingTaskCount};Groups=[{string.Join(",", energizedGroups)}]");
+                    ScheduleDaqPowerOffPendingRetry(
+                        context,
+                        "DaqPowerDisableDiagnosticNoProgress");
                 }
                 catch (OperationCanceledException) { }
             }), "DaqPowerDisableDeadline");

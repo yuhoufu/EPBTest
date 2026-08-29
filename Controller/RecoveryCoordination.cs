@@ -94,6 +94,29 @@ namespace Controller
             return false;
         }
 
+        /// <summary>
+        ///     Quarantines owners after the enclosing run epoch has already
+        ///     been revoked.  Their tokens are cancelled and their completion
+        ///     is released, while late Dispose calls become harmless because
+        ///     the dictionary no longer contains the old owner identity.
+        /// </summary>
+        internal int SupersedeAll(string reason)
+        {
+            OwnerState[] owners;
+            lock (_gate)
+            {
+                owners = _owners.Values.ToArray();
+                _owners.Clear();
+            }
+            foreach (var owner in owners)
+            {
+                try { owner.Cancellation.Cancel(); }
+                catch { }
+                owner.Completion.TrySetResult(true);
+            }
+            return owners.Length;
+        }
+
         internal async Task<HydraulicRecoveryOwnershipLease> AcquireAsync(
             int hydraulicGroupId,
             string ownerId,

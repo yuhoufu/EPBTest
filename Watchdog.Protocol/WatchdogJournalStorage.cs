@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Web.Script.Serialization;
 
@@ -416,24 +417,84 @@ namespace MTTFTest.Watchdog.Protocol
     /// 恢复批次已提交的跨进程耐久旁路。命名管道只负责低延迟通知；即使双向管道
     /// 正在重连，Sidecar 仍能从本机或项目目录确认新 Run 已经正式提交并关闭过渡窗。
     /// </summary>
+    public sealed class WatchdogRecoveryCommitEvidence
+    {
+        public int SchemaVersion { get; set; }
+        public long Generation { get; set; }
+        public long GeneratedUtcTicks { get; set; }
+        public string RunId { get; set; } = string.Empty;
+        public long RunEpoch { get; set; }
+        public string Stage { get; set; } = string.Empty;
+        public string Reason { get; set; } = string.Empty;
+        public string ContentSha256 { get; set; } = string.Empty;
+        public bool Legacy { get; set; }
+    }
+
     public static class WatchdogRecoveryCommitMarker
     {
         public static void WriteLocal(string sessionId, long generation, string reason) =>
-            AtomicWrite(WatchdogJournalPaths.LocalRecoveryCommitPath(sessionId), generation, reason);
+            AtomicWriteLegacy(
+                WatchdogJournalPaths.LocalRecoveryCommitPath(sessionId),
+                generation,
+                reason);
+
+        public static void WriteLocal(
+            string sessionId,
+            long generation,
+            string reason,
+            string runId,
+            long runEpoch,
+            string stage) =>
+            AtomicWrite(
+                WatchdogJournalPaths.LocalRecoveryCommitPath(sessionId),
+                generation,
+                reason,
+                runId,
+                runEpoch,
+                stage);
 
         public static void WriteProject(
             string projectDirectory,
             string sessionId,
             long generation,
             string reason) =>
-            AtomicWrite(
+            AtomicWriteLegacy(
                 WatchdogJournalPaths.ProjectRecoveryCommitPath(projectDirectory, sessionId),
                 generation,
                 reason);
 
+        public static void WriteProject(
+            string projectDirectory,
+            string sessionId,
+            long generation,
+            string reason,
+            string runId,
+            long runEpoch,
+            string stage) =>
+            AtomicWrite(
+                WatchdogJournalPaths.ProjectRecoveryCommitPath(projectDirectory, sessionId),
+                generation,
+                reason,
+                runId,
+                runEpoch,
+                stage);
+
         public static bool TryRead(string projectDirectory, string sessionId, out long generation)
         {
-            generation = 0;
+            var read = TryRead(
+                projectDirectory,
+                sessionId,
+                out WatchdogRecoveryCommitEvidence evidence);
+            generation = evidence?.Generation ?? 0;
+            return read;
+        }
+
+        public static bool TryRead(
+            string projectDirectory,
+            string sessionId,
+            out WatchdogRecoveryCommitEvidence evidence)
+        {
+            evidence = null;
             foreach (var path in CandidatePaths(projectDirectory, sessionId))
             {
                 try
@@ -447,18 +508,33 @@ namespace MTTFTest.Watchdog.Protocol
                                FileShare.ReadWrite | FileShare.Delete))
                     using (var reader = new StreamReader(stream, new UTF8Encoding(false), true))
                         content = reader.ReadToEnd();
-                    var separator = (content ?? string.Empty).IndexOf('|');
-                    var token = separator < 0 ? content : content.Substring(0, separator);
-                    if (long.TryParse(
-                            token,
-                            NumberStyles.Integer,
-                            CultureInfo.InvariantCulture,
-                            out var parsed) && parsed > generation)
-                        generation = parsed;
+                    var parsed = Parse(content);
+                    if (parsed != null && parsed.Generation > (evidence?.Generation ?? 0))
+                        evidence = parsed;
                 }
                 catch { }
             }
-            return generation > 0;
+            return evidence != null && evidence.Generation > 0;
+        }
+
+        public static void Archive(
+            string projectDirectory,
+            string sessionId,
+            long generation,
+            string disposition)
+        {
+            foreach (var path in CandidatePaths(projectDirectory, sessionId))
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    var archive = path + "." + generation.ToString(CultureInfo.InvariantCulture) +
+                                  "." + NormalizeToken(disposition) + ".processed";
+                    if (File.Exists(archive)) File.Delete(archive);
+                    File.Move(path, archive);
+                }
+                catch { }
+            }
         }
 
         private static IEnumerable<string> CandidatePaths(string projectDirectory, string sessionId)
@@ -471,7 +547,51 @@ namespace MTTFTest.Watchdog.Protocol
             if (!string.IsNullOrWhiteSpace(projectPath)) yield return projectPath;
         }
 
-        private static void AtomicWrite(string path, long generation, string reason)
+        private static void AtomicWrite(
+            string path,
+            long generation,
+            string reason,
+            string runId,
+            long runEpoch,
+            string stage)
+        {
+            if (generation <= 0) throw new ArgumentOutOfRangeException(nameof(generation));
+            var directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(directory))
+                throw new InvalidOperationException("恢复提交marker目录无效。");
+            Directory.CreateDirectory(directory);
+            var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                var ticks = DateTime.UtcNow.Ticks;
+                var normalizedRunId = Guid.TryParse(runId, out var parsedRunId)
+                    ? parsedRunId.ToString("N")
+                    : string.Empty;
+                var encodedStage = Convert.ToBase64String(
+                    Encoding.UTF8.GetBytes(stage ?? string.Empty));
+                var encodedReason = Convert.ToBase64String(
+                    Encoding.UTF8.GetBytes(reason ?? string.Empty));
+                var canonical = string.Join("|",
+                    "2",
+                    generation.ToString(CultureInfo.InvariantCulture),
+                    ticks.ToString(CultureInfo.InvariantCulture),
+                    normalizedRunId,
+                    Math.Max(0, runEpoch).ToString(CultureInfo.InvariantCulture),
+                    encodedStage,
+                    encodedReason);
+                var payload = canonical + "|" + ComputeSha256(canonical);
+                File.WriteAllText(temporary, payload, new UTF8Encoding(false));
+                using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+                    stream.Flush(true);
+                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+            }
+            finally
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+            }
+        }
+
+        private static void AtomicWriteLegacy(string path, long generation, string reason)
         {
             if (generation <= 0) throw new ArgumentOutOfRangeException(nameof(generation));
             var directory = Path.GetDirectoryName(path);
@@ -485,14 +605,81 @@ namespace MTTFTest.Watchdog.Protocol
                               DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture) + "|" +
                               (reason ?? string.Empty);
                 File.WriteAllText(temporary, payload, new UTF8Encoding(false));
-                using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+                using (var stream = new FileStream(
+                           temporary,
+                           FileMode.Open,
+                           FileAccess.ReadWrite,
+                           FileShare.Read))
                     stream.Flush(true);
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                if (File.Exists(path)) File.Replace(temporary, path, null);
+                else File.Move(temporary, path);
             }
             finally
             {
                 try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
             }
+        }
+
+        private static WatchdogRecoveryCommitEvidence Parse(string content)
+        {
+            var tokens = (content ?? string.Empty).Split('|');
+            if (tokens.Length >= 8 && tokens[0] == "2" &&
+                long.TryParse(tokens[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var generation) &&
+                long.TryParse(tokens[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks) &&
+                long.TryParse(tokens[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out var runEpoch))
+            {
+                var canonical = string.Join("|", tokens.Take(7));
+                if (!string.Equals(
+                        ComputeSha256(canonical),
+                        tokens[7],
+                        StringComparison.OrdinalIgnoreCase))
+                    return null;
+                try
+                {
+                    return new WatchdogRecoveryCommitEvidence
+                    {
+                        SchemaVersion = 2,
+                        Generation = generation,
+                        GeneratedUtcTicks = ticks,
+                        RunId = tokens[3],
+                        RunEpoch = runEpoch,
+                        Stage = Encoding.UTF8.GetString(Convert.FromBase64String(tokens[5])),
+                        Reason = Encoding.UTF8.GetString(Convert.FromBase64String(tokens[6])),
+                        ContentSha256 = tokens[7],
+                        Legacy = false
+                    };
+                }
+                catch { return null; }
+            }
+
+            var separator = (content ?? string.Empty).IndexOf('|');
+            var token = separator < 0 ? content : content.Substring(0, separator);
+            if (!long.TryParse(
+                    token,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var legacyGeneration) || legacyGeneration <= 0)
+                return null;
+            return new WatchdogRecoveryCommitEvidence
+            {
+                SchemaVersion = 1,
+                Generation = legacyGeneration,
+                Legacy = true
+            };
+        }
+
+        private static string ComputeSha256(string value)
+        {
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(
+                        sha.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty)))
+                    .Replace("-", string.Empty);
+        }
+
+        private static string NormalizeToken(string value)
+        {
+            var token = Regex.Replace(value ?? "Processed", "[^A-Za-z0-9_-]", "_");
+            return string.IsNullOrWhiteSpace(token) ? "Processed" : token;
         }
     }
 

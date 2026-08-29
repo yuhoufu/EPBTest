@@ -65,6 +65,86 @@ namespace Controller
         CancelledByStop = 4
     }
 
+    /// <summary>
+    ///     One recovery incident has exactly one monotonic progress line.  Stage
+    ///     budgets are diagnostic only; <see cref="RecoveryContractSnapshot.HardDeadlineUtc"/>
+    ///     is the sole cancellation authority.
+    /// </summary>
+    public enum RecoveryIncidentStage
+    {
+        Detected = 0,
+        SafetyOffSubmitting = 10,
+        SafetyOffConfirmed = 20,
+        DaqRebuilding = 30,
+        FreshnessConfirmed = 40,
+        PersistenceClosed = 50,
+        Terminal = 60
+    }
+
+    public enum SafetyOffTargetKind
+    {
+        DigitalOutput = 0,
+        PowerSupplyGroup = 1
+    }
+
+    public enum SafetyOffEvidenceStatus
+    {
+        Submitted = 0,
+        ConfirmedOff = 1,
+        Rejected = 2,
+        Failed = 3,
+        TimedOut = 4,
+        Superseded = 5
+    }
+
+    /// <summary>
+    ///     Immutable physical OFF evidence. Queue admission is represented by
+    ///     Submitted; only ConfirmedOff may close a safety boundary.
+    /// </summary>
+    public sealed class SafetyOffReceipt
+    {
+        public Guid CommandId { get; set; }
+        public Guid CorrelationId { get; set; }
+        public SafetyOffTargetKind TargetKind { get; set; }
+        public int TargetId { get; set; }
+        public long RunEpoch { get; set; }
+        public long OperationGeneration { get; set; }
+        public DateTime SubmittedUtc { get; set; }
+        public DateTime CompletedUtc { get; set; }
+        public DateTime HardwareObservedUtc { get; set; }
+        public SafetyOffEvidenceStatus Status { get; set; }
+        public string EvidenceSource { get; set; } = string.Empty;
+        public string Error { get; set; } = string.Empty;
+
+        public bool ConfirmedOff => Status == SafetyOffEvidenceStatus.ConfirmedOff;
+
+        public SafetyOffReceipt Clone() => (SafetyOffReceipt)MemberwiseClone();
+    }
+
+    public enum CycleAttemptClosureDisposition
+    {
+        Unknown = 0,
+        Committed = 1,
+        Aborted = 2,
+        Alarmed = 3
+    }
+
+    public sealed class CycleAttemptClosureReceipt
+    {
+        public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public string Device { get; set; } = string.Empty;
+        public int Channel { get; set; }
+        public long FormalSlot { get; set; } = -1;
+        public long AttemptId { get; set; }
+        public int Cycle { get; set; }
+        public CycleAttemptClosureDisposition Disposition { get; set; }
+        public long PersistenceVersion { get; set; }
+        public bool Durable { get; set; }
+        public string DurabilityEvidence { get; set; } = string.Empty;
+        public DateTime CapturedUtc { get; set; }
+    }
+
     public static class RecoveryOwnershipPolicy
     {
         public static bool HasExplicitOwner(ChannelRuntimeStateChangedEvent state)
@@ -108,7 +188,10 @@ namespace Controller
         Paused = 3,
         ResumeChecking = 4,
         Qualification = 5,
-        Stopping = 6
+        Stopping = 6,
+        // Append-only for persisted/UI compatibility. The physical safety
+        // boundary is complete, but DAQ health evidence is still pending.
+        PauseHolding = 7
     }
 
     /// <summary>
@@ -1134,6 +1217,8 @@ namespace Controller
     public enum StopSafetyStage
     {
         None = 0,
+        /// <summary>Admission fence plus immediate DO OFF / PSU Disable submission.</summary>
+        AdmitAndSubmitSafety = 5,
         FreezeActiveWork = 10,
         RevokeExecutionAuthorization = 20,
         SubmitPhysicalOff = 30,
@@ -1294,5 +1379,38 @@ namespace Controller
                 LogicalState = LogicalState
             };
         }
+    }
+
+    /// <summary>
+    ///     Request-scoped stop evidence.  Historical transaction results are
+    ///     referenced for audit only and are never returned as this request's
+    ///     current physical outcome.
+    /// </summary>
+    public sealed class StopRequestReceipt
+    {
+        public Guid RequestId { get; set; }
+        public StopSource Source { get; set; }
+        public DateTime RequestedUtc { get; set; }
+        public DateTime StartedUtc { get; set; }
+        public DateTime CompletedUtc { get; set; }
+        public Guid PhysicalTransactionId { get; set; }
+        public bool JoinedActiveTransaction { get; set; }
+        public Guid PreviousTransactionId { get; set; }
+        public StopSafetyOutcome PreviousOutcome { get; set; }
+        public StopSafetyResult Result { get; set; }
+
+        public StopRequestReceipt Clone() => new StopRequestReceipt
+        {
+            RequestId = RequestId,
+            Source = Source,
+            RequestedUtc = RequestedUtc,
+            StartedUtc = StartedUtc,
+            CompletedUtc = CompletedUtc,
+            PhysicalTransactionId = PhysicalTransactionId,
+            JoinedActiveTransaction = JoinedActiveTransaction,
+            PreviousTransactionId = PreviousTransactionId,
+            PreviousOutcome = PreviousOutcome,
+            Result = Result?.Clone()
+        };
     }
 }

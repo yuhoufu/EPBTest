@@ -3161,6 +3161,18 @@ namespace Controller
                             var phaseSlot = firstFormalSlot + cycleIndex - 1L;
                             var callbackStopwatch = Stopwatch.StartNew();
                             CycleAttemptContext formalCycleAttempt = null;
+                            if (phaseSlot < 0)
+                            {
+                                CommandEpbOffHighPriority(ch, "FormalSlotIdentityInvalid");
+                                PublishChannelRuntimeState(
+                                    ch,
+                                    ChannelRuntimeState.SystemFault,
+                                    "FormalSlotIdentityInvalid",
+                                    $"正式槽身份无效 Slot={phaseSlot}；已保持断电且未提交形式终态。",
+                                    affectedChannels: new[] { ch });
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                return false;
+                            }
                             FormalBatchSlotScope formalSlotScope;
                             try
                             {
@@ -3208,9 +3220,17 @@ namespace Controller
                                                     fallbackMotorOff,
                                                     fallbackHydraulicReleased,
                                                     fallbackPersistenceCommitted);
-                                            return new FormalBatchParticipantTerminal
-                                            {
-                                                Channel = ch,
+                                             return new FormalBatchParticipantTerminal
+                                             {
+                                                 Channel = ch,
+                                                 Disposition = fallbackMotorOff &&
+                                                               fallbackHydraulicReleased &&
+                                                               fallbackPersistenceCommitted
+                                                     ? formalCycleAttempt?.TerminalState ==
+                                                       CycleAttemptTerminalState.Completed
+                                                         ? FormalParticipantDisposition.SafeCommitted
+                                                         : FormalParticipantDisposition.SafeAborted
+                                                     : FormalParticipantDisposition.SafetyUnproven,
                                                 MotorOffConfirmed = fallbackMotorOff,
                                                 HydraulicMemberReleased = fallbackHydraulicReleased,
                                                 PersistenceBoundaryRequired =
@@ -3221,6 +3241,11 @@ namespace Controller
                                                 CallbackElapsedMs =
                                                     callbackStopwatch.ElapsedMilliseconds,
                                                 SharedCoordinationWaitMs = 0,
+                                                ClosureReceipt = formalCycleAttempt == null
+                                                    ? null
+                                                    : EnrichFormalClosureReceipt(
+                                                        formalCycleAttempt.CaptureClosureReceipt(),
+                                                        phaseSlot),
                                                 CompletedUtc = DateTime.UtcNow
                                             };
                                         })
@@ -3605,6 +3630,12 @@ namespace Controller
                             formalSlotScope.Complete(new FormalBatchParticipantTerminal
                             {
                                 Channel = ch,
+                                Disposition = motorOffConfirmed && hydraulicReleased &&
+                                              persistenceBoundaryClosed
+                                    ? cycleAttempt.TerminalState == CycleAttemptTerminalState.Completed
+                                        ? FormalParticipantDisposition.SafeCommitted
+                                        : FormalParticipantDisposition.SafeAborted
+                                    : FormalParticipantDisposition.SafetyUnproven,
                                 MotorOffConfirmed = motorOffConfirmed,
                                 MechanicalCycleCompleted = cycleOutcome.MechanicalCycleCompleted,
                                 HydraulicMemberReleased = hydraulicReleased,
@@ -3616,6 +3647,9 @@ namespace Controller
                                 PhysicalActionElapsedMs = cycleOutcome.PhysicalActionElapsedMs,
                                 SharedCoordinationWaitMs =
                                     cycleOutcome.SharedCoordinationWaitMs,
+                                ClosureReceipt = EnrichFormalClosureReceipt(
+                                    cycleAttempt.CaptureClosureReceipt(),
+                                    phaseSlot),
                                 Result = cycleOutcome.Reason,
                                 CompletedUtc = DateTime.UtcNow
                             });
@@ -3625,6 +3659,15 @@ namespace Controller
                         }), "BatchChannelTimer", ch);
                 }
             }
+        }
+
+        private static CycleAttemptClosureReceipt EnrichFormalClosureReceipt(
+            CycleAttemptClosureReceipt receipt,
+            long formalSlot)
+        {
+            if (receipt == null) return null;
+            receipt.FormalSlot = formalSlot;
+            return receipt;
         }
 
         private void ReportFormalSlotSafetyBoundaryFailure(

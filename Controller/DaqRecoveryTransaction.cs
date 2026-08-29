@@ -35,13 +35,26 @@ namespace Controller
                 Guid commandId,
                 bool accepted,
                 bool physicalCompletion,
-                string failure)
+                string failure,
+                SafetyOffReceipt evidence = null)
             {
                 Channel = channel;
                 CommandId = commandId;
                 Accepted = accepted;
                 PhysicalCompletion = physicalCompletion;
                 Failure = failure ?? string.Empty;
+                Evidence = evidence?.Clone() ?? new SafetyOffReceipt
+                {
+                    CommandId = commandId,
+                    TargetKind = SafetyOffTargetKind.DigitalOutput,
+                    TargetId = channel,
+                    Status = physicalCompletion
+                        ? SafetyOffEvidenceStatus.ConfirmedOff
+                        : accepted
+                            ? SafetyOffEvidenceStatus.Submitted
+                            : SafetyOffEvidenceStatus.Rejected,
+                    Error = failure ?? string.Empty
+                };
             }
 
             internal int Channel { get; }
@@ -49,6 +62,7 @@ namespace Controller
             internal bool Accepted { get; }
             internal bool PhysicalCompletion { get; }
             internal string Failure { get; }
+            internal SafetyOffReceipt Evidence { get; }
 
             internal OffReceipt WithPhysicalCompletion(bool completed)
             {
@@ -57,7 +71,24 @@ namespace Controller
                     CommandId,
                     Accepted,
                     completed,
-                    Failure);
+                    Failure,
+                    new SafetyOffReceipt
+                    {
+                        CommandId = Evidence.CommandId,
+                        CorrelationId = Evidence.CorrelationId,
+                        TargetKind = Evidence.TargetKind,
+                        TargetId = Evidence.TargetId,
+                        RunEpoch = Evidence.RunEpoch,
+                        OperationGeneration = Evidence.OperationGeneration,
+                        SubmittedUtc = Evidence.SubmittedUtc,
+                        CompletedUtc = completed ? DateTime.UtcNow : Evidence.CompletedUtc,
+                        HardwareObservedUtc = completed ? DateTime.UtcNow : Evidence.HardwareObservedUtc,
+                        Status = completed
+                            ? SafetyOffEvidenceStatus.ConfirmedOff
+                            : Evidence.Status,
+                        EvidenceSource = Evidence.EvidenceSource,
+                        Error = Evidence.Error
+                    });
             }
         }
 
@@ -127,6 +158,7 @@ namespace Controller
                 Accepted = receipt.Accepted;
                 PhysicalCompletion = receipt.PhysicalCompletion;
                 Failure = receipt.Failure;
+                Evidence = receipt.Evidence?.Clone();
             }
 
             internal int Channel;
@@ -134,6 +166,7 @@ namespace Controller
             internal bool Accepted;
             internal bool PhysicalCompletion;
             internal string Failure;
+            internal SafetyOffReceipt Evidence;
         }
 
         private readonly object _gate = new object();
@@ -361,7 +394,17 @@ namespace Controller
                         _offReceipts[channel] = new MutableReceipt(receipt);
                         if (receipt.Accepted &&
                             _earlyPhysicalCompletions.Remove(CompletionKey(channel, receipt.CommandId)))
+                        {
                             _offReceipts[channel].PhysicalCompletion = true;
+                            if (_offReceipts[channel].Evidence != null)
+                            {
+                                _offReceipts[channel].Evidence.CompletedUtc = DateTime.UtcNow;
+                                _offReceipts[channel].Evidence.HardwareObservedUtc =
+                                    _offReceipts[channel].Evidence.CompletedUtc;
+                                _offReceipts[channel].Evidence.Status =
+                                    SafetyOffEvidenceStatus.ConfirmedOff;
+                            }
+                        }
                         failed = !receipt.Accepted;
                     }
                     if (failed)
@@ -424,6 +467,12 @@ namespace Controller
                     return false;
                 }
                 receipt.PhysicalCompletion = true;
+                if (receipt.Evidence != null)
+                {
+                    receipt.Evidence.CompletedUtc = DateTime.UtcNow;
+                    receipt.Evidence.HardwareObservedUtc = receipt.Evidence.CompletedUtc;
+                    receipt.Evidence.Status = SafetyOffEvidenceStatus.ConfirmedOff;
+                }
             }
             // The caller needs to distinguish “this command was accepted as
             // the current receipt” from “the whole group is now confirmed”.
@@ -881,7 +930,8 @@ namespace Controller
                 receipt.CommandId,
                 receipt.Accepted,
                 receipt.PhysicalCompletion,
-                receipt.Failure);
+                receipt.Failure,
+                receipt.Evidence);
         }
 
         private static string CompletionKey(int channel, Guid commandId)

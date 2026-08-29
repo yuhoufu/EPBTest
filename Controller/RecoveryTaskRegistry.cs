@@ -143,6 +143,18 @@ namespace Controller
             internal readonly object Gate = new object();
         }
 
+        internal sealed class QuarantinedRecoverySnapshot
+        {
+            internal long Id { get; set; }
+            internal string Operation { get; set; }
+            internal long RunEpoch { get; set; }
+            internal int[] Channels { get; set; }
+            internal Guid IncidentId { get; set; }
+            internal DateTime QuarantinedUtc { get; set; }
+            internal bool WorkerWasRunning { get; set; }
+            internal string Reason { get; set; }
+        }
+
         /// <summary>
         /// Two-phase recovery registration.  Reserve() installs the incident/task
         /// identity before a worker is created; Bind() attaches the worker; the
@@ -221,11 +233,69 @@ namespace Controller
         }
 
         private readonly ConcurrentDictionary<long, Entry> _active = new();
+        private readonly ConcurrentQueue<QuarantinedRecoverySnapshot> _quarantine =
+            new ConcurrentQueue<QuarantinedRecoverySnapshot>();
         private readonly object _changeGate = new object();
         private TaskCompletionSource<bool> _changeSignal = CreateChangeSignal();
         private long _sequence;
 
         internal int ActiveCount => _active.Count;
+        internal int QuarantinedCount => _quarantine.Count;
+
+        /// <summary>
+        ///     Removes old-generation leases from active ownership after the
+        ///     caller has revoked that run epoch.  Workers are observed for
+        ///     audit but can no longer block a newer run or StopAll drain.
+        /// </summary>
+        internal QuarantinedRecoverySnapshot[] SupersedeThroughEpoch(
+            long revokedRunEpoch,
+            string reason)
+        {
+            var quarantined = new List<QuarantinedRecoverySnapshot>();
+            foreach (var pair in _active
+                         .Where(item => item.Value != null &&
+                                        item.Value.RunEpoch <= revokedRunEpoch)
+                         .OrderBy(item => item.Key)
+                         .ToArray())
+            {
+                var entry = pair.Value;
+                Task worker;
+                lock (entry.Gate)
+                {
+                    if (entry.Terminal) continue;
+                    entry.Terminal = true;
+                    worker = entry.WorkerTask;
+                }
+                if (!_active.TryRemove(pair.Key, out _)) continue;
+                var snapshot = new QuarantinedRecoverySnapshot
+                {
+                    Id = entry.Id,
+                    Operation = entry.Operation ?? string.Empty,
+                    RunEpoch = entry.RunEpoch,
+                    Channels = entry.Channels?.ToArray() ?? Array.Empty<int>(),
+                    IncidentId = entry.IncidentId,
+                    QuarantinedUtc = DateTime.UtcNow,
+                    WorkerWasRunning = worker != null && !worker.IsCompleted,
+                    Reason = reason ?? "RunEpochSuperseded"
+                };
+                _quarantine.Enqueue(snapshot);
+                quarantined.Add(snapshot);
+                if (worker != null)
+                    _ = worker.ContinueWith(
+                        completed =>
+                        {
+                            try { _ = completed.Exception; }
+                            catch { }
+                        },
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+            }
+
+            while (_quarantine.Count > 256 && _quarantine.TryDequeue(out _)) { }
+            if (quarantined.Count > 0) SignalChanged();
+            return quarantined.ToArray();
+        }
 
         /// <summary>
         /// Returns an already registered, real worker for a recovery cohort.

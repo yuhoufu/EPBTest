@@ -659,7 +659,13 @@ namespace AdaptiveControlTests
                            () => harness.Snapshot().IsAttached &&
                                  !harness.Snapshot().ReconnectActive,
                            15000),
-                    "64次guarded send交叉期间真实reconnect没有完成");
+                    "64次guarded send交叉期间真实reconnect没有完成; attached=" +
+                    harness.Snapshot().IsAttached + ";reconnect=" +
+                    harness.Snapshot().ReconnectActive + ";attempt=" +
+                    harness.Snapshot().ReconnectAttempt + ";conn=" +
+                    harness.Snapshot().ActiveConnectionGeneration + ";failClosed=" +
+                    harness.Snapshot().TransportFailClosed + ";safeDegraded=" +
+                    harness.Snapshot().IsSafeDegraded + ";stats=" + harness.ServerStats);
                 var after = harness.Snapshot();
                 Assert(!after.TransportFailClosed && after.HasAuthority &&
                        after.AuthorityProcessId == before.AuthorityProcessId &&
@@ -1877,17 +1883,21 @@ namespace AdaptiveControlTests
 
                 harness.SetHeartbeatAckEnabled(false);
                 var ackDisabledAt = DateTime.UtcNow;
-                Assert(WaitUntil(() => Volatile.Read(ref lostCount) == 1, 7000),
+                Assert(WaitUntil(
+                           () => Volatile.Read(ref lostCount) == 1,
+                           WatchdogTransportPolicy.ClientHeartbeatAckRetireMs + 3000),
                     "ACK停止后monitor没有发布TransportLost");
                 var lostAt = new DateTime(
                     Interlocked.Read(ref lostAtTicks),
                     DateTimeKind.Utc);
                 var lostElapsedMs = (lostAt - ackDisabledAt).TotalMilliseconds;
-                Assert(lostElapsedMs >= 2750 && lostElapsedMs <= 4500,
-                    "TransportLost没有按3s ACK age与250ms monitor cadence触发：" +
+                var expectedRetireMs = WatchdogTransportPolicy.ClientHeartbeatAckRetireMs;
+                Assert(lostElapsedMs >= expectedRetireMs - 500 &&
+                       lostElapsedMs <= expectedRetireMs + 1500,
+                    "TransportLost没有按统一ACK退休策略与250ms monitor cadence触发：" +
                     lostElapsedMs.ToString("F0"));
-                Assert(Interlocked.Read(ref lostAckAgeMs) >= 3000,
-                    "TransportLost在ACK age未跨3s时提前触发：age=" +
+                Assert(Interlocked.Read(ref lostAckAgeMs) >= expectedRetireMs,
+                    "TransportLost在ACK age未跨统一退休门槛时提前触发：age=" +
                     Interlocked.Read(ref lostAckAgeMs));
                 Assert(Volatile.Read(ref lostCount) == 1,
                     "同一ACK age故障重复发布TransportLost");

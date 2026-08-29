@@ -199,6 +199,7 @@ namespace MTTFTest.Watchdog.Client
 
             internal readonly string Payload;
             internal readonly bool Lifecycle;
+            internal readonly bool CompletesConnectionLifecycle;
             internal readonly StreamWriter Writer;
             internal readonly long SessionLease;
             internal readonly long ConnectionGeneration;
@@ -210,6 +211,7 @@ namespace MTTFTest.Watchdog.Client
             internal SendRequest(
                 string payload,
                 bool lifecycle,
+                bool completesConnectionLifecycle,
                 StreamWriter writer,
                 long sessionLease,
                 long connectionGeneration,
@@ -217,6 +219,7 @@ namespace MTTFTest.Watchdog.Client
             {
                 Payload = payload ?? string.Empty;
                 Lifecycle = lifecycle;
+                CompletesConnectionLifecycle = completesConnectionLifecycle;
                 Writer = writer;
                 SessionLease = sessionLease;
                 ConnectionGeneration = connectionGeneration;
@@ -1131,6 +1134,7 @@ namespace MTTFTest.Watchdog.Client
                 var request = new SendRequest(
                     WatchdogWireFrame.Encode(payload),
                     IsLifecycleSend(message.Type),
+                    CompletesConnectionLifecycle(message.Type),
                     writer,
                     capturedSessionLease,
                     capturedConnectionGeneration,
@@ -1199,7 +1203,7 @@ namespace MTTFTest.Watchdog.Client
                    string.Equals(messageType, WatchdogMessageType.WatchdogTakeoverExit, StringComparison.Ordinal);
         }
 
-        private async Task RunSendQueueAsync(SendQueueOwner owner)
+        private void RunSendQueue(SendQueueOwner owner)
         {
             try
             {
@@ -1207,7 +1211,7 @@ namespace MTTFTest.Watchdog.Client
                 {
                     if (!owner.TryDequeue(out var request))
                     {
-                        await owner.Signal.WaitAsync(owner.Lifetime.Token).ConfigureAwait(false);
+                        owner.Signal.Wait(owner.Lifetime.Token);
                         continue;
                     }
                     if (!request.TryBeginWrite())
@@ -1226,11 +1230,7 @@ namespace MTTFTest.Watchdog.Client
                     {
                         writeTask = owner.Writer.WriteLineAsync(request.Payload);
                         owner.SetInflight(writeTask);
-                        var completed = await Task.WhenAny(
-                                writeTask,
-                                Task.Delay(WatchdogTransportPolicy.SendWriteTimeoutMs))
-                            .ConfigureAwait(false);
-                        if (!ReferenceEquals(completed, writeTask))
+                        if (!writeTask.Wait(WatchdogTransportPolicy.SendWriteTimeoutMs))
                         {
                             ObserveLateWriteTask(writeTask);
                             TryCommitSendFailure(
@@ -1254,14 +1254,22 @@ namespace MTTFTest.Watchdog.Client
                             return;
                         }
 
-                        await writeTask.ConfigureAwait(false);
+                        writeTask.GetAwaiter().GetResult();
                         owner.ClearInflight(writeTask);
+                        var stillCurrent = TryCommitSendSuccess(
+                            request.Writer,
+                            request.SessionLease,
+                            request.ConnectionGeneration,
+                            request.ConnectionIdentity);
+                        // ApplicationClosing/ShutdownExpected are allowed to make the
+                        // peer retire the exact connection as soon as the frame is
+                        // consumed.  A successful physical write remains a successful
+                        // send even when the reader observes that expected retirement
+                        // before this worker can commit the non-essential health reset.
+                        // No state is written back unless the exact generation is still
+                        // current, so this does not let an old writer pollute a new one.
                         request.Completion.TrySetResult(
-                            TryCommitSendSuccess(
-                                request.Writer,
-                                request.SessionLease,
-                                request.ConnectionGeneration,
-                                request.ConnectionIdentity)
+                            stillCurrent || request.CompletesConnectionLifecycle
                                 ? SendDisposition.Sent
                                 : SendDisposition.ScopeStale);
                     }
@@ -1318,6 +1326,13 @@ namespace MTTFTest.Watchdog.Client
                            request.ConnectionIdentity) &&
                        (_sessionClosing == 0 || request.Lifecycle);
             }
+        }
+
+        private static bool CompletesConnectionLifecycle(string messageType)
+        {
+            return string.Equals(messageType, WatchdogMessageType.ApplicationClosing, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ShutdownExpected, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.WatchdogTakeoverExit, StringComparison.Ordinal);
         }
 
         private static void ObserveLateWriteTask(Task writeTask)
@@ -1804,6 +1819,15 @@ namespace MTTFTest.Watchdog.Client
                     WaitTaskBounded(monitorTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(reconnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(connectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
+                    // ConnectOwnerAsync may finish just before its public
+                    // ConnectAsync owner publishes the reservation outcome.
+                    // The reservation completion is the externally visible
+                    // lifecycle boundary, so a shutdown receipt must join it
+                    // as well instead of sampling it immediately after only
+                    // the inner owner task has become terminal.
+                    WaitTaskBounded(
+                        connectReservation?.Completion.Task,
+                        WatchdogTransportPolicy.ConnectFailureJoin1000);
             CancelAndJoinLaunch(
                 launchReservation,
                 launchTask,
@@ -2055,15 +2079,31 @@ namespace MTTFTest.Watchdog.Client
                     _lastHeartbeatAckUtcTicks = DateTime.UtcNow.Ticks;
                     _lastHeartbeatAckSequence = 0;
                     _sendFailureReported = 0;
+                    // Publish writer and its exact-generation queue owner in
+                    // one atomic state transition.  Guarded callers are
+                    // synchronous and may arrive as soon as _writer becomes
+                    // visible; exposing the writer first would let them see
+                    // SendNoWriter and tear down the new reconnect before the
+                    // dedicated owner thread has even been installed.
+                    sendOwner = new SendQueueOwner(
+                        writer,
+                        sessionLease,
+                        connectionGeneration,
+                        connectionIdentity);
+                    _sendQueueOwner = sendOwner;
                     connectionTransferred = true;
                 }
 
-                sendOwner = new SendQueueOwner(
-                    writer,
-                    sessionLease,
-                    connectionGeneration,
-                    connectionIdentity);
-                sendTask = Task.Run(() => RunSendQueueAsync(sendOwner));
+                // TrySendForSession is a synchronous compatibility boundary. Under a
+                // Parallel.For (or a saturated UI/control worker pool), every caller can
+                // occupy a ThreadPool worker while waiting for this queue. The exact-
+                // connection writer must therefore own a dedicated thread and must not
+                // require a ThreadPool continuation to make the physical pipe write.
+                sendTask = Task.Factory.StartNew(
+                    () => RunSendQueue(sendOwner),
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default);
                 sendOwner.WorkerTask = sendTask;
                 lock (_gate)
                 {
@@ -2071,11 +2111,11 @@ namespace MTTFTest.Watchdog.Client
                             connectionGeneration,
                             sessionGeneration,
                             sessionLease,
-                            connectionIdentity))
+                            connectionIdentity) ||
+                        !ReferenceEquals(_sendQueueOwner, sendOwner))
                         throw new WatchdogConnectException(
                             WatchdogConnectFailureKind.SessionRevoked,
                             "Watchdog发送worker安装期间Session已失效。");
-                    _sendQueueOwner = sendOwner;
                     _sendTask = sendTask;
                 }
 
@@ -3562,6 +3602,13 @@ namespace MTTFTest.Watchdog.Client
                 if (!IsCurrentReconnectWorkerLocked(workerGeneration, sessionLease, taskIdentity)) return;
                 _transportLostReported = 0;
                 _reconnectAttempt = 0;
+                // Reconnect success is the terminal ownership boundary, not
+                // merely a progress event.  Retire the exact supervisor under
+                // the same gate that publishes the reconnected snapshot so
+                // observers can never see a live connection with a stale
+                // recovery owner that is only waiting for an async finally.
+                _reconnectTask = null;
+                _reconnectTaskIdentity = null;
                 callbacks = _callbacks;
                 reconnectedEvent = ReserveStateChangedLocked(
                     "Reconnected",
@@ -3788,6 +3835,7 @@ namespace MTTFTest.Watchdog.Client
             Task monitorTask;
             Task reconnectTask;
             Task connectTask;
+            ConnectReservation connectReservation;
             LaunchReservation launchReservation;
             Task launchTask;
             WatchdogClientTransportCallbacks callbacks;
@@ -3816,6 +3864,7 @@ namespace MTTFTest.Watchdog.Client
                 monitorTask = _monitorTask;
                 reconnectTask = _reconnectTask;
                 connectTask = _connectTask;
+                connectReservation = _connectReservation;
                 launchReservation = _launchReservation ?? _retainedLaunchReservation;
                 launchTask = _launchTask ?? _retainedLaunchTask;
 
@@ -3862,6 +3911,9 @@ namespace MTTFTest.Watchdog.Client
                     WaitTaskBounded(monitorTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(reconnectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
                     WaitTaskBounded(connectTask, WatchdogTransportPolicy.ConnectFailureJoin1000);
+                    WaitTaskBounded(
+                        connectReservation?.Completion.Task,
+                        WatchdogTransportPolicy.ConnectFailureJoin1000);
             CancelAndJoinLaunch(
                 launchReservation,
                 launchTask,
