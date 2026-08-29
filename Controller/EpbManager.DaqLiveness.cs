@@ -576,6 +576,11 @@ namespace Controller
                         incident,
                         batchCorrelation,
                         fromSafetyEvent: true);
+                    if (_daqAutoRecovery.TryGetValue(incident.Device, out var recoveryContext))
+                        RegisterDaqRecoveryBatchParticipant(
+                            batchCorrelation,
+                            incident.Device,
+                            recoveryContext);
                     // 只有恢复上下文创建成功后才锁存代次并消费历史空窗；否则异常
                     // 会被外层隔离，下一次扫描仍可重试同一安全事件。
                     _daqLivenessLatchedGeneration[incident.Device] = incident.Generation;
@@ -586,6 +591,9 @@ namespace Controller
                             gapCount,
                             (_, current) => Math.Max(current, gapCount));
                 }
+                SealDaqRecoveryBatchBarrier(
+                    batchCorrelation,
+                    incidents.Select(incident => incident.Device));
             }
             catch (Exception ex)
             {

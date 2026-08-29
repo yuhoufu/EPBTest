@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using MTTFTest.Watchdog.Client;
+using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
@@ -13,7 +14,8 @@ namespace MTEmbTest
     {
         Marked = 0,
         NoEngineSession = 1,
-        IdentityMismatch = 2
+        IdentityMismatch = 2,
+        TombstonePersistenceFailed = 3
     }
 
     internal enum RuntimeShutdownIntent
@@ -22,6 +24,17 @@ namespace MTEmbTest
         ApplicationExit = 1,
         WatchdogTakeoverExit = 2,
         WatchdogRecoveryExit = 3
+    }
+
+    internal sealed class RuntimeSessionCloseFenceReceipt
+    {
+        internal RuntimeTransportSessionContext Context { get; set; }
+        internal WatchdogClosingTombstone Tombstone { get; set; }
+        internal RuntimeShutdownMarkOutcome MarkOutcome { get; set; }
+        internal bool TombstoneDurable { get; set; }
+        internal string Error { get; set; } = string.Empty;
+        internal bool IsIrreversible => TombstoneDurable &&
+                                        Tombstone?.SessionLease == Context?.SessionLease;
     }
 
     /// <summary>
@@ -56,6 +69,9 @@ namespace MTEmbTest
     internal interface IRuntimeShutdownSessionPort
     {
         RuntimeShutdownMarkOutcome TryMarkSessionClosing(RuntimeTransportSessionContext context);
+        bool TryCompleteSessionClosing(
+            RuntimeTransportSessionContext context,
+            string terminalReason);
     }
 
     internal interface IRuntimeShutdownPipelinePort
@@ -114,7 +130,22 @@ namespace MTEmbTest
     {
         public RuntimeShutdownMarkOutcome TryMarkSessionClosing(RuntimeTransportSessionContext context)
         {
-            return WatchdogRuntime.TryMarkSessionClosing(context);
+            return WatchdogRuntime.BeginSessionCloseExact(
+                context,
+                WatchdogRuntime.CurrentShutdownIntent.ToString(),
+                Guid.Empty,
+                Guid.Empty,
+                0,
+                0).MarkOutcome;
+        }
+
+        public bool TryCompleteSessionClosing(
+            RuntimeTransportSessionContext context,
+            string terminalReason)
+        {
+            return WatchdogRuntime.CompleteSessionCloseTombstone(
+                context,
+                terminalReason);
         }
     }
 

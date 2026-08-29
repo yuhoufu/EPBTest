@@ -133,17 +133,27 @@ namespace MTEmbTest
             active.IngressGate.BeginClosing();
             var markOutcome = _session.TryMarkSessionClosing(active);
             var ownerVersion = NextVersion(0);
-            if (markOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch)
+            if (markOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch ||
+                markOutcome == RuntimeShutdownMarkOutcome.TombstonePersistenceFailed)
             {
-                var failed = CreateIdentityMismatchReceipt(active, ownerVersion);
+                var failed = markOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch
+                    ? CreateIdentityMismatchReceipt(active, ownerVersion)
+                    : CreateStageFailureReceipt(
+                        active,
+                        ownerVersion,
+                        null,
+                        "ClosingTombstonePersistence",
+                        null);
                 var failedOwner = new RuntimeShutdownRetentionOwner(
                     active, active.ValidatedAttachIdentity, active.ClosingAttempt,
                     ownerVersion, null, failed, false, true, false, false,
-                    RuntimeShutdownMarkOutcome.IdentityMismatch,
-                    "ShutdownIdentityMismatch", RuntimeShutdownRetentionPhase.RetainedFailure);
+                    markOutcome,
+                    markOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch
+                        ? "ShutdownIdentityMismatch"
+                        : "ClosingTombstonePersistenceFailed",
+                    RuntimeShutdownRetentionPhase.RetainedFailure);
                 lock (_executionGate) _owner = failedOwner;
                 NotifyStagePublished(failedOwner);
-                if (!_ownership.TryDetachActive(active)) return failed;
                 return failed;
             }
 
@@ -179,6 +189,38 @@ namespace MTEmbTest
             if (currentOwner.MarkOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch)
                 return currentOwner.RuntimeReceipt ??
                     CreateIdentityMismatchReceipt(context, currentOwner.Version);
+            if (currentOwner.MarkOutcome == RuntimeShutdownMarkOutcome.TombstonePersistenceFailed)
+            {
+                var retryOutcome = _session.TryMarkSessionClosing(context);
+                if (retryOutcome == RuntimeShutdownMarkOutcome.TombstonePersistenceFailed ||
+                    retryOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch)
+                    return currentOwner.RuntimeReceipt ?? CreateStageFailureReceipt(
+                        context,
+                        currentOwner.Version,
+                        currentOwner.EngineReceipt,
+                        "ClosingTombstonePersistence",
+                        null);
+                if (!_ownership.TryDetachActive(context))
+                    return CreatePreviousRuntimeShutdownIncomplete(context, currentOwner.Version);
+                var recoveredOwner = currentOwner.With(
+                    currentOwner.ClosingAttempt,
+                    NextVersion(currentOwner.Version),
+                    currentOwner.EngineReceipt,
+                    currentOwner.RuntimeReceipt,
+                    currentOwner.EngineShutdownStarted,
+                    currentOwner.SkipEngineShutdown,
+                    currentOwner.JournalFlushCompleted,
+                    currentOwner.JournalDisposed,
+                    retryOutcome,
+                    string.Empty,
+                    RuntimeShutdownRetentionPhase.SessionClosing);
+                if (!TryPublishOwnerStage(currentOwner, recoveredOwner))
+                    return CaptureRetainedReceiptOr(
+                        currentOwner.RuntimeReceipt,
+                        currentOwner.EngineReceipt);
+                currentOwner = recoveredOwner;
+                owner = recoveredOwner;
+            }
 
             // Phase 1: obtain a candidate Engine receipt.  A null/throwing
             // candidate leaves the previous incomplete receipt intact.
@@ -372,9 +414,13 @@ namespace MTEmbTest
             runtimeReceipt = candidateReceipt;
 
             var finalVersion = NextVersion(currentOwner.Version);
+            var closingTerminalPersisted =
+                _session.TryCompleteSessionClosing(
+                    context,
+                    "RuntimeShutdownTerminal");
             var terminal = runtimeReceipt != null && runtimeReceipt.PipelineTerminal &&
                 WatchdogRuntime.IsExactEngineTerminal(context, engineReceipt) &&
-                flushCompleted && journalDisposed;
+                flushCompleted && journalDisposed && closingTerminalPersisted;
             var finalReceipt = runtimeReceipt?.WithRetention(
                 finalVersion, !terminal, flushCompleted, journalDisposed,
                 runtimeReceipt?.PreviousRuntimeShutdownIncomplete == true);

@@ -52,6 +52,7 @@ namespace AdaptiveControlTests
             Run("压力证据陈旧只重启所属液压组DAQ采样", PressureEvidenceRearmIsGroupScoped, ref passed);
             Run("DAQ停止后取消仍必须完成重新启动", CancellationCannotSplitDaqRestart, ref passed);
             Run("双DAQ同一扫描恢复在两台均验证前禁止单边重入", SimultaneousDaqRecoveryUsesBatchBarrier, ref passed);
+            Run("DAQ动态屏障排除幽灵设备且暂停Withdraw中性释放", DynamicDaqBarrierExcludesGhostParticipants, ref passed);
             Run("进程回收失败按5秒/15秒退避且受RunId与三次预算门禁", ProcessRestartRetryIsBoundedAndRunScoped, ref passed);
             Run("自动恢复保留根RunId且多通道Starting幂等", UnattendedRunChainIdentityIsStable, ref passed);
             Run("并发清场后学习链身份仍回退到冻结RunId", ClearedLearningChainFallsBackToRunId, ref passed);
@@ -1023,6 +1024,49 @@ namespace AdaptiveControlTests
                 Assert(clock.ElapsedMilliseconds < 2000,
                     "所有权移交超过有界等待时间");
                 Assert(coordinator.ActiveCount == 0, "恢复完成后仍遗留所有者");
+            });
+        }
+
+        private static void DynamicDaqBarrierExcludesGhostParticipants()
+        {
+            RunAsync(async () =>
+            {
+                var runId = Guid.NewGuid();
+                var ghostBarrier = new DaqRecoveryBatchBarrier(runId, 3);
+                using (var dev1 = ghostBarrier.Register("Dev1"))
+                {
+                    ghostBarrier.RecordUnadmitted("Dev2", "NoRunnableContext");
+                    ghostBarrier.Seal();
+                    using (var timeout = new CancellationTokenSource(1000))
+                        Assert(await dev1.ReadyAndWaitAsync(timeout.Token),
+                            "未创建上下文的幽灵Dev2仍进入Expected并阻塞Dev1");
+                    var diagnostic = ghostBarrier.CaptureDiagnostic();
+                    Assert(diagnostic.Contains("Dev1") &&
+                           diagnostic.Contains("NoRunnableContext"),
+                        "动态屏障未持久化Registered/NoRunnableContext快照");
+                }
+                Assert(ghostBarrier.CaptureDiagnostic().Contains("Dev1=Terminal"),
+                    "唯一真实参与者Dispose后屏障未终结");
+
+                var pausedBarrier = new DaqRecoveryBatchBarrier(runId, 4);
+                using (var first = pausedBarrier.Register("Dev1"))
+                using (var paused = pausedBarrier.Register("Dev2"))
+                {
+                    pausedBarrier.Seal();
+                    using (var timeout = new CancellationTokenSource(1000))
+                    {
+                        var ready = first.ReadyAndWaitAsync(timeout.Token);
+                        Assert(!ready.IsCompleted, "第二参与者未收口前屏障提前释放");
+                        Assert(paused.Withdraw("HeldForManualPause"),
+                            "暂停恢复没有形成中性Withdraw");
+                        Assert(await ready, "HeldForManualPause仍等待运行态共同槽");
+                    }
+                }
+                var pausedTerminal = pausedBarrier.CaptureDiagnostic();
+                Assert(pausedTerminal.Contains("Dev1=Terminal") &&
+                       pausedTerminal.Contains("Dev2=Terminal") &&
+                       pausedTerminal.Contains("Dev2=HeldForManualPause"),
+                    "暂停Withdraw与Ready参与者未全部终结");
             });
         }
 

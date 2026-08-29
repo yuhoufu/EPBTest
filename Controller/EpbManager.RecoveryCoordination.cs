@@ -46,40 +46,114 @@ namespace Controller
         internal bool NewAuthorizationChain => !SameRun && !RecoveryContinuation;
     }
 
+    internal enum DaqRecoveryParticipantState
+    {
+        Registered = 0,
+        Ready = 1,
+        Withdrawn = 2,
+        Terminal = 3
+    }
+
+    internal sealed class DaqRecoveryParticipantToken : IDisposable
+    {
+        private readonly DaqRecoveryBatchBarrier _barrier;
+        private int _disposed;
+
+        internal DaqRecoveryParticipantToken(DaqRecoveryBatchBarrier barrier, string device)
+        {
+            _barrier = barrier ?? throw new ArgumentNullException(nameof(barrier));
+            Device = device ?? string.Empty;
+        }
+
+        internal string Device { get; }
+
+        internal Task<bool> ReadyAndWaitAsync(CancellationToken token)
+            => _barrier.ReadyAndWaitAsync(Device, token);
+
+        internal bool Withdraw(string reason)
+            => _barrier.Withdraw(Device, reason);
+
+        internal bool Terminal(string reason)
+            => _barrier.Terminal(Device, reason);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _barrier.Terminal(Device, "ParticipantDisposedWithoutExplicitTerminal");
+        }
+    }
+
     internal sealed class DaqRecoveryBatchBarrier
     {
         private readonly object _gate = new object();
-        private readonly HashSet<string> _expected;
-        private readonly HashSet<string> _ready = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
-        private readonly HashSet<string> _terminal = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, DaqRecoveryParticipantState> _participants =
+            new Dictionary<string, DaqRecoveryParticipantState>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _reasons =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly TaskCompletionSource<bool> _released =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool _sealed;
 
-        internal DaqRecoveryBatchBarrier(Guid runId, long runEpoch, IEnumerable<string> devices)
+        internal DaqRecoveryBatchBarrier(Guid runId, long runEpoch)
         {
             RunId = runId;
             RunEpoch = runEpoch;
-            _expected = new HashSet<string>(
-                (devices ?? Array.Empty<string>())
-                    .Where(device => !string.IsNullOrWhiteSpace(device)),
-                StringComparer.OrdinalIgnoreCase);
+        }
+
+        // Compatibility constructor used by existing deterministic tests: the
+        // supplied devices are treated as already-admitted production contexts.
+        internal DaqRecoveryBatchBarrier(Guid runId, long runEpoch, IEnumerable<string> devices)
+            : this(runId, runEpoch)
+        {
+            foreach (var device in devices ?? Array.Empty<string>()) Register(device);
+            Seal();
         }
 
         internal Guid RunId { get; }
         internal long RunEpoch { get; }
 
-        internal async Task<bool> SignalReadyAndWaitAsync(
-            string device,
-            CancellationToken token)
+        internal DaqRecoveryParticipantToken Register(string device)
+        {
+            var normalized = (device ?? string.Empty).Trim();
+            if (normalized.Length == 0) return null;
+            lock (_gate)
+            {
+                if (_sealed || _participants.ContainsKey(normalized)) return null;
+                _participants[normalized] = DaqRecoveryParticipantState.Registered;
+                return new DaqRecoveryParticipantToken(this, normalized);
+            }
+        }
+
+        internal void RecordUnadmitted(string device, string reason)
+        {
+            var normalized = (device ?? string.Empty).Trim();
+            if (normalized.Length == 0) return;
+            lock (_gate)
+                _reasons[normalized] = "NoRunnableContext:" + (reason ?? string.Empty);
+        }
+
+        internal void Seal()
         {
             lock (_gate)
             {
-                if (!_expected.Contains(device ?? string.Empty)) return false;
-                _ready.Add(device);
-                if (_ready.Count == _expected.Count)
-                    _released.TrySetResult(true);
+                _sealed = true;
+                TryReleaseLocked();
+            }
+        }
+
+        internal Task<bool> SignalReadyAndWaitAsync(string device, CancellationToken token)
+            => ReadyAndWaitAsync(device, token);
+
+        internal async Task<bool> ReadyAndWaitAsync(string device, CancellationToken token)
+        {
+            lock (_gate)
+            {
+                if (!_participants.TryGetValue(device ?? string.Empty, out var state) ||
+                    (state != DaqRecoveryParticipantState.Registered &&
+                     state != DaqRecoveryParticipantState.Ready))
+                    return false;
+                _participants[device] = DaqRecoveryParticipantState.Ready;
+                TryReleaseLocked();
             }
 
             var cancelled = new TaskCompletionSource<bool>(
@@ -94,17 +168,73 @@ namespace Controller
             }
         }
 
-        internal bool MarkTerminal(string device)
+        internal bool Withdraw(string device, string reason)
         {
             lock (_gate)
             {
-                if (_expected.Contains(device ?? string.Empty))
-                    _terminal.Add(device);
-                if (_ready.Count < _expected.Count)
-                    _released.TrySetResult(false);
-                return _terminal.Count == _expected.Count;
+                if (!_participants.TryGetValue(device ?? string.Empty, out var state)) return false;
+                if (state == DaqRecoveryParticipantState.Terminal ||
+                    state == DaqRecoveryParticipantState.Withdrawn)
+                    return true;
+                _participants[device] = DaqRecoveryParticipantState.Withdrawn;
+                _reasons[device] = reason ?? "Withdrawn";
+                TryReleaseLocked();
+                return true;
             }
         }
+
+        internal bool Terminal(string device, string reason)
+        {
+            lock (_gate)
+            {
+                if (!_participants.TryGetValue(device ?? string.Empty, out var state)) return false;
+                if (state == DaqRecoveryParticipantState.Terminal)
+                    return IsTerminalLocked();
+                var failedBeforeReady = state == DaqRecoveryParticipantState.Registered;
+                _participants[device] = DaqRecoveryParticipantState.Terminal;
+                var terminalReason = reason ?? "Terminal";
+                if (state == DaqRecoveryParticipantState.Withdrawn &&
+                    _reasons.TryGetValue(device, out var withdrawReason) &&
+                    !string.IsNullOrWhiteSpace(withdrawReason))
+                    _reasons[device] = withdrawReason + ";Terminal=" + terminalReason;
+                else
+                    _reasons[device] = terminalReason;
+                if (failedBeforeReady) _released.TrySetResult(false);
+                TryReleaseLocked();
+                return IsTerminalLocked();
+            }
+        }
+
+        internal bool MarkTerminal(string device) => Terminal(device, "RecoveryTerminal");
+
+        internal string CaptureDiagnostic()
+        {
+            lock (_gate)
+            {
+                var participants = string.Join(",", _participants
+                    .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                    .Select(pair => pair.Key + "=" + pair.Value));
+                var reasons = string.Join(",", _reasons
+                    .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                    .Select(pair => pair.Key + "=" + pair.Value));
+                return $"Sealed={_sealed};Participants=[{participants}];Reasons=[{reasons}]";
+            }
+        }
+
+        private void TryReleaseLocked()
+        {
+            if (!_sealed) return;
+            if (_participants.Count == 0 || _participants.Values.All(state =>
+                    state == DaqRecoveryParticipantState.Ready ||
+                    state == DaqRecoveryParticipantState.Withdrawn ||
+                    state == DaqRecoveryParticipantState.Terminal))
+                _released.TrySetResult(true);
+        }
+
+        private bool IsTerminalLocked()
+            => _sealed && _participants.Values.All(state =>
+                state == DaqRecoveryParticipantState.Withdrawn ||
+                state == DaqRecoveryParticipantState.Terminal);
     }
 
     /// <summary>
@@ -248,12 +378,7 @@ namespace Controller
             IEnumerable<Guid> correlationAliases = null)
         {
             if (correlationId == Guid.Empty) return;
-            var expected = (devices ?? Array.Empty<string>())
-                .Where(device => !string.IsNullOrWhiteSpace(device))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            if (expected.Length <= 1) return;
-            var barrier = new DaqRecoveryBatchBarrier(runId, runEpoch, expected);
+            var barrier = new DaqRecoveryBatchBarrier(runId, runEpoch);
             var aliases = (correlationAliases ?? Array.Empty<Guid>())
                 .Append(correlationId)
                 .Where(value => value != Guid.Empty)
@@ -275,26 +400,65 @@ namespace Controller
             }
         }
 
+        private void RegisterDaqRecoveryBatchParticipant(
+            Guid correlationId,
+            string device,
+            DaqAutoRecoveryContext context)
+        {
+            if (context == null || correlationId == Guid.Empty ||
+                !_daqRecoveryBatchBarriers.TryGetValue(correlationId, out var barrier))
+                return;
+            if (barrier.RunId != context.RunId || barrier.RunEpoch != context.RunEpoch)
+            {
+                barrier.RecordUnadmitted(device, "RunIdentityMismatch");
+                return;
+            }
+            context.BatchBarrierParticipant = barrier.Register(device);
+            if (context.BatchBarrierParticipant == null)
+                barrier.RecordUnadmitted(device, "RegistrationClosedOrDuplicate");
+        }
+
+        private void SealDaqRecoveryBatchBarrier(
+            Guid correlationId,
+            IEnumerable<string> incidentDevices)
+        {
+            if (correlationId == Guid.Empty ||
+                !_daqRecoveryBatchBarriers.TryGetValue(correlationId, out var barrier))
+                return;
+            foreach (var device in (incidentDevices ?? Array.Empty<string>())
+                         .Where(value => !string.IsNullOrWhiteSpace(value))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!_daqAutoRecovery.TryGetValue(device, out var context) ||
+                    context == null || context.BatchBarrierParticipant == null)
+                    barrier.RecordUnadmitted(device, "NoRunnableContext");
+            }
+            barrier.Seal();
+            _log?.Info(
+                $"DAQ恢复屏障已封口 CorrelationId={correlationId:N};{barrier.CaptureDiagnostic()}",
+                "AI");
+        }
+
         private async Task<bool> WaitForDaqRecoveryBatchBarrierAsync(
             DaqAutoRecoveryContext context)
         {
-            if (context == null ||
-                !_daqRecoveryBatchBarriers.TryGetValue(context.CorrelationId, out var barrier))
+            if (context == null || context.BatchBarrierParticipant == null)
                 return true;
+            if (!_daqRecoveryBatchBarriers.TryGetValue(context.CorrelationId, out var barrier))
+                return false;
             if (barrier.RunId != context.RunId || barrier.RunEpoch != context.RunEpoch)
                 return false;
-            return await barrier.SignalReadyAndWaitAsync(
-                    context.Device,
+            return await context.BatchBarrierParticipant.ReadyAndWaitAsync(
                     context.Cancellation.Token)
                 .ConfigureAwait(false);
         }
 
         private void MarkDaqRecoveryBatchTerminal(DaqAutoRecoveryContext context)
         {
-            if (context == null ||
+            if (context == null || context.BatchBarrierParticipant == null ||
                 !_daqRecoveryBatchBarriers.TryGetValue(context.CorrelationId, out var barrier))
                 return;
-            if (!barrier.MarkTerminal(context.Device)) return;
+            if (!context.BatchBarrierParticipant.Terminal("RecoveryTerminal")) return;
             foreach (var alias in _daqRecoveryBatchBarriers
                          .Where(pair => ReferenceEquals(pair.Value, barrier))
                          .Select(pair => pair.Key)

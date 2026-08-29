@@ -136,6 +136,16 @@ namespace MTTFTest.Watchdog.Protocol
                 case DurableRelaunchPermitState.Failed:
                     if (record.CircuitOpen || !evidence) reason = "FailedEvidenceIncomplete";
                     break;
+                case DurableRelaunchPermitState.RejectedNoWork:
+                    if (record.CircuitOpen || !permit || !evidence ||
+                        !HasToken(record.DetailCode) || record.ProcessId != 0 ||
+                        record.ProcessStartUtcTicks != 0 ||
+                        record.RecoveryCommitGeneration != 0 || HasAnyLaunchIntent(record))
+                        reason = "RejectedNoWorkEvidenceInvalid";
+                    else if (!ValidateActiveEvidenceBinding(
+                                 record, expectedSessionId, false, false, out reason))
+                        return false;
+                    break;
                 case DurableRelaunchPermitState.Blocked:
                 case DurableRelaunchPermitState.Revoked:
                     if (!record.CircuitOpen) reason = record.State == DurableRelaunchPermitState.Blocked ? "BlockedWithoutCircuit" : "RevokedWithoutCircuit";

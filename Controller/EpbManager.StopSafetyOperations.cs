@@ -751,7 +751,10 @@ namespace Controller
             {
                 Source = state.Context.Source,
                 CorrelationId = state.Context.CorrelationId ?? state.Correlation,
+                SafetyTransactionId = state.TransactionId,
                 RunId = state.RunId,
+                RunEpoch = state.RunEpoch,
+                SafetyBoundaryGeneration = state.Generation,
                 MotorOffCommandSucceeded = state.MotorOk,
                 PowerOffConfirmed = state.Power.ok,
                 PressureSafeConfirmed = state.Pressure.ok,

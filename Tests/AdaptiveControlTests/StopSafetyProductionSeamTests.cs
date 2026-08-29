@@ -167,11 +167,15 @@ namespace AdaptiveControlTests
                 LastStage = StopSafetyStage.Completed,
                 Source = StopSource.ManualUi,
                 CorrelationId = Guid.NewGuid().ToString("N"),
+                SafetyTransactionId = Guid.NewGuid(),
                 RunId = runId,
+                RunEpoch = 7,
+                SafetyBoundaryGeneration = 11,
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = true,
                 PressureSafeConfirmed = false,
                 PersistenceBoundaryConfirmed = true,
+                LogicalQuiescenceConfirmed = true,
                 CompletedUtc = DateTime.UtcNow
             };
 
@@ -187,9 +191,16 @@ namespace AdaptiveControlTests
             owner.RevokeForNewStart();
             Assert(owner.TryCapture(batchSessionActive: false) == null,
                 "新启动后仍能复用上一轮人工停止授权");
-            result.Source = StopSource.ApplicationClosing;
-            Assert(!owner.Publish(result), "非人工停止结果错误获得人工退出授权");
-            result.Source = StopSource.ManualUi;
+            result.Source = StopSource.SystemFault;
+            Assert(owner.Publish(result, "operator-adopt"),
+                "人工退出未能采用同Run/epoch/代次的SystemFault停止终态");
+            var intent = owner.CaptureIntent();
+            Assert(intent != null && intent.Matches(result) &&
+                   intent.OriginalSource == StopSource.SystemFault,
+                "SystemFault原始来源或精确停止身份未保留");
+            result.SafetyBoundaryGeneration = 0;
+            Assert(!owner.Publish(result), "缺少安全代次的旧停止结果错误获得退出授权");
+            result.SafetyBoundaryGeneration = 11;
             result.RunId = Guid.Empty;
             Assert(!owner.Publish(result), "缺少RunId的停止结果错误获得退出授权");
         }
@@ -1219,15 +1230,24 @@ namespace AdaptiveControlTests
             var clock = new ManualClock();
             var port = new FakePort();
             var snapshots = new List<StopSafetyProgressSnapshot>();
+            var runId = Guid.NewGuid();
             var runner = new StopSafetyTransactionRunner(
                 port,
                 clock,
                 new StopSafetyTransactionOptions(),
-                snapshot => snapshots.Add(snapshot));
+                snapshot => snapshots.Add(snapshot),
+                () => runId,
+                () => 9,
+                () => 17);
 
             var result = runner.StopAsync(NewContext()).GetAwaiter().GetResult();
             Assert(result.Outcome == StopSafetyOutcome.CompletedSafe,
                 "正常阶段未完成安全终态。");
+            Assert(result.SafetyTransactionId != Guid.Empty &&
+                   result.SafetyTransactionId == snapshots.Last().TransactionId &&
+                   result.RunId == runId && result.RunEpoch == 9 &&
+                   result.SafetyBoundaryGeneration == 17,
+                "StopSafetyResult未完整克隆事务/RunEpoch/安全代次身份。");
             var entered = port.EnteredStages.ToArray();
             var expected = new[]
             {

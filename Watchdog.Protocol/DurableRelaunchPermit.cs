@@ -22,7 +22,12 @@ namespace MTTFTest.Watchdog.Protocol
         Committed = 5,
         Failed = 6,
         Revoked = 7,
-        Blocked = 8
+        Blocked = 8,
+        /// <summary>
+        /// Terminal no-op: authorization was withdrawn before a recovery UI
+        /// attached.  It does not open the circuit or consume failure budget.
+        /// </summary>
+        RejectedNoWork = 9
     }
 
     public enum DurableRelaunchProcessObservation

@@ -154,6 +154,14 @@ namespace MTEmbTest
             {
                 return Outcome;
             }
+
+            public bool TryCompleteSessionClosing(
+                RuntimeTransportSessionContext context,
+                string terminalReason)
+            {
+                return Outcome != RuntimeShutdownMarkOutcome.IdentityMismatch &&
+                       Outcome != RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+            }
         }
 
         private sealed class ProductionPipelineDecorator : IRuntimeShutdownPipelinePort

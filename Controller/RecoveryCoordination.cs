@@ -173,6 +173,10 @@ namespace Controller
                         timeoutMs);
                 }
                 await current.Completion.Task.ConfigureAwait(false);
+                // Completion is published by Dispose. Yield once before the
+                // successor can acquire so the cancelled owner's finally
+                // block can finish its remaining local terminal bookkeeping.
+                await Task.Yield();
             }
         }
 

@@ -637,6 +637,8 @@ namespace Controller
                 ? runEpochOverride
                 : Interlocked.Read(ref _runEpoch);
             var updateRunId = runIdOverride == Guid.Empty ? _activeBatchId : runIdOverride;
+            var pause = CaptureBatchPauseSnapshot();
+            var pauseOwned = pause.Owns(updateRunId, runEpoch, channel);
             var firstRecovering = state == ChannelRuntimeState.Recovering &&
                                   (previous == null ||
                                    previous.State != ChannelRuntimeState.Recovering);
@@ -792,6 +794,8 @@ namespace Controller
                             CorrelationId = correlationId,
                             RunId = updateRunId,
                             RunEpoch = runEpoch,
+                            PauseGeneration = pauseOwned ? pause.Generation : 0,
+                            PauseCommandId = pauseOwned ? pause.CommandId : Guid.Empty,
                             Enabled = IsChannelEnabled(channel),
                             FormalPhaseCommitted = IsFormalPhaseCommitted,
                             TimerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel),
@@ -1134,6 +1138,7 @@ namespace Controller
             public long LastValidationFailureLogTicks;
             public string LastValidationFailureSignature;
             public long RunEpoch;
+            public DaqRecoveryParticipantToken BatchBarrierParticipant;
             public long RecoveryEpoch;
             public string TriggerReason;
             public int RecoverableAlarmChannel;
@@ -7184,16 +7189,29 @@ namespace Controller
                         context))
                     return;
 
-                context.ValidationDetail = "DaqBatchRecoveryBarrier";
-                if (!await WaitForDaqRecoveryBatchBarrierAsync(context).ConfigureAwait(false))
-                    return;
-                if (!IsCurrentRecovery(context)) return;
-
                 var batchPauseSnapshot = CaptureBatchPauseSnapshot();
                 var batchPauseState = batchPauseSnapshot.State;
                 var holdForBatchPause = ShouldHoldDaqRecoveryForPause(
                     context,
                     batchPauseSnapshot);
+                if (holdForBatchPause)
+                {
+                    context.BatchBarrierParticipant?.Withdraw("HeldForManualPause");
+                    _log.Info(
+                        $"DAQ恢复已在运行态屏障前转入人工暂停终态。" +
+                        $"Device={context.Device};PauseGeneration={batchPauseSnapshot.Generation};" +
+                        $"PauseCommandId={batchPauseSnapshot.CommandId:N};" +
+                        $"CorrelationId={context.CorrelationId:N}",
+                        "AI");
+                }
+                else
+                {
+                    context.ValidationDetail = "DaqBatchRecoveryBarrier";
+                    if (!await WaitForDaqRecoveryBatchBarrierAsync(context).ConfigureAwait(false))
+                        return;
+                    if (!IsCurrentRecovery(context)) return;
+                }
+
                 var heldPausePowerOffConfirmed = false;
                 var powerRecoveryChannels = SelectDaqRecoveryPowerChannels(
                     context.PreviouslyActiveChannels ?? context.AffectedChannels,
@@ -9612,8 +9630,15 @@ namespace Controller
                         ownership.Token,
                         hardDeadline.Token);
                     var recoveryToken = recoveryLinked.Token;
-                    if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels))
+                    if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels) &&
+                        !TryCaptureExactManualPauseOwner(
+                            recoveryRunId,
+                            recoveryRunEpoch,
+                            channels,
+                            out _))
+                    {
                         return;
+                    }
                     var offFailed = channels
                         .Where(channel => !TryEnsureSoftwareRecoveryOutputOff(
                             channel,
@@ -9630,7 +9655,12 @@ namespace Controller
                         "液压协调");
                     while (true)
                     {
-                        if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels))
+                        if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels) &&
+                            !TryCaptureExactManualPauseOwner(
+                                recoveryRunId,
+                                recoveryRunEpoch,
+                                channels,
+                                out _))
                         {
                             _log.Info(
                                 $"液压组{hydraulicId}软件自愈因运行已停止或已重新开始而作废。",
@@ -10097,6 +10127,7 @@ namespace Controller
                 var attempt = 0;
                 var hardDeadlineReached = false;
                 HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease[] ownerships = null;
+                var exitDisposition = RecoveryExitDisposition.SafeIdleFault;
                 CancellationTokenSource hardDeadline = null;
                 CancellationTokenSource recoveryLinked = null;
                 try
@@ -10118,8 +10149,16 @@ namespace Controller
                             .Concat(new[] { hardDeadline.Token })
                             .ToArray());
                     var recoveryToken = recoveryLinked.Token;
-                    if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels))
+                    if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels) &&
+                        !TryCaptureExactManualPauseOwner(
+                            recoveryRunId,
+                            recoveryRunEpoch,
+                            channels,
+                            out _))
+                    {
+                        exitDisposition = RecoveryExitDisposition.Superseded;
                         return;
+                    }
                     var offFailed = channels
                         .Where(channel => !TryEnsureSoftwareRecoveryOutputOff(
                             channel,
@@ -10136,8 +10175,14 @@ namespace Controller
                         "程控电源");
                     while (true)
                     {
-                        if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels))
+                        if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels) &&
+                            !TryCaptureExactManualPauseOwner(
+                                recoveryRunId,
+                                recoveryRunEpoch,
+                                channels,
+                                out _))
                         {
+                            exitDisposition = RecoveryExitDisposition.Superseded;
                             _log.Info(
                                 $"电源组{groupId}软件自愈因运行已停止或已重新开始而作废。",
                                 "程控电源");
@@ -10174,6 +10219,33 @@ namespace Controller
                                     "程控电源");
                             }
 
+                            if (TryCaptureExactManualPauseOwner(
+                                    recoveryRunId,
+                                    recoveryRunEpoch,
+                                    channels,
+                                    out var exactPause))
+                            {
+                                if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
+                                        cutoffCycles,
+                                        cutoffUtc,
+                                        $"PowerSupply:{sourceFault.Code}:HeldForPause",
+                                        _daqPersistenceRecoveryTimeoutMs,
+                                        recoveryToken)
+                                    .ConfigureAwait(false))
+                                    throw new SoftwareSelfHealingRetryException(
+                                        "人工暂停期间程控电源恢复圈截止尚未耐久闭合。");
+                                exitDisposition = RecoveryExitDisposition.HeldForManualPause;
+                                foreach (var channel in channels.Where(ch => _timers.ContainsKey(ch)))
+                                    PublishChannelRuntimeState(
+                                        channel,
+                                        GetDaqRecoveredHeldRuntimeState(exactPause.State),
+                                        "PowerSupplyRecoveredHeldForManualPause",
+                                        "程控电源已确认 OFF 且耐久边界闭合；保持人工暂停运行载体。",
+                                        affectedChannels: channels,
+                                        correlationId: controlFault.CorrelationId);
+                                return;
+                            }
+
                             await RecoveryStageDeadline.RunAsync(
                                     "PowerPrepareAndEnable",
                                     RecoveryStageTimeoutMs,
@@ -10182,6 +10254,7 @@ namespace Controller
                                 .ConfigureAwait(false);
                             if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels))
                             {
+                                exitDisposition = RecoveryExitDisposition.Superseded;
                                 try
                                 {
                                     await RecoveryStageDeadline.RunAsync(
@@ -10226,6 +10299,7 @@ namespace Controller
                                 _emergencyPowerGroupLatch.TryRemove(
                                     groupId,
                                     controlFault.CorrelationId);
+                                exitDisposition = RecoveryExitDisposition.RejoinedRunning;
                                 return;
                             }
                             var batchPauseState = CurrentBatchPauseState;
@@ -10239,6 +10313,7 @@ namespace Controller
                                         "程控电源已恢复；批次仍处于暂停/恢复预检，保持定时器暂停",
                                         affectedChannels: channels,
                                         correlationId: controlFault.CorrelationId);
+                                exitDisposition = RecoveryExitDisposition.HeldForManualPause;
                                 return;
                             }
 
@@ -10292,6 +10367,7 @@ namespace Controller
                             _emergencyPowerGroupLatch.TryRemove(
                                 groupId,
                                 controlFault.CorrelationId);
+                            exitDisposition = RecoveryExitDisposition.RejoinedRunning;
                             return;
                         }
                         catch (OperationCanceledException)
@@ -10333,6 +10409,7 @@ namespace Controller
                 }
                 catch (OperationCanceledException)
                 {
+                    exitDisposition = RecoveryExitDisposition.CancelledByStop;
                     _log.Info(
                         $"电源组{groupId}恢复所有权已移交给更高层恢复。",
                         "程控电源");
@@ -10384,18 +10461,50 @@ namespace Controller
                         }
                     }
 
-                    _emergencyPowerGroupLatch.TryFail(
-                        groupId,
-                        controlFault.CorrelationId,
-                        hardDeadlineReached
-                            ? "PowerRecoveryHardDeadline"
-                            : "PowerRecoveryTerminalWithoutRejoin");
-
-                    recoveryIncident?.CompleteAfterTerminal(contract =>
-                        CommitRecoveryIncidentStateForRelease(
-                            contract,
-                            "PowerRecoveryTerminalWithoutRejoin",
-                            "程控电源软件自愈未完成重入，已保持受影响通道安全终态。 "));
+                    if (exitDisposition == RecoveryExitDisposition.RejoinedRunning)
+                    {
+                        _emergencyPowerGroupLatch.TryRemove(
+                            groupId,
+                            controlFault.CorrelationId);
+                        recoveryIncident?.CompleteAfterTerminal(_ => { });
+                    }
+                    else if (exitDisposition == RecoveryExitDisposition.HeldForManualPause)
+                    {
+                        _emergencyPowerGroupLatch.TryRemove(
+                            groupId,
+                            controlFault.CorrelationId);
+                        recoveryIncident?.CompleteAfterTerminal(contract =>
+                        {
+                            var pause = CaptureBatchPauseSnapshot();
+                            foreach (var channel in contract.Channels ?? Array.Empty<int>())
+                            {
+                                if (!_timers.ContainsKey(channel)) continue;
+                                PublishChannelRuntimeState(
+                                    channel,
+                                    GetDaqRecoveredHeldRuntimeState(pause.State),
+                                    "PowerRecoveryHeldForManualPauseTerminal",
+                                    "程控电源恢复以人工暂停终态释放 Owner；Timer/Runner 保留。",
+                                    affectedChannels: contract.Channels,
+                                    correlationId: contract.IncidentId,
+                                    runIdOverride: contract.RunId,
+                                    runEpochOverride: contract.RunEpoch);
+                            }
+                        });
+                    }
+                    else
+                    {
+                        _emergencyPowerGroupLatch.TryFail(
+                            groupId,
+                            controlFault.CorrelationId,
+                            hardDeadlineReached
+                                ? "PowerRecoveryHardDeadline"
+                                : exitDisposition.ToString());
+                        recoveryIncident?.CompleteAfterTerminal(contract =>
+                            CommitRecoveryIncidentStateForRelease(
+                                contract,
+                                "PowerRecovery" + exitDisposition,
+                                "程控电源恢复未完成运行态重入，已保持安全终态。"));
+                    }
                 }
                 };
             }
@@ -11938,7 +12047,10 @@ namespace Controller
             {
                 Source = context.Source,
                 CorrelationId = context.CorrelationId ?? string.Empty,
+                SafetyTransactionId = stopCorrelation,
                 RunId = runId,
+                RunEpoch = runEpoch,
+                SafetyBoundaryGeneration = stopGeneration,
                 MotorOffCommandSucceeded = motorOk,
                 PowerOffConfirmed = power.ok,
                 PressureSafeConfirmed = pressure.ok,

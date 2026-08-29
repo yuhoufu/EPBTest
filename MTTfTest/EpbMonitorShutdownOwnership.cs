@@ -70,20 +70,66 @@ namespace MTEmbTest
     }
 
     /// <summary>
-    /// Retains only a completed, run-bound manual StopAll receipt. A new start
-    /// revokes it before any hardware can be re-enabled, preventing an old
-    /// operator-stop intent from authorizing a later run's application exit.
+    /// Immutable adoption of an already completed StopAll transaction by a
+    /// later operator exit intent.  The original source remains audit data;
+    /// SystemFault and ManualUi transactions are equally reusable only when
+    /// their exact safety identity and all terminal boundaries are present.
+    /// </summary>
+    internal sealed class ManualExitIntentReceipt
+    {
+        internal string CommandId { get; set; } = string.Empty;
+        internal Guid SafetyTransactionId { get; set; }
+        internal Guid RunId { get; set; }
+        internal long RunEpoch { get; set; }
+        internal long SafetyBoundaryGeneration { get; set; }
+        internal StopSource OriginalSource { get; set; }
+        internal string OriginalCorrelationId { get; set; } = string.Empty;
+        internal DateTime AdoptedUtc { get; set; }
+
+        internal bool Matches(StopSafetyResult result)
+        {
+            return result != null &&
+                   SafetyTransactionId != Guid.Empty &&
+                   SafetyTransactionId == result.SafetyTransactionId &&
+                   RunId == result.RunId &&
+                   RunEpoch == result.RunEpoch &&
+                   SafetyBoundaryGeneration == result.SafetyBoundaryGeneration;
+        }
+
+        internal ManualExitIntentReceipt Clone()
+        {
+            return (ManualExitIntentReceipt)MemberwiseClone();
+        }
+    }
+
+    /// <summary>
+    /// Retains a completed, identity-bound StopAll receipt adopted by an
+    /// operator exit. A new start revokes it before hardware can be enabled.
     /// </summary>
     internal sealed class ManualStopExitReceiptOwner
     {
         private readonly object _gate = new object();
         private StopSafetyResult _receipt;
+        private ManualExitIntentReceipt _intent;
 
-        internal bool Publish(StopSafetyResult result)
+        internal bool Publish(StopSafetyResult result, string commandId = null)
         {
             lock (_gate)
             {
                 _receipt = IsReusable(result) ? result.Clone() : null;
+                _intent = _receipt == null
+                    ? null
+                    : new ManualExitIntentReceipt
+                    {
+                        CommandId = commandId ?? string.Empty,
+                        SafetyTransactionId = result.SafetyTransactionId,
+                        RunId = result.RunId,
+                        RunEpoch = result.RunEpoch,
+                        SafetyBoundaryGeneration = result.SafetyBoundaryGeneration,
+                        OriginalSource = result.Source,
+                        OriginalCorrelationId = result.CorrelationId ?? string.Empty,
+                        AdoptedUtc = DateTime.UtcNow
+                    };
                 return _receipt != null;
             }
         }
@@ -95,7 +141,11 @@ namespace MTEmbTest
 
         internal void Revoke()
         {
-            lock (_gate) _receipt = null;
+            lock (_gate)
+            {
+                _receipt = null;
+                _intent = null;
+            }
         }
 
         internal StopSafetyResult TryCapture(bool batchSessionActive)
@@ -107,14 +157,24 @@ namespace MTEmbTest
             }
         }
 
+        internal ManualExitIntentReceipt CaptureIntent()
+        {
+            lock (_gate) return _intent?.Clone();
+        }
+
         private static bool IsReusable(StopSafetyResult result)
         {
             return result != null &&
-                   result.Source == StopSource.ManualUi &&
+                   result.SafetyTransactionId != Guid.Empty &&
                    result.RunId != Guid.Empty &&
+                   result.RunEpoch > 0 &&
+                   result.SafetyBoundaryGeneration > 0 &&
                    !string.IsNullOrWhiteSpace(result.CorrelationId) &&
                    result.CompletedUtc != default(DateTime) &&
-                   result.CanCloseApplication;
+                   result.CanReleaseAcquisition &&
+                   result.PersistenceBoundaryConfirmed &&
+                   result.LogicalQuiescenceConfirmed &&
+                   result.LastStage == StopSafetyStage.Completed;
         }
     }
 
@@ -130,6 +190,7 @@ namespace MTEmbTest
         internal long SessionGeneration { get; set; }
         internal long SessionLease { get; set; }
         internal StopSafetyResult StopSafety { get; set; }
+        internal ManualExitIntentReceipt ManualExitIntent { get; set; }
         internal RuntimeShutdownReceipt WatchdogShutdown { get; set; }
         internal bool UiResourcesReleased { get; set; }
         internal DateTime CompletedUtc { get; set; }
@@ -142,6 +203,7 @@ namespace MTEmbTest
             SessionLease == WatchdogShutdown.SessionLease;
 
         internal bool CanRestart => StopSafety?.CanCloseApplication == true &&
+                                    ManualExitIntent?.Matches(StopSafety) == true &&
                                     ExactSessionTerminal &&
                                     UiResourcesReleased;
         internal bool CanClose => CanRestart;

@@ -299,6 +299,25 @@ namespace MTTFTest.Watchdog
                 transition?.Status ?? DurableAuthorityTransitionStatus.Unproven);
         }
 
+        internal DurableRelaunchResult RejectNoWork(
+            DurableRelaunchPermitIdentity identity,
+            string reason)
+        {
+            var transition = _authority.RejectCurrentNoWork(identity, reason);
+            if (transition?.Succeeded == true)
+            {
+                _capabilities.TryRemove(identity?.Generation ?? 0, out _);
+                _arguments.TryRemove(identity?.Generation ?? 0, out _);
+            }
+            return Result(
+                transition?.Succeeded == true,
+                false,
+                false,
+                transition?.Reason ?? "RejectedNoWorkCommitFailed",
+                transition?.Record ?? _authority.Snapshot,
+                transition?.Status ?? DurableAuthorityTransitionStatus.Unproven);
+        }
+
         private RecoveryFailureOperation MakeOperation(string operationSeed, string failureCode, string fingerprint,
             string progress, string source, string runId, long runEpoch, string stage, int budget)
         {

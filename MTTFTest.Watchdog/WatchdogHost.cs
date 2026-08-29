@@ -13,6 +13,11 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTTFTest.Watchdog
 {
+    internal sealed class RecoveryLaunchRejectedNoWorkException : InvalidOperationException
+    {
+        internal RecoveryLaunchRejectedNoWorkException(string message) : base(message) { }
+    }
+
     internal sealed class WatchdogVerifiedActiveRun
     {
         public string RunId { get; set; }
@@ -30,6 +35,28 @@ namespace MTTFTest.Watchdog
         public long CheckpointRevision { get; set; }
         public string CheckpointSha256 { get; set; }
         public string CapturedUtc { get; set; }
+    }
+
+    /// <summary>
+    /// Minimal, forward-compatible view of the main application's durable
+    /// unattended checkpoint.  JavaScriptSerializer ignores fields owned by
+    /// newer checkpoint schemas, so the sidecar can make the final launch
+    /// authorization decision without taking a binary dependency on the UI.
+    /// </summary>
+    internal sealed class DurableCheckpointLaunchObservation
+    {
+        public long Revision { get; set; }
+        public bool Armed { get; set; }
+        public string RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public string WatchdogSessionId { get; set; }
+    }
+
+    internal enum RecoveryBootstrapObservation
+    {
+        None = 0,
+        RejectedNoWork = 1,
+        StartupFailed = 2
     }
 
     internal sealed class WatchdogJournal
@@ -672,6 +699,7 @@ namespace MTTFTest.Watchdog
                 RecoveryBlockedUtcTicks = previous?.RecoveryBlockedUtcTicks ?? 0,
                 LastRecoveryCommitRunId = previous?.LastRecoveryCommitRunId,
                 LastReason = previous?.LastReason,
+                ManualStopRequested = previous?.ManualStopRequested == true,
                 State = previous?.RecoveryBlocked == true
                     ? "SafeIdleRecoveryBlocked"
                     : "Starting",
@@ -756,6 +784,31 @@ namespace MTTFTest.Watchdog
 
         private async Task<int> RunAsync()
         {
+            WatchdogClosingTombstone closing;
+            if (WatchdogClosingTombstoneStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out closing) || IsSessionRevoked())
+            {
+                _journal.ManualStopRequested = true;
+                var revoked = _relaunchCoordinator.Revoke(
+                    "TerminalSessionObservedOnStartup");
+                if (revoked?.Record != null)
+                    lock (_journalGate) ApplyDurablePermitLocked(revoked.Record);
+                RecordEvent(
+                    "TerminalSessionObservedOnStartup",
+                    closing == null
+                        ? "LegacyRevocationMarker"
+                        : $"State={closing.State};Version={closing.StateVersion};" +
+                          $"Generation={closing.SessionGeneration};Lease={closing.SessionLease}");
+                _transitionWindow.Hide();
+                PublishTerminal(
+                    "TerminalSessionObservedOnStartup",
+                    closing?.TerminalReason ?? "SessionRevoked");
+                SaveJournal();
+                return 0;
+            }
+
             var monitor = MonitorAsync(_stop.Token);
             while (!_stop.IsCancellationRequested)
             {
@@ -2195,6 +2248,12 @@ namespace MTTFTest.Watchdog
                 {
                     launchOwner = TryStartCommittedLaunch(approved);
                 }
+                catch (RecoveryLaunchRejectedNoWorkException ex)
+                {
+                    Record("IdleRestartRejectedNoWork", ex.Message);
+                    _transitionWindow.Hide();
+                    return false;
+                }
                 catch (Exception ex)
                 {
                     BlockLaunchOutcomeUnknown(
@@ -2450,7 +2509,8 @@ namespace MTTFTest.Watchdog
                         var arguments = string.Format(CultureInfo.InvariantCulture,
                              "--watchdog-recover {0} --watchdog-pipe {1} --previous-pid {2} --recovery-attempt {3} --exclude-channels {4} " +
                              "--sidecar-pid {5} --sidecar-start-ticks {6} --sidecar-instance-nonce {7} " +
-                             "--relaunch-generation {8} --relaunch-permit-id {9} --relaunch-permit-nonce {10}",
+                             "--relaunch-generation {8} --relaunch-permit-id {9} --relaunch-permit-nonce {10} " +
+                             "--journal-directory {11}",
                              Quote(_args.SessionId), Quote(_args.PipeName), previousPid, attempt,
                              Quote(string.Join(",", excluded)),
                              _sidecarProcessId,
@@ -2458,7 +2518,8 @@ namespace MTTFTest.Watchdog
                              Quote(_sidecarInstanceNonce),
                              permitRecord.Generation,
                              Quote(permitRecord.PermitId),
-                             Quote(permitRecord.PermitNonce));
+                             Quote(permitRecord.PermitNonce),
+                             Quote(_args.JournalDirectory));
                         lock (_processLaunchGate)
                         {
                             if (_journal.ManualStopRequested ||
@@ -2499,11 +2560,53 @@ namespace MTTFTest.Watchdog
                         _attached = false;
                         Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                         Record("RecoveryProcessLaunched", $"PID={started.Id};Attempt={attempt};Permit={permitGeneration}");
-                        var attachDeadline = DateTime.UtcNow.AddSeconds(20);
+                        var attachDeadlineTicks = Stopwatch.GetTimestamp() +
+                                                  20L * Stopwatch.Frequency;
+                        string bootstrapFailureReason = null;
                         while (!_attached && !_journal.ManualStopRequested && !IsSessionRevoked() &&
-                               DateTime.UtcNow < attachDeadline && !started.HasExited)
+                               Stopwatch.GetTimestamp() < attachDeadlineTicks)
                         {
-                            var remaining = Math.Max(1, (int)Math.Ceiling((attachDeadline - DateTime.UtcNow).TotalSeconds));
+                            var bootstrapObservation = ObserveBootstrapOutcome(
+                                launchIdentity,
+                                launchOwner,
+                                attempt,
+                                out var observedFailureReason);
+                            if (bootstrapObservation == RecoveryBootstrapObservation.RejectedNoWork)
+                                return;
+                            if (bootstrapObservation == RecoveryBootstrapObservation.StartupFailed)
+                            {
+                                bootstrapFailureReason = observedFailureReason;
+                                break;
+                            }
+                            if (started.HasExited)
+                            {
+                                var outcomeDeadline = Stopwatch.GetTimestamp() +
+                                                      5L * Stopwatch.Frequency;
+                                while (Stopwatch.GetTimestamp() < outcomeDeadline)
+                                {
+                                    bootstrapObservation = ObserveBootstrapOutcome(
+                                        launchIdentity,
+                                        launchOwner,
+                                        attempt,
+                                        out observedFailureReason);
+                                    if (bootstrapObservation == RecoveryBootstrapObservation.RejectedNoWork)
+                                        return;
+                                    if (bootstrapObservation == RecoveryBootstrapObservation.StartupFailed)
+                                    {
+                                        bootstrapFailureReason = observedFailureReason;
+                                        break;
+                                    }
+                                    await Task.Delay(100).ConfigureAwait(false);
+                                }
+                                break;
+                            }
+                            var remainingTicks = Math.Max(
+                                0,
+                                attachDeadlineTicks - Stopwatch.GetTimestamp());
+                            var remaining = Math.Max(
+                                1,
+                                (int)Math.Ceiling(
+                                    remainingTicks / (double)Stopwatch.Frequency));
                             _transitionWindow.Show(
                                 "主程序正在加载",
                                 "等待监控界面连接 Watchdog 恢复会话",
@@ -2517,17 +2620,34 @@ namespace MTTFTest.Watchdog
                             try { launchOwner?.Dispose(); } catch { }
                             return;
                         }
+                        var terminalObservation = ObserveBootstrapOutcome(
+                            launchIdentity,
+                            launchOwner,
+                            attempt,
+                            out var terminalFailureReason);
+                        if (terminalObservation == RecoveryBootstrapObservation.RejectedNoWork)
+                            return;
+                        if (terminalObservation == RecoveryBootstrapObservation.StartupFailed)
+                            bootstrapFailureReason = terminalFailureReason;
                         if (launchOwner != null) launchOwner.KillExactAndDispose();
                         else _processLauncher.KillExact(started);
                         // RegisterRecoveryFailure is the single strict-V4
                         // failure transaction and closes the active permit.
-                        Record("RecoveryAttachFailed", $"Attempt={attempt};Permit={permitGeneration}");
+                        var failureCode = string.IsNullOrWhiteSpace(bootstrapFailureReason)
+                            ? "RecoveryAttachFailed"
+                            : "RecoveryBootstrapStartupFailed";
+                        var failureDetail = string.IsNullOrWhiteSpace(bootstrapFailureReason)
+                            ? failureCode
+                            : bootstrapFailureReason;
+                        Record(
+                            failureCode,
+                            $"Attempt={attempt};Permit={permitGeneration};Reason={failureDetail}");
                         var failureDecision = RegisterRecoveryFailure(
-                            "RecoveryAttachFailed",
+                            failureCode,
                             RecoveryFailurePolicy.Classify(
-                                "RecoveryAttachFailed",
+                                failureCode,
                                 false,
-                                "RecoveryAttachFailed"));
+                                failureDetail));
                         if (failureDecision.SafeIdleRecoveryBlocked ||
                             (!failureDecision.ProcessRelaunchAllowed &&
                              !failureDecision.RelaunchPermitAlreadyPending))
@@ -2535,7 +2655,7 @@ namespace MTTFTest.Watchdog
                             EnterRelaunchCircuitOpen(
                                 failureDecision.Fingerprint,
                                 failureDecision.ConsecutiveCount,
-                                "RecoveryAttachFailed");
+                                failureCode);
                             return;
                         }
                         permitGeneration = failureDecision.RelaunchPermitGeneration;
@@ -2547,6 +2667,14 @@ namespace MTTFTest.Watchdog
                             "主程序未在 20 秒内连接，将按退避策略再次尝试",
                             0,
                             attempt);
+                    }
+                    catch (RecoveryLaunchRejectedNoWorkException ex)
+                    {
+                        Record("RecoveryLaunchRejectedNoWork", ex.Message);
+                        _transitionWindow.Hide();
+                        PublishTerminal("RecoveryRejectedNoWork", ex.Message);
+                        _stop.Cancel();
+                        return;
                     }
                     catch (Exception ex)
                     {
@@ -2707,6 +2835,20 @@ namespace MTTFTest.Watchdog
                     $"AuthorityGeneration={approved?.Generation ?? 0};Reason={reason}");
                 return 0;
             }
+            if (TryGetRecoveryNoWorkReason(out var noWorkReason))
+            {
+                var rejected = CommitRejectedNoWork(
+                    approved.Identity,
+                    "PermitIssuance:" + noWorkReason);
+                if (rejected)
+                    Record(
+                        "RelaunchPermitRejectedNoWork",
+                        $"Generation={generation};Reason={noWorkReason}");
+                else
+                    BlockLaunchOutcomeUnknown(
+                        "RejectedNoWorkCommitFailedAtPermitIssuance:" + noWorkReason);
+                return 0;
+            }
             return generation;
         }
 
@@ -2840,10 +2982,187 @@ namespace MTTFTest.Watchdog
             var capability = _relaunchCoordinator.GetLaunchCapability(generation);
             if (capability == null)
                 throw new InvalidOperationException("LaunchCapabilityMissing");
+            if (TryGetRecoveryNoWorkReason(out var noWorkReason))
+            {
+                var current = _relaunchCoordinator.Snapshot;
+                if (!CommitRejectedNoWork(
+                        current?.Identity,
+                        "ProcessStart:" + noWorkReason))
+                    throw new InvalidOperationException(
+                        "RejectedNoWorkCommitFailed:" + noWorkReason);
+                throw new RecoveryLaunchRejectedNoWorkException(
+                    noWorkReason);
+            }
             var owner = _processLauncher.Start(capability);
             if (owner == null || owner.Process == null)
                 throw new InvalidOperationException("GuardedProcessStartReturnedNull");
             return owner;
+        }
+
+        private bool CommitRejectedNoWork(
+            DurableRelaunchPermitIdentity identity,
+            string reason)
+        {
+            var rejected = ExecuteAuthorityTransitionWithBusyRetry(
+                () => _relaunchCoordinator.RejectNoWork(identity, reason));
+            if (rejected?.Record != null)
+                lock (_journalGate) ApplyDurablePermitLocked(rejected.Record);
+            return rejected?.Succeeded == true &&
+                   rejected.Record?.State == DurableRelaunchPermitState.RejectedNoWork;
+        }
+
+        /// <summary>
+        /// Reads the durable checkpoint again at both permit publication and
+        /// the guarded Process.Start boundary.  A newer disarm, a different
+        /// run/session, or an unreadable previously-known checkpoint is a
+        /// neutral NoWork terminal: it must never re-authorize main-process
+        /// creation and must not consume the recovery failure budget.
+        /// </summary>
+        private bool TryGetRecoveryNoWorkReason(out string reason)
+        {
+            reason = null;
+            if (IsSessionRevoked())
+            {
+                reason = "ClosingFenceOrRevocationObserved";
+                return true;
+            }
+
+            WatchdogCheckpointMirror mirror;
+            lock (_journalGate) mirror = _journal?.LastCheckpointMirror;
+            if (mirror == null) return false;
+            if (!mirror.Armed)
+            {
+                reason = "CheckpointMirrorDisarmed";
+                return true;
+            }
+
+            var sourcePath = mirror.SourcePath;
+            if (string.IsNullOrWhiteSpace(sourcePath)) return false;
+            DurableJsonReadResult<DurableCheckpointLaunchObservation> read;
+            try
+            {
+                read = DurableJsonFileStore.ReadLatestValid<DurableCheckpointLaunchObservation>(
+                    checkpoint => checkpoint?.Revision ?? 0,
+                    sourcePath,
+                    sourcePath + ".bak");
+            }
+            catch (Exception ex)
+            {
+                reason = "DurableCheckpointReadFailed:" + ex.GetBaseException().Message;
+                return true;
+            }
+            var checkpoint = read?.Value;
+            if (checkpoint == null)
+            {
+                reason = "DurableCheckpointUnavailable:" +
+                         (read?.Status.ToString() ?? "Missing");
+                return true;
+            }
+            if (checkpoint.Revision < mirror.Revision)
+            {
+                reason = "DurableCheckpointRevisionRegressed";
+                return true;
+            }
+            if (!checkpoint.Armed)
+            {
+                reason = "DurableCheckpointDisarmed";
+                return true;
+            }
+            if (!string.Equals(
+                    checkpoint.WatchdogSessionId,
+                    _args.SessionId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    checkpoint.RunId,
+                    mirror.RunId,
+                    StringComparison.OrdinalIgnoreCase) ||
+                checkpoint.RunEpoch != mirror.RunEpoch)
+            {
+                reason = "DurableCheckpointIdentityChanged";
+                return true;
+            }
+            return false;
+        }
+
+        private RecoveryBootstrapObservation ObserveBootstrapOutcome(
+            DurableRelaunchPermitIdentity identity,
+            GuardedProcessOwnerReceipt owner,
+            int attempt,
+            out string failureReason)
+        {
+            failureReason = string.Empty;
+            if (identity == null || owner?.Process == null)
+                return RecoveryBootstrapObservation.None;
+            var record = _relaunchCoordinator.Snapshot;
+            if (record == null || record.Generation != identity.Generation ||
+                !string.Equals(record.PermitId, identity.PermitId, StringComparison.Ordinal) ||
+                string.IsNullOrWhiteSpace(record.PermitNonce))
+                return RecoveryBootstrapObservation.None;
+            RecoveryBootstrapReceipt receipt;
+            if (!RecoveryBootstrapOutcomeStore.TryReadVerified(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    identity.Generation,
+                    identity.PermitId,
+                    record.PermitNonce,
+                    out receipt))
+                return RecoveryBootstrapObservation.None;
+            if (receipt.ChildProcessId != owner.ProcessId ||
+                receipt.ChildProcessStartUtcTicks != owner.StartUtcTicks)
+            {
+                Record(
+                    "RecoveryBootstrapReceiptRejected",
+                    $"ProcessIdentityMismatch;ReceiptPid={receipt.ChildProcessId};" +
+                    $"ExpectedPid={owner.ProcessId};Outcome={receipt.Outcome}");
+                return RecoveryBootstrapObservation.None;
+            }
+            if (receipt.Outcome == RecoveryBootstrapOutcome.StartupFailed)
+            {
+                failureReason = string.IsNullOrWhiteSpace(receipt.Reason)
+                    ? "Recovery child reported StartupFailed before UI attach."
+                    : receipt.Reason;
+                Record(
+                    "RecoveryBootstrapStartupFailed",
+                    $"Attempt={attempt};Permit={identity.Generation};" +
+                    $"CheckpointRevision={receipt.CheckpointRevision};Reason={failureReason}");
+                return RecoveryBootstrapObservation.StartupFailed;
+            }
+            if (receipt.Outcome != RecoveryBootstrapOutcome.RejectedNoWork)
+                return RecoveryBootstrapObservation.None;
+
+            var rejected = ExecuteAuthorityTransitionWithBusyRetry(
+                () => _relaunchCoordinator.RejectNoWork(
+                    identity,
+                    string.IsNullOrWhiteSpace(receipt.Reason)
+                        ? "RecoveryBootstrapRejectedNoWork"
+                        : receipt.Reason));
+            if (rejected?.Record != null)
+                lock (_journalGate) ApplyDurablePermitLocked(rejected.Record);
+            if (rejected?.Succeeded != true ||
+                rejected.Record?.State != DurableRelaunchPermitState.RejectedNoWork)
+            {
+                BlockLaunchOutcomeUnknown(
+                    "RejectedNoWorkCommitFailed:" + (rejected?.Reason ?? "Unknown"));
+                return RecoveryBootstrapObservation.RejectedNoWork;
+            }
+
+            try
+            {
+                if (!owner.Process.HasExited && !owner.Process.WaitForExit(5000))
+                    owner.KillExactAndDispose();
+                else
+                    owner.Dispose();
+            }
+            catch { owner.KillExactAndDispose(); }
+            Record(
+                "RecoveryBootstrapRejectedNoWork",
+                $"Attempt={attempt};Permit={identity.Generation};" +
+                $"CheckpointRevision={receipt.CheckpointRevision};Reason={receipt.Reason}");
+            _transitionWindow.Hide();
+            Interlocked.Exchange(ref _transitionActive, 0);
+            PublishTerminal("RecoveryRejectedNoWork", receipt.Reason);
+            _stop.Cancel();
+            return RecoveryBootstrapObservation.RejectedNoWork;
         }
 
         private bool TryCommitAttachedPermit(WatchdogRunSession session, out string failure)
@@ -3580,7 +3899,11 @@ namespace MTTFTest.Watchdog
 
         private bool IsSessionRevoked()
         {
-            return WatchdogControlMarker.IsRevoked(_args.JournalDirectory, _args.SessionId);
+            return WatchdogControlMarker.IsRevoked(_args.JournalDirectory, _args.SessionId) ||
+                   WatchdogClosingTombstoneStore.TryRead(
+                       _args.JournalDirectory,
+                       _args.SessionId,
+                       out _);
         }
 
         private bool MatchesCurrentProcess(Process process)

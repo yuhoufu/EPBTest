@@ -291,6 +291,12 @@ namespace MTTFTest.Watchdog.Protocol
         public static string ProjectRevocationPath(string directory, string sessionId) => Path.Combine(
             ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".revoked");
 
+        public static string LocalClosingPath(string sessionId) => Path.Combine(
+            LocalControlDirectory, "session-" + SafeName(sessionId) + ".closing.json");
+
+        public static string ProjectClosingPath(string directory, string sessionId) => Path.Combine(
+            ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".closing.json");
+
         public static string LocalRecoveryCommitPath(string sessionId) => Path.Combine(
             LocalControlDirectory, "session-" + SafeName(sessionId) + ".recovery-committed");
 
@@ -362,6 +368,7 @@ namespace MTTFTest.Watchdog.Protocol
                 var cutoff = DateTime.UtcNow.AddDays(-Math.Max(1, retentionDays));
                 var files = directory.GetFiles("session-*.revoked", SearchOption.TopDirectoryOnly)
                     .Concat(directory.GetFiles("session-*.recovery-committed", SearchOption.TopDirectoryOnly))
+                    .Concat(directory.GetFiles("session-*.closing.json", SearchOption.TopDirectoryOnly))
                     .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
                     .OrderBy(file => file.LastWriteTimeUtc).ToList();
                 foreach (var file in files.Where(file => file.LastWriteTimeUtc < cutoff).ToArray())
@@ -504,7 +511,7 @@ namespace MTTFTest.Watchdog.Protocol
         private const int ErrorArchiveCount = 1;
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private static readonly Regex OwnedFile = new Regex(
-            @"^session-(?<id>[0-9a-f]{32})\.(json|bootstrap\.json|relaunch\.json|lease\.json|manifest\.json|revoked|recovery-committed|sidecar-events(?:\.\d+)?\.jsonl|client-events(?:\.\d+)?\.jsonl|errors(?:\.\d+)?\.log)$",
+            @"^session-(?<id>[0-9a-f]{32})\.(json|bootstrap\.json|bootstrap-outcome-\d+\.json|relaunch\.json|lease\.json|manifest\.json|closing\.json|revoked|recovery-committed|sidecar-events(?:\.\d+)?\.jsonl|client-events(?:\.\d+)?\.jsonl|errors(?:\.\d+)?\.log)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         private readonly object _gate = new object();

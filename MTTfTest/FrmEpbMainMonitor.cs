@@ -2695,6 +2695,22 @@ namespace MTEmbTest
                         RequestedUtc = DateTime.UtcNow
                     });
 
+                // StopAll 已取得事务身份后立即建立不可逆 Close Fence；即使后续
+                // 管道回执、detach 或 UI 收口失败，同一 Watchdog 会话也不能再拉起主程序。
+                var stopProgress = _epb.CaptureStopSafetyProgress();
+                var closeFence = WatchdogRuntime.BeginSessionCloseExact(
+                    stopWatchdogContext,
+                    "ManualStopIntent",
+                    stopProgress?.TransactionId ?? Guid.Empty,
+                    stopProgress?.RunId ?? Guid.Empty,
+                    stopProgress?.RunEpoch ?? 0,
+                    stopProgress?.Generation ?? 0);
+                if (stopWatchdogContext != null && !closeFence.IsIrreversible)
+                    logger?.Warn(
+                        $"人工停止 Close Fence 未形成双写耐久回执，将保留关闭事务重试；" +
+                        $"Mark={closeFence.MarkOutcome}; Error={closeFence.Error}",
+                        "Watchdog");
+
                 // StopAll 已经开始后再同步 UI 开关；即使控件事件处理异常，也不会挡住断能。
                 for (var chIndex = 0; chIndex < 12; chIndex++)
                     EpbGroup[chIndex].CtrlRunning.Checked = false;
@@ -2736,7 +2752,7 @@ namespace MTEmbTest
                 }
                 var safety = await stopTask;
                 completedSafety = safety;
-                if (!_manualStopExitReceipt.Publish(safety))
+                if (!_manualStopExitReceipt.Publish(safety, stopCommandId))
                     logger?.Warn(
                         $"人工停止结果不满足关闭复用条件，将在关闭时重新执行安全停机。" +
                         $"CommandId={stopCommandId}; RunId={safety.RunId:N}; " +
@@ -2755,6 +2771,7 @@ namespace MTEmbTest
                         SessionGeneration = stopWatchdogContext?.SessionGeneration ?? 0,
                         SessionLease = stopWatchdogContext?.SessionLease ?? 0,
                         StopSafety = safety,
+                        ManualExitIntent = _manualStopExitReceipt.CaptureIntent(),
                         CompletedUtc = DateTime.UtcNow,
                         Error = ProcessRestartUiPolicy.GetOperatorMessage(safety.TimedOut)
                     });
@@ -2792,11 +2809,12 @@ namespace MTEmbTest
                     SessionGeneration = stopWatchdogContext?.SessionGeneration ?? 0,
                     SessionLease = stopWatchdogContext?.SessionLease ?? 0,
                     StopSafety = completedSafety,
+                    ManualExitIntent = _manualStopExitReceipt.CaptureIntent(),
                     CompletedUtc = DateTime.UtcNow,
                     Error = ex.GetBaseException().Message
                 });
                 // 操作员的停止意图已经成立；关闭或下一次启动会再次执行幂等清场。
-                LogInfo($"停止试验收尾异常，等待 Watchdog 自动接管：{ex.Message}");
+                LogInfo($"设备已 OFF，监督会话关闭待重试；自动恢复保持撤权：{ex.Message}");
                 BtnStartTest.Enabled = false;
             }
             finally
@@ -2900,6 +2918,7 @@ namespace MTEmbTest
                     SessionGeneration = capturedContext?.SessionGeneration ?? 0,
                     SessionLease = capturedContext?.SessionLease ?? 0,
                     StopSafety = safety,
+                    ManualExitIntent = _manualStopExitReceipt.CaptureIntent(),
                     CompletedUtc = DateTime.UtcNow,
                     Error = "缺少Main-owned Watchdog shutdown owner。"
                 };
@@ -2916,6 +2935,7 @@ namespace MTEmbTest
                                     shutdown?.SessionGeneration ?? 0,
                 SessionLease = capturedContext?.SessionLease ?? shutdown?.SessionLease ?? 0,
                 StopSafety = safety,
+                ManualExitIntent = _manualStopExitReceipt.CaptureIntent(),
                 WatchdogShutdown = shutdown,
                 UiResourcesReleased = shutdown?.IsTerminal == true,
                 CompletedUtc = DateTime.UtcNow

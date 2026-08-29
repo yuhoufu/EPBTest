@@ -208,12 +208,16 @@ namespace Controller
         internal StopSafetyTransactionLease(
             Guid transactionId,
             long generation,
+            Guid runId,
+            long runEpoch,
             DateTime startedUtc,
             DateTime hardDeadlineUtc,
             CancellationTokenSource cancellation)
         {
             TransactionId = transactionId;
             Generation = generation;
+            RunId = runId;
+            RunEpoch = runEpoch;
             StartedUtc = startedUtc;
             HardDeadlineUtc = hardDeadlineUtc;
             Cancellation = cancellation;
@@ -221,6 +225,8 @@ namespace Controller
 
         internal Guid TransactionId { get; }
         internal long Generation { get; }
+        internal Guid RunId { get; }
+        internal long RunEpoch { get; }
         internal DateTime StartedUtc { get; }
         internal DateTime HardDeadlineUtc { get; }
         internal CancellationTokenSource Cancellation { get; }
@@ -393,10 +399,14 @@ namespace Controller
                     generation = ++_nextGeneration;
                 var transactionId = Guid.NewGuid();
                 var startedUtc = _clock.UtcNow;
+                var runId = _runIdProvider();
+                var runEpoch = _runEpochProvider();
                 var cts = new CancellationTokenSource();
                 var lease = new StopSafetyTransactionLease(
                     transactionId,
                     generation,
+                    runId,
+                    runEpoch,
                     startedUtc,
                     startedUtc + _options.HardDeadline,
                     cts);
@@ -406,8 +416,8 @@ namespace Controller
                 _progress = new StopSafetyProgressSnapshot
                 {
                     TransactionId = transactionId,
-                    RunId = _runIdProvider(),
-                    RunEpoch = _runEpochProvider(),
+                    RunId = runId,
+                    RunEpoch = runEpoch,
                     Generation = generation,
                     ProgressVersion = 1,
                     StartedUtc = startedUtc,
@@ -644,6 +654,7 @@ namespace Controller
                                    transaction.TransactionId.ToString("N");
             latest.Source = transaction.StopContext.Source;
             latest.RunId = transaction.RunId;
+            StampSafetyIdentity(latest, lease);
             PublishTerminal(
                 lease,
                 timedOut ? StopSafetyStage.TimedOut : StopSafetyStage.Completed,
@@ -743,6 +754,8 @@ namespace Controller
             StopSafetyResult result)
         {
             result = result ?? new StopSafetyResult();
+            StampSafetyIdentity(result, lease);
+            result.LastStage = StopSafetyStage.Completed;
             result.CompletedUtc = result.CompletedUtc == default(DateTime)
                 ? _clock.UtcNow
                 : result.CompletedUtc;
@@ -752,6 +765,17 @@ namespace Controller
             PublishTerminal(lease, StopSafetyStage.Completed,
                 "Stop safety transaction completed", result);
             return result;
+        }
+
+        private static void StampSafetyIdentity(
+            StopSafetyResult result,
+            StopSafetyTransactionLease lease)
+        {
+            if (result == null || lease == null) return;
+            result.SafetyTransactionId = lease.TransactionId;
+            result.RunId = lease.RunId;
+            result.RunEpoch = lease.RunEpoch;
+            result.SafetyBoundaryGeneration = lease.Generation;
         }
 
         private StopSafetyResult EnterStageFailureTerminal(
@@ -1044,7 +1068,10 @@ namespace Controller
                 Source = transaction.StopContext.Source,
                 CorrelationId = transaction.StopContext.CorrelationId ??
                                 transaction.TransactionId.ToString("N"),
+                SafetyTransactionId = transaction.TransactionId,
                 RunId = transaction.RunId,
+                RunEpoch = transaction.RunEpoch,
+                SafetyBoundaryGeneration = transaction.Generation,
                 StartedUtc = transaction.StartedUtc,
                 CompletedUtc = _clock.UtcNow
             };
@@ -1066,7 +1093,10 @@ namespace Controller
                 Source = transaction.StopContext.Source,
                 CorrelationId = transaction.StopContext.CorrelationId ??
                                 transaction.TransactionId.ToString("N"),
+                SafetyTransactionId = transaction.TransactionId,
                 RunId = transaction.RunId,
+                RunEpoch = transaction.RunEpoch,
+                SafetyBoundaryGeneration = transaction.Generation,
                 StartedUtc = transaction.StartedUtc,
                 CompletedUtc = _clock.UtcNow
             };

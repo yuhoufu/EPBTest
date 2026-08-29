@@ -38,6 +38,8 @@
     <Compile Include="WatchdogJournalV4Validator.cs" />
     <Compile Include="WatchdogJournalBootstrap.cs" />
     <Compile Include="WatchdogJournalStorage.cs" />
+    <Compile Include="WatchdogClosingTombstone.cs" />
+    <Compile Include="RecoveryBootstrapOutcome.cs" />
     <Compile Include="DurableJsonFileStore.cs" />
     <Compile Include="DurableRelaunchFileStore.cs" />
     <Compile Include="DurableRelaunchAuthorityV4.cs" />

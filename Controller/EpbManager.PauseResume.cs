@@ -12,14 +12,38 @@ namespace Controller
 {
     internal sealed class BatchPauseSnapshot
     {
-        internal BatchPauseSnapshot(BatchPauseState state, long generation)
+        internal BatchPauseSnapshot(
+            BatchPauseState state,
+            long generation,
+            Guid runId,
+            long runEpoch,
+            Guid commandId,
+            IEnumerable<int> frozenChannels)
         {
             State = state;
             Generation = generation;
+            RunId = runId;
+            RunEpoch = runEpoch;
+            CommandId = commandId;
+            FrozenChannels = (frozenChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
         }
 
         internal BatchPauseState State { get; }
         internal long Generation { get; }
+        internal Guid RunId { get; }
+        internal long RunEpoch { get; }
+        internal Guid CommandId { get; }
+        internal int[] FrozenChannels { get; }
+
+        internal bool Owns(Guid runId, long runEpoch, int channel)
+        {
+            return Generation > 0 && CommandId != Guid.Empty &&
+                   RunId == runId && RunEpoch == runEpoch &&
+                   FrozenChannels.Contains(channel);
+        }
     }
 
     internal sealed class DaqDataContinuityCompromisedException : InvalidOperationException
@@ -34,7 +58,13 @@ namespace Controller
             new ConcurrentDictionary<int, DateTime>();
         private readonly object _batchPauseStateGate = new object();
         private BatchPauseSnapshot _batchPauseSnapshot =
-            new BatchPauseSnapshot(BatchPauseState.Idle, 0);
+            new BatchPauseSnapshot(
+                BatchPauseState.Idle,
+                0,
+                Guid.Empty,
+                0,
+                Guid.Empty,
+                Array.Empty<int>());
         private DateTime _batchPausedUtc = DateTime.MinValue;
         private int[] _batchPausedChannels = Array.Empty<int>();
         private long _qualificationGeneration;
@@ -61,6 +91,28 @@ namespace Controller
 
         internal BatchPauseSnapshot CaptureBatchPauseSnapshot() =>
             Volatile.Read(ref _batchPauseSnapshot);
+
+        private bool TryCaptureExactManualPauseOwner(
+            Guid runId,
+            long runEpoch,
+            IEnumerable<int> channels,
+            out BatchPauseSnapshot pause)
+        {
+            pause = CaptureBatchPauseSnapshot();
+            if (pause == null || pause.RunId != runId || pause.RunEpoch != runEpoch ||
+                pause.CommandId == Guid.Empty ||
+                (pause.State != BatchPauseState.PausePending &&
+                 pause.State != BatchPauseState.Paused &&
+                 pause.State != BatchPauseState.ResumeChecking))
+                return false;
+            var capturedPause = pause;
+            var active = (channels ?? Array.Empty<int>())
+                .Where(channel => _timers.ContainsKey(channel) || _runners.ContainsKey(channel))
+                .Distinct()
+                .ToArray();
+            return active.Length > 0 &&
+                   active.All(channel => capturedPause.FrozenChannels.Contains(channel));
+        }
 
         public bool IsBatchPaused => CurrentBatchPauseState == BatchPauseState.Paused;
 
@@ -128,6 +180,8 @@ namespace Controller
                     pauseStartedUtc,
                     pauseStartedUtc.AddMilliseconds(hardDeadlineMs));
                 SetBatchPauseState(BatchPauseState.PausePending, channels, "等待所有通道完成当前圈");
+                var pauseTransaction = CaptureBatchPauseSnapshot();
+                _batchPausedChannels = pauseTransaction.FrozenChannels.ToArray();
                 foreach (var channel in channels)
                     PublishChannelRuntimeState(
                         channel,
@@ -170,6 +224,9 @@ namespace Controller
                     "当前圈已完成，正在确认全断能");
                 await CompletePauseSafetyBoundaryAsync(channels, forceHydraulicGroups: true, token)
                     .ConfigureAwait(false);
+                await WaitForBatchPauseRecoveryOwnersAsync(pauseTransaction, token)
+                    .ConfigureAwait(false);
+                CommitBatchPausedOrThrow(pauseTransaction);
                 _batchPausedUtc = DateTime.UtcNow;
                 _batchPausedChannels = channels;
                 foreach (var channel in channels)
@@ -1107,13 +1164,42 @@ namespace Controller
                 {
                     var previous = _batchPauseSnapshot;
                     var generation = previous.Generation;
+                    var runId = previous.RunId;
+                    var runEpoch = previous.RunEpoch;
+                    var commandId = previous.CommandId;
+                    var frozenChannels = previous.FrozenChannels;
                     if (state == BatchPauseState.PausePending &&
                         previous.State != BatchPauseState.PausePending &&
                         previous.State != BatchPauseState.Paused &&
                         previous.State != BatchPauseState.ResumeChecking &&
                         previous.State != BatchPauseState.Qualification)
+                    {
                         generation++;
-                    snapshot = new BatchPauseSnapshot(state, generation);
+                        runId = _activeBatchId;
+                        runEpoch = Interlocked.Read(ref _runEpoch);
+                        commandId = Guid.NewGuid();
+                        frozenChannels = (channels ?? Array.Empty<int>())
+                            .Distinct()
+                            .OrderBy(channel => channel)
+                            .ToArray();
+                    }
+                    else if (state == BatchPauseState.Idle ||
+                             (state == BatchPauseState.Running &&
+                              previous.State != BatchPauseState.ResumeChecking &&
+                              previous.State != BatchPauseState.Qualification))
+                    {
+                        runId = _activeBatchId;
+                        runEpoch = Interlocked.Read(ref _runEpoch);
+                        commandId = Guid.Empty;
+                        frozenChannels = Array.Empty<int>();
+                    }
+                    snapshot = new BatchPauseSnapshot(
+                        state,
+                        generation,
+                        runId,
+                        runEpoch,
+                        commandId,
+                        frozenChannels);
                     Volatile.Write(ref _batchPauseSnapshot, snapshot);
                 }
             }
@@ -1124,7 +1210,9 @@ namespace Controller
                 Channels = channels?.Distinct().OrderBy(x => x).ToArray() ?? Array.Empty<int>(),
                 TimestampUtc = DateTime.UtcNow,
                 Reason = reason ?? string.Empty,
-                RunId = _activeBatchId
+                RunId = snapshot.RunId == Guid.Empty ? _activeBatchId : snapshot.RunId,
+                RunEpoch = snapshot.RunEpoch,
+                CommandId = snapshot.CommandId
             };
             _log?.Info(
                 $"批次暂停状态={state} Generation={update.Generation} " +
@@ -1134,6 +1222,112 @@ namespace Controller
                 BatchPauseStateChanged,
                 update,
                 ex => _log?.Warn($"批次暂停状态观察者异常，已隔离：{ex.Message}", "EPB"));
+        }
+
+        private void CommitBatchPausedOrThrow(BatchPauseSnapshot expected)
+        {
+            if (expected == null || expected.CommandId == Guid.Empty)
+                throw new InvalidOperationException("暂停事务身份缺失，拒绝提交 Paused。");
+
+            lock (_daqRecoveryCommitGate)
+            {
+                var current = CaptureBatchPauseSnapshot();
+                if (current.State != BatchPauseState.PausePending ||
+                    current.Generation != expected.Generation ||
+                    current.RunId != expected.RunId ||
+                    current.RunEpoch != expected.RunEpoch ||
+                    current.CommandId != expected.CommandId)
+                    throw new InvalidOperationException(
+                        "暂停事务在安全边界期间已被替换，拒绝提交旧 Paused。" +
+                        $" Expected={expected.RunId:N}/{expected.RunEpoch}/{expected.Generation}/{expected.CommandId:N}" +
+                        $" Actual={current.RunId:N}/{current.RunEpoch}/{current.Generation}/{current.CommandId:N}");
+
+                var invalid = new List<string>();
+                foreach (var channel in expected.FrozenChannels)
+                {
+                    var runtime = _channelRuntimeStateStore.Get(channel);
+                    var timerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel);
+                    var runnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel);
+                    var formal = runtime?.FormalPhaseCommitted == true || IsFormalPhaseCommitted;
+                    var recoveryOwned = runtime?.State == ChannelRuntimeState.Recovering ||
+                                        RecoveryOwnershipPolicy.HasExplicitOwner(runtime);
+                    var energized = IsChannelEnergized(channel) || runtime?.Energized == true;
+                    var identityCurrent = runtime != null &&
+                                          runtime.RunId == expected.RunId &&
+                                          runtime.RunEpoch == expected.RunEpoch &&
+                                          runtime.PauseGeneration == expected.Generation &&
+                                          runtime.PauseCommandId == expected.CommandId;
+                    if (!timerActive || !runnerActive || !formal || recoveryOwned ||
+                        energized || !identityCurrent)
+                        invalid.Add(
+                            $"EPB{channel}:Timer={timerActive},Runner={runnerActive},Formal={formal}," +
+                            $"RecoveryOwner={recoveryOwned},Energized={energized},Identity={identityCurrent}");
+                }
+
+                if (invalid.Count > 0)
+                    throw new InvalidOperationException(
+                        "暂停提交前复核失败：" + string.Join(";", invalid));
+            }
+        }
+
+        private async Task WaitForBatchPauseRecoveryOwnersAsync(
+            BatchPauseSnapshot expected,
+            CancellationToken token)
+        {
+            if (expected == null || expected.CommandId == Guid.Empty)
+                throw new InvalidOperationException("暂停事务身份缺失，不能等待恢复 Owner 收口。");
+
+            var progress = CaptureManualPauseProgress();
+            var deadlineUtc = progress.HardDeadlineUtc > DateTime.UtcNow
+                ? progress.HardDeadlineUtc
+                : DateTime.UtcNow;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var pendingOwners = new List<int>();
+                lock (_daqRecoveryCommitGate)
+                {
+                    var current = CaptureBatchPauseSnapshot();
+                    if (current.State != BatchPauseState.PausePending ||
+                        current.Generation != expected.Generation ||
+                        current.RunId != expected.RunId ||
+                        current.RunEpoch != expected.RunEpoch ||
+                        current.CommandId != expected.CommandId)
+                        throw new InvalidOperationException(
+                            "等待恢复 Owner 收口期间暂停事务已被替换，拒绝提交 Paused。");
+
+                    foreach (var channel in expected.FrozenChannels)
+                    {
+                        var runtime = _channelRuntimeStateStore.Get(channel);
+                        var timerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel);
+                        var runnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel);
+                        var formal = runtime?.FormalPhaseCommitted == true || IsFormalPhaseCommitted;
+                        var identityCurrent = runtime != null &&
+                                              runtime.RunId == expected.RunId &&
+                                              runtime.RunEpoch == expected.RunEpoch &&
+                                              runtime.PauseGeneration == expected.Generation &&
+                                              runtime.PauseCommandId == expected.CommandId;
+                        if (!timerActive || !runnerActive || !formal || !identityCurrent)
+                            throw new InvalidOperationException(
+                                $"EPB[{channel}] 暂停运行载体或事务身份已丢失，禁止发布假 Paused。" +
+                                $" Timer={timerActive},Runner={runnerActive},Formal={formal},Identity={identityCurrent}");
+                        if (IsChannelEnergized(channel) || runtime.Energized)
+                            throw new InvalidOperationException(
+                                $"EPB[{channel}] 暂停安全边界后仍有上电证据，禁止发布 Paused。");
+                        if (runtime.State == ChannelRuntimeState.Recovering ||
+                            RecoveryOwnershipPolicy.HasExplicitOwner(runtime))
+                            pendingOwners.Add(channel);
+                    }
+                }
+
+                if (pendingOwners.Count == 0)
+                    return;
+                if (DateTime.UtcNow >= deadlineUtc)
+                    throw new TimeoutException(
+                        $"暂停安全边界到达硬截止，恢复 Owner 未收口：EPB[{string.Join(",", pendingOwners)}]。");
+
+                await Task.Delay(50, token).ConfigureAwait(false);
+            }
         }
 
         private void BeginManualPauseProgress(

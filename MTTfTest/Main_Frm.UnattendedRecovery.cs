@@ -155,6 +155,18 @@ namespace MtEmbTest
                         ProjectLogLevel.Error,
                         "独立看门狗恢复已拒绝：" + error + "；所有输出保持关闭。",
                         "独立看门狗");
+                    var noWorkWritten = TryWriteRecoveryBootstrapReceipt(
+                        intent,
+                        RecoveryBootstrapOutcome.RejectedNoWork,
+                        error,
+                        0);
+                    if (noWorkWritten)
+                    {
+                        RequestWatchdogOwnedExit(
+                            "RecoveryCheckpointRejectedNoWork",
+                            RuntimeShutdownIntent.WatchdogRecoveryExit);
+                        return;
+                    }
                     try
                     {
                         await WatchdogRuntime.NotifyRecoveryCheckpointRejectedAsync(
@@ -176,6 +188,11 @@ namespace MtEmbTest
                     return;
                 }
                 recoveryRunId = checkpoint.RunId ?? string.Empty;
+                TryWriteRecoveryBootstrapReceipt(
+                    intent,
+                    RecoveryBootstrapOutcome.RecoveryAccepted,
+                    "CheckpointConsumed",
+                    checkpoint.Revision);
 
                 // 恢复进程不会再次经过“点击开始”的 BatchGuard；必须在重新附着
                 // 原 Watchdog Session 前恢复封存目录，保证多次接管后的 Journal
@@ -235,6 +252,11 @@ namespace MtEmbTest
                     !recoveryReadyDecision.AttachExistingAuthorityOnly)
                     throw new InvalidOperationException(
                         "Watchdog恢复UI入口未Ready：" + recoveryReadyDecision.Reason);
+                TryWriteRecoveryBootstrapReceipt(
+                    intent,
+                    RecoveryBootstrapOutcome.RecoveryUiAttached,
+                    "RecoveryUiReady",
+                    checkpoint.Revision);
                 var consecutiveHardwareFailures = 0;
                 var previousFingerprint = string.Empty;
                 while (!monitor.IsOperatorStopRequested)
@@ -297,6 +319,11 @@ namespace MtEmbTest
             catch (Exception ex)
             {
                 var baseError = ex.GetBaseException();
+                TryWriteRecoveryBootstrapReceipt(
+                    intent,
+                    RecoveryBootstrapOutcome.StartupFailed,
+                    baseError.Message,
+                    0);
                 var supersededByTakeover = WatchdogRuntime.IsActiveTakeoverCancellation(baseError);
                 var classification = RecoveryFailurePolicy.Classify(
                     supersededByTakeover ? "RecoverySupersededByTakeover" : null,
@@ -344,6 +371,47 @@ namespace MtEmbTest
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
                 }
+            }
+        }
+
+        private static bool TryWriteRecoveryBootstrapReceipt(
+            WatchdogRecoveryIntent intent,
+            RecoveryBootstrapOutcome outcome,
+            string reason,
+            long checkpointRevision)
+        {
+            if (intent == null || intent.StartIdle ||
+                string.IsNullOrWhiteSpace(intent.JournalDirectory))
+                return false;
+            try
+            {
+                using (var process = System.Diagnostics.Process.GetCurrentProcess())
+                {
+                    RecoveryBootstrapOutcomeStore.WriteThrough(
+                        intent.JournalDirectory,
+                        new RecoveryBootstrapReceipt
+                        {
+                            SessionId = intent.SessionId,
+                            PermitGeneration = intent.RelaunchPermitGeneration,
+                            PermitId = intent.RelaunchPermitId,
+                            ChildProcessId = process.Id,
+                            ChildProcessStartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                            CheckpointRevision = Math.Max(0, checkpointRevision),
+                            Outcome = outcome,
+                            Reason = reason ?? string.Empty
+                        },
+                        intent.RelaunchPermitNonce);
+                }
+                return true;
+            }
+            catch (Exception receiptError)
+            {
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "恢复 bootstrap 耐久回执写入失败：" + receiptError.GetBaseException().Message,
+                    "独立看门狗",
+                    receiptError);
+                return false;
             }
         }
 

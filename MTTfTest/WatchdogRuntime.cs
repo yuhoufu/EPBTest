@@ -49,6 +49,7 @@ namespace MTEmbTest
         public long RelaunchPermitGeneration { get; set; }
         public string RelaunchPermitId { get; set; }
         public string RelaunchPermitNonce { get; set; }
+        public string JournalDirectory { get; set; }
         public int[] ExcludedChannels { get; set; } = Array.Empty<int>();
         public bool StartIdle { get; set; }
 
@@ -87,6 +88,7 @@ namespace MTEmbTest
                 RelaunchPermitGeneration = Math.Max(0, permitGeneration),
                 RelaunchPermitId = Read("--relaunch-permit-id"),
                 RelaunchPermitNonce = Read("--relaunch-permit-nonce"),
+                JournalDirectory = Read("--journal-directory"),
                 StartIdle = startIdle,
                 ExcludedChannels = (Read("--exclude-channels") ?? string.Empty)
                     .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
@@ -1623,6 +1625,8 @@ namespace MTEmbTest
                  string.IsNullOrWhiteSpace(intent.RelaunchPermitId) ||
                  !WatchdogProcessIdentityPolicy.IsValidChallengeNonce(intent.RelaunchPermitNonce)))
                 throw new InvalidOperationException("恢复参数缺少完整的Relaunch permit三元组。");
+            if (!intent.StartIdle)
+                WatchdogJournalPaths.ValidateProjectDirectory(intent.JournalDirectory);
         }
 
         private static WatchdogClientTransportOptions BuildOptions(
@@ -2472,24 +2476,9 @@ namespace MTEmbTest
         internal static RuntimeShutdownMarkOutcome TryMarkSessionClosing(
             RuntimeTransportSessionContext context)
         {
-            if (context == null || context.SessionLease <= 0)
-                return RuntimeShutdownMarkOutcome.NoEngineSession;
-            // Marking is allowed while the Runtime context is transitioning
-            // to Closing, but it still requires the same exact active context
-            // and Engine identities.  Do not use the legacy no-argument API.
-            var composite = CaptureTransportSnapshot();
-            if (composite == null || composite.Engine == null)
-                return RuntimeShutdownMarkOutcome.NoEngineSession;
-            var snapshot = composite.Engine;
-            if (!snapshot.SessionActive || snapshot.ActiveSessionLease <= 0)
-                return RuntimeShutdownMarkOutcome.NoEngineSession;
-            if (!composite.IsStable || !ReferenceEquals(composite.Context, context))
-                return RuntimeShutdownMarkOutcome.IdentityMismatch;
-            if (snapshot.SessionLease != snapshot.ActiveSessionLease ||
-                snapshot.SessionLease != context.SessionLease ||
-                snapshot.SessionGeneration != context.SessionGeneration ||
-                !string.Equals(snapshot.SessionId, context.SessionId, StringComparison.Ordinal))
-                return RuntimeShutdownMarkOutcome.IdentityMismatch;
+            var validation = ValidateExactClosingIdentity(context);
+            if (validation != RuntimeShutdownMarkOutcome.Marked)
+                return validation;
             if (TransportEngine.TryMarkSessionClosing(
                 context.SessionId,
                 context.SessionGeneration,
@@ -2504,6 +2493,144 @@ namespace MTEmbTest
             if (after == null || !after.SessionActive || after.ActiveSessionLease <= 0)
                 return RuntimeShutdownMarkOutcome.NoEngineSession;
             return RuntimeShutdownMarkOutcome.IdentityMismatch;
+        }
+
+        private static RuntimeShutdownMarkOutcome ValidateExactClosingIdentity(
+            RuntimeTransportSessionContext context)
+        {
+            if (context == null || context.SessionLease <= 0)
+                return RuntimeShutdownMarkOutcome.NoEngineSession;
+            // Validation is read-only and precedes creation of the durable
+            // tombstone.  A stale Runtime context must never fence a newer
+            // Engine session merely because both happen to be present.
+            var composite = CaptureTransportSnapshot();
+            if (composite == null || composite.Engine == null)
+                return RuntimeShutdownMarkOutcome.NoEngineSession;
+            var snapshot = composite.Engine;
+            if (!snapshot.SessionActive || snapshot.ActiveSessionLease <= 0)
+                return RuntimeShutdownMarkOutcome.NoEngineSession;
+            if (!composite.IsStable || !ReferenceEquals(composite.Context, context))
+                return RuntimeShutdownMarkOutcome.IdentityMismatch;
+            if (snapshot.SessionLease != snapshot.ActiveSessionLease ||
+                snapshot.SessionLease != context.SessionLease ||
+                snapshot.SessionGeneration != context.SessionGeneration ||
+                !string.Equals(snapshot.SessionId, context.SessionId, StringComparison.Ordinal))
+                return RuntimeShutdownMarkOutcome.IdentityMismatch;
+            return RuntimeShutdownMarkOutcome.Marked;
+        }
+
+        internal static RuntimeSessionCloseFenceReceipt BeginSessionCloseExact(
+            RuntimeTransportSessionContext context,
+            string closeIntent,
+            Guid stopSafetyTransactionId,
+            Guid stopRunId,
+            long stopRunEpoch,
+            long stopSafetyBoundaryGeneration)
+        {
+            var receipt = new RuntimeSessionCloseFenceReceipt { Context = context };
+            if (context == null || context.SessionLease <= 0)
+            {
+                receipt.MarkOutcome = RuntimeShutdownMarkOutcome.NoEngineSession;
+                receipt.Error = "Watchdog exact close context is missing.";
+                return receipt;
+            }
+
+            var exactIdentity = ValidateExactClosingIdentity(context);
+            if (exactIdentity == RuntimeShutdownMarkOutcome.IdentityMismatch)
+            {
+                receipt.MarkOutcome = exactIdentity;
+                receipt.Error = "Watchdog exact close identity mismatch.";
+                return receipt;
+            }
+
+            Volatile.Write(ref context.State.SessionClosing, 1);
+            context.TrySetPipelineState(RuntimeCallbackPipelineState.Closing);
+            context.IngressGate.BeginClosing();
+
+            WatchdogClosingTombstone previous;
+            var version = WatchdogClosingTombstoneStore.TryRead(
+                context.JournalDirectory,
+                context.SessionId,
+                out previous)
+                ? Math.Max(1, previous.StateVersion + 1)
+                : 1;
+            var tombstone = new WatchdogClosingTombstone
+            {
+                SessionId = context.SessionId,
+                SessionGeneration = context.SessionGeneration,
+                SessionLease = context.SessionLease,
+                CloseIntent = closeIntent ?? string.Empty,
+                StopSafetyTransactionId = stopSafetyTransactionId == Guid.Empty
+                    ? previous?.StopSafetyTransactionId ?? string.Empty
+                    : stopSafetyTransactionId.ToString("N"),
+                StopRunId = stopRunId == Guid.Empty
+                    ? previous?.StopRunId ?? string.Empty
+                    : stopRunId.ToString("N"),
+                StopRunEpoch = stopRunEpoch > 0
+                    ? stopRunEpoch
+                    : previous?.StopRunEpoch ?? 0,
+                StopSafetyBoundaryGeneration = stopSafetyBoundaryGeneration > 0
+                    ? stopSafetyBoundaryGeneration
+                    : previous?.StopSafetyBoundaryGeneration ?? 0,
+                StateVersion = version,
+                State = WatchdogClosingTombstoneState.Closing,
+                TerminalReason = closeIntent ?? string.Empty
+            };
+
+            try
+            {
+                receipt.Tombstone = WatchdogClosingTombstoneStore.WriteThrough(
+                    context.JournalDirectory,
+                    tombstone);
+                receipt.TombstoneDurable = true;
+            }
+            catch (Exception ex)
+            {
+                receipt.Error = ex.GetBaseException().Message;
+                receipt.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+                try { WriteSessionRevocationMarker(context, "ClosingTombstoneWriteFailed"); }
+                catch { }
+            }
+
+            var mark = TryMarkSessionClosing(context);
+            if (!receipt.TombstoneDurable)
+                return receipt;
+            receipt.MarkOutcome = mark;
+            WriteSessionRevocationMarker(context, closeIntent ?? "SessionClosing");
+            RecordClientEvent(
+                context,
+                "WatchdogClosingTombstone",
+                $"StateVersion={version};Generation={context.SessionGeneration};" +
+                $"Lease={context.SessionLease};Intent={closeIntent}");
+            FlushClientJournal(context);
+            return receipt;
+        }
+
+        internal static bool CompleteSessionCloseTombstone(
+            RuntimeTransportSessionContext context,
+            string terminalReason)
+        {
+            if (context == null || context.SessionLease <= 0) return true;
+            try
+            {
+                WatchdogClosingTombstone existing;
+                if (!WatchdogClosingTombstoneStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out existing))
+                    return false;
+                if (existing.SessionGeneration != context.SessionGeneration ||
+                    existing.SessionLease != context.SessionLease)
+                    return false;
+                existing.State = WatchdogClosingTombstoneState.Terminal;
+                existing.StateVersion = Math.Max(1, existing.StateVersion + 1);
+                existing.TerminalReason = terminalReason ?? "RuntimeShutdownTerminal";
+                WatchdogClosingTombstoneStore.WriteThrough(
+                    context.JournalDirectory,
+                    existing);
+                return true;
+            }
+            catch { return false; }
         }
 
         private static bool Send(WatchdogMessage message)

@@ -56,6 +56,15 @@ namespace Controller
         TerminalCleanup = 5
     }
 
+    public enum RecoveryExitDisposition
+    {
+        RejoinedRunning = 0,
+        HeldForManualPause = 1,
+        SafeIdleFault = 2,
+        Superseded = 3,
+        CancelledByStop = 4
+    }
+
     public static class RecoveryOwnershipPolicy
     {
         public static bool HasExplicitOwner(ChannelRuntimeStateChangedEvent state)
@@ -136,6 +145,8 @@ namespace Controller
         public DateTime TimestampUtc { get; set; }
         public string Reason { get; set; } = string.Empty;
         public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public Guid CommandId { get; set; }
     }
 
     public enum ManualPauseStage
@@ -194,6 +205,8 @@ namespace Controller
         public Guid CorrelationId { get; set; }
         public Guid RunId { get; set; }
         public long RunEpoch { get; set; }
+        public long PauseGeneration { get; set; }
+        public Guid PauseCommandId { get; set; }
         public bool Enabled { get; set; }
         public bool FormalPhaseCommitted { get; set; }
         public bool TimerActive { get; set; }
@@ -225,6 +238,8 @@ namespace Controller
                 CorrelationId = CorrelationId,
                 RunId = RunId,
                 RunEpoch = RunEpoch,
+                PauseGeneration = PauseGeneration,
+                PauseCommandId = PauseCommandId,
                 Enabled = Enabled,
                 FormalPhaseCommitted = FormalPhaseCommitted,
                 TimerActive = TimerActive,
@@ -1206,7 +1221,10 @@ namespace Controller
         public string StageError { get; set; } = string.Empty;
         public StopSource Source { get; set; } = StopSource.UnknownLegacy;
         public string CorrelationId { get; set; } = string.Empty;
+        public Guid SafetyTransactionId { get; set; }
         public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public long SafetyBoundaryGeneration { get; set; }
         public bool MotorOffCommandSucceeded { get; set; }
         public bool PowerOffConfirmed { get; set; }
         public bool PressureSafeConfirmed { get; set; }
@@ -1253,7 +1271,10 @@ namespace Controller
                 StageError = StageError,
                 Source = Source,
                 CorrelationId = CorrelationId,
+                SafetyTransactionId = SafetyTransactionId,
                 RunId = RunId,
+                RunEpoch = RunEpoch,
+                SafetyBoundaryGeneration = SafetyBoundaryGeneration,
                 MotorOffCommandSucceeded = MotorOffCommandSucceeded,
                 PowerOffConfirmed = PowerOffConfirmed,
                 PressureSafeConfirmed = PressureSafeConfirmed,

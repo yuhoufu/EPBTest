@@ -76,6 +76,16 @@ namespace MTEmbTest
                 // close and exact retention phases.
                 return RuntimeShutdownMarkOutcome.NoEngineSession;
             }
+
+
+            public bool TryCompleteSessionClosing(
+                RuntimeTransportSessionContext context,
+                string terminalReason)
+            {
+                // This isolated UI seam has no protocol session/tombstone;
+                // NoEngineSession is already its durable no-work boundary.
+                return true;
+            }
         }
 
         private sealed class UiRetentionPipelinePort : IRuntimeShutdownPipelinePort

@@ -898,6 +898,67 @@ namespace MTTFTest.Watchdog.Protocol
             }
         }
 
+        public DurableAuthorityTransitionResult RejectCurrentNoWork(
+            DurableRelaunchPermitIdentity identity,
+            string reason)
+        {
+            lock (_gate)
+            {
+                var fresh = _store.Load(_sessionId);
+                if (fresh != null && fresh.FailureKind == DurableAuthorityFailureKind.Busy)
+                    return TransitionBusy(fresh.Reason ?? "AuthorityMutexBusy");
+                if (fresh == null || fresh.Record == null || fresh.Blocked || fresh.Unproven)
+                    return TransitionUnproven(fresh?.Reason ?? "AuthorityReloadBlocked");
+                _record = fresh.Record.Clone();
+                _sha256 = fresh.Sha256;
+                if (_record.State == DurableRelaunchPermitState.RejectedNoWork &&
+                    MatchesPermitIdentity(_record, identity))
+                    return new DurableAuthorityTransitionResult
+                    {
+                        Status = DurableAuthorityTransitionStatus.Committed,
+                        Reason = "AlreadyRejectedNoWork",
+                        Record = _record.Clone(),
+                        Sha256 = _sha256
+                    };
+                if (!MatchesPermitIdentity(_record, identity))
+                    return TransitionInvalid("PermitIdentityMismatch");
+                if (_record.State != DurableRelaunchPermitState.Approved &&
+                    _record.State != DurableRelaunchPermitState.LaunchIntent &&
+                    _record.State != DurableRelaunchPermitState.Started &&
+                    _record.State != DurableRelaunchPermitState.Attached)
+                    return TransitionInvalid("NoActivePermit");
+
+                var candidate = _record.Clone();
+                candidate.State = DurableRelaunchPermitState.RejectedNoWork;
+                candidate.CircuitOpen = false;
+                candidate.DetailCode = string.IsNullOrWhiteSpace(reason)
+                    ? "RejectedNoWork"
+                    : reason;
+                candidate.ProcessId = 0;
+                candidate.ProcessStartUtcTicks = 0;
+                candidate.RecoveryCommitGeneration = 0;
+                ClearLaunchIdentity(candidate);
+                var commit = TryCommitCandidateLocked(candidate, null, false);
+                if (commit == null) return TransitionWriteFailed("NullCommit");
+                if (commit.Status == DurableAuthorityCommitStatus.Busy ||
+                    commit.FailureKind == DurableAuthorityFailureKind.Busy)
+                    return TransitionBusy(commit.Reason ?? "AuthorityMutexBusy");
+                if (commit.Status == DurableAuthorityCommitStatus.Conflict)
+                    return TransitionConflict("RejectedNoWorkConflict");
+                if (!IsCandidateApplied(commit))
+                    return TransitionWriteFailed(commit.Reason ?? "RejectedNoWorkCommitFailed");
+                _record = commit.Record.Clone();
+                _sha256 = commit.Sha256;
+                return new DurableAuthorityTransitionResult
+                {
+                    Status = DurableAuthorityTransitionStatus.Committed,
+                    Reason = candidate.DetailCode,
+                    Record = _record.Clone(),
+                    Sha256 = _sha256
+                };
+            }
+        }
+
         private DurableAuthorityTransitionResult TransitionLifecycle(
             DurableLaunchIntentCapability capability,
             DurableRelaunchPermitState expectedState,
@@ -969,6 +1030,16 @@ namespace MTTFTest.Watchdog.Protocol
                    string.Equals(record.LaunchAuthoritySha256, capability.AuthoritySha256, StringComparison.Ordinal);
         }
 
+        private static bool MatchesPermitIdentity(
+            DurableRelaunchAuthorityRecord record,
+            DurableRelaunchPermitIdentity identity)
+        {
+            return record != null && identity != null &&
+                   record.Generation == identity.Generation &&
+                   string.Equals(record.SessionId, identity.SessionId, StringComparison.Ordinal) &&
+                   string.Equals(record.PermitId, identity.PermitId, StringComparison.Ordinal);
+        }
+
         private static bool HasLaunchIdentity(DurableRelaunchAuthorityRecord record)
         {
             return record != null && !string.IsNullOrWhiteSpace(record.LaunchIntentId) &&
@@ -1003,7 +1074,8 @@ namespace MTTFTest.Watchdog.Protocol
                     observedSha = _sha256;
                     if (observed == null || observed.State == DurableRelaunchPermitState.None ||
                         observed.State == DurableRelaunchPermitState.Committed || observed.State == DurableRelaunchPermitState.Failed ||
-                        observed.State == DurableRelaunchPermitState.Revoked || observed.State == DurableRelaunchPermitState.Blocked)
+                        observed.State == DurableRelaunchPermitState.Revoked || observed.State == DurableRelaunchPermitState.Blocked ||
+                        observed.State == DurableRelaunchPermitState.RejectedNoWork)
                         return new DurableAuthorityReconcileResult
                         {
                             Observation = DurableRelaunchProcessObservation.Unknown,
