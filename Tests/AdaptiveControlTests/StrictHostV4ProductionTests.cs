@@ -22,10 +22,13 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V2.13.0.34 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
+            Run("V2.13.0.35 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
             Run("strict bootstrap format2", StrictBootstrapFormat2, ref passed);
             Run("approved intent durable", ApprovedToIntent, ref passed);
             Run("approved permit取消后耐久Superseded且重启不可消费", ApprovedPermitRevocationIsDurable, ref passed);
+            Run("RejectedNoWork终态不打开熔断且重启不可消费", RejectedNoWorkIsNeutralTerminal, ref passed);
+            Run("closing tombstone双写并保持精确会话身份", ClosingTombstoneIsWriteThrough, ref passed);
+            Run("bootstrap outcome绑定子进程身份且HMAC拒绝篡改", BootstrapOutcomeHmacBinding, ref passed);
             Run("started requires durable consume", StartedRequiresDurableConsume, ref passed);
             Run("started attached committed", StartedAttachedCommitted, ref passed);
             Run("recovery commit replaces failed context and second takeover gets fresh permit",
@@ -47,15 +50,15 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(2, 13, 0, 34);
+            var expected = new Version(2, 13, 0, 35);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
-                "Protocol assembly version is not V2.13.0.34");
+                "Protocol assembly version is not V2.13.0.35");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,
-                "Client assembly version is not V2.13.0.34");
+                "Client assembly version is not V2.13.0.35");
             Require(typeof(StrictHostV4AuthorityAdapter).Assembly.GetName().Version == expected,
-                "Host assembly version is not V2.13.0.34");
+                "Host assembly version is not V2.13.0.35");
             Require(typeof(Main_Frm).Assembly.GetName().Version == expected,
-                "Main application assembly version is not V2.13.0.34");
+                "Main application assembly version is not V2.13.0.35");
             Require(WatchdogProtocol.Version == 3 &&
                     WatchdogJournalPolicy.CurrentSchemaVersion == 4 &&
                     DurableRelaunchAuthorityV4Validator.RequiredFormatRevision == 2,
@@ -141,6 +144,118 @@ namespace AdaptiveControlTests
                         !reopened.Authority.ResumeLaunchIntent().Succeeded,
                     "重启后已撤销permit仍可恢复为LaunchIntent");
             });
+        }
+
+        private static void RejectedNoWorkIsNeutralTerminal()
+        {
+            WithAuthority((dir, session, authority) =>
+            {
+                var decision = authority.RegisterFailureAndDecide(
+                    Operation(session, "13131313131313131313131313131313"));
+                var failures = decision.Record.ConsecutiveFailures;
+                var rejected = authority.RejectCurrentNoWork(
+                    new DurableRelaunchPermitIdentity
+                    {
+                        SessionId = decision.Record.SessionId,
+                        Generation = decision.Record.Generation,
+                        PermitId = decision.Record.PermitId
+                    },
+                    "CheckpointDisarmed");
+                Require(rejected.Succeeded &&
+                        rejected.Record.State == DurableRelaunchPermitState.RejectedNoWork &&
+                        !rejected.Record.CircuitOpen &&
+                        rejected.Record.ConsecutiveFailures == failures,
+                    "RejectedNoWork错误打开熔断或增加失败预算");
+                var reopened = DurableRelaunchAuthorityV4Factory.TryOpenExisting(dir, session);
+                Require(reopened.Succeeded &&
+                        reopened.Authority.Snapshot.State == DurableRelaunchPermitState.RejectedNoWork &&
+                        !reopened.Authority.ResumeLaunchIntent().Succeeded,
+                    "RejectedNoWork重启后仍可恢复启动许可");
+            });
+        }
+
+        private static void ClosingTombstoneIsWriteThrough()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "closing-tombstone-" + Guid.NewGuid().ToString("N"));
+            var session = Guid.NewGuid().ToString("N");
+            var local = WatchdogJournalPaths.LocalClosingPath(session);
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var written = WatchdogClosingTombstoneStore.WriteThrough(
+                    directory,
+                    new WatchdogClosingTombstone
+                    {
+                        SessionId = session,
+                        SessionGeneration = 3,
+                        SessionLease = 9,
+                        CloseIntent = "ManualStopIntent",
+                        StateVersion = 1,
+                        State = WatchdogClosingTombstoneState.Closing,
+                        TerminalReason = "ManualStopIntent"
+                    });
+                WatchdogClosingTombstone read;
+                Require(File.Exists(local) &&
+                        File.Exists(WatchdogJournalPaths.ProjectClosingPath(directory, session)) &&
+                        WatchdogClosingTombstoneStore.TryRead(directory, session, out read) &&
+                        read.SessionGeneration == 3 && read.SessionLease == 9 &&
+                        written.UpdatedUtcTicks > 0,
+                    "closing tombstone未完成本机/项目双写或身份回读");
+            }
+            finally
+            {
+                try { if (File.Exists(local)) File.Delete(local); } catch { }
+                try { if (Directory.Exists(directory)) Directory.Delete(directory, true); } catch { }
+            }
+        }
+
+        private static void BootstrapOutcomeHmacBinding()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "bootstrap-outcome-" + Guid.NewGuid().ToString("N"));
+            var session = Guid.NewGuid().ToString("N");
+            var permit = Guid.NewGuid().ToString("N");
+            var nonce = Guid.NewGuid().ToString("N");
+            try
+            {
+                Directory.CreateDirectory(directory);
+                using (var process = Process.GetCurrentProcess())
+                    RecoveryBootstrapOutcomeStore.WriteThrough(
+                        directory,
+                        new RecoveryBootstrapReceipt
+                        {
+                            SessionId = session,
+                            PermitGeneration = 4,
+                            PermitId = permit,
+                            ChildProcessId = process.Id,
+                            ChildProcessStartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                            CheckpointRevision = 12,
+                            Outcome = RecoveryBootstrapOutcome.RejectedNoWork,
+                            Reason = "CheckpointDisarmed"
+                        },
+                        nonce);
+                RecoveryBootstrapReceipt verified;
+                Require(RecoveryBootstrapOutcomeStore.TryReadVerified(
+                            directory, session, 4, permit, nonce, out verified) &&
+                        verified.Outcome == RecoveryBootstrapOutcome.RejectedNoWork &&
+                        verified.CheckpointRevision == 12,
+                    "合法bootstrap outcome未通过HMAC与身份验证");
+                var path = RecoveryBootstrapOutcomeStore.GetPath(directory, session, 4);
+                File.WriteAllText(
+                    path,
+                    File.ReadAllText(path).Replace("CheckpointDisarmed", "TamperedReason"),
+                    new UTF8Encoding(false));
+                Require(!RecoveryBootstrapOutcomeStore.TryReadVerified(
+                            directory, session, 4, permit, nonce, out verified),
+                    "篡改bootstrap outcome仍通过HMAC验证");
+            }
+            finally
+            {
+                try { if (Directory.Exists(directory)) Directory.Delete(directory, true); } catch { }
+            }
         }
 
         private static void StartedAttachedCommitted()
