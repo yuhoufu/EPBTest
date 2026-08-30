@@ -39,7 +39,7 @@ namespace MTTFTest.Watchdog.Protocol
     }
 
     /// <summary>
-    /// Exact v3 wire receipt for a recovery-attempt failure.  It intentionally
+    /// Exact v4 wire receipt for a recovery-attempt failure.  It intentionally
     /// carries no permit nonce: nonce is launch transport evidence and must not
     /// be reflected back as durable failure authority.
     /// </summary>

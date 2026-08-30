@@ -81,6 +81,7 @@ namespace Controller
         private ManualPauseProgressSnapshot _manualPauseProgress = new ManualPauseProgressSnapshot();
 
         public event Action<BatchPauseStateChangedEvent> BatchPauseStateChanged;
+        public event Action<ManualPauseProgressSnapshot> ManualPauseProgressChanged;
 
         /// <summary>
         /// 由宿主注册Raw发布/文件写入排空回调。优雅暂停只有在圈数据与原始数据链均排空后才完成。
@@ -186,12 +187,12 @@ namespace Controller
                     throw new InvalidOperationException("正式阶段尚未建立，启动定位或学习阶段不能暂停。");
 
                 var channels = timers.Select(pair => pair.Key).ToArray();
-                BeginManualPauseProgress(
-                    channels,
-                    pauseStartedUtc,
-                    pauseStartedUtc.AddMilliseconds(hardDeadlineMs));
                 SetBatchPauseState(BatchPauseState.PausePending, channels, "等待所有通道完成当前圈");
                 var pauseTransaction = CaptureBatchPauseSnapshot();
+                BeginManualPauseProgress(
+                    pauseTransaction,
+                    pauseStartedUtc,
+                    pauseStartedUtc.AddMilliseconds(hardDeadlineMs));
                 _batchPausedChannels = pauseTransaction.FrozenChannels.ToArray();
                 foreach (var channel in channels)
                     PublishChannelRuntimeState(
@@ -357,6 +358,7 @@ namespace Controller
 
                 _batchPausedUtc = DateTime.MinValue;
                 _batchPausedChannels = Array.Empty<int>();
+                AdvanceManualPauseProgress(ManualPauseStage.Resumed, "同一批次已恢复运行");
                 SetBatchPauseState(BatchPauseState.Running, channels, "试验已恢复");
             }
             catch (OperationCanceledException) when (
@@ -753,6 +755,10 @@ namespace Controller
             {
                 await Task.WhenAll(selected.Select(HydraulicMarkReleaseAsync)).ConfigureAwait(false);
             }
+
+            if (_powerSupply == null)
+                throw new InvalidOperationException("暂停安全边界缺少程控电源协调器。");
+            await _powerSupply.DisableAllAsync("GracefulPause", token).ConfigureAwait(false);
 
             if (CurrentBatchPauseState == BatchPauseState.PausePending)
             {
@@ -1446,10 +1452,11 @@ namespace Controller
         }
 
         private void BeginManualPauseProgress(
-            int[] channels,
+            BatchPauseSnapshot pause,
             DateTime startedUtc,
             DateTime hardDeadlineUtc)
         {
+            ManualPauseProgressSnapshot published;
             lock (_manualPauseProgressGate)
             {
                 _manualPauseProgress = new ManualPauseProgressSnapshot
@@ -1460,29 +1467,51 @@ namespace Controller
                     StartedUtc = startedUtc,
                     StageStartedUtc = startedUtc,
                     HardDeadlineUtc = hardDeadlineUtc,
-                    Channels = channels?.Distinct().OrderBy(channel => channel).ToArray() ?? Array.Empty<int>(),
+                    Channels = pause?.FrozenChannels?.Distinct().OrderBy(channel => channel).ToArray() ?? Array.Empty<int>(),
                     EnergizedChannels = Array.Empty<int>(),
+                    RunId = pause?.RunId ?? Guid.Empty,
+                    RunEpoch = pause?.RunEpoch ?? 0,
+                    PauseCommandId = pause?.CommandId ?? Guid.Empty,
                     Detail = "等待所有通道完成当前圈"
                 };
+                published = _manualPauseProgress.Clone();
             }
+            PublishManualPauseProgress(published);
         }
 
         private void AdvanceManualPauseProgress(ManualPauseStage stage, string detail)
         {
+            ManualPauseProgressSnapshot published;
             lock (_manualPauseProgressGate)
             {
-                _manualPauseProgress.Active = stage != ManualPauseStage.Completed;
+                _manualPauseProgress.Active = stage != ManualPauseStage.Completed &&
+                                              stage != ManualPauseStage.Resumed;
                 _manualPauseProgress.Stage = stage;
                 _manualPauseProgress.StageStartedUtc = DateTime.UtcNow;
                 _manualPauseProgress.ProgressVersion++;
                 _manualPauseProgress.Detail = detail ?? string.Empty;
                 if (stage == ManualPauseStage.Completed)
+                {
                     _manualPauseProgress.EnergizedChannels = Array.Empty<int>();
+                    _manualPauseProgress.MotorsOff = true;
+                    _manualPauseProgress.PowerOff = true;
+                    _manualPauseProgress.PressureSafe = true;
+                    _manualPauseProgress.PersistenceDrained = true;
+                }
+                if (stage == ManualPauseStage.PersistenceDrain)
+                {
+                    _manualPauseProgress.MotorsOff = true;
+                    _manualPauseProgress.PowerOff = true;
+                    _manualPauseProgress.PressureSafe = true;
+                }
+                published = _manualPauseProgress.Clone();
             }
+            PublishManualPauseProgress(published);
         }
 
         private void MarkManualPauseSafetyFault(string reason)
         {
+            ManualPauseProgressSnapshot published;
             lock (_manualPauseProgressGate)
             {
                 _manualPauseProgress.Active = true;
@@ -1491,7 +1520,17 @@ namespace Controller
                 _manualPauseProgress.ProgressVersion++;
                 _manualPauseProgress.SafetyFault = true;
                 _manualPauseProgress.Detail = reason ?? "人工暂停安全边界失败";
+                published = _manualPauseProgress.Clone();
             }
+            PublishManualPauseProgress(published);
+        }
+
+        private void PublishManualPauseProgress(ManualPauseProgressSnapshot snapshot)
+        {
+            NonCriticalObserver.Invoke(
+                ManualPauseProgressChanged,
+                snapshot?.Clone(),
+                ex => _log?.Warn($"人工暂停进度观察者异常，已隔离：{ex.Message}", "EPB"));
         }
 
         public bool CanAcknowledgeChannelAlarm(int channel, out string rejectionReason)

@@ -16,11 +16,11 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("Attached返回冻结Sidecar身份并保持协议v3往返", AttachedIdentityRoundTrips, ref passed);
-            Run("协议版本严格限制为v3", ProtocolVersionMustBeExactV3, ref passed);
+            Run("Attached返回冻结Sidecar身份并保持协议v4往返", AttachedIdentityRoundTrips, ref passed);
+            Run("协议版本严格限制为v4", ProtocolVersionMustBeExactV4, ref passed);
             Run("Watchdog超过20KiB长帧完整性往返", LongIntegrityFrameRoundTrips, ref passed);
             Run("Watchdog半帧与校验篡改明确拒绝", PartialOrCorruptFrameIsRejected, ref passed);
-            Run("真实Sidecar进程拒绝v2/0/v4并接受v3", RealSidecarRejectsInvalidProtocolVersions, ref passed);
+            Run("真实Sidecar进程拒绝v2/0/v3并接受v4", RealSidecarRejectsInvalidProtocolVersions, ref passed);
             Run("真实Sidecar缺失或非法challenge nonce时启动失败",
                 RealSidecarRejectsMissingOrInvalidLaunchNonce, ref passed);
             Run("真实Sidecar同权威新管道重连不重置Stop域",
@@ -390,8 +390,8 @@ namespace AdaptiveControlTests
                 InstanceNonce = "nonce-1"
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
-            Assert(WatchdogProtocol.Version == 3 &&
-                   roundTrip.ProtocolVersion == 3 &&
+            Assert(WatchdogProtocol.Version == 4 &&
+                   roundTrip.ProtocolVersion == 4 &&
                    roundTrip.Type == WatchdogMessageType.Attached &&
                    roundTrip.SessionId == "session-transport" &&
                    roundTrip.SidecarProcessId == 321 &&
@@ -402,7 +402,7 @@ namespace AdaptiveControlTests
                    roundTrip.SidecarSessionId == "session-transport" &&
                    roundTrip.SidecarInstanceNonce == "nonce-1" &&
                    roundTrip.InstanceNonce == "nonce-1",
-                "Attached身份字段未能按v3协议往返");
+                "Attached身份字段未能按v4协议往返");
         }
 
         private static void AuthorityIdentityRequiresCompleteEvidence()
@@ -427,16 +427,16 @@ namespace AdaptiveControlTests
                 "缺失Session/PID/Start/Nonce时错误授予权威");
         }
 
-        private static void ProtocolVersionMustBeExactV3()
+        private static void ProtocolVersionMustBeExactV4()
         {
             Assert(WatchdogProtocol.IsSupportedVersion(WatchdogProtocol.Version),
-                "当前v3协议被错误拒绝");
+                "当前v4协议被错误拒绝");
             Assert(!WatchdogProtocol.IsSupportedVersion(0) &&
                    !WatchdogProtocol.IsSupportedVersion(2) &&
-                   !WatchdogProtocol.IsSupportedVersion(4),
-                "v2/0/v4协议没有被严格拒绝");
+                   !WatchdogProtocol.IsSupportedVersion(3),
+                "v2/0/v3协议没有被严格拒绝");
 
-            foreach (var version in new[] { 0, 2, 4 })
+            foreach (var version in new[] { 0, 2, 3 })
             {
                 var message = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(
                     new WatchdogMessage
@@ -490,10 +490,10 @@ namespace AdaptiveControlTests
                 "MTTFTest.Watchdog.exe");
             Assert(File.Exists(sidecarPath), "测试输出目录缺少真实Sidecar：" + sidecarPath);
             // Use a fresh process and a fresh pipe for every version.  This
-            // proves that an invalid connection cannot poison a later v3
-            // connection, and does not accidentally accept v3 after the
+            // proves that an invalid connection cannot poison a later v4
+            // connection, and does not accidentally accept v4 after the
             // reader has already observed an invalid frame on the same pipe.
-            foreach (var version in new[] { 0, 2, 4, WatchdogProtocol.Version })
+            foreach (var version in new[] { 0, 2, 3, WatchdogProtocol.Version })
             {
                 var projectDirectory = Path.Combine(
                     Path.GetTempPath(),
@@ -570,7 +570,7 @@ namespace AdaptiveControlTests
                     }
                     else
                     {
-                        Assert(responseTask.Wait(5000), "真实Sidecar未返回v3 Attached");
+                Assert(responseTask.Wait(5000), "真实Sidecar未返回v4 Attached");
                         var response = WatchdogProtocol.Deserialize(responseTask.Result);
                         Assert(response != null &&
                                response.Type == WatchdogMessageType.Attached &&
@@ -579,7 +579,7 @@ namespace AdaptiveControlTests
                                response.SidecarProcessStartUtcTicks > 0 &&
                                response.SidecarInstanceNonce == launchNonce &&
                                response.InstanceNonce == launchNonce,
-                            "真实Sidecar未按v3返回完整Attached身份");
+                    "真实Sidecar未按v4返回完整Attached身份");
 
                         writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
                         {

@@ -625,6 +625,7 @@ namespace MTTFTest.Watchdog
         private int _manualStopEmergencyResent;
         private int _manualStopTakeoverStarted;
         private int _manualPauseSafetyTakeoverStarted;
+        private int _safetyHandoffStarted;
         private int _physicalStopConfirmed;
         private int _transitionActive;
         private int _operatorTransitionStopStarted;
@@ -1503,6 +1504,15 @@ namespace MTTFTest.Watchdog
                     PublishTerminal("ExpectedApplicationExit", message.Reason);
                     _stop.Cancel();
                     break;
+                case WatchdogMessageType.SafetyHandoffRequested:
+                    Record("SafetyHandoffRequested", message.SafetyHandoff?.HandoffId ?? message.Reason);
+                    WatchdogSafetyHandoffReceipt requested;
+                    if (WatchdogSafetyHandoffReceiptStore.TryRead(
+                            _args.JournalDirectory,
+                            _args.SessionId,
+                            out requested))
+                        BeginSafetyHandoff(requested);
+                    break;
                 case WatchdogMessageType.ShutdownExpected:
                     _journal.ManualStopRequested = true;
                     CancelAutomaticTakeover("ShutdownExpected");
@@ -1769,6 +1779,7 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     await Task.Delay(250, token).ConfigureAwait(false);
+                    if (ObserveDurableSafetyState()) continue;
                     if (!_attached) continue;
                     if (WatchdogRecoveryCommitMarker.TryRead(
                             _args.JournalDirectory,
@@ -2294,63 +2305,26 @@ namespace MTTFTest.Watchdog
             while (!IsTransitionOperatorStopInProgress() && !IsSessionRevoked() &&
                    DateTime.UtcNow < deadline && IsCurrentProcessAlive())
                 await Task.Delay(250).ConfigureAwait(false);
-            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
-            if (IsCurrentProcessAlive())
-            {
-                try
-                {
-                    using (var process = Process.GetProcessById(_journal.CurrentPid))
-                    {
-                        if (MatchesCurrentProcess(process))
-                        {
-                            await CaptureMiniDumpBeforeTerminationAsync(
-                                    process,
-                                    "ManualPauseSafety:" + reason)
-                                .ConfigureAwait(false);
-                            process.Kill();
-                            process.WaitForExit(5000);
-                            Record("ManualPauseOldProcessTerminated", reason);
-                        }
-                    }
-                }
-                catch (Exception ex) { Record("ManualPauseTerminationFailed", ex.Message); }
-            }
-            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
-            if (!LaunchIdleRestart("ManualPauseSafety:" + reason)) return;
-            PublishTerminal("ManualPauseIdleRestartLaunched", reason);
-            _stop.Cancel();
+            if (IsTransitionOperatorStopInProgress() ||
+                DurableStopOrPauseCompletionSupersedesTakeover()) return;
+            // An operator pause is never an automatic-resume authority.  Keep
+            // requesting the main process' single StopAll owner and wait for a
+            // durable Closing/handoff receipt; do not kill it or launch a UI.
+            Send(WatchdogMessageType.RequestStopAll,
+                "ManualPauseSafetyAwaitingDurableHandoff:" + reason,
+                _activeTakeoverCorrelationId);
+            Record("ManualPauseSafetyAwaitingDurableHandoff", reason);
         }
 
         private async Task ManualStopTakeoverAsync(string reason)
         {
-            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
-            if (IsCurrentProcessAlive())
-            {
-                try
-                {
-                    using (var process = Process.GetProcessById(_journal.CurrentPid))
-                    {
-                        if (WatchdogProcessIdentityPolicy.CanKillOldProcess(
-                                IsSessionRevoked(),
-                                manualStopRequested: true,
-                                MatchesCurrentProcess(process)))
-                        {
-                            await CaptureMiniDumpBeforeTerminationAsync(
-                                    process,
-                                    "ManualStopSafety:" + reason)
-                                .ConfigureAwait(false);
-                            process.Kill();
-                            process.WaitForExit(5000);
-                            Record("ManualStopOldProcessTerminated", reason);
-                        }
-                    }
-                }
-                catch (Exception ex) { Record("ManualStopTerminationFailed", ex.Message); }
-            }
-            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
-            if (!LaunchIdleRestart("ManualStopSafety:" + reason)) return;
-            PublishTerminal("ManualStopIdleRestartLaunched", reason);
-            _stop.Cancel();
+            await Task.Yield();
+            if (IsTransitionOperatorStopInProgress() ||
+                DurableStopOrPauseCompletionSupersedesTakeover()) return;
+            Send(WatchdogMessageType.RequestStopAll,
+                "ManualStopSafetyAwaitingDurableHandoff:" + reason,
+                Guid.NewGuid().ToString("N"));
+            Record("ManualStopSafetyAwaitingDurableHandoff", reason);
         }
 
         private bool LaunchIdleRestart(string reason)
@@ -3785,7 +3759,7 @@ namespace MTTFTest.Watchdog
                 // nonce or launch-only identity.
                 Send(new WatchdogMessage
                 {
-                    ProtocolVersion = 3,
+                    ProtocolVersion = WatchdogProtocol.Version,
                     Type = WatchdogMessageType.RecoveryAttemptFailedReceipt,
                     SessionId = _args.SessionId,
                     CorrelationId = strict.Receipt.RequestCorrelationId,
@@ -4113,13 +4087,240 @@ namespace MTTFTest.Watchdog
                 return WatchdogCloseFenceAction.TerminateSession;
             if (closing == null)
                 return WatchdogCloseFenceAction.None;
-            if (closing.State == WatchdogClosingTombstoneState.Terminal)
+            if (closing.IsSafetyTerminal)
                 return WatchdogCloseFenceAction.TerminateSession;
-            if (closing.State != WatchdogClosingTombstoneState.Closing)
+            if (closing.State != WatchdogClosingTombstoneState.Closing &&
+                closing.State != WatchdogClosingTombstoneState.Terminal)
                 return WatchdogCloseFenceAction.TerminateSession;
-            return activeConnection && currentProcessAlive
-                ? WatchdogCloseFenceAction.SuppressRelaunch
-                : WatchdogCloseFenceAction.TerminateSession;
+            // A v1/v2 Closing record is durable stop intent, not proof of
+            // completion.  Pipe loss or main exit must not turn intent into a
+            // false terminal; the sidecar waits for Terminal or safety handoff.
+            return WatchdogCloseFenceAction.SuppressRelaunch;
+        }
+
+        private bool ObserveDurableSafetyState()
+        {
+            WatchdogClosingTombstone closing;
+            WatchdogClosingTombstoneStore.TryRead(
+                _args.JournalDirectory,
+                _args.SessionId,
+                out closing);
+            if (closing != null)
+            {
+                ObserveClosingFence(closing);
+                if (closing.IsSafetyTerminal)
+                {
+                    Record("DurableClosingTerminalObserved",
+                        $"StateVersion={closing.StateVersion};SafetyStage={closing.EffectiveSafetyStage}");
+                    PublishTerminal("DurableClosingTerminalObserved", closing.TerminalReason);
+                    _stop.Cancel();
+                    return true;
+                }
+            }
+
+            WatchdogSafetyHandoffReceipt handoff;
+            if (WatchdogSafetyHandoffReceiptStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out handoff) &&
+                (closing == null ||
+                 closing.SessionGeneration == handoff.SessionGeneration &&
+                 closing.SessionLease == handoff.SessionLease))
+            {
+                BeginSafetyHandoff(handoff);
+                return true;
+            }
+
+            WatchdogManualPauseReceipt pause;
+            if (WatchdogManualPauseReceiptStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out pause) &&
+                (pause.Stage == WatchdogManualPauseStage.Completed ||
+                 pause.Stage == WatchdogManualPauseStage.Resumed))
+            {
+                CancelAutomaticTakeover("DurableManualPause" + pause.Stage);
+                Record("DurableManualPauseProgressObserved",
+                    $"Revision={pause.Revision};Stage={pause.Stage}");
+                return !_attached;
+            }
+            return false;
+        }
+
+        private bool DurableStopOrPauseCompletionSupersedesTakeover()
+        {
+            WatchdogClosingTombstone closing;
+            if (WatchdogClosingTombstoneStore.TryRead(
+                    _args.JournalDirectory, _args.SessionId, out closing))
+            {
+                ObserveClosingFence(closing);
+                return true;
+            }
+            WatchdogManualPauseReceipt pause;
+            return WatchdogManualPauseReceiptStore.TryRead(
+                       _args.JournalDirectory, _args.SessionId, out pause) &&
+                   (pause.Stage == WatchdogManualPauseStage.Completed ||
+                    pause.Stage == WatchdogManualPauseStage.Resumed);
+        }
+
+        private void BeginSafetyHandoff(WatchdogSafetyHandoffReceipt receipt)
+        {
+            if (receipt == null || !receipt.IsValidFor(_args.SessionId) ||
+                Interlocked.CompareExchange(ref _safetyHandoffStarted, 1, 0) != 0)
+                return;
+            CancelAutomaticTakeover("SafetyHandoffObserved");
+            _journal.ManualStopRequested = true;
+            _ = Task.Run(() => RunSafetyHandoffAsync(receipt.HandoffId, receipt.Nonce));
+        }
+
+        private async Task RunSafetyHandoffAsync(string handoffId, string nonce)
+        {
+            try
+            {
+                WatchdogSafetyHandoffReceipt receipt;
+                if (!TryReadExactSafetyHandoff(handoffId, nonce, out receipt)) return;
+                if (receipt.State == WatchdogSafetyHandoffState.Requested)
+                {
+                    receipt.State = WatchdogSafetyHandoffState.Accepted;
+                    receipt.SidecarProcessId = _sidecarProcessId;
+                    receipt.SidecarProcessStartUtcTicks = _sidecarProcessStartUtcTicks;
+                    receipt.Revision++;
+                    receipt.Detail = "SidecarAcceptedExactSafetyHandoff";
+                    WatchdogSafetyHandoffReceiptStore.WriteThrough(_args.JournalDirectory, receipt);
+                    SendSafetyHandoff(WatchdogMessageType.SafetyHandoffAccepted, receipt);
+                    Record("SafetyHandoffAccepted", $"HandoffId={handoffId};Revision={receipt.Revision}");
+                }
+
+                while (!_stop.IsCancellationRequested)
+                {
+                    if (!TryReadExactSafetyHandoff(handoffId, nonce, out receipt)) return;
+                    if (receipt.State == WatchdogSafetyHandoffState.Completed &&
+                        receipt.IsSafetyCompleted)
+                    {
+                        SendSafetyHandoff(WatchdogMessageType.SafetyHandoffCompleted, receipt);
+                        PublishTerminal("SafetyHandoffCompleted", receipt.Detail);
+                        _stop.Cancel();
+                        return;
+                    }
+
+                    while (IsCurrentProcessAlive() && !_stop.IsCancellationRequested)
+                        await Task.Delay(250).ConfigureAwait(false);
+                    if (_stop.IsCancellationRequested) return;
+
+                    if (receipt.State == WatchdogSafetyHandoffState.WorkerStarted &&
+                        ProbeProcessIdentity(
+                            receipt.WorkerProcessId,
+                            receipt.WorkerProcessStartUtcTicks) == DurableRelaunchProcessObservation.Alive)
+                    {
+                        await Task.Delay(250).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    Process worker = null;
+                    try
+                    {
+                        var executable = string.IsNullOrWhiteSpace(receipt.MainExecutablePath)
+                            ? _args.ExecutablePath
+                            : receipt.MainExecutablePath;
+                        var arguments = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "--watchdog-safety-shutdown {0} --handoff-id {1} --handoff-nonce {2} " +
+                            "--journal-directory {3}",
+                            Quote(_args.SessionId),
+                            Quote(handoffId),
+                            Quote(nonce),
+                            Quote(_args.JournalDirectory));
+                        worker = Process.Start(new ProcessStartInfo
+                        {
+                            FileName = executable,
+                            Arguments = arguments,
+                            WorkingDirectory = Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory,
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        });
+                        if (worker == null) throw new InvalidOperationException("SafetyWorkerStartReturnedNull");
+                        receipt.WorkerProcessId = worker.Id;
+                        receipt.WorkerProcessStartUtcTicks = worker.StartTime.ToUniversalTime().Ticks;
+                        receipt.AttemptCount++;
+                        receipt.State = WatchdogSafetyHandoffState.WorkerStarted;
+                        receipt.Revision++;
+                        receipt.Detail = "SafetyWorkerStarted";
+                        WatchdogSafetyHandoffReceiptStore.WriteThrough(_args.JournalDirectory, receipt);
+                        Record("SafetyHandoffWorkerStarted",
+                            $"PID={worker.Id};Attempt={receipt.AttemptCount};HandoffId={handoffId}");
+                        await Task.Run(() => worker.WaitForExit()).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        Record("SafetyHandoffWorkerFailed", ex.GetBaseException().Message);
+                    }
+                    finally
+                    {
+                        try { worker?.Dispose(); } catch { }
+                    }
+
+                    if (TryReadExactSafetyHandoff(handoffId, nonce, out receipt) &&
+                        receipt.State == WatchdogSafetyHandoffState.Completed &&
+                        receipt.IsSafetyCompleted)
+                        continue;
+                    var attempt = Math.Max(1, receipt?.AttemptCount ?? 1);
+                    var delay = attempt <= 1 ? 250 : attempt == 2 ? 1000 : 5000;
+                    await Task.Delay(delay).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Record("SafetyHandoffSupervisorFailed", ex.GetBaseException().Message);
+                Interlocked.Exchange(ref _safetyHandoffStarted, 0);
+            }
+        }
+
+        private bool TryReadExactSafetyHandoff(
+            string handoffId,
+            string nonce,
+            out WatchdogSafetyHandoffReceipt receipt)
+        {
+            if (!WatchdogSafetyHandoffReceiptStore.TryRead(
+                    _args.JournalDirectory, _args.SessionId, out receipt))
+                return false;
+            return string.Equals(receipt.HandoffId, handoffId, StringComparison.Ordinal) &&
+                   string.Equals(receipt.Nonce, nonce, StringComparison.Ordinal);
+        }
+
+        private void SendSafetyHandoff(string type, WatchdogSafetyHandoffReceipt receipt)
+        {
+            if (receipt == null) return;
+            Send(new WatchdogMessage
+            {
+                Type = type,
+                SessionId = _args.SessionId,
+                CorrelationId = receipt.HandoffId,
+                SafetyHandoff = new WatchdogSafetyHandoff
+                {
+                    SessionId = receipt.SessionId,
+                    SessionGeneration = receipt.SessionGeneration,
+                    SessionLease = receipt.SessionLease,
+                    HandoffId = receipt.HandoffId,
+                    Nonce = receipt.Nonce,
+                    StopSafetyTransactionId = receipt.StopSafetyTransactionId,
+                    RunId = receipt.RunId,
+                    RunEpoch = receipt.RunEpoch,
+                    SidecarProcessId = receipt.SidecarProcessId,
+                    SidecarProcessStartUtcTicks = receipt.SidecarProcessStartUtcTicks,
+                    WorkerProcessId = receipt.WorkerProcessId,
+                    WorkerProcessStartUtcTicks = receipt.WorkerProcessStartUtcTicks,
+                    MotorsOff = receipt.MotorsOff,
+                    PowerOff = receipt.PowerOff,
+                    PressureSafe = receipt.PressureSafe,
+                    PersistenceDrained = receipt.PersistenceDrained,
+                    LogicalQuiescent = receipt.LogicalQuiescent,
+                    HardwareResourcesReleased = receipt.HardwareResourcesReleased,
+                    ExecutionAuthorizationRevoked = receipt.ExecutionAuthorizationRevoked,
+                    CallbacksIsolated = receipt.CallbacksIsolated,
+                    TimestampUtcTicks = receipt.UpdatedUtcTicks
+                }
+            });
         }
 
         private WatchdogCloseFenceAction CaptureCloseFenceAction(

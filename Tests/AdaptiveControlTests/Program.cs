@@ -118,6 +118,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-safety-v39", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogSafetyClosureV39Tests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--stop-production-seam", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += StopSafetyProductionSeamTests.RunProductionAcceptance();
@@ -483,6 +490,7 @@ namespace AdaptiveControlTests
                 _passed += PowerSupplyTelemetryRecorderTests.RunAll();
                 _passed += HistoricalStorageBudgetTests.RunAll();
                 _passed += WatchdogJournalStorageTests.RunAll();
+                _passed += WatchdogSafetyClosureV39Tests.RunAll();
                 _passed += RecoveryFailureReceiptProtocolTests.RunAll();
                 _passed += WatchdogHostIntegrationTests.RunAll();
                 _passed += FieldWaveformReplayTests.RunAll();

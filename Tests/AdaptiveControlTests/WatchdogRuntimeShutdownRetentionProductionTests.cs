@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Controller;
 using MTEmbTest;
 using MTTFTest.Watchdog.Protocol;
 
@@ -160,6 +161,23 @@ namespace AdaptiveControlTests
 
                     WatchdogRuntime.NotifyPhysicalStopConfirmed(
                         $"RuntimeClosingFenceRound{round}");
+                    Assert(WatchdogRuntime.AdvanceSessionCloseSafety(
+                            context,
+                            new StopSafetyResult
+                            {
+                                Outcome = StopSafetyOutcome.CompletedSafe,
+                                LastStage = StopSafetyStage.Completed,
+                                SafetyTransactionId = transactionId,
+                                RunId = currentRunId,
+                                RunEpoch = round,
+                                SafetyBoundaryGeneration = round,
+                                MotorOffCommandSucceeded = true,
+                                PowerOffConfirmed = true,
+                                PressureSafeConfirmed = true,
+                                PersistenceBoundaryConfirmed = true,
+                                LogicalQuiescenceConfirmed = true
+                            }),
+                        $"第{round}轮未能推进v2完整安全证明");
                     WatchdogRuntime.NotifyStopCompleted(
                         new WatchdogStopSummary
                         {
@@ -195,7 +213,7 @@ namespace AdaptiveControlTests
                                context.SessionId,
                                out var tombstone) &&
                            tombstone.State == WatchdogClosingTombstoneState.Terminal &&
-                           tombstone.StateVersion == 2 &&
+                           tombstone.StateVersion == 3 &&
                            string.Equals(
                                tombstone.StopSafetyTransactionId,
                                transactionId.ToString("N"),
@@ -204,7 +222,7 @@ namespace AdaptiveControlTests
                                tombstone.StopRunId,
                                currentRunId.ToString("N"),
                                StringComparison.OrdinalIgnoreCase),
-                        $"第{round}轮Closing tombstone未从v1推进至Terminal v2");
+                        $"第{round}轮Closing tombstone未从ClosingIntent推进至schema v2 Terminal");
                     Assert(WatchdogControlMarker.IsRevoked(journal, context.SessionId),
                         $"第{round}轮Terminal后未发布legacy兼容撤权");
                 }

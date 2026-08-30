@@ -298,6 +298,18 @@ namespace MTTFTest.Watchdog.Protocol
         public static string ProjectClosingPath(string directory, string sessionId) => Path.Combine(
             ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".closing.json");
 
+        public static string LocalManualPausePath(string sessionId) => Path.Combine(
+            LocalControlDirectory, "session-" + SafeName(sessionId) + ".manual-pause.json");
+
+        public static string ProjectManualPausePath(string directory, string sessionId) => Path.Combine(
+            ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".manual-pause.json");
+
+        public static string LocalSafetyHandoffPath(string sessionId) => Path.Combine(
+            LocalControlDirectory, "session-" + SafeName(sessionId) + ".safety-handoff.json");
+
+        public static string ProjectSafetyHandoffPath(string directory, string sessionId) => Path.Combine(
+            ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".safety-handoff.json");
+
         public static string LocalRecoveryCommitPath(string sessionId) => Path.Combine(
             LocalControlDirectory, "session-" + SafeName(sessionId) + ".recovery-committed");
 
@@ -370,6 +382,8 @@ namespace MTTFTest.Watchdog.Protocol
                 var files = directory.GetFiles("session-*.revoked", SearchOption.TopDirectoryOnly)
                     .Concat(directory.GetFiles("session-*.recovery-committed", SearchOption.TopDirectoryOnly))
                     .Concat(directory.GetFiles("session-*.closing.json", SearchOption.TopDirectoryOnly))
+                    .Concat(directory.GetFiles("session-*.manual-pause.json", SearchOption.TopDirectoryOnly))
+                    .Concat(directory.GetFiles("session-*.safety-handoff.json", SearchOption.TopDirectoryOnly))
                     .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
                     .OrderBy(file => file.LastWriteTimeUtc).ToList();
                 foreach (var file in files.Where(file => file.LastWriteTimeUtc < cutoff).ToArray())
@@ -698,7 +712,7 @@ namespace MTTFTest.Watchdog.Protocol
         private const int ErrorArchiveCount = 1;
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private static readonly Regex OwnedFile = new Regex(
-            @"^session-(?<id>[0-9a-f]{32})\.(json|bootstrap\.json|bootstrap-outcome-\d+\.json|relaunch\.json|lease\.json|manifest\.json|closing\.json|revoked|recovery-committed|sidecar-events(?:\.\d+)?\.jsonl|client-events(?:\.\d+)?\.jsonl|errors(?:\.\d+)?\.log)$",
+            @"^session-(?<id>[0-9a-f]{32})\.(json|bootstrap\.json|bootstrap-outcome-\d+\.json|relaunch\.json|lease\.json|manifest\.json|closing\.json|manual-pause\.json|safety-handoff\.json|revoked|recovery-committed|sidecar-events(?:\.\d+)?\.jsonl|client-events(?:\.\d+)?\.jsonl|errors(?:\.\d+)?\.log)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         private readonly object _gate = new object();

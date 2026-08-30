@@ -8,6 +8,14 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTTFTest.Watchdog.Client
 {
+    public enum ExactSessionClosingResult
+    {
+        Marked = 0,
+        ExactSessionDetached = 1,
+        NoEngineSession = 2,
+        IdentityMismatch = 3
+    }
+
     /// <summary>
     /// Controls whether a client is allowed to create a new sidecar when the
     /// first pipe connection is unavailable.  The normal initial-session

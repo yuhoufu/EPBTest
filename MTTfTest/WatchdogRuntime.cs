@@ -8,6 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Controller;
 using MTTFTest.Watchdog.Client;
 using MTTFTest.Watchdog.Protocol;
 
@@ -1831,6 +1832,54 @@ namespace MTEmbTest
             context?.State.HeartbeatSource.Set(provider);
         }
 
+        internal static bool PersistManualPauseProgress(ManualPauseProgressSnapshot snapshot)
+        {
+            if (snapshot == null || snapshot.ProgressVersion <= 0) return false;
+            RuntimeTransportSessionContext context;
+            lock (Gate) context = _activeContext;
+            if (context == null || context.SessionLease <= 0) return false;
+            try
+            {
+                var receipt = new WatchdogManualPauseReceipt
+                {
+                    SessionId = context.SessionId,
+                    SessionGeneration = context.SessionGeneration,
+                    SessionLease = context.SessionLease,
+                    RunId = snapshot.RunId == Guid.Empty ? string.Empty : snapshot.RunId.ToString("N"),
+                    RunEpoch = snapshot.RunEpoch,
+                    PauseCommandId = snapshot.PauseCommandId == Guid.Empty
+                        ? string.Empty
+                        : snapshot.PauseCommandId.ToString("N"),
+                    Revision = snapshot.ProgressVersion,
+                    Stage = (WatchdogManualPauseStage)(int)snapshot.Stage,
+                    Channels = snapshot.Channels?.ToArray() ?? Array.Empty<int>(),
+                    EnergizedChannels = snapshot.EnergizedChannels?.ToArray() ?? Array.Empty<int>(),
+                    MotorsOff = snapshot.MotorsOff,
+                    PowerOff = snapshot.PowerOff,
+                    PressureSafe = snapshot.PressureSafe,
+                    PersistenceDrained = snapshot.PersistenceDrained,
+                    SafetyFault = snapshot.SafetyFault,
+                    Detail = snapshot.Detail ?? string.Empty,
+                    StartedUtcTicks = snapshot.StartedUtc.Ticks,
+                    HardDeadlineUtcTicks = snapshot.HardDeadlineUtc.Ticks
+                };
+                WatchdogManualPauseReceiptStore.WriteThrough(
+                    context.JournalDirectory,
+                    receipt);
+                RecordClientEvent(
+                    context,
+                    "ManualPauseProgressDurable",
+                    $"Revision={receipt.Revision};Stage={receipt.Stage};Run={receipt.RunId}/{receipt.RunEpoch}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                RecordClientEvent(context, "ManualPauseProgressPersistenceFailed", ex.GetBaseException().Message);
+                RaiseTransportError(context, "ManualPauseProgressPersistenceFailed", ex.GetBaseException().Message);
+                return false;
+            }
+        }
+
         private static WatchdogHeartbeat CaptureHeartbeat(RuntimeTransportSessionContext context)
         {
             WatchdogHeartbeat heartbeat = null;
@@ -2366,6 +2415,128 @@ namespace MTEmbTest
             });
         }
 
+        internal static WatchdogSafetyHandoffReceipt RequestSafetyHandoff(
+            RuntimeTransportSessionContext context,
+            StopSafetyResult safety,
+            bool hardwareResourcesReleased)
+        {
+            if (context == null || context.SessionLease <= 0 || safety == null ||
+                safety.SafetyTransactionId == Guid.Empty || !safety.PersistenceBoundaryConfirmed ||
+                !hardwareResourcesReleased ||
+                Volatile.Read(ref context.State.SessionClosing) == 0 ||
+                (context.PipelineState != RuntimeCallbackPipelineState.Closing &&
+                 context.PipelineState != RuntimeCallbackPipelineState.Terminal))
+                return null;
+            try
+            {
+                WatchdogSafetyHandoffReceipt existing;
+                if (WatchdogSafetyHandoffReceiptStore.TryRead(
+                        context.JournalDirectory, context.SessionId, out existing))
+                {
+                    if (existing.SessionGeneration == context.SessionGeneration &&
+                        existing.SessionLease == context.SessionLease &&
+                        string.Equals(existing.StopSafetyTransactionId,
+                            safety.SafetyTransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase))
+                        return existing;
+                    return null;
+                }
+                var receipt = new WatchdogSafetyHandoffReceipt
+                {
+                    SessionId = context.SessionId,
+                    SessionGeneration = context.SessionGeneration,
+                    SessionLease = context.SessionLease,
+                    HandoffId = Guid.NewGuid().ToString("N"),
+                    Nonce = Guid.NewGuid().ToString("N"),
+                    StopSafetyTransactionId = safety.SafetyTransactionId.ToString("N"),
+                    RunId = safety.RunId == Guid.Empty ? string.Empty : safety.RunId.ToString("N"),
+                    RunEpoch = safety.RunEpoch,
+                    Revision = 1,
+                    State = WatchdogSafetyHandoffState.Requested,
+                    MotorsOff = safety.MotorOffCommandSucceeded,
+                    PowerOff = safety.PowerOffConfirmed,
+                    PressureSafe = safety.PressureSafeConfirmed,
+                    PersistenceDrained = safety.PersistenceBoundaryConfirmed,
+                    LogicalQuiescent = safety.LogicalQuiescenceConfirmed,
+                    HardwareResourcesReleased = hardwareResourcesReleased,
+                    ExecutionAuthorizationRevoked = true,
+                    CallbacksIsolated = true,
+                    ProjectDirectory = ResolveProjectDirectory(context.JournalDirectory),
+                    MainExecutablePath = context.MainExecutablePath,
+                    Detail = "MainProcessRequestedBoundedSafetyHandoff"
+                };
+                WatchdogSafetyHandoffReceiptStore.WriteThrough(context.JournalDirectory, receipt);
+                WatchdogClosingTombstone closing;
+                if (WatchdogClosingTombstoneStore.TryRead(
+                        context.JournalDirectory, context.SessionId, out closing) &&
+                    IsExactClosingTombstoneIdentity(context, closing))
+                {
+                    closing.SafetyHandoffId = receipt.HandoffId;
+                    closing.SafetyOwner = "SafetyHandoff";
+                    closing.StateVersion++;
+                    WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, closing);
+                }
+                Send(context, new WatchdogMessage
+                {
+                    Type = WatchdogMessageType.SafetyHandoffRequested,
+                    SessionId = context.SessionId,
+                    CorrelationId = receipt.HandoffId,
+                    SafetyHandoff = ToWireSafetyHandoff(receipt)
+                });
+                RecordClientEvent(context, "SafetyHandoffRequested",
+                    $"HandoffId={receipt.HandoffId};Revision={receipt.Revision}");
+                FlushClientJournal(context);
+                return receipt;
+            }
+            catch (Exception ex)
+            {
+                RecordClientEvent(context, "SafetyHandoffRequestFailed", ex.GetBaseException().Message);
+                return null;
+            }
+        }
+
+        private static WatchdogSafetyHandoff ToWireSafetyHandoff(
+            WatchdogSafetyHandoffReceipt receipt)
+        {
+            return receipt == null ? null : new WatchdogSafetyHandoff
+            {
+                SessionId = receipt.SessionId,
+                SessionGeneration = receipt.SessionGeneration,
+                SessionLease = receipt.SessionLease,
+                HandoffId = receipt.HandoffId,
+                Nonce = receipt.Nonce,
+                StopSafetyTransactionId = receipt.StopSafetyTransactionId,
+                RunId = receipt.RunId,
+                RunEpoch = receipt.RunEpoch,
+                SidecarProcessId = receipt.SidecarProcessId,
+                SidecarProcessStartUtcTicks = receipt.SidecarProcessStartUtcTicks,
+                WorkerProcessId = receipt.WorkerProcessId,
+                WorkerProcessStartUtcTicks = receipt.WorkerProcessStartUtcTicks,
+                MotorsOff = receipt.MotorsOff,
+                PowerOff = receipt.PowerOff,
+                PressureSafe = receipt.PressureSafe,
+                PersistenceDrained = receipt.PersistenceDrained,
+                LogicalQuiescent = receipt.LogicalQuiescent,
+                HardwareResourcesReleased = receipt.HardwareResourcesReleased,
+                ExecutionAuthorizationRevoked = receipt.ExecutionAuthorizationRevoked,
+                CallbacksIsolated = receipt.CallbacksIsolated,
+                TimestampUtcTicks = receipt.UpdatedUtcTicks
+            };
+        }
+
+        private static string ResolveProjectDirectory(string journalDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(journalDirectory)) return string.Empty;
+            try
+            {
+                var resolved = Path.GetFullPath(journalDirectory);
+                return string.Equals(Path.GetFileName(resolved), "WatchdogSessions",
+                        StringComparison.OrdinalIgnoreCase)
+                    ? Directory.GetParent(resolved)?.FullName ?? resolved
+                    : resolved;
+            }
+            catch { return string.Empty; }
+        }
+
         internal static void NotifyRunCompleted()
         {
             var context = CaptureContext();
@@ -2536,11 +2707,16 @@ namespace MTEmbTest
             var validation = ValidateExactClosingIdentity(context);
             if (validation != RuntimeShutdownMarkOutcome.Marked)
                 return validation;
-            if (TransportEngine.TryMarkSessionClosing(
+            var mark = TransportEngine.TryMarkSessionClosingExact(
                 context.SessionId,
                 context.SessionGeneration,
-                context.SessionLease))
+                context.SessionLease);
+            if (mark == ExactSessionClosingResult.Marked)
                 return RuntimeShutdownMarkOutcome.Marked;
+            if (mark == ExactSessionClosingResult.ExactSessionDetached)
+                return RuntimeShutdownMarkOutcome.ExactSessionDetached;
+            if (mark == ExactSessionClosingResult.IdentityMismatch)
+                return RuntimeShutdownMarkOutcome.IdentityMismatch;
 
             // The Engine may have detached between the stable capture and
             // the mark CAS.  Re-read its immutable snapshot to distinguish a
@@ -2573,7 +2749,9 @@ namespace MTEmbTest
                 snapshot.SessionGeneration != context.SessionGeneration ||
                 !string.Equals(snapshot.SessionId, context.SessionId, StringComparison.Ordinal))
                 return RuntimeShutdownMarkOutcome.IdentityMismatch;
-            return RuntimeShutdownMarkOutcome.Marked;
+            return snapshot.ActiveConnectionGeneration == 0
+                ? RuntimeShutdownMarkOutcome.ExactSessionDetached
+                : RuntimeShutdownMarkOutcome.Marked;
         }
 
         internal static RuntimeSessionCloseFenceReceipt BeginSessionCloseExact(
@@ -2660,6 +2838,7 @@ namespace MTEmbTest
             const long version = 1;
             var tombstone = new WatchdogClosingTombstone
             {
+                SchemaVersion = 2,
                 SessionId = context.SessionId,
                 SessionGeneration = context.SessionGeneration,
                 SessionLease = context.SessionLease,
@@ -2678,6 +2857,8 @@ namespace MTEmbTest
                     : previous?.StopSafetyBoundaryGeneration ?? 0,
                 StateVersion = version,
                 State = WatchdogClosingTombstoneState.Closing,
+                SafetyStage = WatchdogClosingSafetyStage.ClosingIntent,
+                SafetyOwner = "MainProcess",
                 TerminalReason = closeIntent ?? string.Empty
             };
 
@@ -2730,8 +2911,12 @@ namespace MTEmbTest
                     existing.SessionLease != context.SessionLease)
                     return false;
                 if (existing.State == WatchdogClosingTombstoneState.Terminal)
-                    return true;
+                    return existing.IsSafetyTerminal;
+                if (!existing.MotorsOff || !existing.PowerOff || !existing.PressureSafe ||
+                    !existing.PersistenceDrained || !existing.LogicalQuiescent)
+                    return false;
                 existing.State = WatchdogClosingTombstoneState.Terminal;
+                existing.SafetyStage = WatchdogClosingSafetyStage.Terminal;
                 existing.StateVersion = Math.Max(1, existing.StateVersion + 1);
                 existing.TerminalReason = terminalReason ?? "RuntimeShutdownTerminal";
                 WatchdogClosingTombstoneStore.WriteThrough(
@@ -2740,6 +2925,88 @@ namespace MTEmbTest
                 WriteSessionRevocationMarker(
                     context,
                     existing.TerminalReason);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        internal static bool AdvanceSessionCloseSafety(
+            RuntimeTransportSessionContext context,
+            StopSafetyProgressSnapshot progress)
+        {
+            if (context == null || progress == null || progress.TransactionId == Guid.Empty)
+                return false;
+            try
+            {
+                WatchdogClosingTombstone existing;
+                if (!WatchdogClosingTombstoneStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out existing) ||
+                    !IsExactClosingTombstoneIdentity(context, existing) ||
+                    !string.Equals(existing.StopSafetyTransactionId,
+                        progress.TransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                var next = existing.SafetyStage;
+                if (progress.PhysicalSafe)
+                {
+                    next = WatchdogClosingSafetyStage.PhysicalSafe;
+                    existing.MotorsOff = true;
+                    existing.PowerOff = true;
+                }
+                if (progress.Stage >= StopSafetyStage.ClosePersistenceBoundary)
+                {
+                    next = WatchdogClosingSafetyStage.DataDrained;
+                    existing.PersistenceDrained = true;
+                }
+                if (progress.Stage >= StopSafetyStage.Completed)
+                {
+                    next = WatchdogClosingSafetyStage.LogicalQuiescent;
+                    existing.LogicalQuiescent = true;
+                }
+                if (next <= existing.SafetyStage) return true;
+                existing.SafetyStage = next;
+                existing.StateVersion++;
+                existing.TerminalReason = progress.Detail ?? existing.TerminalReason;
+                WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, existing);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        internal static bool AdvanceSessionCloseSafety(
+            RuntimeTransportSessionContext context,
+            StopSafetyResult result)
+        {
+            if (context == null || result == null || result.SafetyTransactionId == Guid.Empty)
+                return false;
+            try
+            {
+                WatchdogClosingTombstone existing;
+                if (!WatchdogClosingTombstoneStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out existing) ||
+                    !IsExactClosingTombstoneIdentity(context, existing) ||
+                    !string.Equals(existing.StopSafetyTransactionId,
+                        result.SafetyTransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                existing.MotorsOff = result.MotorOffCommandSucceeded;
+                existing.PowerOff = result.PowerOffConfirmed;
+                existing.PressureSafe = result.PressureSafeConfirmed;
+                existing.PersistenceDrained = result.PersistenceBoundaryConfirmed;
+                existing.LogicalQuiescent = result.LogicalQuiescenceConfirmed;
+                existing.DataContinuityVerified = !result.DataContinuityCompromised;
+                existing.SafetyStage = result.LogicalQuiescenceConfirmed
+                    ? WatchdogClosingSafetyStage.LogicalQuiescent
+                    : result.PersistenceBoundaryConfirmed
+                        ? WatchdogClosingSafetyStage.DataDrained
+                        : result.PhysicalSafetyConfirmed
+                            ? WatchdogClosingSafetyStage.PhysicalSafe
+                            : WatchdogClosingSafetyStage.ClosingIntent;
+                existing.StateVersion++;
+                existing.TerminalReason = result.Outcome + ":" + (result.StageError ?? string.Empty);
+                WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, existing);
                 return true;
             }
             catch { return false; }

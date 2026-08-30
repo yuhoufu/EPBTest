@@ -13,9 +13,10 @@ namespace MTEmbTest
     internal enum RuntimeShutdownMarkOutcome
     {
         Marked = 0,
-        NoEngineSession = 1,
-        IdentityMismatch = 2,
-        TombstonePersistenceFailed = 3
+        ExactSessionDetached = 1,
+        NoEngineSession = 2,
+        IdentityMismatch = 3,
+        TombstonePersistenceFailed = 4
     }
 
     internal enum RuntimeShutdownIntent

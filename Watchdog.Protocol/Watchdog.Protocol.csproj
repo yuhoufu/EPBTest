@@ -39,6 +39,7 @@
     <Compile Include="WatchdogJournalBootstrap.cs" />
     <Compile Include="WatchdogJournalStorage.cs" />
     <Compile Include="WatchdogClosingTombstone.cs" />
+    <Compile Include="WatchdogSafetyReceipts.cs" />
     <Compile Include="RecoveryBootstrapOutcome.cs" />
     <Compile Include="DurableJsonFileStore.cs" />
     <Compile Include="DurableRelaunchFileStore.cs" />

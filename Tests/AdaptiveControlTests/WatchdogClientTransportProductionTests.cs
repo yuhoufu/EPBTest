@@ -90,6 +90,8 @@ namespace AdaptiveControlTests
             }
             Run("生产Engine写失败按精确connection单次断开/重连",
                 WriteFailureBreaksExactConnectionAndReconnects, ref passed);
+            Run("生产Engine注入600/750/1000ms写阻塞后精确重连并立即发布快照",
+                InjectedWriteTimeoutReconnectsExactScope, ref passed);
             Run("生产Engine CaptureHeartbeat一次失败不触发重连",
                 HeartbeatCaptureFailureDoesNotReconnect, ref passed);
             return passed;
@@ -98,7 +100,7 @@ namespace AdaptiveControlTests
         internal static int RunPublicFailClosedAttachedOnly()
         {
             var passed = 0;
-            Run("生产Engine public v0/v2/v4 ProtocolRejected sticky",
+            Run("生产Engine public v0/v2/v3 ProtocolRejected sticky",
                 StickyTransportFailureIsTerminalUntilNewBegin, ref passed);
             Run("生产Engine public Host消息 SessionRevoked",
                 PublicHostMessageRevokesSession, ref passed);
@@ -108,7 +110,7 @@ namespace AdaptiveControlTests
                 PublicHandshakeTimeoutIsStickyFailClosed, ref passed);
             Run("生产Engine public reconnect后迟到old Attached不污染authority",
                 PublicDelayedOldAttachedDoesNotPolluteReconnect, ref passed);
-            Run("生产Engine public v3 malformed/late Attached IdentityRejected",
+            Run("生产Engine public v4 malformed/late Attached IdentityRejected",
                 InvalidAttachedEvidenceDoesNotMutateIdentity, ref passed);
             return passed;
         }
@@ -126,7 +128,35 @@ namespace AdaptiveControlTests
                 PublicDelayedOldAttachedDoesNotPolluteReconnect, ref passed);
             Run("生产Engine public heartbeat/monitor/reconnect cadence",
                 HeartbeatMonitorAndReconnectCadence, ref passed);
+            Run("生产Engine精确会话断管后返回ExactSessionDetached且ABA仍拒绝",
+                ExactSessionDetachedIsDistinctFromIdentityMismatch, ref passed);
             return passed;
+        }
+
+        private static void ExactSessionDetachedIsDistinctFromIdentityMismatch()
+        {
+            using (var harness = TestHarness.Create(LaunchMode.Success))
+            {
+                harness.Engine.BeginSession(harness.Options, harness.Callbacks);
+                Assert(harness.Engine.StartAsync().Wait(15000), "ExactDetached前置Attach失败");
+                var attached = harness.Snapshot();
+                harness.Factory.Disable();
+                harness.StopListening();
+                harness.CloseCurrentConnection();
+                Assert(WaitUntil(() => harness.Snapshot().ActiveConnectionGeneration == 0, 5000),
+                    "断管后精确connection未清除");
+                var exact = harness.Engine.TryMarkSessionClosingExact(
+                    attached.SessionId,
+                    attached.SessionGeneration,
+                    attached.ActiveSessionLease);
+                var aba = harness.Engine.TryMarkSessionClosingExact(
+                    attached.SessionId,
+                    attached.SessionGeneration,
+                    attached.ActiveSessionLease + 1);
+                Assert(exact == ExactSessionClosingResult.ExactSessionDetached &&
+                       aba == ExactSessionClosingResult.IdentityMismatch,
+                    "精确断开与ABA身份冲突未分离：exact=" + exact + ";aba=" + aba);
+            }
         }
 
         internal static int RunPublicRecoveryPolicyOnly()
@@ -890,7 +920,7 @@ namespace AdaptiveControlTests
             {
                 AttachedMutation.ProtocolV0,
                 AttachedMutation.ProtocolV2,
-                AttachedMutation.ProtocolV4
+                AttachedMutation.ProtocolV3
             };
             foreach (var mutation in protocolMutations)
             {
@@ -1213,7 +1243,7 @@ namespace AdaptiveControlTests
             {
                 case AttachedMutation.ProtocolV0: return 0;
                 case AttachedMutation.ProtocolV2: return 2;
-                case AttachedMutation.ProtocolV4: return 4;
+                case AttachedMutation.ProtocolV3: return 3;
                 default: return WatchdogProtocol.Version;
             }
         }
@@ -3088,6 +3118,57 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void InjectedWriteTimeoutReconnectsExactScope()
+        {
+            foreach (var delayMs in new[] { 600, 750, 1000 })
+            {
+                var writePort = new DelayOnceWritePort();
+                using (var harness = TestHarness.Create(LaunchMode.Success, writePort))
+                {
+                    var label = "injected-write-timeout-" + delayMs;
+                    harness.Engine.BeginSession(
+                        harness.Options,
+                        harness.CreateCallbacks(harness.Options, label));
+                    Assert(harness.Engine.StartAsync().Wait(15000),
+                        label + " 前置Attach失败");
+                    var before = harness.Snapshot();
+                    var stateBoundary = harness.MarkStateBoundary();
+                    harness.ArmForNextServer();
+                    writePort.Arm(delayMs);
+                    Assert(!harness.Engine.Send(new WatchdogMessage
+                    {
+                        ProtocolVersion = WatchdogProtocol.Version,
+                        Type = WatchdogMessageType.RunStopped,
+                        SessionId = before.SessionId,
+                        Reason = label
+                    }), label + " 写入超时未返回失败");
+                    Assert(WaitUntil(
+                            () =>
+                            {
+                                var current = harness.Snapshot();
+                                return current.IsAttached &&
+                                       current.ActiveConnectionGeneration >
+                                       before.ActiveConnectionGeneration;
+                            },
+                            15000),
+                        label + " 未恢复同一Authority的精确连接");
+                    var after = harness.Snapshot();
+                    var events = harness.StateEventsAfter(stateBoundary)
+                        .Where(item => item?.Snapshot != null &&
+                                       item.Snapshot.ActiveSessionLease == before.ActiveSessionLease)
+                        .Select(item => item.EventType)
+                        .ToArray();
+                    Assert(after.AuthorityProcessId == before.AuthorityProcessId &&
+                           after.AuthorityProcessStartUtcTicks == before.AuthorityProcessStartUtcTicks &&
+                           harness.TransportLostCallbackCount == 1 &&
+                           events.Count(item => item == "ReconnectStarted") == 1 &&
+                           events.Count(item => item == "Reconnected") == 1 &&
+                           events.Count(item => item == "ImmediateStateSnapshot") == 1,
+                        label + " 生命周期不完整或重复：" + string.Join(",", events));
+                }
+            }
+        }
+
         private static void HeartbeatCaptureFailureDoesNotReconnect()
         {
             using (var harness = TestHarness.Create(LaunchMode.Success))
@@ -3306,12 +3387,30 @@ namespace AdaptiveControlTests
             NonCooperativeCancel
         }
 
+        private sealed class DelayOnceWritePort : IWatchdogPipeWritePort
+        {
+            private int _delayMs;
+
+            internal void Arm(int delayMs)
+            {
+                Volatile.Write(ref _delayMs, delayMs);
+            }
+
+            public Task WriteLineAsync(StreamWriter writer, string payload)
+            {
+                var delay = Interlocked.Exchange(ref _delayMs, 0);
+                return delay > 0
+                    ? Task.Delay(delay)
+                    : writer.WriteLineAsync(payload);
+            }
+        }
+
         private enum AttachedMutation
         {
             Valid,
             ProtocolV0,
             ProtocolV2,
-            ProtocolV4,
+            ProtocolV3,
             NoAttachedResponse,
             MissingSessionId,
             MissingAuthoritySessionId,
@@ -3349,7 +3448,8 @@ namespace AdaptiveControlTests
 
             private TestHarness(
                 LaunchMode mode,
-                AttachedMutation mutation = AttachedMutation.Valid)
+                AttachedMutation mutation = AttachedMutation.Valid,
+                IWatchdogPipeWritePort writePort = null)
             {
                 _journalDirectory = Path.Combine(
                     Path.GetTempPath(),
@@ -3358,7 +3458,7 @@ namespace AdaptiveControlTests
                 Factory = new GatePipeFactory();
                 _server = new PipeServer(Factory, mutation);
                 Launcher = new ControlledLauncher(mode, _server);
-                Engine = new WatchdogClientTransportEngine(Launcher, Factory);
+                Engine = new WatchdogClientTransportEngine(Launcher, Factory, writePort);
                 Engine.StateChanged += notification =>
                 {
                     lock (_eventGate) _stateEvents.Add(notification);
@@ -3404,6 +3504,13 @@ namespace AdaptiveControlTests
                 AttachedMutation mutation)
             {
                 return new TestHarness(mode, mutation);
+            }
+
+            internal static TestHarness Create(
+                LaunchMode mode,
+                IWatchdogPipeWritePort writePort)
+            {
+                return new TestHarness(mode, AttachedMutation.Valid, writePort);
             }
 
             internal WatchdogClientTransportSnapshot Snapshot() => Engine.CaptureSnapshot();
@@ -4548,8 +4655,8 @@ namespace AdaptiveControlTests
                     case AttachedMutation.ProtocolV2:
                         response.ProtocolVersion = 2;
                         break;
-                    case AttachedMutation.ProtocolV4:
-                        response.ProtocolVersion = 4;
+                    case AttachedMutation.ProtocolV3:
+                        response.ProtocolVersion = 3;
                         break;
                     case AttachedMutation.MissingSessionId:
                         response.SessionId = null;

@@ -239,7 +239,8 @@ namespace Controller
         PhysicalOffConfirm = 2,
         PersistenceDrain = 3,
         Completed = 4,
-        SafetyFault = 5
+        SafetyFault = 5,
+        Resumed = 6
     }
 
     /// <summary>供主界面与独立 Watchdog 共同使用的人工暂停权威进展。</summary>
@@ -255,6 +256,13 @@ namespace Controller
         public int[] EnergizedChannels { get; set; } = Array.Empty<int>();
         public bool SafetyFault { get; set; }
         public string Detail { get; set; } = string.Empty;
+        public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public Guid PauseCommandId { get; set; }
+        public bool MotorsOff { get; set; }
+        public bool PowerOff { get; set; }
+        public bool PressureSafe { get; set; }
+        public bool PersistenceDrained { get; set; }
 
         public ManualPauseProgressSnapshot Clone() => new ManualPauseProgressSnapshot
         {
@@ -267,7 +275,14 @@ namespace Controller
             Channels = Channels?.ToArray() ?? Array.Empty<int>(),
             EnergizedChannels = EnergizedChannels?.ToArray() ?? Array.Empty<int>(),
             SafetyFault = SafetyFault,
-            Detail = Detail ?? string.Empty
+            Detail = Detail ?? string.Empty,
+            RunId = RunId,
+            RunEpoch = RunEpoch,
+            PauseCommandId = PauseCommandId,
+            MotorsOff = MotorsOff,
+            PowerOff = PowerOff,
+            PressureSafe = PressureSafe,
+            PersistenceDrained = PersistenceDrained
         };
     }
 

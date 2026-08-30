@@ -96,10 +96,10 @@ namespace AdaptiveControlTests
             Run("CAS压力1000次无回退", CasStress1000, ref passed);
             Run("不同session serializer隔离", DifferentSessionsIsolation, ref passed);
             Run("大小写目录别名共享authority mutex", CaseInsensitivePathAlias, ref passed);
-            Run("协议exact v3/外层身份/nonce隔离", ReceiptValidator, ref passed);
+            Run("协议exact v4/外层身份/nonce隔离", ReceiptValidator, ref passed);
             Run("原始JSON白名单与字段类型严格校验", RawWireWhitelist, ref passed);
-            Run("失败请求exact-v3原始hash与重放身份", RecoveryFailureRequestWire, ref passed);
-            Run("协议拒绝v0/v2/v4", ExactProtocolVersions, ref passed);
+            Run("失败请求exact-v4原始hash与重放身份", RecoveryFailureRequestWire, ref passed);
+            Run("协议拒绝v0/v2/v3", ExactProtocolVersions, ref passed);
             Run("wire序列化不反射permit nonce", WireScrubsNonce, ref passed);
             Run("canonical文化区域和prose重放", CultureAndReplay, ref passed);
             Run("生产FileStore原子IO故障边界与typed结果", ProductionFileIoFailureTiers, ref passed);
@@ -658,7 +658,7 @@ namespace AdaptiveControlTests
                 ConsecutiveCount = 1, RelaunchPermitGeneration = 1, DecisionSequence = 1,
                 DecisionUtcTicks = DateTime.UtcNow.Ticks, DetailCode = "CircuitOpen"
             };
-            var message = new WatchdogMessage { ProtocolVersion = 3, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt, SessionId = session, CorrelationId = corr, RecoveryFailureReceipt = receipt };
+            var message = new WatchdogMessage { ProtocolVersion = WatchdogProtocol.Version, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt, SessionId = session, CorrelationId = corr, RecoveryFailureReceipt = receipt };
             RecoveryFailureReceipt parsed; string reason;
             Assert(WatchdogProtocol.TryValidateRecoveryFailureReceipt(message, session, corr, Hash('A'), out parsed, out reason), "strict receipt rejected: " + reason);
             var mutators = new Action<WatchdogMessage>[]
@@ -678,7 +678,7 @@ namespace AdaptiveControlTests
             {
                 var invalid = new WatchdogMessage
                 {
-                    ProtocolVersion = 3, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt,
+                    ProtocolVersion = WatchdogProtocol.Version, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt,
                     SessionId = session, CorrelationId = corr, RecoveryFailureReceipt = receipt.Clone()
                 };
                 mutate(invalid);
@@ -687,7 +687,7 @@ namespace AdaptiveControlTests
             }
             var nonce = new WatchdogMessage
             {
-                ProtocolVersion = 3, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt,
+                ProtocolVersion = WatchdogProtocol.Version, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt,
                 SessionId = session, CorrelationId = corr, RelaunchPermitNonce = "launch-only",
                 RecoveryFailureReceipt = receipt.Clone()
             };
@@ -696,7 +696,7 @@ namespace AdaptiveControlTests
 
         private static void ExactProtocolVersions()
         {
-            var session = Guid.NewGuid().ToString("N"); var corr = Guid.NewGuid().ToString("N"); var message = new WatchdogMessage { ProtocolVersion = 3, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt, SessionId = session, CorrelationId = corr, RecoveryFailureReceipt = new RecoveryFailureReceipt { RequestCorrelationId = corr, RequestPayloadSha256 = Hash('A'), FailureCode = "x", FailureFingerprint = "fp", Disposition = RecoveryFailureDispositions.CircuitOpen, DecisionSequence = 1, DecisionUtcTicks = DateTime.UtcNow.Ticks, DetailCode = "CircuitOpen" } }; foreach (var version in new[] { 0, 2, 4 }) { message.ProtocolVersion = version; RecoveryFailureReceipt ignored; string reason; Assert(!WatchdogProtocol.TryValidateRecoveryFailureReceipt(message, session, corr, out ignored, out reason) && reason == "ProtocolVersion", "protocol version " + version + " was accepted"); }
+            var session = Guid.NewGuid().ToString("N"); var corr = Guid.NewGuid().ToString("N"); var message = new WatchdogMessage { ProtocolVersion = WatchdogProtocol.Version, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt, SessionId = session, CorrelationId = corr, RecoveryFailureReceipt = new RecoveryFailureReceipt { RequestCorrelationId = corr, RequestPayloadSha256 = Hash('A'), FailureCode = "x", FailureFingerprint = "fp", Disposition = RecoveryFailureDispositions.CircuitOpen, DecisionSequence = 1, DecisionUtcTicks = DateTime.UtcNow.Ticks, DetailCode = "CircuitOpen" } }; foreach (var version in new[] { 0, 2, 3 }) { message.ProtocolVersion = version; RecoveryFailureReceipt ignored; string reason; Assert(!WatchdogProtocol.TryValidateRecoveryFailureReceipt(message, session, corr, out ignored, out reason) && reason == "ProtocolVersion", "protocol version " + version + " was accepted"); }
         }
 
         private static void RawWireWhitelist()
@@ -737,7 +737,7 @@ namespace AdaptiveControlTests
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongType, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ReceiptType", "numeric field with string type accepted");
-            var wrongVersion = json.Replace("\"ProtocolVersion\":3", "\"ProtocolVersion\":2");
+            var wrongVersion = json.Replace("\"ProtocolVersion\":4", "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongVersion, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ProtocolVersion", "v2 raw receipt accepted");
@@ -747,7 +747,7 @@ namespace AdaptiveControlTests
             // data into a valid authority receipt.
             var missingTop = new[]
             {
-                json.Replace("\"ProtocolVersion\":3,", string.Empty),
+                json.Replace("\"ProtocolVersion\":4,", string.Empty),
                 json.Replace("\"Type\":\"RecoveryAttemptFailedReceipt\",", string.Empty),
                 json.Replace("\"SessionId\":\"" + session + "\",", string.Empty),
                 json.Replace("\"CorrelationId\":\"" + corr + "\",", string.Empty),
@@ -784,7 +784,7 @@ namespace AdaptiveControlTests
 
         private static void WireScrubsNonce()
         {
-            var session = Guid.NewGuid().ToString("N"); var corr = Guid.NewGuid().ToString("N"); var message = new WatchdogMessage { ProtocolVersion = 3, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt, SessionId = session, CorrelationId = corr, RelaunchPermitNonce = "secret", RelaunchPermitId = "launch-id", RelaunchPermitGeneration = 9, Session = new WatchdogRunSession { SessionId = session, RelaunchPermitNonce = "nested-secret" }, Heartbeat = new WatchdogHeartbeat { SessionId = session }, RecoveryFailureReceipt = new RecoveryFailureReceipt { RequestCorrelationId = corr, RequestPayloadSha256 = Hash('A'), FailureCode = "x", FailureFingerprint = "fp", Disposition = RecoveryFailureDispositions.CircuitOpen, DecisionSequence = 1, DecisionUtcTicks = DateTime.UtcNow.Ticks, DetailCode = "CircuitOpen" } }; var json = WatchdogProtocol.Serialize(message); Assert(json.IndexOf("secret", StringComparison.Ordinal) < 0 && json.IndexOf("launch-id", StringComparison.Ordinal) < 0 && json.IndexOf("Heartbeat", StringComparison.Ordinal) < 0 && json.IndexOf("\"Session\"", StringComparison.Ordinal) < 0, "wire receipt reflected unrelated/launch fields");
+            var session = Guid.NewGuid().ToString("N"); var corr = Guid.NewGuid().ToString("N"); var message = new WatchdogMessage { ProtocolVersion = WatchdogProtocol.Version, Type = WatchdogMessageType.RecoveryAttemptFailedReceipt, SessionId = session, CorrelationId = corr, RelaunchPermitNonce = "secret", RelaunchPermitId = "launch-id", RelaunchPermitGeneration = 9, Session = new WatchdogRunSession { SessionId = session, RelaunchPermitNonce = "nested-secret" }, Heartbeat = new WatchdogHeartbeat { SessionId = session }, RecoveryFailureReceipt = new RecoveryFailureReceipt { RequestCorrelationId = corr, RequestPayloadSha256 = Hash('A'), FailureCode = "x", FailureFingerprint = "fp", Disposition = RecoveryFailureDispositions.CircuitOpen, DecisionSequence = 1, DecisionUtcTicks = DateTime.UtcNow.Ticks, DetailCode = "CircuitOpen" } }; var json = WatchdogProtocol.Serialize(message); Assert(json.IndexOf("secret", StringComparison.Ordinal) < 0 && json.IndexOf("launch-id", StringComparison.Ordinal) < 0 && json.IndexOf("Heartbeat", StringComparison.Ordinal) < 0 && json.IndexOf("\"Session\"", StringComparison.Ordinal) < 0, "wire receipt reflected unrelated/launch fields");
         }
 
         private static void RecoveryFailureRequestWire()
@@ -851,7 +851,7 @@ namespace AdaptiveControlTests
                    reason == "RequestShape",
                 "unknown/launch-only request key accepted");
             var v2 = wire.Replace(
-                "\"ProtocolVersion\":3", "\"ProtocolVersion\":2");
+                "\"ProtocolVersion\":4", "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureRequestWire(
                        v2, session, out _, out _, out reason) &&
                    reason == "RequestProtocolOrType",

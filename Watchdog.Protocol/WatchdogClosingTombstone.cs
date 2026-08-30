@@ -14,6 +14,15 @@ namespace MTTFTest.Watchdog.Protocol
         Terminal = 2
     }
 
+    public enum WatchdogClosingSafetyStage
+    {
+        ClosingIntent = 1,
+        PhysicalSafe = 2,
+        DataDrained = 3,
+        LogicalQuiescent = 4,
+        Terminal = 5
+    }
+
     /// <summary>
     /// Cross-process, write-through fence for one exact Watchdog session.
     /// Once written, launch/reconnect authorization for that session can never
@@ -21,7 +30,7 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public sealed class WatchdogClosingTombstone
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -32,18 +41,39 @@ namespace MTTFTest.Watchdog.Protocol
         public long StopSafetyBoundaryGeneration { get; set; }
         public long StateVersion { get; set; }
         public WatchdogClosingTombstoneState State { get; set; }
+        public WatchdogClosingSafetyStage SafetyStage { get; set; } =
+            WatchdogClosingSafetyStage.ClosingIntent;
+        public bool MotorsOff { get; set; }
+        public bool PowerOff { get; set; }
+        public bool PressureSafe { get; set; }
+        public bool PersistenceDrained { get; set; }
+        public bool LogicalQuiescent { get; set; }
+        public bool DataContinuityVerified { get; set; }
+        public string SafetyOwner { get; set; } = string.Empty;
+        public string SafetyHandoffId { get; set; } = string.Empty;
         public string TerminalReason { get; set; } = string.Empty;
         public long UpdatedUtcTicks { get; set; }
 
         public bool IsValidFor(string sessionId)
         {
-            return SchemaVersion == 1 &&
+            return (SchemaVersion == 1 || SchemaVersion == 2) &&
                    !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    SessionGeneration > 0 && SessionLease > 0 && StateVersion > 0 &&
                    (State == WatchdogClosingTombstoneState.Closing ||
                     State == WatchdogClosingTombstoneState.Terminal);
         }
+
+        public bool IsSafetyTerminal =>
+            SchemaVersion == 2 &&
+            State == WatchdogClosingTombstoneState.Terminal &&
+            SafetyStage == WatchdogClosingSafetyStage.Terminal &&
+            MotorsOff && PowerOff && PressureSafe && PersistenceDrained && LogicalQuiescent;
+
+        public WatchdogClosingSafetyStage EffectiveSafetyStage =>
+            SchemaVersion == 1 || SafetyStage == 0
+                ? WatchdogClosingSafetyStage.ClosingIntent
+                : SafetyStage;
     }
 
     public static class WatchdogClosingTombstoneStore
@@ -57,6 +87,22 @@ namespace MTTFTest.Watchdog.Protocol
             if (tombstone == null) throw new ArgumentNullException(nameof(tombstone));
             if (!tombstone.IsValidFor(tombstone.SessionId))
                 throw new InvalidOperationException("Watchdog closing tombstone identity is incomplete.");
+            WatchdogClosingTombstone previous;
+            if (TryRead(projectDirectory, tombstone.SessionId, out previous))
+            {
+                if (previous.SessionGeneration != tombstone.SessionGeneration ||
+                    previous.SessionLease != tombstone.SessionLease ||
+                    tombstone.StateVersion < previous.StateVersion ||
+                    tombstone.State < previous.State ||
+                    tombstone.EffectiveSafetyStage < previous.EffectiveSafetyStage ||
+                    !SameOptionalIdentity(previous.StopSafetyTransactionId,
+                        tombstone.StopSafetyTransactionId))
+                    throw new InvalidOperationException("Watchdog closing tombstone revision or identity regressed.");
+                if (tombstone.StateVersion == previous.StateVersion &&
+                    !string.Equals(Serializer.Serialize(previous), Serializer.Serialize(tombstone),
+                        StringComparison.Ordinal))
+                    throw new InvalidOperationException("Watchdog closing tombstone revision was reused with different content.");
+            }
             tombstone.UpdatedUtcTicks = DateTime.UtcNow.Ticks;
             var payload = Serializer.Serialize(tombstone);
             AtomicWrite(WatchdogJournalPaths.LocalClosingPath(tombstone.SessionId), payload);
@@ -78,6 +124,12 @@ namespace MTTFTest.Watchdog.Protocol
                 .ThenByDescending(value => value.UpdatedUtcTicks)
                 .FirstOrDefault();
             return tombstone != null;
+        }
+
+        private static bool SameOptionalIdentity(string previous, string current)
+        {
+            return string.IsNullOrWhiteSpace(previous) ||
+                   string.Equals(previous, current, StringComparison.OrdinalIgnoreCase);
         }
 
         private static IEnumerable<string> CandidatePaths(string projectDirectory, string sessionId)

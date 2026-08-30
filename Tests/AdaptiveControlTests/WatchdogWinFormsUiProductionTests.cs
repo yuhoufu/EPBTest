@@ -747,6 +747,7 @@ namespace AdaptiveControlTests
                            receipt.AuthorityInstanceNonceHash == identity.AuthorityInstanceNonceHash,
                         "Global binding receipt omitted one of the frozen nine identity fields.");
 
+                    PrepareExactRuntimeSafetyTerminal(context, "GlobalExactTestStop");
                     var terminal = WatchdogRuntime.ShutdownRuntimeWithReceipt();
                     Assert(terminal != null && terminal.IsTerminal &&
                            terminal.SessionId == identity.SessionId &&
@@ -915,7 +916,11 @@ namespace AdaptiveControlTests
                             try
                             {
                                 if (raceContext != null)
+                                {
                                     raceContext.AfterActivateAndTakeBeforeReadyProbe = null;
+                                    PrepareExactRuntimeSafetyTerminal(
+                                        raceContext, "DisposeRaceCleanup");
+                                }
                                 var cleanup = WatchdogRuntime.ShutdownRuntimeWithReceipt();
                                 if (cleanup == null || !cleanup.IsTerminal)
                                     failure ??= new InvalidOperationException(
@@ -1092,6 +1097,8 @@ namespace AdaptiveControlTests
                                 (firstBinding == null ? "<null>" : firstBinding.Reason));
                             var firstContext = firstBinding.Context;
                             var firstTarget = main.WatchdogPostTarget;
+                            PrepareExactRuntimeSafetyTerminal(
+                                firstContext, "ProductionNormalStopFirst");
                             var firstStop = await main.ShutdownWatchdogSessionAndReleaseUiAsync(
                                     "ProductionNormalStopFirst")
                                 .ConfigureAwait(true);
@@ -1121,6 +1128,9 @@ namespace AdaptiveControlTests
                                    !ReferenceEquals(secondBinding.Context, firstContext) &&
                                    secondBinding.Context.SessionId == second.SessionId,
                                 "The same Main instance did not become Ready for the next exact session.");
+
+                            PrepareExactRuntimeSafetyTerminal(
+                                secondBinding.Context, "ProductionNormalStopConcurrent");
 
                             var closes = Enumerable.Range(0, 64)
                                 .Select(_ => Task.Run(() =>
@@ -1490,6 +1500,37 @@ namespace AdaptiveControlTests
         private static void Assert(bool condition, string message)
         {
             if (!condition) throw new InvalidOperationException(message);
+        }
+
+        private static void PrepareExactRuntimeSafetyTerminal(
+            RuntimeTransportSessionContext context,
+            string reason)
+        {
+            var transactionId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var fence = WatchdogRuntime.BeginSessionCloseExact(
+                context,
+                reason,
+                transactionId,
+                runId,
+                1,
+                1);
+            Assert(fence != null && fence.IsIrreversible,
+                "测试无法建立精确关闭围栏：" + fence?.Error);
+            Assert(WatchdogRuntime.AdvanceSessionCloseSafety(context, new StopSafetyResult
+            {
+                Outcome = StopSafetyOutcome.CompletedSafe,
+                LastStage = StopSafetyStage.Completed,
+                SafetyTransactionId = transactionId,
+                RunId = runId,
+                RunEpoch = 1,
+                SafetyBoundaryGeneration = 1,
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = true,
+                PressureSafeConfirmed = true,
+                PersistenceBoundaryConfirmed = true,
+                LogicalQuiescenceConfirmed = true
+            }), "测试无法推进v2完整安全终态");
         }
 
         private sealed class StaFormHost : IDisposable

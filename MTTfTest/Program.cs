@@ -37,6 +37,20 @@ namespace MtEmbTest
         [STAThread]
         static void Main(string[] args)
         {
+            if (WatchdogSafetyShutdownWorker.TryParse(
+                    args,
+                    out var safetySessionId,
+                    out var safetyHandoffId,
+                    out var safetyNonce,
+                    out var safetyJournalDirectory))
+            {
+                Environment.ExitCode = WatchdogSafetyShutdownWorker.Run(
+                    safetySessionId,
+                    safetyHandoffId,
+                    safetyNonce,
+                    safetyJournalDirectory);
+                return;
+            }
             var watchdogRecoveryIntent = WatchdogRecoveryIntent.Parse(args);
             var recoveryIntent = watchdogRecoveryIntent == null
                 ? RecoveryProcessBootstrap.Parse(args)
@@ -113,10 +127,11 @@ namespace MtEmbTest
                 {
                     try
                     {
-                        mainForm.ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
-                                "ApplicationExit")
-                            .GetAwaiter()
-                            .GetResult();
+                        if (!mainForm.HasApplicationCloseReceipt)
+                            mainForm.ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
+                                    "ApplicationExit")
+                                .GetAwaiter()
+                                .GetResult();
                     }
                     catch (Exception ex)
                     {

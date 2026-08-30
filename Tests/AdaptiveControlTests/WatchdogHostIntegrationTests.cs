@@ -65,18 +65,24 @@ namespace AdaptiveControlTests
                     closing: closing,
                     activeConnection: false,
                     currentProcessAlive: true) ==
-                WatchdogCloseFenceAction.TerminateSession,
-                "启动/重连路径错误恢复了遗留Closing会话");
+                WatchdogCloseFenceAction.SuppressRelaunch,
+                "断管后的Closing意图被错误升级为无证明终态");
             Assert(
                 WatchdogHost.EvaluateCloseFenceAction(
                     legacyRevoked: false,
                     closing: closing,
                     activeConnection: true,
                     currentProcessAlive: false) ==
-                WatchdogCloseFenceAction.TerminateSession,
-                "Closing owner退出后Sidecar仍保持会话");
+                WatchdogCloseFenceAction.SuppressRelaunch,
+                "owner退出后的Closing意图被错误升级为无证明终态");
 
             closing.State = WatchdogClosingTombstoneState.Terminal;
+            closing.SafetyStage = WatchdogClosingSafetyStage.Terminal;
+            closing.MotorsOff = true;
+            closing.PowerOff = true;
+            closing.PressureSafe = true;
+            closing.PersistenceDrained = true;
+            closing.LogicalQuiescent = true;
             Assert(
                 WatchdogHost.EvaluateCloseFenceAction(
                     legacyRevoked: false,

@@ -164,6 +164,7 @@ namespace MTEmbTest
                 manager.ChannelWarningOverlayChanged += OnChannelWarningOverlayChanged;
                 manager.ChannelDisableRequested += OnNonRecoverableChannelDisableRequested;
                 manager.ChannelDisablePersistenceFailed += OnChannelDisablePersistenceFailed;
+                manager.StopSafetyProgressPublished += OnStopSafetyProgressPublished;
                 for (var index = 0; index < EpbGroup.Length; index++)
                 {
                     var channelIndex = index;
@@ -240,6 +241,13 @@ namespace MTEmbTest
                 Interlocked.Exchange(ref _powerSupplyUiAttached, 0);
                 throw;
             }
+        }
+
+        private void OnStopSafetyProgressPublished(StopSafetyProgressSnapshot progress)
+        {
+            UpdateCloseOverlay(progress);
+            var context = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
+            WatchdogRuntime.AdvanceSessionCloseSafety(context, progress);
         }
 
         private void InitializeChannelRuntimeStatusUi()

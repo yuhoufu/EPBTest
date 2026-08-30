@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Controller;
+using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
@@ -192,6 +193,7 @@ namespace MTEmbTest
         internal StopSafetyResult StopSafety { get; set; }
         internal ManualExitIntentReceipt ManualExitIntent { get; set; }
         internal RuntimeShutdownReceipt WatchdogShutdown { get; set; }
+        internal WatchdogSafetyHandoffReceipt SafetyHandoff { get; set; }
         internal bool UiResourcesReleased { get; set; }
         internal DateTime CompletedUtc { get; set; }
         internal string Error { get; set; } = string.Empty;
@@ -202,11 +204,46 @@ namespace MTEmbTest
             SessionGeneration == WatchdogShutdown.SessionGeneration &&
             SessionLease == WatchdogShutdown.SessionLease;
 
-        internal bool CanRestart => StopSafety?.CanCloseApplication == true &&
+        internal bool ExactSafetyHandoffAccepted =>
+            SafetyHandoff != null &&
+            SafetyHandoff.State >= WatchdogSafetyHandoffState.Accepted &&
+            string.Equals(SessionId, SafetyHandoff.SessionId, StringComparison.Ordinal) &&
+            SessionGeneration == SafetyHandoff.SessionGeneration &&
+            SessionLease == SafetyHandoff.SessionLease &&
+            SafetyHandoff.CanExitApplication;
+
+        internal bool CanStartNewSession => StopSafety?.CanRestartInProcess == true &&
                                     ManualExitIntent?.Matches(StopSafety) == true &&
                                     ExactSessionTerminal &&
                                     UiResourcesReleased;
-        internal bool CanClose => CanRestart;
+        internal bool CanExitApplication =>
+            StopSafety?.PersistenceBoundaryConfirmed == true &&
+            UiResourcesReleased &&
+            (ExactSessionTerminal || ExactSafetyHandoffAccepted);
+        internal bool CanRestart => CanStartNewSession;
+        internal bool CanClose => CanExitApplication;
+    }
+
+    internal sealed class ApplicationCloseReceipt
+    {
+        internal string SessionId { get; set; } = string.Empty;
+        internal long SessionGeneration { get; set; }
+        internal long SessionLease { get; set; }
+        internal bool HardwareResourcesReleased { get; set; }
+        internal bool WatchdogTerminal { get; set; }
+        internal bool SafetyHandoffAccepted { get; set; }
+        internal DateTime CompletedUtc { get; set; }
+
+        internal bool CanExit => HardwareResourcesReleased &&
+                                 (WatchdogTerminal || SafetyHandoffAccepted);
+
+        internal bool Matches(RuntimeTransportSessionContext context)
+        {
+            return context == null ||
+                   string.Equals(SessionId, context.SessionId, StringComparison.Ordinal) &&
+                   SessionGeneration == context.SessionGeneration &&
+                   SessionLease == context.SessionLease;
+        }
     }
 
     /// <summary>

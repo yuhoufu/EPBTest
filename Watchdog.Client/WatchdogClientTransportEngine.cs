@@ -12,6 +12,17 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTTFTest.Watchdog.Client
 {
+    internal interface IWatchdogPipeWritePort
+    {
+        Task WriteLineAsync(StreamWriter writer, string payload);
+    }
+
+    internal sealed class WatchdogPipeWritePort : IWatchdogPipeWritePort
+    {
+        public Task WriteLineAsync(StreamWriter writer, string payload) =>
+            writer.WriteLineAsync(payload);
+    }
+
     /// <summary>
     /// The sole owner of the client-side Sidecar transport lifecycle.
     /// Runtime supplies journal/UI/business callbacks; this class owns pipe,
@@ -188,6 +199,34 @@ namespace MTTFTest.Watchdog.Client
             AdmissionBusy = 2,
             TransportUnavailable = 3,
             TransportWriteFailed = 4
+        }
+
+        private enum TransportBreakOrigin
+        {
+            Send = 1,
+            Reader = 2,
+            Monitor = 3,
+            Reconnect = 4
+        }
+
+        private sealed class TransportBreakScope
+        {
+            internal TransportBreakScope(
+                TransportBreakOrigin origin,
+                long sessionLease,
+                long connectionGeneration,
+                object connectionIdentity)
+            {
+                Origin = origin;
+                SessionLease = sessionLease;
+                ConnectionGeneration = connectionGeneration;
+                ConnectionIdentity = connectionIdentity;
+            }
+
+            internal TransportBreakOrigin Origin { get; }
+            internal long SessionLease { get; }
+            internal long ConnectionGeneration { get; }
+            internal object ConnectionIdentity { get; }
         }
 
         private sealed class SendRequest
@@ -444,6 +483,7 @@ namespace MTTFTest.Watchdog.Client
         private long _stateEventSequence;
         private long _stateEventDeliveredSequence;
         private bool _stateEventDispatching;
+        private readonly IWatchdogPipeWritePort _writePort;
 
         /// <summary>
         /// Raised after a transport lifecycle transition has committed. The
@@ -455,9 +495,18 @@ namespace MTTFTest.Watchdog.Client
         public WatchdogClientTransportEngine(
             ISidecarProcessLauncher launcher = null,
             INamedPipeClientFactory pipeFactory = null)
+            : this(launcher, pipeFactory, null)
+        {
+        }
+
+        internal WatchdogClientTransportEngine(
+            ISidecarProcessLauncher launcher,
+            INamedPipeClientFactory pipeFactory,
+            IWatchdogPipeWritePort writePort)
         {
             _launcher = launcher ?? new SystemSidecarProcessLauncher();
             _pipeFactory = pipeFactory ?? new SystemNamedPipeClientFactory();
+            _writePort = writePort ?? new WatchdogPipeWritePort();
         }
 
         public bool IsAttached
@@ -1200,7 +1249,10 @@ namespace MTTFTest.Watchdog.Client
                    string.Equals(messageType, WatchdogMessageType.RunCompleted, StringComparison.Ordinal) ||
                    string.Equals(messageType, WatchdogMessageType.ApplicationClosing, StringComparison.Ordinal) ||
                    string.Equals(messageType, WatchdogMessageType.ShutdownExpected, StringComparison.Ordinal) ||
-                   string.Equals(messageType, WatchdogMessageType.WatchdogTakeoverExit, StringComparison.Ordinal);
+                   string.Equals(messageType, WatchdogMessageType.WatchdogTakeoverExit, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.SafetyHandoffRequested, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.SafetyHandoffAccepted, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.SafetyHandoffCompleted, StringComparison.Ordinal);
         }
 
         private void RunSendQueue(SendQueueOwner owner)
@@ -1228,7 +1280,7 @@ namespace MTTFTest.Watchdog.Client
                     Task writeTask = null;
                     try
                     {
-                        writeTask = owner.Writer.WriteLineAsync(request.Payload);
+                        writeTask = _writePort.WriteLineAsync(owner.Writer, request.Payload);
                         owner.SetInflight(writeTask);
                         if (!writeTask.Wait(WatchdogTransportPolicy.SendWriteTimeoutMs))
                         {
@@ -1660,19 +1712,39 @@ namespace MTTFTest.Watchdog.Client
             long expectedSessionGeneration,
             long expectedSessionLease)
         {
+            return TryMarkSessionClosingExact(
+                       expectedSessionId,
+                       expectedSessionGeneration,
+                       expectedSessionLease) == ExactSessionClosingResult.Marked;
+        }
+
+        public ExactSessionClosingResult TryMarkSessionClosingExact(
+            string expectedSessionId,
+            long expectedSessionGeneration,
+            long expectedSessionLease)
+        {
             if (string.IsNullOrWhiteSpace(expectedSessionId) ||
                 expectedSessionGeneration <= 0 || expectedSessionLease <= 0)
-                return false;
+                return ExactSessionClosingResult.NoEngineSession;
             lock (_gate)
             {
-                if (_options == null ||
-                    _activeSessionLease != expectedSessionLease ||
+                if (_options == null || _activeSessionLease <= 0)
+                    return ExactSessionClosingResult.NoEngineSession;
+                if (_activeSessionLease != expectedSessionLease ||
                     !string.Equals(_options.SessionId, expectedSessionId, StringComparison.Ordinal) ||
-                    _options.SessionGeneration != expectedSessionGeneration ||
-                    _activeSessionGeneration != expectedSessionGeneration)
-                    return false;
+                    _options.SessionGeneration != expectedSessionGeneration)
+                    return ExactSessionClosingResult.IdentityMismatch;
+                if (_activeConnectionGeneration == 0 &&
+                    _activeConnectionIdentity == null &&
+                    _activeSessionGeneration == 0)
+                {
+                    _sessionClosing = 1;
+                    return ExactSessionClosingResult.ExactSessionDetached;
+                }
+                if (_activeSessionGeneration != expectedSessionGeneration)
+                    return ExactSessionClosingResult.IdentityMismatch;
                 _sessionClosing = 1;
-                return true;
+                return ExactSessionClosingResult.Marked;
             }
         }
 
@@ -3597,6 +3669,8 @@ namespace MTTFTest.Watchdog.Client
         {
             WatchdogClientTransportCallbacks callbacks;
             WatchdogClientTransportEvent reconnectedEvent;
+            long connectionGeneration;
+            object connectionIdentity;
             lock (_gate)
             {
                 if (!IsCurrentReconnectWorkerLocked(workerGeneration, sessionLease, taskIdentity)) return;
@@ -3610,6 +3684,8 @@ namespace MTTFTest.Watchdog.Client
                 _reconnectTask = null;
                 _reconnectTaskIdentity = null;
                 callbacks = _callbacks;
+                connectionGeneration = _activeConnectionGeneration;
+                connectionIdentity = _activeConnectionIdentity;
                 reconnectedEvent = ReserveStateChangedLocked(
                     "Reconnected",
                     "Generation=" + workerGeneration.ToString(CultureInfo.InvariantCulture));
@@ -3617,6 +3693,21 @@ namespace MTTFTest.Watchdog.Client
             try { callbacks?.RecordEvent?.Invoke("TransportEvent", "WatchdogReconnected:同一Session重连成功。"); } catch { }
             try { callbacks?.TransportError?.Invoke("WatchdogReconnected", "同一Session重连成功。"); } catch { }
             EnqueueStateChanged(reconnectedEvent);
+            if (SendHeartbeatSnapshot(
+                    "ImmediateStateSnapshot",
+                    sessionLease,
+                    connectionGeneration,
+                    connectionIdentity))
+            {
+                WatchdogClientTransportEvent snapshotEvent;
+                lock (_gate)
+                    snapshotEvent = ReserveStateChangedLocked(
+                        "ImmediateStateSnapshot",
+                        "ConnectionGeneration=" + connectionGeneration.ToString(CultureInfo.InvariantCulture));
+                try { callbacks?.RecordEvent?.Invoke(
+                    "ImmediateStateSnapshot", "ReconnectSuccess"); } catch { }
+                EnqueueStateChanged(snapshotEvent);
+            }
         }
 
         private bool SetReconnectAttemptIfCurrent(
@@ -4228,6 +4319,7 @@ namespace MTTFTest.Watchdog.Client
             long sessionLease;
             long connectionGeneration;
             object connectionIdentity;
+            TransportBreakScope breakScope;
             lock (_gate)
             {
                 if (!ReferenceEquals(_writer, expectedWriter) ||
@@ -4244,26 +4336,34 @@ namespace MTTFTest.Watchdog.Client
                 sessionLease = _activeSessionLease;
                 connectionGeneration = _activeConnectionGeneration;
                 connectionIdentity = _activeConnectionIdentity;
-            }
-            if (CloseTransportOnly(
+                breakScope = new TransportBreakScope(
+                    fromSendWorker ? TransportBreakOrigin.Send : TransportBreakOrigin.Reader,
                     sessionLease,
                     connectionGeneration,
-                    connectionIdentity,
+                    connectionIdentity);
+            }
+            if (CloseTransportOnly(
+                    breakScope.SessionLease,
+                    breakScope.ConnectionGeneration,
+                    breakScope.ConnectionIdentity,
                     fromSendWorker))
             {
+                // The exact connection CAS above is the authorization boundary.
+                // A send owner is not a monitor/reconnect worker identity and must
+                // never be compared with those worker slots after detachment.
                 ReportTransportLostOnce(
                     reason,
                     detail,
-                    sessionLease,
+                    breakScope.SessionLease,
                     0,
                     null,
-                    expectedWorkerIdentity);
+                    null);
                 TryScheduleReconnect(
                     WatchdogTransportPolicy.ReconnectInitial250,
-                    sessionLease,
-                    connectionGeneration,
-                    connectionIdentity,
-                    expectedWorkerIdentity,
+                    breakScope.SessionLease,
+                    breakScope.ConnectionGeneration,
+                    breakScope.ConnectionIdentity,
+                    null,
                     true);
             }
         }

@@ -90,6 +90,7 @@
     <Compile Include="..\..\MTTFTest.Watchdog\HostRelaunchOrchestrator.cs" Link="LegacyTestOnly\HostRelaunchOrchestrator.cs" />
     <Compile Include="WatchdogJournalStorageTests.cs" />
     <Compile Include="WatchdogWinFormsUiProductionTests.cs" />
+    <Compile Include="WatchdogSafetyClosureV39Tests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
   </ItemGroup>
   <ItemGroup>

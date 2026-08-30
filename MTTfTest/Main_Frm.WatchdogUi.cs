@@ -107,6 +107,7 @@ namespace MtEmbTest
         private int _watchdogExitIntent = (int)RuntimeShutdownIntent.ApplicationExit;
         private Task _watchdogCloseTask;
         private Task<RuntimeShutdownReceipt> _watchdogShutdownTask;
+        private ApplicationCloseReceipt _applicationCloseReceipt;
 
         internal WinFormsWatchdogPostTarget WatchdogPostTarget =>
             _watchdogUiAdapter?.PostTarget;
@@ -131,6 +132,7 @@ namespace MtEmbTest
         {
             // 新精确会话不得继承上一会话的应用退出授权。
             Interlocked.Exchange(ref _watchdogAllowClose, 0);
+            _applicationCloseReceipt = null;
             return _watchdogUiAdapter.BindExactAsync(monitor);
         }
 
@@ -141,8 +143,23 @@ namespace MtEmbTest
                 Func<WatchdogStopAllOfferEnvelope, Task> handler)
         {
             Interlocked.Exchange(ref _watchdogAllowClose, 0);
+            _applicationCloseReceipt = null;
             return _watchdogUiAdapter.BindExactAsync(targetId, subscriberId, handler);
         }
+
+        internal void CacheApplicationCloseReceipt(ApplicationCloseReceipt receipt)
+        {
+            if (receipt?.CanExit != true) return;
+            var active = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
+            if (!receipt.Matches(active)) return;
+            _applicationCloseReceipt = receipt;
+            Interlocked.Exchange(ref _watchdogAllowClose, 1);
+        }
+
+        internal bool HasApplicationCloseReceipt =>
+            _applicationCloseReceipt?.CanExit == true &&
+            _applicationCloseReceipt.Matches(
+                WatchdogRuntime.CaptureTransportSnapshot()?.Context);
 
         internal void NotifyMainUiReadyOnce(string reason)
         {
@@ -151,6 +168,11 @@ namespace MtEmbTest
 
         internal bool HandleWatchdogMainFormClosing(FormClosingEventArgs e)
         {
+            if (HasApplicationCloseReceipt)
+            {
+                Interlocked.Exchange(ref _watchdogAllowClose, 1);
+                return false;
+            }
             if (Volatile.Read(ref _watchdogAllowClose) != 0) return false;
             var composite = WatchdogRuntime.CaptureTransportSnapshot();
             var retained = WatchdogRuntime.CaptureRetainedShutdown();
@@ -351,15 +373,37 @@ namespace MtEmbTest
                 }
             }
 
+            var applicationReceipts = monitors.Length == 0
+                ? Array.Empty<ApplicationCloseReceipt>()
+                : await Task.WhenAll(monitors.Select(
+                        monitor => monitor.AuthorizeApplicationExitAfterPreparationAsync()))
+                    .ConfigureAwait(true);
+            if (applicationReceipts.Any(item => item?.CanExit != true))
+            {
+                Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                UseWaitCursor = false;
+                Text = BuildWindowTitle() + " - 安全交接尚未完成，可重试关闭";
+                return;
+            }
+            foreach (var applicationReceipt in applicationReceipts)
+                CacheApplicationCloseReceipt(applicationReceipt);
+
             // Keep the sidecar and its authenticated PID identity alive while
             // child windows execute their bounded safety/DAQ cleanup.  Only at
             // the final main-process boundary publish the explicit typed exit
             // intent. Operator exit uses ShutdownExpected; watchdog-owned
             // recovery/takeover exits keep the sidecar authority alive.
-            RuntimeShutdownReceipt receipt;
+            RuntimeShutdownReceipt receipt = null;
             var exitIntent = (RuntimeShutdownIntent)Volatile.Read(
                 ref _watchdogExitIntent);
-            if (exitIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
+            if (applicationReceipts.Any(item => item?.SafetyHandoffAccepted == true))
+            {
+                // The UI has released its hardware callbacks and the exact
+                // sidecar durably accepted responsibility.  Shutting down the
+                // Runtime here would publish a competing terminal and race the
+                // headless worker.
+            }
+            else if (exitIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
                 exitIntent == RuntimeShutdownIntent.WatchdogRecoveryExit)
             {
                 receipt = await GetOrCreateWatchdogShutdownTask(
@@ -372,7 +416,8 @@ namespace MtEmbTest
                 receipt = await ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
                     reason);
             }
-            if (receipt == null || !receipt.IsCloseAuthorized)
+            if (!HasApplicationCloseReceipt &&
+                (receipt == null || !receipt.IsCloseAuthorized))
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                 UseWaitCursor = false;

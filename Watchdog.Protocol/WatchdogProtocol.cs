@@ -43,7 +43,7 @@ namespace MTTFTest.Watchdog.Protocol
             }
             if (!wire.StartsWith(Prefix, StringComparison.Ordinal))
             {
-                // Backward-compatible v3 JSON line.  Non-JSON text is rejected
+                // Backward-compatible v4 JSON line.  Non-JSON text is rejected
                 // here rather than being ambiguously classified downstream.
                 if (wire.TrimStart().StartsWith("{", StringComparison.Ordinal))
                 {
@@ -118,11 +118,11 @@ namespace MTTFTest.Watchdog.Protocol
 
     public static class WatchdogProtocol
     {
-        // V3 is the first contract that carries authoritative sidecar identity,
-        // stage-specific StopAll deadlines and explicit recovery ownership.
-        // Older peers must not silently omit these safety fields.
-        public const int Version = 3;
-        public const int MinimumCompatibleVersion = 3;
+        // V4 adds durable pause/closing evidence and bounded safety handoff.
+        // Safety messages are exact-version contracts: a peer must not infer
+        // missing v4 fields from an older payload.
+        public const int Version = 4;
+        public const int MinimumCompatibleVersion = 4;
         public static string Serialize(WatchdogMessage message)
         {
             var json = new JavaScriptSerializer();
@@ -145,7 +145,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (message != null && string.Equals(message.Type, WatchdogMessageType.RecoveryAttemptFailed, StringComparison.Ordinal))
             {
                 // This request is durable authority input.  Serialize only
-                // its exact v3 shape so the host can hash the accepted raw
+                // its exact v4 shape so the host can hash the accepted raw
                 // bytes and a retry can reproduce the same operation.
                 var values = new Dictionary<string, object>(StringComparer.Ordinal)
                 {
@@ -208,7 +208,7 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         /// <summary>
-        /// Exact v3 parser for the only client message which can mutate the
+        /// Exact v4 parser for the only client message which can mutate the
         /// durable relaunch authority.  Unknown keys, missing fields and
         /// launch/session payloads are rejected before DTO deserialization.
         /// The returned hash covers the exact accepted UTF-8 line.
@@ -514,6 +514,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (receipt == null) { reason = "ReceiptMissing"; return false; }
             if (message.Session != null || message.Heartbeat != null || message.StopSummary != null ||
                 message.CheckpointMirror != null || message.BatchStartFailure != null ||
+                message.SafetyHandoff != null ||
                 !string.IsNullOrEmpty(message.Reason) ||
                 !string.IsNullOrEmpty(message.RecoveryFailureCode) || message.RecoveryFailurePermanent ||
                 !string.IsNullOrEmpty(message.RecoveryFailureDetail) ||
@@ -642,6 +643,9 @@ namespace MTTFTest.Watchdog.Protocol
         public const string ApplicationClosing = "ApplicationClosing";
         public const string ShutdownExpected = "ShutdownExpected";
         public const string WatchdogTakeoverExit = "WatchdogTakeoverExit";
+        public const string SafetyHandoffRequested = "SafetyHandoffRequested";
+        public const string SafetyHandoffAccepted = "SafetyHandoffAccepted";
+        public const string SafetyHandoffCompleted = "SafetyHandoffCompleted";
     }
 
     public sealed class WatchdogMessage
@@ -706,8 +710,34 @@ namespace MTTFTest.Watchdog.Protocol
         public WatchdogCheckpointMirror CheckpointMirror { get; set; }
         /// <summary>启动失败时是否具备跨进程恢复资格；缺失表示旧客户端或证据不足。</summary>
         public WatchdogBatchStartFailureContext BatchStartFailure { get; set; }
-        /// <summary>Structured durable failure decision (v3 exact wire shape).</summary>
+        /// <summary>Structured durable failure decision (v4 exact wire shape).</summary>
         public RecoveryFailureReceipt RecoveryFailureReceipt { get; set; }
+        public WatchdogSafetyHandoff SafetyHandoff { get; set; }
+    }
+
+    public sealed class WatchdogSafetyHandoff
+    {
+        public string SessionId { get; set; }
+        public long SessionGeneration { get; set; }
+        public long SessionLease { get; set; }
+        public string HandoffId { get; set; }
+        public string Nonce { get; set; }
+        public string StopSafetyTransactionId { get; set; }
+        public string RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public int SidecarProcessId { get; set; }
+        public long SidecarProcessStartUtcTicks { get; set; }
+        public int WorkerProcessId { get; set; }
+        public long WorkerProcessStartUtcTicks { get; set; }
+        public bool MotorsOff { get; set; }
+        public bool PowerOff { get; set; }
+        public bool PressureSafe { get; set; }
+        public bool PersistenceDrained { get; set; }
+        public bool LogicalQuiescent { get; set; }
+        public bool HardwareResourcesReleased { get; set; }
+        public bool ExecutionAuthorizationRevoked { get; set; }
+        public bool CallbacksIsolated { get; set; }
+        public long TimestampUtcTicks { get; set; }
     }
 
     public sealed class WatchdogBatchStartFailureContext
