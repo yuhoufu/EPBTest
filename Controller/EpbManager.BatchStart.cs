@@ -2148,6 +2148,32 @@ namespace Controller
             return !persistenceRequired || attempt.IsDurablyCommitted;
         }
 
+        internal static FormalParticipantDisposition ResolveFormalSlotDisposition(
+            bool motorOffConfirmed,
+            bool hydraulicReleased,
+            bool persistenceRequired,
+            CycleAttemptClosureReceipt closureReceipt)
+        {
+            if (!motorOffConfirmed || !hydraulicReleased)
+                return FormalParticipantDisposition.SafetyUnproven;
+            if (persistenceRequired && closureReceipt?.Durable != true)
+                return FormalParticipantDisposition.SafetyUnproven;
+            if (!persistenceRequired)
+                return closureReceipt?.Disposition == CycleAttemptClosureDisposition.Committed
+                    ? FormalParticipantDisposition.SafeCommitted
+                    : FormalParticipantDisposition.SafeAborted;
+            switch (closureReceipt?.Disposition ?? CycleAttemptClosureDisposition.Unknown)
+            {
+                case CycleAttemptClosureDisposition.Committed:
+                    return FormalParticipantDisposition.SafeCommitted;
+                case CycleAttemptClosureDisposition.Aborted:
+                case CycleAttemptClosureDisposition.Alarmed:
+                    return FormalParticipantDisposition.SafeAborted;
+                default:
+                    return FormalParticipantDisposition.SafetyUnproven;
+            }
+        }
+
         internal static int[] ResolveBatchStartFailureChannels(
             SoftwareSelfHealingExhaustedException circuitFailure,
             IEnumerable<ChannelStartFault> startFaults,
@@ -3211,9 +3237,18 @@ namespace Controller
                                                 ResolveFormalFallbackPersistence(
                                                     formalCycleAttempt,
                                                     out var fallbackPersistenceRequired);
-                                            if (!fallbackMotorOff ||
-                                                !fallbackHydraulicReleased ||
-                                                !fallbackPersistenceCommitted)
+                                            var fallbackReceipt = formalCycleAttempt == null
+                                                ? null
+                                                : EnrichFormalClosureReceipt(
+                                                    formalCycleAttempt.CaptureClosureReceipt(),
+                                                    phaseSlot);
+                                            var fallbackDisposition = ResolveFormalSlotDisposition(
+                                                fallbackMotorOff,
+                                                fallbackHydraulicReleased,
+                                                fallbackPersistenceRequired,
+                                                fallbackReceipt);
+                                            if (fallbackDisposition ==
+                                                FormalParticipantDisposition.SafetyUnproven)
                                                 ReportFormalSlotSafetyBoundaryFailure(
                                                     ch,
                                                     phaseSlot,
@@ -3223,14 +3258,7 @@ namespace Controller
                                              return new FormalBatchParticipantTerminal
                                              {
                                                  Channel = ch,
-                                                 Disposition = fallbackMotorOff &&
-                                                               fallbackHydraulicReleased &&
-                                                               fallbackPersistenceCommitted
-                                                     ? formalCycleAttempt?.TerminalState ==
-                                                       CycleAttemptTerminalState.Completed
-                                                         ? FormalParticipantDisposition.SafeCommitted
-                                                         : FormalParticipantDisposition.SafeAborted
-                                                     : FormalParticipantDisposition.SafetyUnproven,
+                                                 Disposition = fallbackDisposition,
                                                 MotorOffConfirmed = fallbackMotorOff,
                                                 HydraulicMemberReleased = fallbackHydraulicReleased,
                                                 PersistenceBoundaryRequired =
@@ -3241,11 +3269,7 @@ namespace Controller
                                                 CallbackElapsedMs =
                                                     callbackStopwatch.ElapsedMilliseconds,
                                                 SharedCoordinationWaitMs = 0,
-                                                ClosureReceipt = formalCycleAttempt == null
-                                                    ? null
-                                                    : EnrichFormalClosureReceipt(
-                                                        formalCycleAttempt.CaptureClosureReceipt(),
-                                                        phaseSlot),
+                                                ClosureReceipt = fallbackReceipt,
                                                 CompletedUtc = DateTime.UtcNow
                                             };
                                         })
@@ -3618,9 +3642,19 @@ namespace Controller
                             var hydraulicReleased =
                                 !_hydraulicLeaseByChannel.TryGetValue(ch, out var finalLease) ||
                                 finalLease.IsClosed;
-                            var persistenceBoundaryClosed = cycleAttempt.IsDurablyCommitted;
-                            if (!motorOffConfirmed || !hydraulicReleased ||
-                                (!persistenceBoundaryClosed && !IsAlarmStopRequested(ch)))
+                            var closureReceipt = EnrichFormalClosureReceipt(
+                                cycleAttempt.CaptureClosureReceipt(),
+                                phaseSlot);
+                            var persistenceRequired = !IsAlarmStopRequested(ch);
+                            var persistenceBoundaryClosed =
+                                !persistenceRequired || closureReceipt?.Durable == true;
+                            var formalDisposition = ResolveFormalSlotDisposition(
+                                motorOffConfirmed,
+                                hydraulicReleased,
+                                persistenceRequired,
+                                closureReceipt);
+                            if (formalDisposition ==
+                                FormalParticipantDisposition.SafetyUnproven)
                                 ReportFormalSlotSafetyBoundaryFailure(
                                     ch,
                                     phaseSlot,
@@ -3630,26 +3664,19 @@ namespace Controller
                             formalSlotScope.Complete(new FormalBatchParticipantTerminal
                             {
                                 Channel = ch,
-                                Disposition = motorOffConfirmed && hydraulicReleased &&
-                                              persistenceBoundaryClosed
-                                    ? cycleAttempt.TerminalState == CycleAttemptTerminalState.Completed
-                                        ? FormalParticipantDisposition.SafeCommitted
-                                        : FormalParticipantDisposition.SafeAborted
-                                    : FormalParticipantDisposition.SafetyUnproven,
+                                Disposition = formalDisposition,
                                 MotorOffConfirmed = motorOffConfirmed,
                                 MechanicalCycleCompleted = cycleOutcome.MechanicalCycleCompleted,
                                 HydraulicMemberReleased = hydraulicReleased,
                                 ControlSucceeded = controlSucceeded,
-                                PersistenceBoundaryRequired = !IsAlarmStopRequested(ch),
+                                PersistenceBoundaryRequired = persistenceRequired,
                                 PersistenceCommitted = persistenceBoundaryClosed,
                                 PermanentlyIsolated = IsAlarmStopRequested(ch),
                                 CallbackElapsedMs = callbackStopwatch.ElapsedMilliseconds,
                                 PhysicalActionElapsedMs = cycleOutcome.PhysicalActionElapsedMs,
                                 SharedCoordinationWaitMs =
                                     cycleOutcome.SharedCoordinationWaitMs,
-                                ClosureReceipt = EnrichFormalClosureReceipt(
-                                    cycleAttempt.CaptureClosureReceipt(),
-                                    phaseSlot),
+                                ClosureReceipt = closureReceipt,
                                 Result = cycleOutcome.Reason,
                                 CompletedUtc = DateTime.UtcNow
                             });

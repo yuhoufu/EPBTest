@@ -1489,9 +1489,21 @@ namespace AdaptiveControlTests
 
         private static void TransitionWindowExposesOperatorStop()
         {
+            Assert(RecoveryTransitionPolicy.DismissPromptButtonText.Contains("不停止恢复") &&
+                   RecoveryTransitionPolicy.PreserveProcessButtonText.Contains("保留主程序"),
+                "过渡窗没有公开保留主程序的安全关闭动作");
             Assert(RecoveryTransitionPolicy.OperatorStopButtonText.Contains("停止自动恢复") &&
-                   RecoveryTransitionPolicy.OperatorStopButtonText.Contains("关闭"),
-                "过渡窗没有公开清晰的人工停止并关闭语义");
+                   RecoveryTransitionPolicy.OperatorStopButtonText.Contains("退出软件"),
+                "过渡窗没有公开清晰的人工停止并退出语义");
+            Assert(RecoveryTransitionPolicy.OperatorStopConfirmationText.Contains("选择“否”"),
+                "破坏性退出动作没有声明默认保留主程序");
+            Assert(RecoveryTransitionPolicy.ShouldPreferPreserveProcess(
+                       WatchdogManualPauseStage.Completed,
+                       true) &&
+                   !RecoveryTransitionPolicy.ShouldPreferPreserveProcess(
+                       WatchdogManualPauseStage.PersistenceDrain,
+                       true),
+                "Stage=4存活进程没有成为默认保留动作");
             Assert(
                 RecoveryTransitionPolicy.MustSuppressAutomaticRestart(
                     transitionOperatorStopStarted: true,

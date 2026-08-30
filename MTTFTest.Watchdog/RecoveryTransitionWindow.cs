@@ -16,13 +16,18 @@ namespace MTTFTest.Watchdog
     {
         private readonly object _gate = new object();
         private readonly ManualResetEventSlim _ready = new ManualResetEventSlim(false);
+        private readonly Action _dismissPromptRequested;
         private readonly Action _operatorStopRequested;
         private Thread _thread;
         private RecoveryForm _form;
         private bool _disposed;
+        private int _hiddenByOperator;
 
-        public RecoveryTransitionWindow(Action operatorStopRequested)
+        public RecoveryTransitionWindow(
+            Action dismissPromptRequested,
+            Action operatorStopRequested)
         {
+            _dismissPromptRequested = dismissPromptRequested;
             _operatorStopRequested = operatorStopRequested;
             if (!Environment.UserInteractive)
             {
@@ -42,6 +47,7 @@ namespace MTTFTest.Watchdog
 
         public void Show(string title, string detail, int remainingSeconds, int attempt)
         {
+            if (Volatile.Read(ref _hiddenByOperator) != 0) return;
             Invoke(form =>
             {
                 form.UpdateStatus(title, detail, remainingSeconds, attempt);
@@ -67,13 +73,36 @@ namespace MTTFTest.Watchdog
             Invoke(form => form.Hide());
         }
 
+        public void BeginTransition()
+        {
+            Interlocked.Exchange(ref _hiddenByOperator, 0);
+            Invoke(form => form.BeginTransition());
+        }
+
+        public void DismissByOperator()
+        {
+            Interlocked.Exchange(ref _hiddenByOperator, 1);
+            Hide();
+        }
+
+        public void SetPreserveMainProcessPreferred(bool preferred)
+        {
+            Invoke(form => form.SetPreserveMainProcessPreferred(preferred));
+        }
+
         private void RunUi()
         {
             try
             {
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                var form = new RecoveryForm(_operatorStopRequested);
+                var form = new RecoveryForm(
+                    () =>
+                    {
+                        DismissByOperator();
+                        _dismissPromptRequested?.Invoke();
+                    },
+                    _operatorStopRequested);
                 // Application.Run(form) implicitly shows the form.  The sidecar
                 // is created for every ordinary test run, so that behavior made
                 // the recovery surface appear even though no takeover had
@@ -135,15 +164,18 @@ namespace MTTFTest.Watchdog
             private readonly Label _detail;
             private readonly Label _countdown;
             private readonly ProgressBar _progress;
+            private readonly Button _dismissPrompt;
             private readonly Button _operatorStop;
             private readonly System.Windows.Forms.Timer _topmostTimer;
             private bool _allowClose;
             private int _operatorStopRaised;
 
-            public RecoveryForm(Action operatorStopRequested)
+            public RecoveryForm(
+                Action dismissPromptRequested,
+                Action operatorStopRequested)
             {
                 Text = "MT EPB 试验系统自动恢复";
-                ClientSize = new Size(660, 372);
+                ClientSize = new Size(660, 390);
                 BackColor = Color.FromArgb(245, 249, 252);
                 FormBorderStyle = FormBorderStyle.FixedDialog;
                 StartPosition = FormStartPosition.CenterScreen;
@@ -201,10 +233,30 @@ namespace MTTFTest.Watchdog
                     ForeColor = Color.FromArgb(180, 74, 25),
                     Text = "所有控制输出保持 OFF。请勿重复启动软件或操作试验设备。"
                 };
+                _dismissPrompt = new Button
+                {
+                    Location = new Point(34, 313),
+                    Size = new Size(282, 42),
+                    BackColor = Color.FromArgb(30, 116, 190),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+                    Text = RecoveryTransitionPolicy.DismissPromptButtonText,
+                    UseVisualStyleBackColor = false,
+                    Cursor = Cursors.Hand,
+                    TabStop = true
+                };
+                _dismissPrompt.FlatAppearance.BorderSize = 0;
+                _dismissPrompt.Click += (_, __) =>
+                {
+                    _dismissPrompt.Enabled = false;
+                    ThreadPool.QueueUserWorkItem(_ => dismissPromptRequested?.Invoke());
+                };
+
                 _operatorStop = new Button
                 {
-                    Location = new Point(184, 305),
-                    Size = new Size(292, 42),
+                    Location = new Point(344, 313),
+                    Size = new Size(282, 42),
                     BackColor = Color.FromArgb(198, 56, 56),
                     ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,
@@ -217,7 +269,16 @@ namespace MTTFTest.Watchdog
                 _operatorStop.FlatAppearance.BorderSize = 0;
                 _operatorStop.Click += (_, __) =>
                 {
+                    var confirmed = MessageBox.Show(
+                        this,
+                        RecoveryTransitionPolicy.OperatorStopConfirmationText,
+                        RecoveryTransitionPolicy.OperatorStopConfirmationTitle,
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+                    if (!confirmed) return;
                     if (Interlocked.Exchange(ref _operatorStopRaised, 1) != 0) return;
+                    _dismissPrompt.Enabled = false;
                     _operatorStop.Enabled = false;
                     _operatorStop.Cursor = Cursors.WaitCursor;
                     _operatorStop.Text = "正在安全停止，请稍候…";
@@ -227,7 +288,10 @@ namespace MTTFTest.Watchdog
                     ThreadPool.QueueUserWorkItem(_ => operatorStopRequested?.Invoke());
                 };
 
+                AcceptButton = _dismissPrompt;
+                CancelButton = _dismissPrompt;
                 Controls.Add(_operatorStop);
+                Controls.Add(_dismissPrompt);
                 Controls.Add(safety);
                 Controls.Add(_progress);
                 Controls.Add(_countdown);
@@ -260,6 +324,27 @@ namespace MTTFTest.Watchdog
                     _progress.Maximum = 60;
                     _progress.Value = Math.Min(_progress.Maximum, remainingSeconds);
                 }
+            }
+
+            public void SetPreserveMainProcessPreferred(bool preferred)
+            {
+                if (Volatile.Read(ref _operatorStopRaised) != 0) return;
+                _dismissPrompt.Text = preferred
+                    ? RecoveryTransitionPolicy.PreserveProcessButtonText
+                    : RecoveryTransitionPolicy.DismissPromptButtonText;
+                AcceptButton = _dismissPrompt;
+                _dismissPrompt.Select();
+            }
+
+            public void BeginTransition()
+            {
+                if (Volatile.Read(ref _operatorStopRaised) != 0) return;
+                _dismissPrompt.Enabled = true;
+                _dismissPrompt.Cursor = Cursors.Hand;
+                _operatorStop.Enabled = true;
+                _operatorStop.Cursor = Cursors.Hand;
+                _operatorStop.Text = RecoveryTransitionPolicy.OperatorStopButtonText;
+                SetPreserveMainProcessPreferred(false);
             }
 
             public void CloseForShutdown()

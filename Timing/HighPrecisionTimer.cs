@@ -238,6 +238,25 @@ public sealed class HighPrecisionTimer
     }
 
     /// <summary>
+    /// 安全停止专用的无用户回调暂停栅栏。该入口只封住下一圈并原子更新运行态，
+    /// 不发布 <see cref="StateChanged"/>、不写日志，也不取消内部 CTS；可能阻塞的
+    /// 订阅回调和取消回调必须由调用方在隔离清理任务中处理。
+    /// </summary>
+    public void RequestSafetyPauseNonBlocking(string reason = null)
+    {
+        SetPauseReason(reason);
+        Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
+        Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
+        _pauseGate.Reset();
+        Interlocked.Exchange(
+            ref _runtimeState,
+            (int)HighPrecisionTimerRuntimeState.PausePending);
+        if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
+            Volatile.Read(ref _cycleState) == 2)
+            CompleteGracefulPause(publishPaused: false);
+    }
+
+    /// <summary>
     /// 请求在当前圈自然结束后暂停；若当前尚未进入圈执行，则立即封住下一圈。
     /// 返回的任务只在定时器确认“不再启动新圈”后完成。
     /// </summary>

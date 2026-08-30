@@ -560,6 +560,13 @@ namespace MTTFTest.Watchdog
         }
     }
 
+    internal enum WatchdogAttachPurpose
+    {
+        InitialAuthorityAttach = 0,
+        NewRecoveryAuthority = 1,
+        SameAuthorityReconnect = 2
+    }
+
     internal sealed class WatchdogHost : IDisposable
     {
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
@@ -677,7 +684,9 @@ namespace MTTFTest.Watchdog
                     args.JournalPolicy,
                     process.Id,
                     process.StartTime.ToUniversalTime().Ticks);
-            _transitionWindow = new RecoveryTransitionWindow(OnTransitionOperatorStopRequested);
+            _transitionWindow = new RecoveryTransitionWindow(
+                OnTransitionPromptDismissRequested,
+                OnTransitionOperatorStopRequested);
             var startedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
             var previous = TryLoadPreviousJournal(args);
             _journal = new WatchdogJournal
@@ -1012,6 +1021,11 @@ namespace MTTFTest.Watchdog
                             attachValidationFailure ?? "AttachIdentityInvalid");
                         break;
                     }
+                    var attachPurpose = sameAuthorityReconnect
+                        ? WatchdogAttachPurpose.SameAuthorityReconnect
+                        : message.Session?.RecoveryProcess == true
+                            ? WatchdogAttachPurpose.NewRecoveryAuthority
+                            : WatchdogAttachPurpose.InitialAuthorityAttach;
                     string normalizedAttachExecutablePath = null;
                     if (!string.IsNullOrWhiteSpace(message.Session?.ExecutablePath))
                     {
@@ -1028,7 +1042,25 @@ namespace MTTFTest.Watchdog
                             break;
                         }
                     }
-                    if (message.Session?.RecoveryProcess == true)
+                    if (attachPurpose == WatchdogAttachPurpose.SameAuthorityReconnect &&
+                        message.Session?.RecoveryProcess == true)
+                    {
+                        if (!TryValidateRecoveryReconnectPermit(
+                                message.Session,
+                                out var recoveryReconnectFailure))
+                        {
+                            // A rejected transport reconnect must not mutate or
+                            // revoke the still-live process authority.  Only a
+                            // brand-new recovery authority is allowed to consume
+                            // or poison the one-shot relaunch permit.
+                            RecordEvent(
+                                "RecoveryReconnectRejected",
+                                recoveryReconnectFailure ??
+                                "RecoveryReconnectPermitIdentityInvalid");
+                            break;
+                        }
+                    }
+                    else if (attachPurpose == WatchdogAttachPurpose.NewRecoveryAuthority)
                     {
                         if (!TryCommitAttachedPermit(
                                 message.Session,
@@ -1095,7 +1127,7 @@ namespace MTTFTest.Watchdog
                     // single-writer queue.  This does not reset UI readiness or
                     // suppress any formal progress / StopAll safety deadline.
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
-                    if (!sameAuthorityReconnect)
+                    if (attachPurpose != WatchdogAttachPurpose.SameAuthorityReconnect)
                     {
                         CancelAutomaticTakeover("ValidatedNewProcessAttached");
                         _takeoverStarted = 0;
@@ -1143,9 +1175,10 @@ namespace MTTFTest.Watchdog
                         Record("AttachedReconnect",
                             "SameAuthority;ConnectionGeneration=" + connectionGeneration);
                     }
-                    if (message.Session?.RecoveryProcess == true)
+                    if (attachPurpose == WatchdogAttachPurpose.NewRecoveryAuthority)
                     {
                         Interlocked.Exchange(ref _transitionActive, 1);
+                        _transitionWindow.BeginTransition();
                         _transitionWindow.Show(
                             "主程序已重新启动",
                             "正在连接恢复会话并加载安全检查点",
@@ -2207,6 +2240,7 @@ namespace MTTFTest.Watchdog
                 $"{reason};Generation={transaction.Generation};Authority={authorityIdentity}");
             _activeTakeoverCorrelationId = correlationId;
             Interlocked.Exchange(ref _transitionActive, 1);
+            _transitionWindow.BeginTransition();
             _transitionWindow.Show(
                 "检测到异常，正在安全接管",
                 "正在请求原程序关闭全部输出。原因：" + DescribeRecoveryReason(reason),
@@ -2298,6 +2332,7 @@ namespace MTTFTest.Watchdog
             var correlationId = Guid.NewGuid().ToString("N");
             _activeTakeoverCorrelationId = correlationId;
             Interlocked.Exchange(ref _transitionActive, 1);
+            _transitionWindow.BeginTransition();
             Record("ManualPauseSafetyTakeoverRequested", reason);
             _transitionWindow.Show(
                 "人工暂停安全确认异常",
@@ -3354,6 +3389,46 @@ namespace MTTFTest.Watchdog
             }
         }
 
+        private bool TryValidateRecoveryReconnectPermit(
+            WatchdogRunSession session,
+            out string failure)
+        {
+            failure = string.Empty;
+            if (session == null || !session.RecoveryProcess ||
+                session.RelaunchGeneration <= 0 ||
+                string.IsNullOrWhiteSpace(session.RelaunchPermitId) ||
+                string.IsNullOrWhiteSpace(session.RelaunchPermitNonce))
+            {
+                failure = "RecoveryReconnectPermitMissing";
+                return false;
+            }
+
+            var record = _relaunchCoordinator.Snapshot;
+            if (record == null ||
+                (record.State != DurableRelaunchPermitState.Attached &&
+                 record.State != DurableRelaunchPermitState.Committed) ||
+                record.Generation != session.RelaunchGeneration ||
+                !string.Equals(record.PermitId, session.RelaunchPermitId, StringComparison.Ordinal) ||
+                !string.Equals(record.PermitNonce, session.RelaunchPermitNonce, StringComparison.Ordinal) ||
+                record.ProcessId != session.ProcessId ||
+                record.ProcessStartUtcTicks != session.ProcessStartUtcTicks)
+            {
+                failure = "RecoveryReconnectPermitIdentityMismatch";
+                return false;
+            }
+
+            if (ProbeProcessIdentity(
+                    session.ProcessId,
+                    session.ProcessStartUtcTicks) !=
+                DurableRelaunchProcessObservation.Alive)
+            {
+                failure = "RecoveryReconnectProcessNotAliveOrReused";
+                return false;
+            }
+
+            return true;
+        }
+
         private bool TryCommitRecoveryBatch(
             string runId,
             long runEpoch,
@@ -3615,6 +3690,8 @@ namespace MTTFTest.Watchdog
 
         private void ShowRecoveryBlockedTransition(string detail)
         {
+            Interlocked.Exchange(ref _transitionActive, 1);
+            _transitionWindow.BeginTransition();
             _transitionWindow.Show(
                 "自动恢复已阻断，设备保持安全",
                 $"恢复失败已进入持久终态（Code={_journal.RecoveryFailureCode ?? "Unknown"}，" +
@@ -3975,6 +4052,14 @@ namespace MTTFTest.Watchdog
             }
         }
 
+        private void OnTransitionPromptDismissRequested()
+        {
+            RecordEvent(
+                "RecoveryTransitionPromptDismissed",
+                "ProcessPreserved=True;AutomaticRecoveryUnchanged=True");
+            try { _transitionWindow.Hide(); } catch { }
+        }
+
         private void OnTransitionOperatorStopRequested()
         {
             lock (_processLaunchGate)
@@ -4149,6 +4234,10 @@ namespace MTTFTest.Watchdog
                 (pause.Stage == WatchdogManualPauseStage.Completed ||
                  pause.Stage == WatchdogManualPauseStage.Resumed))
             {
+                _transitionWindow.SetPreserveMainProcessPreferred(
+                    RecoveryTransitionPolicy.ShouldPreferPreserveProcess(
+                        pause.Stage,
+                        IsCurrentProcessAlive()));
                 CancelAutomaticTakeover("DurableManualPause" + pause.Stage);
                 Record("DurableManualPauseProgressObserved",
                     $"Revision={pause.Revision};Stage={pause.Stage}");

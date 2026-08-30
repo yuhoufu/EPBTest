@@ -21,6 +21,8 @@ namespace AdaptiveControlTests
                 UnsafeRetirementFailsClosed, ref passed);
             Run("SafeAborted可靠封圈释放槽位且不计机械完成",
                 SafeAbortedReleasesSlot, ref passed);
+            Run("耐久作废映射SafeAborted且半提交保持SafetyUnproven",
+                DurableAbortDispositionIsExplicit, ref passed);
             Run("SafetyUnproven形式终态必须阻断后续槽位",
                 SafetyUnprovenBlocksSlot, ref passed);
             Run("墙钟边界计算禁止补跑历史槽",
@@ -180,6 +182,43 @@ namespace AdaptiveControlTests
                 .GetAwaiter().GetResult();
             next.Complete(SafeTerminal(4));
             coordinator.ClearRun(runId);
+        }
+
+        private static void DurableAbortDispositionIsExplicit()
+        {
+            var aborted = new CycleAttemptClosureReceipt
+            {
+                Disposition = CycleAttemptClosureDisposition.Aborted,
+                Durable = true,
+                PersistenceVersion = 42,
+                DurabilityEvidence = "AbortReceiptCommitted"
+            };
+            Assert(EpbManager.ResolveFormalSlotDisposition(
+                       true,
+                       true,
+                       true,
+                       aborted) == FormalParticipantDisposition.SafeAborted,
+                "耐久作废没有映射为SafeAborted");
+
+            var halfCommitted = new CycleAttemptClosureReceipt
+            {
+                Disposition = CycleAttemptClosureDisposition.Aborted,
+                Durable = false,
+                PersistenceVersion = 0,
+                DurabilityEvidence = "AbortReceiptNotDurable"
+            };
+            Assert(EpbManager.ResolveFormalSlotDisposition(
+                       true,
+                       true,
+                       true,
+                       halfCommitted) == FormalParticipantDisposition.SafetyUnproven,
+                "半提交作废错误释放了正式槽");
+            Assert(EpbManager.ResolveFormalSlotDisposition(
+                       false,
+                       true,
+                       true,
+                       aborted) == FormalParticipantDisposition.SafetyUnproven,
+                "物理OFF未证明时错误释放了正式槽");
         }
 
         private static void SafetyUnprovenBlocksSlot()

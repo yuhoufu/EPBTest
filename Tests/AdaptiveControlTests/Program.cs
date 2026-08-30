@@ -608,6 +608,7 @@ namespace AdaptiveControlTests
                 Run("优雅暂停等待当前圈结束且阻止下一圈", TimerGracefulPauseWaitsForCurrentCycle);
                 Run("计划等待窗口内暂停不误启动下一圈", TimerPauseDuringPlannedDelayBlocksNextCycle);
                 Run("Timer暂停事件立即纠正运行态", TimerPauseStateCorrectsRunningStatus);
+                Run("安全暂停入口不执行阻塞状态订阅", TimerSafetyPauseDoesNotInvokeSubscribers);
                 Run("Timer失活看门狗识别停止和陈旧心跳", TimerRuntimeWatchdogDetectsStoppedAndStale);
                 Run("Runner软预警不覆盖学习资格等生命周期", RunnerWarningPreservesLifecyclePhase);
                 Run("批次启动自愈原因受生命周期拥有者覆盖", BatchLifecycleRecoveryReasonsAreCovered);
@@ -4094,6 +4095,34 @@ namespace AdaptiveControlTests
                 "Timer已暂停但通道仍运行时未要求纠正UI状态");
             timer.Stop();
             Assert(run.Wait(1000), "Timer状态测试停止超时");
+        }
+
+        private static void TimerSafetyPauseDoesNotInvokeSubscribers()
+        {
+            var callbackEntered = new ManualResetEventSlim(false);
+            var releaseCallback = new ManualResetEventSlim(false);
+            var timer = new HighPrecisionTimer(100, OverrunPolicy.AlignToWallClock);
+            Action<HighPrecisionTimerStateChangedEvent> blockingSubscriber = _ =>
+            {
+                callbackEntered.Set();
+                releaseCallback.Wait();
+            };
+            timer.StateChanged += blockingSubscriber;
+            var stopwatch = Stopwatch.StartNew();
+            timer.RequestSafetyPauseNonBlocking("StopAllTest");
+            stopwatch.Stop();
+
+            Assert(stopwatch.ElapsedMilliseconds < 200,
+                "安全暂停入口被状态订阅占用，ElapsedMs=" + stopwatch.ElapsedMilliseconds);
+            Assert(!callbackEntered.IsSet,
+                "安全暂停入口同步执行了StateChanged订阅");
+            Assert(timer.RuntimeState == HighPrecisionTimerRuntimeState.PausePending &&
+                   timer.IsPaused,
+                "安全暂停入口未原子封住下一圈");
+
+            timer.StateChanged -= blockingSubscriber;
+            releaseCallback.Set();
+            timer.Stop();
         }
 
         private static void TimerRuntimeWatchdogDetectsStoppedAndStale()

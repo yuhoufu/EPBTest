@@ -142,7 +142,14 @@ namespace MTTFTest.Watchdog.Protocol
 
     public static class RecoveryTransitionPolicy
     {
-        public const string OperatorStopButtonText = "停止自动恢复并关闭";
+        public const string DismissPromptButtonText = "关闭提示（不停止恢复）";
+        public const string PreserveProcessButtonText = "保留主程序并关闭提示";
+        public const string OperatorStopButtonText = "停止自动恢复并退出软件…";
+        public const string OperatorStopConfirmationTitle = "确认退出试验软件";
+        public const string OperatorStopConfirmationText =
+            "该操作将停止自动恢复，并在安全断能后退出试验软件。\r\n\r\n" +
+            "如果只想关闭当前提示并保留已暂停的主程序，请选择“否”。\r\n\r\n" +
+            "确定继续吗？";
 
         public static string FormatCountdown(int remainingSeconds)
         {
@@ -180,6 +187,13 @@ namespace MTTFTest.Watchdog.Protocol
             bool sessionRevoked)
         {
             return transitionOperatorStopStarted || sessionRevoked;
+        }
+
+        public static bool ShouldPreferPreserveProcess(
+            WatchdogManualPauseStage pauseStage,
+            bool exactProcessAlive)
+        {
+            return exactProcessAlive && pauseStage == WatchdogManualPauseStage.Completed;
         }
     }
 

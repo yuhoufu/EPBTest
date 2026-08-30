@@ -336,14 +336,15 @@ namespace Controller
                 return;
 
             var reason = "StopAll:" + state.Context.Source;
-            // Pause every producer first.  The cycle identity is then
-            // sampled again before any CTS/runtime participant is removed.
+            // Pause every producer first.  This path is deliberately free of
+            // StateChanged/log/cancellation callbacks.  The cycle identity is
+            // then sampled again before any CTS/runtime participant is removed.
             foreach (var channel in state.Channels)
             {
                 try
                 {
                     if (_timers.TryGetValue(channel, out var timer))
-                        timer.Pause(reason);
+                        timer.RequestSafetyPauseNonBlocking(reason);
                 }
                 catch (Exception ex)
                 {
@@ -364,16 +365,77 @@ namespace Controller
                 }
             }
 
-            // Cancellation is deliberately after the second cycle sample.
-            // Do not acquire channel execution gates in this immediate stage:
-            // an in-flight recovery callback may still own one of them.
+            // Runtime objects and cancellation sources are atomically removed
+            // from the authoritative maps after the second identity sample.
+            // No user callback is invoked here and channel execution gates are
+            // intentionally not acquired.  Slow Cancel/Dispose/Stop/event
+            // detach work is queued by ClearTimerAndRunner after physical OFF.
+            state.DetachedBatchSessionCts =
+                Interlocked.Exchange(ref _batchSessionCts, null);
             foreach (var channel in state.Channels)
             {
-                try { CancelCyclePauseCts(channel); }
-                catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:取消PauseCTS:{ex.Message}"); }
-                try { CancelStopCts(channel); }
-                catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:取消StopCTS:{ex.Message}"); }
+                try
+                {
+                    if (_cyclePauseCtsByChannel.TryRemove(channel, out var pauseCts))
+                        state.CleanupItems.Add(StopSafetyCleanupWorkItem.ForCancellationSource(
+                            channel,
+                            "CyclePauseCts.CancelDispose",
+                            pauseCts));
+                }
+                catch (Exception ex)
+                {
+                    state.FreezeErrors.Add($"EPB{channel}:摘除PauseCTS:{ex.Message}");
+                }
+                try
+                {
+                    if (_stopCtsByChannel.TryRemove(channel, out var stopCts))
+                        state.CleanupItems.Add(StopSafetyCleanupWorkItem.ForCancellationSource(
+                            channel,
+                            "StopCts.CancelDispose",
+                            stopCts));
+                }
+                catch (Exception ex)
+                {
+                    state.FreezeErrors.Add($"EPB{channel}:摘除StopCTS:{ex.Message}");
+                }
+                try
+                {
+                    foreach (var timer in _timerRuntime.Remove(channel))
+                        state.CleanupItems.Add(new StopSafetyCleanupWorkItem
+                        {
+                            Channel = channel,
+                            Operation = "Timer.ObserverDetachAndStop",
+                            Execute = () =>
+                            {
+                                DetachTimerRuntimeObserver(channel, timer);
+                                timer.Stop();
+                            }
+                        });
+                }
+                catch (Exception ex)
+                {
+                    state.FreezeErrors.Add($"EPB{channel}:摘除Timer:{ex.Message}");
+                }
+                try
+                {
+                    foreach (var runner in _runnerRuntime.Remove(channel))
+                        state.CleanupItems.Add(new StopSafetyCleanupWorkItem
+                        {
+                            Channel = channel,
+                            Operation = "Runner.EventDetach",
+                            Execute = () => DetachRunnerEvents(runner)
+                        });
+                }
+                catch (Exception ex)
+                {
+                    state.FreezeErrors.Add($"EPB{channel}:摘除Runner:{ex.Message}");
+                }
             }
+            if (state.DetachedBatchSessionCts != null)
+                state.CleanupItems.Add(StopSafetyCleanupWorkItem.ForCancellationSource(
+                    0,
+                    "BatchSessionCts.CancelDispose",
+                    state.DetachedBatchSessionCts));
             state.RuntimeProducersFrozen = true;
         }
 
@@ -541,7 +603,7 @@ namespace Controller
                             ? "Failed"
                             : "Cancelled";
                     EndBatchSession(
-                        cancel: true,
+                        cancel: false,
                         publishIdleState: false,
                         terminalStatus: terminalStatus,
                         terminalReason: state.Context.Reason);
@@ -552,25 +614,95 @@ namespace Controller
                 }
                 foreach (var channel in state.Channels)
                 {
-                    try { RemoveTimerRuntime(channel, "StopSafetyTransaction"); }
-                    catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除Timer:{ex.Message}"); }
-                    try { RemoveRunnerRuntime(channel, "StopSafetyTransaction"); }
-                    catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除Runner:{ex.Message}"); }
+                    // Capture any producer that raced with Freeze.  The global
+                    // energization fence makes the late owner harmless; only
+                    // callback-free map removal is performed in this stage.
+                    try
+                    {
+                        foreach (var timer in _timerRuntime.Remove(channel))
+                            state.CleanupItems.Add(new StopSafetyCleanupWorkItem
+                            {
+                                Channel = channel,
+                                Operation = "LateTimer.ObserverDetachAndStop",
+                                Execute = () =>
+                                {
+                                    DetachTimerRuntimeObserver(channel, timer);
+                                    timer.Stop();
+                                }
+                            });
+                    }
+                    catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:摘除迟到Timer:{ex.Message}"); }
+                    try
+                    {
+                        foreach (var runner in _runnerRuntime.Remove(channel))
+                            state.CleanupItems.Add(new StopSafetyCleanupWorkItem
+                            {
+                                Channel = channel,
+                                Operation = "LateRunner.EventDetach",
+                                Execute = () => DetachRunnerEvents(runner)
+                            });
+                    }
+                    catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:摘除迟到Runner:{ex.Message}"); }
                     try { UnmarkHydraulicParticipant(channel); }
                     catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除液压参与者:{ex.Message}"); }
                 }
-                try { ClearChannelRuntimes("StopSafetyTransaction"); }
-                catch (Exception ex) { state.FreezeErrors.Add("ClearRuntime:" + ex.Message); }
+                QueueStopSafetyCleanup(state);
                 state.RuntimeObjectsFrozen = true;
             }
             return state.FreezeErrors.Count == 0
                 ? StopSafetyPortResult.Success(
-                    "已清理Timer、Runner、CTS并移除液压参与者。",
+                    $"已摘除Timer、Runner、CTS并移除液压参与者；" +
+                    $"隔离清理已排队 {state.CleanupItems.Count} 项。",
                     materialProgress: true,
                     evidenceSource: "StopTimerRunner",
                     evidenceVersion: 1)
                 : StopSafetyPortResult.Failure(
                     "运行对象清理失败:" + string.Join(";", state.FreezeErrors));
+        }
+
+        private void QueueStopSafetyCleanup(StopSafetyProductionState state)
+        {
+            if (Interlocked.Exchange(ref state.CleanupScheduled, 1) != 0)
+                return;
+            foreach (var item in state.CleanupItems.ToArray())
+            {
+                var captured = item;
+                captured.ExecutionTask = Task.Factory.StartNew(
+                    () => ExecuteStopSafetyCleanupItem(state, captured),
+                    CancellationToken.None,
+                    TaskCreationOptions.DenyChildAttach,
+                    TaskScheduler.Default);
+            }
+        }
+
+        private void ExecuteStopSafetyCleanupItem(
+            StopSafetyProductionState state,
+            StopSafetyCleanupWorkItem item)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            _log?.Info(
+                $"StopCleanupOperationStarted Transaction={state.TransactionId:N} " +
+                $"Channel={item.Channel} Operation={item.Operation}",
+                "停止事务");
+            try
+            {
+                item.Execute?.Invoke();
+                _log?.Info(
+                    $"StopCleanupOperationCompleted Transaction={state.TransactionId:N} " +
+                    $"Channel={item.Channel} Operation={item.Operation} " +
+                    $"ElapsedMs={stopwatch.ElapsedMilliseconds} Result=Success",
+                    "停止事务");
+            }
+            catch (Exception ex)
+            {
+                item.Failure = ex.GetType().Name + ":" + ex.Message;
+                Interlocked.Exchange(ref item.Failed, 1);
+                _log?.Warn(
+                    $"StopCleanupOperationFailed Transaction={state.TransactionId:N} " +
+                    $"Channel={item.Channel} Operation={item.Operation} " +
+                    $"ElapsedMs={stopwatch.ElapsedMilliseconds} Result={ex.GetType().Name}:{ex.Message}",
+                    "停止事务");
+            }
         }
 
         private async Task<StopSafetyPortResult> ExecuteStopRecoveryOwnerStageAsync(
@@ -829,6 +961,7 @@ namespace Controller
                     : StopSafetyOutcome.PhysicalSafetyUnconfirmed;
             result.RequiresProcessRestart = !result.CanRestartInProcess;
             state.Result = result;
+            ReportStopCleanupStatusAtSafetyBoundary(state, result);
             if (result.RequiresProcessRestart)
                 Interlocked.Exchange(ref _processRestartRequired, 1);
             lock (_stopSafetyGate)
@@ -855,6 +988,38 @@ namespace Controller
                 PhysicalSafe = result.PhysicalSafetyConfirmed ? true : (bool?)null,
                 Detail = "停止安全事务已完成逻辑清场验证"
             };
+        }
+
+        private void ReportStopCleanupStatusAtSafetyBoundary(
+            StopSafetyProductionState state,
+            StopSafetyResult result)
+        {
+            var abnormal = state.CleanupItems
+                .Where(item =>
+                    Volatile.Read(ref item.Failed) != 0 ||
+                    item.ExecutionTask != null && !item.ExecutionTask.IsCompleted)
+                .ToArray();
+            if (abnormal.Length == 0) return;
+            var detail = string.Join(
+                ",",
+                abnormal.Select(item =>
+                    $"Channel={item.Channel}/Operation={item.Operation}/" +
+                    (Volatile.Read(ref item.Failed) != 0
+                        ? "Failed=" + item.Failure
+                        : "Pending")));
+            if (result.PhysicalSafetyConfirmed &&
+                result.PersistenceBoundaryConfirmed)
+            {
+                _log?.Warn(
+                    $"设备已安全，后台收口异常；不要求重启。" +
+                    $"Transaction={state.TransactionId:N};{detail}",
+                    "停止事务");
+                return;
+            }
+            _log?.Error(
+                $"后台收口异常且物理或持久化事实未完全证明，保持原有接管策略。" +
+                $"Transaction={state.TransactionId:N};{detail}",
+                "停止事务");
         }
 
         private void StartStopOffFallbacks(StopSafetyProductionState state)
@@ -988,6 +1153,33 @@ namespace Controller
             }
         }
 
+        private sealed class StopSafetyCleanupWorkItem
+        {
+            internal int Channel { get; set; }
+            internal string Operation { get; set; } = string.Empty;
+            internal Action Execute { get; set; }
+            internal Task ExecutionTask { get; set; }
+            internal int Failed;
+            internal string Failure { get; set; } = string.Empty;
+
+            internal static StopSafetyCleanupWorkItem ForCancellationSource(
+                int channel,
+                string operation,
+                CancellationTokenSource source)
+            {
+                return new StopSafetyCleanupWorkItem
+                {
+                    Channel = channel,
+                    Operation = operation ?? "CancellationSource.CancelDispose",
+                    Execute = () =>
+                    {
+                        try { source?.Cancel(); }
+                        finally { source?.Dispose(); }
+                    }
+                };
+            }
+        }
+
         private sealed class StopSafetyProductionState
         {
             internal StopSafetyProductionState(
@@ -1034,6 +1226,10 @@ namespace Controller
             internal List<string> DataGaps { get; } = new List<string>();
             internal List<string> PersistenceErrors { get; } = new List<string>();
             internal List<string> FreezeErrors { get; } = new List<string>();
+            internal List<StopSafetyCleanupWorkItem> CleanupItems { get; } =
+                new List<StopSafetyCleanupWorkItem>();
+            internal CancellationTokenSource DetachedBatchSessionCts { get; set; }
+            internal int CleanupScheduled;
             internal Task<(bool ok, string error)> PowerTask { get; set; }
             internal Task<(bool ok, string error)> PressureTask { get; set; }
             internal (bool ok, string error) Power { get; set; } = (true, string.Empty);

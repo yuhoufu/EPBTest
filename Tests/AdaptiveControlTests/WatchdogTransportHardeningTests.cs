@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,6 +27,8 @@ namespace AdaptiveControlTests
                 RealSidecarRejectsMissingOrInvalidLaunchNonce, ref passed);
             Run("真实Sidecar同权威新管道重连不重置Stop域",
                 RealSidecarAllowsSameAuthorityReconnect, ref passed);
+            Run("恢复许可Committed后同PID与代次重连保持主进程",
+                RealSidecarAllowsCommittedRecoveryReconnect, ref passed);
             Run("真实Sidecar附着断开/待握手死亡/启动失败50次句柄回基线",
                 RealSidecarAttachReconnectAndStartupFailureReturnsToBaseline, ref passed);
             Run("生产句柄所有权50次循环回到基线", ProcessHandleOwnerReturnsToBaseline, ref passed);
@@ -780,6 +784,193 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void RealSidecarAllowsCommittedRecoveryReconnect()
+        {
+            var sidecarPath = Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "MTTFTest.Watchdog.exe");
+            Assert(File.Exists(sidecarPath), "测试输出目录缺少真实Sidecar：" + sidecarPath);
+            var projectDirectory = Path.Combine(
+                Path.GetTempPath(),
+                "MTTFTest.RecoveryReattach." + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(projectDirectory);
+            var session = Guid.NewGuid().ToString("N");
+            var pipeName = "MTTFTest.RecoveryReattach." + session;
+            var nonce = Guid.NewGuid().ToString("N");
+            Process sidecar = null;
+            try
+            {
+                using (var current = Process.GetCurrentProcess())
+                {
+                    var startTicks = current.StartTime.ToUniversalTime().Ticks;
+                    var created = DurableRelaunchAuthorityV4Factory.TryCreatePristine(
+                        projectDirectory,
+                        session,
+                        current.Id,
+                        startTicks,
+                        RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit);
+                    Assert(created.Succeeded,
+                        "恢复重连strict authority初始化失败：" + created.Reason);
+                    var failure = created.Authority.RegisterFailureAndDecide(
+                        CreateRecoveryFailureOperation(session));
+                    Assert(failure.ActionAllowed &&
+                           failure.Record?.State == DurableRelaunchPermitState.Approved,
+                        "恢复重连未生成Approved许可：" + failure.Reason);
+                    var intent = created.Authority.PrepareLaunchIntent(
+                        CreateLaunchIntent(failure.Record, session));
+                    Assert(intent.Succeeded && intent.Capability != null,
+                        "恢复重连未生成LaunchIntent：" + intent.Reason);
+                    Assert(created.Authority.ConsumeLaunchIntent(intent.Capability).Succeeded,
+                        "恢复重连LaunchIntent未耐久消费");
+                    var started = created.Authority.CommitStarted(
+                        intent.Capability,
+                        current.Id,
+                        startTicks);
+                    Assert(started.Succeeded &&
+                           started.Record?.State == DurableRelaunchPermitState.Started,
+                        "恢复重连未提交Started：" + started.Reason);
+                    var recoveryPermit = started.Record.Clone();
+
+                    sidecar = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = sidecarPath,
+                        Arguments = string.Join(" ",
+                            "--parent-pid", current.Id.ToString(),
+                            "--parent-start-ticks", startTicks.ToString(),
+                            "--session", QuoteArg(session),
+                            "--pipe", QuoteArg(pipeName),
+                            "--executable", QuoteArg(current.MainModule?.FileName),
+                            "--journal-directory", QuoteArg(projectDirectory),
+                            "--sidecar-instance-nonce", nonce),
+                        WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    });
+                    Assert(sidecar != null, "恢复重连Sidecar启动失败");
+
+                    using (var first = new NamedPipeClientStream(
+                               ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+                    {
+                        first.Connect(5000);
+                        using (var reader = new StreamReader(first, new UTF8Encoding(false), false, 4096, true))
+                        using (var writer = new StreamWriter(first, new UTF8Encoding(false), 4096, true)
+                               { AutoFlush = true })
+                        {
+                            SendAttach(
+                                writer,
+                                session,
+                                pipeName,
+                                WatchdogProtocol.Version,
+                                recoveryPermit);
+                            var attached = ReadMessage(reader, TimeSpan.FromSeconds(5));
+                            Assert(attached?.Type == WatchdogMessageType.Attached,
+                                "恢复进程首次Attach未被接受");
+                            writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
+                            {
+                                Type = WatchdogMessageType.RecoveryBatchCommitted,
+                                SessionId = session,
+                                CorrelationId = Guid.NewGuid().ToString("N"),
+                                RecoveryCommitGeneration = 1,
+                                RecoveryProgressToken = "recovery-commit-1",
+                                Reason = "RecoveryCommittedBeforeReconnect",
+                                Heartbeat = CreateRecoveryHeartbeat(
+                                    session,
+                                    current.Id,
+                                    startTicks,
+                                    1)
+                            }));
+                            Assert(SpinWait.SpinUntil(
+                                    () => DurableRelaunchAuthorityV4Factory
+                                              .TryOpenExisting(projectDirectory, session)
+                                              .Authority?.Snapshot?.State ==
+                                          DurableRelaunchPermitState.Committed,
+                                    5000),
+                                "恢复批次未在断管前提交Committed");
+                            writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
+                            {
+                                Type = WatchdogMessageType.Heartbeat,
+                                SessionId = session,
+                                CorrelationId = Guid.NewGuid().ToString("N"),
+                                Heartbeat = CreateRecoveryHeartbeat(
+                                    session,
+                                    current.Id,
+                                    startTicks,
+                                    1)
+                            }));
+                            var pendingPauseAck = ReadMessage(
+                                reader,
+                                TimeSpan.FromSeconds(5));
+                            Assert(pendingPauseAck?.Type == WatchdogMessageType.HeartbeatAck &&
+                                   pendingPauseAck.AckSequence == 1,
+                                "ManualPausePending心跳未被确认");
+                        }
+                    }
+
+                    using (var second = new NamedPipeClientStream(
+                               ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+                    {
+                        second.Connect(5000);
+                        using (var reader = new StreamReader(second, new UTF8Encoding(false), false, 4096, true))
+                        using (var writer = new StreamWriter(second, new UTF8Encoding(false), 4096, true)
+                               { AutoFlush = true })
+                        {
+                            SendAttach(
+                                writer,
+                                session,
+                                pipeName,
+                                WatchdogProtocol.Version,
+                                recoveryPermit);
+                            var reattached = ReadMessage(reader, TimeSpan.FromSeconds(5));
+                            Assert(reattached?.Type == WatchdogMessageType.Attached,
+                                "Committed恢复进程同身份重连被误阻断");
+                            writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
+                            {
+                                Type = WatchdogMessageType.Heartbeat,
+                                SessionId = session,
+                                CorrelationId = Guid.NewGuid().ToString("N"),
+                                Heartbeat = CreateRecoveryHeartbeat(
+                                    session,
+                                    current.Id,
+                                    startTicks,
+                                    2)
+                            }));
+                            var ack = ReadMessage(reader, TimeSpan.FromSeconds(5));
+                            Assert(ack?.Type == WatchdogMessageType.HeartbeatAck &&
+                                   ack.AckSequence == 2,
+                                "Committed恢复重连后的首条Heartbeat未被确认");
+                            writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
+                            {
+                                Type = WatchdogMessageType.ApplicationClosing,
+                                SessionId = session,
+                                Reason = "CommittedRecoveryReconnectComplete"
+                            }));
+                        }
+                    }
+                }
+                Assert(sidecar.WaitForExit(5000),
+                    "Committed恢复重连测试Sidecar未正常退出");
+                var events = string.Join(
+                    Environment.NewLine,
+                    Directory.GetFiles(projectDirectory, "*events.jsonl")
+                        .Select(File.ReadAllText));
+                Assert(events.Contains("AttachedReconnectValidated"),
+                    "Committed恢复重连未记录AttachedReconnectValidated");
+                Assert(!events.Contains("DurableRecoveryBlocked") &&
+                       !events.Contains("RecoveryReconnectRejected"),
+                    "Committed恢复重连错误进入恢复阻断");
+            }
+            finally
+            {
+                if (sidecar != null)
+                {
+                    try { if (!sidecar.HasExited) sidecar.Kill(); } catch { }
+                    try { sidecar.Dispose(); } catch { }
+                }
+                try { Directory.Delete(projectDirectory, true); } catch { }
+            }
+        }
+
         private static void RealSidecarAttachReconnectAndStartupFailureReturnsToBaseline()
         {
             var sidecarPath = Path.Combine(
@@ -955,6 +1146,16 @@ namespace AdaptiveControlTests
             string pipeName,
             int protocolVersion)
         {
+            SendAttach(writer, session, pipeName, protocolVersion, null);
+        }
+
+        private static void SendAttach(
+            StreamWriter writer,
+            string session,
+            string pipeName,
+            int protocolVersion,
+            DurableRelaunchAuthorityRecord recoveryPermit)
+        {
             using (var current = Process.GetCurrentProcess())
             {
                 writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
@@ -970,10 +1171,110 @@ namespace AdaptiveControlTests
                         ExecutablePath = current.MainModule?.FileName,
                         ProcessId = current.Id,
                         ProcessStartUtcTicks = current.StartTime.ToUniversalTime().Ticks,
-                        RecoveryProcess = false
+                        RecoveryProcess = recoveryPermit != null,
+                        RelaunchGeneration = recoveryPermit?.Generation ?? 0,
+                        RelaunchPermitId = recoveryPermit?.PermitId,
+                        RelaunchPermitNonce = recoveryPermit?.PermitNonce
                     }
                 }));
             }
+        }
+
+        private static WatchdogHeartbeat CreateRecoveryHeartbeat(
+            string session,
+            int processId,
+            long processStartUtcTicks,
+            long sequence)
+        {
+            return new WatchdogHeartbeat
+            {
+                Sequence = sequence,
+                SessionId = session,
+                ProcessId = processId,
+                ProcessStartUtcTicks = processStartUtcTicks,
+                RunId = "recovered-run",
+                RunEpoch = 2,
+                Phase = "Formal",
+                RecoveryStage = "RecoveryCommitted",
+                RecoveryProgressVersion = sequence,
+                RecoveryBatchCommitGeneration = sequence >= 1 ? 1 : 0,
+                ManualPauseActive = true,
+                ManualPausePending = sequence == 1,
+                ManualPauseStage = sequence == 1
+                    ? WatchdogManualPauseStage.PersistenceDrain.ToString()
+                    : WatchdogManualPauseStage.Completed.ToString(),
+                ManualPauseProgressVersion = sequence,
+                ManualPauseStageStartedUtc = DateTime.UtcNow.Ticks,
+                ManualPauseHardDeadlineUtc = DateTime.UtcNow.AddSeconds(30).Ticks,
+                OutputsConfirmedOff = true,
+                EnabledChannels = Array.Empty<int>(),
+                EligibleChannels = Array.Empty<int>()
+            };
+        }
+
+        private static RecoveryFailureOperation CreateRecoveryFailureOperation(string session)
+        {
+            using (var current = Process.GetCurrentProcess())
+            {
+                return new RecoveryFailureOperation
+                {
+                    OperationId = Guid.NewGuid().ToString("N"),
+                    SessionId = session,
+                    SessionNonce = new string('a', 32),
+                    SidecarProcessId = current.Id,
+                    SidecarProcessStartUtcTicks =
+                        current.StartTime.ToUniversalTime().Ticks,
+                    ConnectionGeneration = 1,
+                    RecoveryAttemptGeneration = 1,
+                    RequestCorrelationId = Guid.NewGuid().ToString("N"),
+                    RequestPayloadSha256 = new string('B', 64),
+                    FailureCode = "CommittedReconnectFixture",
+                    FailureFingerprint = "CommittedReconnectFixture",
+                    DetailCode = "CommittedReconnectFixture",
+                    RunId = "failed-run",
+                    RunEpoch = 1,
+                    RecoveryStage = "Recovery",
+                    RecoveryProgressToken = "failed-progress-1",
+                    RecoveryProcessSource = "TransportFixture",
+                    DeviceOrChannelGroup = "Host",
+                    MaximumProcessRelaunches =
+                        RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit
+                };
+            }
+        }
+
+        private static DurableLaunchIntent CreateLaunchIntent(
+            DurableRelaunchAuthorityRecord record,
+            string session)
+        {
+            var executable = Path.GetFullPath(
+                Process.GetCurrentProcess().MainModule.FileName);
+            string executableSha256;
+            using (var sha = SHA256.Create())
+            using (var stream = new FileStream(
+                       executable,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite | FileShare.Delete))
+                executableSha256 = BitConverter.ToString(sha.ComputeHash(stream))
+                    .Replace("-", string.Empty)
+                    .ToUpperInvariant();
+            var intent = new DurableLaunchIntent
+            {
+                SessionId = session,
+                SessionNonce = new string('a', 32),
+                Generation = record.Generation,
+                PermitId = record.PermitId,
+                PermitNonce = record.PermitNonce,
+                IntentId = Guid.NewGuid().ToString("N"),
+                ExecutablePath = executable,
+                ExecutableSha256 = executableSha256,
+                Arguments = "--committed-reconnect-fixture",
+                WorkingDirectory = Path.GetDirectoryName(executable),
+                LaunchOptionsCanonical = "UseShellExecute=false;CreateNoWindow=true"
+            };
+            intent.LaunchSpecSha256 = DurableLaunchCanonical.Sha256(intent);
+            return intent;
         }
 
         private static WatchdogMessage ReadMessage(
