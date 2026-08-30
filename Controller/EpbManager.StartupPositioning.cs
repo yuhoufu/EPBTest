@@ -315,13 +315,18 @@ namespace Controller
         internal async Task PublishStartupPositioningFailureAsync(StartupPositioningResult result)
         {
             if (result == null || result.Succeeded) return;
-            var reason =
-                $"StartupPositioningFailed Stage={result.Stage} Code={result.Code} " +
-                $"Peak={result.PeakCurrentA:F3}A Elapsed={result.ElapsedMs}ms Detail={result.Reason}";
+            RefreshStartupPositioningEvidence(result);
+            var openCircuit = StartupPositioningFaultPolicy.IsOpenCircuit(result);
             var classification = ClassifyStartupPositioningFailure(
                 IsStartupPositioningOverCurrent(result),
                 HasFreshStartupPowerEvidence(result?.Channel ?? 0),
-                IsStartupPositioningOutputControlFailure(result));
+                IsStartupPositioningOutputControlFailure(result),
+                openCircuit,
+                result.ForwardCommandAccepted,
+                result.DaqEvidenceFresh,
+                result.PowerEnergizationPermitted,
+                result.InfrastructureTransitionObserved);
+            var reason = BuildStartupPositioningFailureReason(result, openCircuit, classification);
             if (classification != FaultClassification.HardwareConfirmed &&
                 !TryEnsureSoftwareRecoveryOutputOff(
                     result.Channel,
@@ -337,7 +342,12 @@ namespace Controller
                 null,
                 DateTime.UtcNow,
                 Guid.NewGuid(),
-                classification);
+                classification,
+                classification == FaultClassification.HardwareConfirmed && openCircuit
+                    ? FaultRecoveryPolicy.CurrentRunDisableChannel
+                    : classification == FaultClassification.HardwareConfirmed
+                        ? FaultRecoveryPolicy.NonRecoverable
+                        : FaultRecoveryPolicy.Recoverable);
 
             if (classification != FaultClassification.HardwareConfirmed)
             {
@@ -499,23 +509,84 @@ namespace Controller
         internal bool IsStartupPositioningHardwareConfirmed(StartupPositioningResult result)
         {
             if (result == null || result.Succeeded) return false;
+            RefreshStartupPositioningEvidence(result);
             return ClassifyStartupPositioningFailure(
                        IsStartupPositioningOverCurrent(result),
                        HasFreshStartupPowerEvidence(result.Channel),
-                       IsStartupPositioningOutputControlFailure(result)) ==
+                       IsStartupPositioningOutputControlFailure(result),
+                       StartupPositioningFaultPolicy.IsOpenCircuit(result),
+                       result.ForwardCommandAccepted,
+                       result.DaqEvidenceFresh,
+                       result.PowerEnergizationPermitted,
+                       result.InfrastructureTransitionObserved) ==
                    FaultClassification.HardwareConfirmed;
         }
 
         internal static FaultClassification ClassifyStartupPositioningFailure(
             bool overCurrent,
             bool freshIndependentPowerEvidence,
-            bool outputControlFailure = false)
+            bool outputControlFailure = false,
+            bool openCircuit = false,
+            bool forwardCommandAccepted = false,
+            bool daqEvidenceFresh = false,
+            bool powerEnergizationPermitted = false,
+            bool infrastructureTransition = false)
         {
             // 输出关闭失败属于控制链/外部设备故障，必须保持安全断电重试；
-            // 只有卡钳过流且具备独立、实时电源证据时才锁存为卡钳硬件故障。
-            return overCurrent && freshIndependentPowerEvidence
+            // 过流需要独立电源证据；近零电流需要命令、DAQ、供电许可三项
+            // 同时有效，且不能发生在DAQ/电源计划恢复窗口内。
+            var hardwareConfirmed = overCurrent && freshIndependentPowerEvidence ||
+                                    openCircuit && forwardCommandAccepted &&
+                                    daqEvidenceFresh && powerEnergizationPermitted &&
+                                    !infrastructureTransition;
+            return hardwareConfirmed
                 ? FaultClassification.HardwareConfirmed
                 : FaultClassification.SoftwareTransient;
+        }
+
+        private void RefreshStartupPositioningEvidence(StartupPositioningResult result)
+        {
+            if (result == null) return;
+            result.RootFaultCode = StartupPositioningFaultPolicy.NormalizeRootCode(
+                result.RootFaultCode ?? result.Code,
+                result.Reason);
+            result.Code = result.RootFaultCode;
+            var groupId = GetElectricalGroupId(result.Channel);
+            var permitReason = "PowerCoordinatorMissing";
+            result.PowerEnergizationPermitted = _powerSupply != null && groupId > 0 &&
+                                                 _powerSupply.HasEnergizationPermit(
+                                                     groupId,
+                                                     out permitReason);
+            result.InfrastructureTransitionObserved =
+                IsInfrastructureTransitionForChannel(
+                    result.Channel,
+                    out var transitionReason);
+            result.InfrastructureTransitionReason = result.InfrastructureTransitionObserved
+                ? transitionReason
+                : result.PowerEnergizationPermitted
+                    ? string.Empty
+                    : $"PowerPermitMissing Group={groupId} Reason={permitReason}";
+        }
+
+        private static string BuildStartupPositioningFailureReason(
+            StartupPositioningResult result,
+            bool openCircuit,
+            FaultClassification classification)
+        {
+            var detail =
+                $"StartupPositioningFailed Stage={result.Stage} Code={result.Code} " +
+                $"Last={result.LastCurrentA:F3}A Peak={result.PeakCurrentA:F3}A " +
+                $"Elapsed={result.ElapsedMs}ms CommandAccepted={result.ForwardCommandAccepted} " +
+                $"DaqFresh={result.DaqEvidenceFresh} PowerPermit={result.PowerEnergizationPermitted} " +
+                $"InfrastructureTransition={result.InfrastructureTransitionObserved} " +
+                $"TransitionReason={result.InfrastructureTransitionReason} Detail={result.Reason}";
+            if (!openCircuit || classification != FaultClassification.HardwareConfirmed)
+                return detail;
+            return
+                $"EPB{result.Channel} 上电后连续约{result.NearZeroConfirmMs}ms电流不高于" +
+                $"{result.NearZeroThresholdA:F2}A（末值{result.LastCurrentA:F3}A），" +
+                "疑似卡钳、线束或驱动支路开路；本次运行已隔离该通道，" +
+                "其余健康通道继续，下次启动将重新检测。 " + detail;
         }
 
         private static bool IsStartupPositioningOutputControlFailure(
@@ -603,9 +674,18 @@ namespace Controller
             json.AppendLine($"  \"channel\": {result.Channel},");
             json.AppendLine($"  \"stage\": \"{Json(result.Stage.ToString())}\",");
             json.AppendLine($"  \"code\": \"{Json(result.Code)}\",");
+            json.AppendLine($"  \"rootFaultCode\": \"{Json(result.RootFaultCode)}\",");
             json.AppendLine($"  \"reason\": \"{Json(result.Reason)}\",");
-            json.AppendLine($"  \"peakCurrentA\": {result.PeakCurrentA.ToString("R", CultureInfo.InvariantCulture)},");
-            json.AppendLine($"  \"lastSlopeAperMs\": {result.LastSlopeAperMs.ToString("R", CultureInfo.InvariantCulture)},");
+            json.AppendLine($"  \"peakCurrentA\": {StartupJsonNumber(result.PeakCurrentA)},");
+            json.AppendLine($"  \"lastCurrentA\": {StartupJsonNumber(result.LastCurrentA)},");
+            json.AppendLine($"  \"forwardCommandAccepted\": {result.ForwardCommandAccepted.ToString().ToLowerInvariant()},");
+            json.AppendLine($"  \"daqEvidenceFresh\": {result.DaqEvidenceFresh.ToString().ToLowerInvariant()},");
+            json.AppendLine($"  \"powerEnergizationPermitted\": {result.PowerEnergizationPermitted.ToString().ToLowerInvariant()},");
+            json.AppendLine($"  \"infrastructureTransitionObserved\": {result.InfrastructureTransitionObserved.ToString().ToLowerInvariant()},");
+            json.AppendLine($"  \"infrastructureTransitionReason\": \"{Json(result.InfrastructureTransitionReason)}\",");
+            json.AppendLine($"  \"nearZeroThresholdA\": {StartupJsonNumber(result.NearZeroThresholdA)},");
+            json.AppendLine($"  \"nearZeroConfirmMs\": {result.NearZeroConfirmMs},");
+            json.AppendLine($"  \"lastSlopeAperMs\": {StartupJsonNumber(result.LastSlopeAperMs)},");
             json.AppendLine($"  \"elapsedMs\": {result.ElapsedMs},");
             json.AppendLine($"  \"forwardProgramProgressDeadlineMs\": {result.ForwardProgramProgressDeadlineMs},");
             json.AppendLine($"  \"forwardProjectLimitMs\": {result.ForwardProjectLimitMs},");
@@ -616,7 +696,7 @@ namespace Controller
             json.AppendLine($"  \"reverseLearnedProgressDeadlineMs\": {result.ReverseLearnedProgressDeadlineMs},");
             json.AppendLine($"  \"reverseEffectiveProgressDeadlineMs\": {result.ReverseEffectiveProgressDeadlineMs},");
             json.AppendLine($"  \"reverseAbsoluteOnTimeMs\": {result.ReverseAbsoluteOnTimeMs},");
-            json.AppendLine($"  \"reverseReleaseThresholdA\": {result.ReverseReleaseThresholdA.ToString("R", CultureInfo.InvariantCulture)},");
+            json.AppendLine($"  \"reverseReleaseThresholdA\": {StartupJsonNumber(result.ReverseReleaseThresholdA)},");
             json.AppendLine($"  \"sampleCount\": {samples.Count},");
             json.AppendLine($"  \"doEventCount\": {doEvents.Length}");
             json.AppendLine("}");
@@ -643,6 +723,13 @@ namespace Controller
                 .Replace("\"", "\\\"")
                 .Replace("\r", "\\r")
                 .Replace("\n", "\\n");
+        }
+
+        private static string StartupJsonNumber(double value)
+        {
+            return double.IsNaN(value) || double.IsInfinity(value)
+                ? "null"
+                : value.ToString("R", CultureInfo.InvariantCulture);
         }
     }
 }

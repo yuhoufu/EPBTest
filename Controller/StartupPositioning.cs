@@ -122,8 +122,17 @@ namespace Controller
         public StartupPositioningStage Stage { get; set; }
         public StartupPositioningCompletionKind CompletionKind { get; set; }
         public string Code { get; set; }
+        public string RootFaultCode { get; set; }
         public string Reason { get; set; }
         public double PeakCurrentA { get; set; }
+        public double LastCurrentA { get; set; }
+        public bool ForwardCommandAccepted { get; set; }
+        public bool DaqEvidenceFresh { get; set; }
+        public bool PowerEnergizationPermitted { get; set; }
+        public bool InfrastructureTransitionObserved { get; set; }
+        public string InfrastructureTransitionReason { get; set; }
+        public double NearZeroThresholdA { get; set; }
+        public int NearZeroConfirmMs { get; set; }
         public double LastSlopeAperMs { get; set; }
         public int ElapsedMs { get; set; }
         public int ForwardProgramProgressDeadlineMs { get; set; }
@@ -138,5 +147,32 @@ namespace Controller
         public double ReverseReleaseThresholdA { get; set; }
         public IReadOnlyList<StartupPositioningSample> Samples { get; set; } =
             Array.Empty<StartupPositioningSample>();
+    }
+
+    internal static class StartupPositioningFaultPolicy
+    {
+        internal const string OpenCircuitCode = "OpenCircuitOrOutputFault";
+
+        internal static string NormalizeRootCode(string code, string reason)
+        {
+            if (Contains(code, OpenCircuitCode) || Contains(reason, OpenCircuitCode))
+                return OpenCircuitCode;
+            return code ?? string.Empty;
+        }
+
+        internal static bool IsOpenCircuit(StartupPositioningResult result)
+        {
+            return result != null &&
+                   string.Equals(
+                       NormalizeRootCode(result.RootFaultCode ?? result.Code, result.Reason),
+                       OpenCircuitCode,
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool Contains(string value, string token)
+        {
+            return !string.IsNullOrWhiteSpace(value) &&
+                   value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
     }
 }

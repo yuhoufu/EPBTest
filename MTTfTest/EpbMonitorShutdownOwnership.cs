@@ -224,6 +224,14 @@ namespace MTEmbTest
         internal bool CanClose => CanExitApplication;
     }
 
+    internal enum ApplicationExitDisposition
+    {
+        None = 0,
+        Graceful = 1,
+        SafetyHandoff = 2,
+        ForcedDeadlineExit = 3
+    }
+
     internal sealed class ApplicationCloseReceipt
     {
         internal string SessionId { get; set; } = string.Empty;
@@ -232,6 +240,10 @@ namespace MTEmbTest
         internal bool HardwareResourcesReleased { get; set; }
         internal bool WatchdogTerminal { get; set; }
         internal bool SafetyHandoffAccepted { get; set; }
+        internal ApplicationExitDisposition Disposition { get; set; }
+        internal DateTime RequestedUtc { get; set; }
+        internal DateTime HardDeadlineUtc { get; set; }
+        internal string DiagnosticDetail { get; set; } = string.Empty;
         internal DateTime CompletedUtc { get; set; }
 
         internal bool CanExit => HardwareResourcesReleased &&

@@ -2607,9 +2607,8 @@ namespace MTEmbTest
                     if (main == null)
                         throw new InvalidOperationException(
                             "批量启动取消时缺少 Main-owned Watchdog shutdown owner。");
-                    await main.ShutdownWatchdogSessionAndReleaseUiAsync(
-                            "BatchStartCancelled")
-                        .ConfigureAwait(true);
+                    // 启动取消只发布运行停止事实。Watchdog 会话由人工停止/应用关闭
+                    // 的唯一事务收口，禁止在最终 StopSafetyResult 落盘前提前拆除。
                 }
                 catch (Exception ex)
                 {
@@ -3466,6 +3465,7 @@ namespace MTEmbTest
                     SessionLease = context?.SessionLease ?? shutdown.SessionLease,
                     HardwareResourcesReleased = true,
                     WatchdogTerminal = true,
+                    Disposition = ApplicationExitDisposition.Graceful,
                     CompletedUtc = DateTime.UtcNow
                 };
             }
@@ -3489,6 +3489,7 @@ namespace MTEmbTest
                         SessionLease = context.SessionLease,
                         HardwareResourcesReleased = true,
                         SafetyHandoffAccepted = true,
+                        Disposition = ApplicationExitDisposition.SafetyHandoff,
                         CompletedUtc = DateTime.UtcNow
                     };
                 }

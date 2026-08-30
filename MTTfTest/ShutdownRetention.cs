@@ -83,6 +83,7 @@ namespace MTEmbTest
     internal interface IRuntimeShutdownSessionPort
     {
         RuntimeShutdownMarkOutcome TryMarkSessionClosing(RuntimeTransportSessionContext context);
+        bool IsFinalSafetyResultDurable(RuntimeTransportSessionContext context);
         bool TryCompleteSessionClosing(
             RuntimeTransportSessionContext context,
             string terminalReason);
@@ -160,6 +161,11 @@ namespace MTEmbTest
             return WatchdogRuntime.CompleteSessionCloseTombstone(
                 context,
                 terminalReason);
+        }
+
+        public bool IsFinalSafetyResultDurable(RuntimeTransportSessionContext context)
+        {
+            return WatchdogRuntime.IsFinalSessionCloseSafetyDurable(context);
         }
     }
 
@@ -364,6 +370,7 @@ namespace MTEmbTest
             lock (Gate)
             {
                 if (!ReferenceEquals(_activeContext, context)) return false;
+                _lastDetachedContext = context;
                 _activeContext = null;
                 return true;
             }

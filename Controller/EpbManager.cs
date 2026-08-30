@@ -4949,11 +4949,13 @@ namespace Controller
         {
             if (string.Equals(
                     faultCode,
-                    "ForwardLoadRiseNotStarted",
-                    StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(
-                    faultCode,
                     "OpenCircuitOrOutputFault",
+                    StringComparison.OrdinalIgnoreCase))
+                return FaultRecoveryPolicy.CurrentRunDisableChannel;
+
+            if (string.Equals(
+                    faultCode,
+                    "ForwardLoadRiseNotStarted",
                     StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(
                     faultCode,

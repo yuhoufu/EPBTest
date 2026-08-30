@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -108,6 +109,10 @@ namespace MtEmbTest
         private Task _watchdogCloseTask;
         private Task<RuntimeShutdownReceipt> _watchdogShutdownTask;
         private ApplicationCloseReceipt _applicationCloseReceipt;
+        private WatchdogApplicationExitReceipt _applicationExitDeadlineReceipt;
+        private int _applicationExitDeadlineArmed;
+        private const int ApplicationExitHardDeadlineSeconds = 30;
+        private const int ApplicationExitDiagnosticDeadlineSeconds = 25;
 
         internal WinFormsWatchdogPostTarget WatchdogPostTarget =>
             _watchdogUiAdapter?.PostTarget;
@@ -152,6 +157,16 @@ namespace MtEmbTest
             if (receipt?.CanExit != true) return;
             var active = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
             if (!receipt.Matches(active)) return;
+            if (_applicationExitDeadlineReceipt != null)
+            {
+                receipt.RequestedUtc = new DateTime(
+                    _applicationExitDeadlineReceipt.RequestedUtcTicks,
+                    DateTimeKind.Utc);
+                receipt.HardDeadlineUtc = new DateTime(
+                    _applicationExitDeadlineReceipt.HardDeadlineUtcTicks,
+                    DateTimeKind.Utc);
+                receipt.DiagnosticDetail = _applicationExitDeadlineReceipt.Detail ?? string.Empty;
+            }
             _applicationCloseReceipt = receipt;
             Interlocked.Exchange(ref _watchdogAllowClose, 1);
         }
@@ -168,6 +183,7 @@ namespace MtEmbTest
 
         internal bool HandleWatchdogMainFormClosing(FormClosingEventArgs e)
         {
+            ArmApplicationExitDeadlineOnce("MainFormClosing");
             if (HasApplicationCloseReceipt)
             {
                 Interlocked.Exchange(ref _watchdogAllowClose, 1);
@@ -197,6 +213,7 @@ namespace MtEmbTest
             RuntimeShutdownIntent shutdownIntent)
         {
             if (IsDisposed || Disposing) return;
+            ArmApplicationExitDeadlineOnce(reason ?? "WatchdogOwnedExit");
             if (InvokeRequired)
             {
                 try
@@ -217,6 +234,93 @@ namespace MtEmbTest
                     monitor.PrepareForWatchdogRetryExit();
             }
             BeginWatchdogClose(reason ?? "WatchdogOwnedExit");
+        }
+
+        private void ArmApplicationExitDeadlineOnce(string reason)
+        {
+            if (Interlocked.CompareExchange(
+                    ref _applicationExitDeadlineArmed,
+                    1,
+                    0) != 0)
+                return;
+            var requestedUtc = DateTime.UtcNow;
+            _applicationExitDeadlineReceipt = WatchdogRuntime.ArmApplicationExitDeadline(
+                reason,
+                TimeSpan.FromSeconds(ApplicationExitHardDeadlineSeconds));
+            var deadlineUtc = _applicationExitDeadlineReceipt?.HardDeadlineUtcTicks > 0
+                ? new DateTime(
+                    _applicationExitDeadlineReceipt.HardDeadlineUtcTicks,
+                    DateTimeKind.Utc)
+                : requestedUtc.AddSeconds(ApplicationExitHardDeadlineSeconds);
+            _ = Task.Run(() => RunLocalApplicationExitDeadlineAsync(
+                requestedUtc,
+                deadlineUtc,
+                reason));
+        }
+
+        private async Task RunLocalApplicationExitDeadlineAsync(
+            DateTime requestedUtc,
+            DateTime deadlineUtc,
+            string reason)
+        {
+            var diagnosticsLogged = false;
+            while (DateTime.UtcNow < deadlineUtc)
+            {
+                var elapsed = DateTime.UtcNow - requestedUtc;
+                var remainingSeconds = Math.Max(
+                    0,
+                    (int)Math.Ceiling((deadlineUtc - DateTime.UtcNow).TotalSeconds));
+                if (!diagnosticsLogged &&
+                    elapsed >= TimeSpan.FromSeconds(ApplicationExitDiagnosticDeadlineSeconds))
+                {
+                    diagnosticsLogged = true;
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        $"ApplicationExitDiagnosticsDeadline Reason={reason};" +
+                        $"RemainingSeconds={remainingSeconds}",
+                        "独立看门狗");
+                }
+                TryPostApplicationExitCountdown(remainingSeconds);
+                var delay = deadlineUtc - DateTime.UtcNow;
+                if (delay <= TimeSpan.Zero) break;
+                await Task.Delay(delay > TimeSpan.FromSeconds(1)
+                        ? TimeSpan.FromSeconds(1)
+                        : delay)
+                    .ConfigureAwait(false);
+            }
+
+            WatchdogRuntime.MarkApplicationExitDeadlineForced(
+                "LocalMainProcess30SecondDeadline:" + reason);
+            ProjectLogHub.Write(
+                ProjectLogLevel.Error,
+                $"ApplicationExitForcedDeadlineExit Reason={reason};" +
+                $"RequestedUtc={requestedUtc:O};DeadlineUtc={deadlineUtc:O}",
+                "独立看门狗");
+            try
+            {
+                using (var process = Process.GetCurrentProcess())
+                    process.Kill();
+            }
+            catch
+            {
+                Environment.Exit(0);
+            }
+        }
+
+        private void TryPostApplicationExitCountdown(int remainingSeconds)
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    if (IsDisposed || Disposing) return;
+                    UseWaitCursor = true;
+                    Text = BuildWindowTitle() +
+                           $" - 正在安全退出，最迟{remainingSeconds}秒后结束程序";
+                }));
+            }
+            catch { }
         }
 
         internal Task<RuntimeShutdownReceipt> ShutdownWatchdogSessionAndReleaseUiAsync(
@@ -305,10 +409,10 @@ namespace MtEmbTest
             }
             lock (_watchdogExitGate)
             {
-                if (_watchdogCloseTask != null && !_watchdogCloseTask.IsCompleted)
+                if (_watchdogCloseTask != null)
                 {
                     UseWaitCursor = true;
-                    Text = BuildWindowTitle() + " - 正在安全退出…";
+                    Text = BuildWindowTitle() + " - 已加入同一安全退出事务";
                     ProjectLogHub.Write(
                         ProjectLogLevel.Info,
                         $"MainProcessExitJoinedExistingTask Reason={reason}",
@@ -343,7 +447,7 @@ namespace MtEmbTest
                 {
                     Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                     UseWaitCursor = false;
-                    Text = BuildWindowTitle() + " - 安全收口未完成，可重试关闭";
+                    Text = BuildWindowTitle() + " - 安全收口未完成，等待退出监督器";
                     ProjectLogHub.Write(
                         ProjectLogLevel.Error,
                         $"MainProcessExitStalled MonitorSafetyPreparationTimeout Reason={reason}",
@@ -356,7 +460,7 @@ namespace MtEmbTest
                 {
                     Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                     UseWaitCursor = false;
-                    Text = BuildWindowTitle() + " - 安全收口失败，可重试关闭";
+                    Text = BuildWindowTitle() + " - 安全收口失败，等待退出监督器";
                     ProjectLogHub.Write(
                         ProjectLogLevel.Error,
                         "MainProcessExitStalled MonitorSafetyPreparationFailed: " +
@@ -368,7 +472,7 @@ namespace MtEmbTest
                 {
                     Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                     UseWaitCursor = false;
-                    Text = BuildWindowTitle() + " - 安全条件未满足，可重试关闭";
+                    Text = BuildWindowTitle() + " - 安全条件未满足，等待退出监督器";
                     return;
                 }
             }
@@ -382,7 +486,7 @@ namespace MtEmbTest
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                 UseWaitCursor = false;
-                Text = BuildWindowTitle() + " - 安全交接尚未完成，可重试关闭";
+                Text = BuildWindowTitle() + " - 安全交接尚未完成，等待退出监督器";
                 return;
             }
             foreach (var applicationReceipt in applicationReceipts)
@@ -462,7 +566,7 @@ namespace MtEmbTest
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                 UseWaitCursor = false;
-                Text = BuildWindowTitle() + " - 子窗口释放超时，可重试关闭";
+                Text = BuildWindowTitle() + " - 子窗口释放超时，等待退出监督器";
                 ProjectLogHub.Write(
                     ProjectLogLevel.Error,
                     $"MainProcessExitStalled ChildWindowReleaseTimeout Reason={reason}; " +
@@ -475,7 +579,7 @@ namespace MtEmbTest
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                 UseWaitCursor = false;
-                Text = BuildWindowTitle() + " - 子窗口释放失败，可重试关闭";
+                Text = BuildWindowTitle() + " - 子窗口释放失败，等待退出监督器";
                 ProjectLogHub.Write(
                     ProjectLogLevel.Error,
                     "MainProcessExitStalled ChildWindowReleaseFailed: " +
@@ -485,6 +589,8 @@ namespace MtEmbTest
             }
 
             Interlocked.Exchange(ref _watchdogAllowClose, 1);
+            WatchdogRuntime.MarkApplicationExitGraceful(
+                "MainAndChildWindowsReleased");
             Close();
         }
 

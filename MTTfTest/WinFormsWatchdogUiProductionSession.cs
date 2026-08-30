@@ -86,6 +86,12 @@ namespace MTEmbTest
                 // NoEngineSession is already its durable no-work boundary.
                 return true;
             }
+
+            public bool IsFinalSafetyResultDurable(
+                RuntimeTransportSessionContext context)
+            {
+                return true;
+            }
         }
 
         private sealed class UiRetentionPipelinePort : IRuntimeShutdownPipelinePort

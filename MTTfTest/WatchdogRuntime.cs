@@ -815,6 +815,7 @@ namespace MTEmbTest
         private static readonly WatchdogClientTransportEngine TransportEngine =
             new WatchdogClientTransportEngine();
         private static RuntimeTransportSessionContext _activeContext;
+        private static RuntimeTransportSessionContext _lastDetachedContext;
         private static Func<WatchdogHeartbeat> _pendingHeartbeatProvider;
         private static string _journalExportDirectory;
         private static long _sessionGeneration;
@@ -2585,6 +2586,166 @@ namespace MTEmbTest
             FlushClientJournal(context);
         }
 
+        internal static WatchdogApplicationExitReceipt ArmApplicationExitDeadline(
+            string reason,
+            TimeSpan hardDeadline)
+        {
+            var context = CaptureContextOrLastDetached();
+            if (context == null || context.SessionLease <= 0) return null;
+            try
+            {
+                WatchdogApplicationExitReceipt existing;
+                if (WatchdogApplicationExitReceiptStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out existing) &&
+                    existing.SessionGeneration == context.SessionGeneration &&
+                    existing.SessionLease == context.SessionLease)
+                    return existing;
+
+                var now = DateTime.UtcNow;
+                var bounded = hardDeadline <= TimeSpan.Zero ||
+                              hardDeadline > TimeSpan.FromSeconds(30)
+                    ? TimeSpan.FromSeconds(30)
+                    : hardDeadline;
+                using (var process = Process.GetCurrentProcess())
+                {
+                    var receipt = new WatchdogApplicationExitReceipt
+                    {
+                        SessionId = context.SessionId,
+                        SessionGeneration = context.SessionGeneration,
+                        SessionLease = context.SessionLease,
+                        ExitIntentId = Guid.NewGuid().ToString("N"),
+                        Revision = 1,
+                        State = WatchdogApplicationExitState.Requested,
+                        MainProcessId = process.Id,
+                        MainProcessStartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                        RequestedUtcTicks = now.Ticks,
+                        DiagnosticDeadlineUtcTicks = now.AddSeconds(25).Ticks,
+                        HardDeadlineUtcTicks = now.Add(bounded).Ticks,
+                        Reason = reason ?? "ApplicationExitRequested",
+                        Detail = "ExactProcessExitDeadlineArmed"
+                    };
+                    WatchdogApplicationExitReceiptStore.WriteThrough(
+                        context.JournalDirectory,
+                        receipt);
+                    RecordClientEvent(
+                        context,
+                        "ApplicationExitRequested",
+                        $"Intent={receipt.ExitIntentId};PID={receipt.MainProcessId};" +
+                        $"HardDeadlineUtcTicks={receipt.HardDeadlineUtcTicks};Reason={receipt.Reason}");
+                    Send(context, new WatchdogMessage
+                    {
+                        Type = WatchdogMessageType.ApplicationExitRequested,
+                        SessionId = context.SessionId,
+                        CorrelationId = receipt.ExitIntentId,
+                        Reason = receipt.Reason,
+                        ApplicationExit = receipt
+                    });
+                    FlushClientJournal(context);
+                    return receipt;
+                }
+            }
+            catch (Exception ex)
+            {
+                RecordClientEvent(context, "ApplicationExitDeadlineArmFailed", ex.GetBaseException().Message);
+                FlushClientJournal(context);
+                return null;
+            }
+        }
+
+        internal static void MarkApplicationExitGraceful(string detail)
+        {
+            UpdateApplicationExitDisposition(
+                WatchdogApplicationExitState.GracefulCompleted,
+                false,
+                detail);
+        }
+
+        internal static void MarkApplicationExitDeadlineForced(string detail)
+        {
+            UpdateApplicationExitDisposition(
+                WatchdogApplicationExitState.ForcedDeadlineExit,
+                true,
+                detail);
+        }
+
+        private static void UpdateApplicationExitDisposition(
+            WatchdogApplicationExitState state,
+            bool terminationRequested,
+            string detail)
+        {
+            var context = CaptureContext();
+            if (context == null) return;
+            try
+            {
+                WatchdogApplicationExitReceipt receipt;
+                if (!WatchdogApplicationExitReceiptStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out receipt) ||
+                    receipt.SessionGeneration != context.SessionGeneration ||
+                    receipt.SessionLease != context.SessionLease ||
+                    state < receipt.State)
+                    return;
+                receipt.State = state;
+                receipt.ProcessTerminationRequested |= terminationRequested;
+                receipt.Revision++;
+                receipt.Detail = detail ?? string.Empty;
+                WatchdogApplicationExitReceiptStore.WriteThrough(
+                    context.JournalDirectory,
+                    receipt);
+                RecordClientEvent(
+                    context,
+                    state.ToString(),
+                    receipt.Detail);
+                FlushClientJournal(context);
+            }
+            catch (Exception ex)
+            {
+                RecordClientEvent(
+                    context,
+                    "ApplicationExitDispositionCommitFailed",
+                    ex.GetBaseException().Message);
+            }
+        }
+
+        private static void UpdateApplicationExitSafety(
+            RuntimeTransportSessionContext context,
+            StopSafetyResult result)
+        {
+            if (context == null || result == null) return;
+            try
+            {
+                WatchdogApplicationExitReceipt receipt;
+                if (!WatchdogApplicationExitReceiptStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out receipt) ||
+                    receipt.SessionGeneration != context.SessionGeneration ||
+                    receipt.SessionLease != context.SessionLease)
+                    return;
+                receipt.StopSafetyTransactionId = result.SafetyTransactionId == Guid.Empty
+                    ? receipt.StopSafetyTransactionId
+                    : result.SafetyTransactionId.ToString("N");
+                receipt.MotorsOff = result.MotorOffCommandSucceeded;
+                receipt.PowerOff = result.PowerOffConfirmed;
+                receipt.PressureSafe = result.PressureSafeConfirmed;
+                receipt.PersistenceDrained = result.PersistenceBoundaryConfirmed;
+                receipt.LogicalQuiescent = result.LogicalQuiescenceConfirmed;
+                receipt.DataContinuityVerified = !result.DataContinuityCompromised;
+                receipt.Revision++;
+                receipt.Detail = "FinalStopSafetyResultCommitted";
+                WatchdogApplicationExitReceiptStore.WriteThrough(
+                    context.JournalDirectory,
+                    receipt);
+            }
+            catch (Exception ex)
+            {
+                RecordClientEvent(context, "ApplicationExitSafetyCommitFailed", ex.GetBaseException().Message);
+            }
+        }
+
         /// <summary>
         /// Sends the protocol close marker using one frozen Engine identity.
         /// Retention shutdown calls this immediately before detaching the
@@ -2661,6 +2822,11 @@ namespace MTEmbTest
         private static RuntimeTransportSessionContext CaptureContext()
         {
             lock (Gate) return _activeContext;
+        }
+
+        private static RuntimeTransportSessionContext CaptureContextOrLastDetached()
+        {
+            lock (Gate) return _activeContext ?? _lastDetachedContext;
         }
 
         /// <summary>
@@ -2838,7 +3004,7 @@ namespace MTEmbTest
             const long version = 1;
             var tombstone = new WatchdogClosingTombstone
             {
-                SchemaVersion = 2,
+                SchemaVersion = 3,
                 SessionId = context.SessionId,
                 SessionGeneration = context.SessionGeneration,
                 SessionLease = context.SessionLease,
@@ -2947,27 +3113,20 @@ namespace MTEmbTest
                     !string.Equals(existing.StopSafetyTransactionId,
                         progress.TransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase))
                     return false;
-                var next = existing.SafetyStage;
-                if (progress.PhysicalSafe)
-                {
-                    next = WatchdogClosingSafetyStage.PhysicalSafe;
-                    existing.MotorsOff = true;
-                    existing.PowerOff = true;
-                }
-                if (progress.Stage >= StopSafetyStage.ClosePersistenceBoundary)
-                {
-                    next = WatchdogClosingSafetyStage.DataDrained;
-                    existing.PersistenceDrained = true;
-                }
-                if (progress.Stage >= StopSafetyStage.Completed)
-                {
-                    next = WatchdogClosingSafetyStage.LogicalQuiescent;
-                    existing.LogicalQuiescent = true;
-                }
-                if (next <= existing.SafetyStage) return true;
-                existing.SafetyStage = next;
+                if (progress.ProgressVersion < existing.ControllerProgressVersion)
+                    return false;
+                if (progress.ProgressVersion == existing.ControllerProgressVersion &&
+                    (int)progress.Stage <= existing.ControllerStopStage)
+                    return true;
+                existing.SchemaVersion = Math.Max(3, existing.SchemaVersion);
+                existing.ControllerStopStage = Math.Max(
+                    existing.ControllerStopStage,
+                    (int)progress.Stage);
+                existing.ControllerProgressVersion = Math.Max(
+                    existing.ControllerProgressVersion,
+                    progress.ProgressVersion);
+                existing.ControllerProgressDetail = progress.Detail ?? string.Empty;
                 existing.StateVersion++;
-                existing.TerminalReason = progress.Detail ?? existing.TerminalReason;
                 WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, existing);
                 return true;
             }
@@ -2991,25 +3150,57 @@ namespace MTEmbTest
                     !string.Equals(existing.StopSafetyTransactionId,
                         result.SafetyTransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase))
                     return false;
+                existing.SchemaVersion = Math.Max(3, existing.SchemaVersion);
                 existing.MotorsOff = result.MotorOffCommandSucceeded;
                 existing.PowerOff = result.PowerOffConfirmed;
                 existing.PressureSafe = result.PressureSafeConfirmed;
                 existing.PersistenceDrained = result.PersistenceBoundaryConfirmed;
                 existing.LogicalQuiescent = result.LogicalQuiescenceConfirmed;
                 existing.DataContinuityVerified = !result.DataContinuityCompromised;
-                existing.SafetyStage = result.LogicalQuiescenceConfirmed
+                existing.FinalSafetyResultCommitted = true;
+                var finalStage = result.LogicalQuiescenceConfirmed
                     ? WatchdogClosingSafetyStage.LogicalQuiescent
                     : result.PersistenceBoundaryConfirmed
                         ? WatchdogClosingSafetyStage.DataDrained
                         : result.PhysicalSafetyConfirmed
                             ? WatchdogClosingSafetyStage.PhysicalSafe
                             : WatchdogClosingSafetyStage.ClosingIntent;
+                existing.SafetyStage = existing.SafetyStage > finalStage
+                    ? existing.SafetyStage
+                    : finalStage;
                 existing.StateVersion++;
                 existing.TerminalReason = result.Outcome + ":" + (result.StageError ?? string.Empty);
                 WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, existing);
+                UpdateApplicationExitSafety(context, result);
                 return true;
             }
             catch { return false; }
+        }
+
+        internal static bool IsFinalSessionCloseSafetyDurable(
+            RuntimeTransportSessionContext context)
+        {
+            if (context == null || context.SessionLease <= 0) return true;
+            try
+            {
+                WatchdogClosingTombstone existing;
+                if (!WatchdogClosingTombstoneStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out existing) ||
+                    !IsExactClosingTombstoneIdentity(context, existing))
+                    return false;
+                // Schema 1/2 records predate the explicit marker. Preserve their
+                // readability; schema 3 requires the final Controller result when
+                // an exact StopSafety transaction is bound to the close fence.
+                return existing.SchemaVersion < 3 ||
+                       string.IsNullOrWhiteSpace(existing.StopSafetyTransactionId) ||
+                       existing.FinalSafetyResultCommitted;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool IsExactClosingTombstoneIdentity(

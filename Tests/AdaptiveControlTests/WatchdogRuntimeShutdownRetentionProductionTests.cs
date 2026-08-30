@@ -163,6 +163,45 @@ namespace AdaptiveControlTests
                         $"RuntimeClosingFenceRound{round}");
                     Assert(WatchdogRuntime.AdvanceSessionCloseSafety(
                             context,
+                            new StopSafetyProgressSnapshot
+                            {
+                                TransactionId = transactionId,
+                                RunId = currentRunId,
+                                RunEpoch = round,
+                                Generation = round,
+                                ProgressVersion = 7,
+                                Stage = StopSafetyStage.Completed,
+                                PhysicalSafe = true,
+                                Detail = "ControllerCompletedWithoutFinalEvidence"
+                            }),
+                        $"第{round}轮未能记录schema v3 Controller进度");
+                    Assert(WatchdogClosingTombstoneStore.TryRead(
+                               journal,
+                               context.SessionId,
+                               out var progressOnly) &&
+                           progressOnly.SchemaVersion == 3 &&
+                           progressOnly.ControllerStopStage ==
+                           (int)StopSafetyStage.Completed &&
+                            progressOnly.ControllerProgressVersion == 7 &&
+                            !progressOnly.FinalSafetyResultCommitted &&
+                           progressOnly.SafetyStage ==
+                           WatchdogClosingSafetyStage.ClosingIntent &&
+                           !progressOnly.MotorsOff && !progressOnly.PowerOff &&
+                           !progressOnly.PressureSafe &&
+                           !progressOnly.PersistenceDrained &&
+                           !progressOnly.LogicalQuiescent,
+                        $"第{round}轮Controller进度伪造了最终安全事实");
+                    var blockedBeforeFinal = WatchdogRuntime.ShutdownRuntimeWithReceipt(
+                        RuntimeShutdownIntent.SessionClose);
+                    var stillAttached = WatchdogRuntime.CaptureTransportSnapshot();
+                    Assert(blockedBeforeFinal != null && !blockedBeforeFinal.IsTerminal &&
+                           (blockedBeforeFinal.TerminalReason ?? string.Empty).Contains(
+                               "FinalStopSafetyResultNotDurable") &&
+                           stillAttached?.Engine?.SessionActive == true &&
+                           stillAttached.Context == context,
+                        $"第{round}轮最终StopSafetyResult落盘前错误拆除了Engine/Pipeline");
+                    Assert(WatchdogRuntime.AdvanceSessionCloseSafety(
+                            context,
                             new StopSafetyResult
                             {
                                 Outcome = StopSafetyOutcome.CompletedSafe,
@@ -177,7 +216,14 @@ namespace AdaptiveControlTests
                                 PersistenceBoundaryConfirmed = true,
                                 LogicalQuiescenceConfirmed = true
                             }),
-                        $"第{round}轮未能推进v2完整安全证明");
+                        $"第{round}轮未能提交schema v3完整安全证明");
+                    Assert(WatchdogClosingTombstoneStore.TryRead(
+                               journal,
+                               context.SessionId,
+                               out var finalEvidence) &&
+                           finalEvidence.FinalSafetyResultCommitted &&
+                           WatchdogRuntime.IsFinalSessionCloseSafetyDurable(context),
+                        $"第{round}轮最终StopSafetyResult未在传输拆除前耐久提交");
                     WatchdogRuntime.NotifyStopCompleted(
                         new WatchdogStopSummary
                         {
@@ -213,7 +259,9 @@ namespace AdaptiveControlTests
                                context.SessionId,
                                out var tombstone) &&
                            tombstone.State == WatchdogClosingTombstoneState.Terminal &&
-                           tombstone.StateVersion == 3 &&
+                            tombstone.SchemaVersion == 3 &&
+                            tombstone.FinalSafetyResultCommitted &&
+                           tombstone.StateVersion >= 4 &&
                            string.Equals(
                                tombstone.StopSafetyTransactionId,
                                transactionId.ToString("N"),
@@ -222,7 +270,7 @@ namespace AdaptiveControlTests
                                tombstone.StopRunId,
                                currentRunId.ToString("N"),
                                StringComparison.OrdinalIgnoreCase),
-                        $"第{round}轮Closing tombstone未从ClosingIntent推进至schema v2 Terminal");
+                        $"第{round}轮Closing tombstone未从ClosingIntent推进至schema v3 Terminal");
                     Assert(WatchdogControlMarker.IsRevoked(journal, context.SessionId),
                         $"第{round}轮Terminal后未发布legacy兼容撤权");
                 }

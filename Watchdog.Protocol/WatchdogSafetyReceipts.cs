@@ -6,6 +6,62 @@ using System.Web.Script.Serialization;
 
 namespace MTTFTest.Watchdog.Protocol
 {
+    public enum WatchdogApplicationExitState
+    {
+        Requested = 1,
+        DiagnosticsCaptured = 2,
+        GracefulCompleted = 3,
+        ForcedDeadlineExit = 4
+    }
+
+    /// <summary>
+    /// Durable, exact-process exit deadline shared by the WinForms process
+    /// and the independent Watchdog host.
+    /// </summary>
+    public sealed class WatchdogApplicationExitReceipt
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public string SessionId { get; set; } = string.Empty;
+        public long SessionGeneration { get; set; }
+        public long SessionLease { get; set; }
+        public string ExitIntentId { get; set; } = string.Empty;
+        public string StopSafetyTransactionId { get; set; } = string.Empty;
+        public long Revision { get; set; }
+        public WatchdogApplicationExitState State { get; set; }
+        public int MainProcessId { get; set; }
+        public long MainProcessStartUtcTicks { get; set; }
+        public long RequestedUtcTicks { get; set; }
+        public long DiagnosticDeadlineUtcTicks { get; set; }
+        public long HardDeadlineUtcTicks { get; set; }
+        public bool MotorsOff { get; set; }
+        public bool PowerOff { get; set; }
+        public bool PressureSafe { get; set; }
+        public bool PersistenceDrained { get; set; }
+        public bool LogicalQuiescent { get; set; }
+        public bool DataContinuityVerified { get; set; }
+        public bool ProcessTerminationRequested { get; set; }
+        public long OperatorNoticeAcknowledgedUtcTicks { get; set; }
+        public string Reason { get; set; } = string.Empty;
+        public string Detail { get; set; } = string.Empty;
+        public long UpdatedUtcTicks { get; set; }
+
+        public bool IsValidFor(string sessionId)
+        {
+            Guid parsed;
+            return SchemaVersion == 1 && Revision > 0 && SessionGeneration > 0 &&
+                   SessionLease > 0 && MainProcessId > 0 &&
+                   MainProcessStartUtcTicks > 0 && RequestedUtcTicks > 0 &&
+                   DiagnosticDeadlineUtcTicks >= RequestedUtcTicks &&
+                   HardDeadlineUtcTicks > DiagnosticDeadlineUtcTicks &&
+                   HardDeadlineUtcTicks <= RequestedUtcTicks + TimeSpan.FromSeconds(31).Ticks &&
+                   !string.IsNullOrWhiteSpace(SessionId) &&
+                   string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
+                   Guid.TryParseExact(ExitIntentId ?? string.Empty, "N", out parsed) &&
+                   State >= WatchdogApplicationExitState.Requested &&
+                   State <= WatchdogApplicationExitState.ForcedDeadlineExit;
+        }
+    }
+
     public enum WatchdogManualPauseStage
     {
         None = 0,
@@ -147,6 +203,85 @@ namespace MTTFTest.Watchdog.Protocol
                 value => value.Revision,
                 value => value.IsValidFor(sessionId),
                 out receipt);
+        }
+    }
+
+    public static class WatchdogApplicationExitReceiptStore
+    {
+        public static WatchdogApplicationExitReceipt WriteThrough(
+            string projectDirectory,
+            WatchdogApplicationExitReceipt receipt)
+        {
+            return WatchdogSafetyReceiptStore.WriteThrough(
+                projectDirectory,
+                receipt,
+                value => value.SessionId,
+                value => value.SessionGeneration,
+                value => value.SessionLease,
+                value => value.Revision,
+                WatchdogJournalPaths.LocalApplicationExitPath,
+                WatchdogJournalPaths.ProjectApplicationExitPath,
+                value => value.UpdatedUtcTicks = DateTime.UtcNow.Ticks,
+                value => value.IsValidFor(value.SessionId),
+                (previous, current) =>
+                    string.Equals(previous.ExitIntentId, current.ExitIntentId, StringComparison.Ordinal) &&
+                    previous.MainProcessId == current.MainProcessId &&
+                    previous.MainProcessStartUtcTicks == current.MainProcessStartUtcTicks &&
+                    previous.RequestedUtcTicks == current.RequestedUtcTicks &&
+                    previous.DiagnosticDeadlineUtcTicks == current.DiagnosticDeadlineUtcTicks &&
+                    previous.HardDeadlineUtcTicks == current.HardDeadlineUtcTicks &&
+                    current.State >= previous.State);
+        }
+
+        public static bool TryRead(
+            string projectDirectory,
+            string sessionId,
+            out WatchdogApplicationExitReceipt receipt)
+        {
+            return WatchdogSafetyReceiptStore.TryRead(
+                projectDirectory,
+                sessionId,
+                WatchdogJournalPaths.LocalApplicationExitPath,
+                WatchdogJournalPaths.ProjectApplicationExitPath,
+                value => value.Revision,
+                value => value.IsValidFor(sessionId),
+                out receipt);
+        }
+
+        public static bool TryReadLatestForced(out WatchdogApplicationExitReceipt receipt)
+        {
+            receipt = null;
+            try
+            {
+                var directory = WatchdogJournalPaths.LocalControlDirectory;
+                if (!Directory.Exists(directory)) return false;
+                var serializer = new JavaScriptSerializer();
+                receipt = Directory.GetFiles(
+                        directory,
+                        "session-*.application-exit.json",
+                        SearchOption.TopDirectoryOnly)
+                    .Select(path =>
+                    {
+                        try
+                        {
+                            return serializer.Deserialize<WatchdogApplicationExitReceipt>(
+                                File.ReadAllText(path, new UTF8Encoding(false)));
+                        }
+                        catch { return null; }
+                    })
+                    .Where(value => value != null &&
+                                    value.IsValidFor(value.SessionId) &&
+                                    value.State == WatchdogApplicationExitState.ForcedDeadlineExit &&
+                                    value.OperatorNoticeAcknowledgedUtcTicks <= 0)
+                    .OrderByDescending(value => value.UpdatedUtcTicks)
+                    .FirstOrDefault();
+                return receipt != null;
+            }
+            catch
+            {
+                receipt = null;
+                return false;
+            }
         }
     }
 

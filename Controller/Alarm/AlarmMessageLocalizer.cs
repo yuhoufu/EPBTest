@@ -21,7 +21,8 @@ namespace Controller.Alarm
                 ["ForwardCurrentRiseStalled"] = "正向电流上升停滞",
                 ["ForwardLowPlateauConfirmed"] = "连续8圈夹紧电流停留在合格下限以下，卡钳已停用",
                 ["ForwardLoadRiseNotStarted"] = "连续3次未检测到夹紧电流爬坡，卡钳已停用",
-                ["OpenCircuitOrOutputFault"] = "连续3次上电电流接近0，卡钳已停用",
+                ["OpenCircuitOrOutputFault"] =
+                    "上电后连续约200ms电流不高于0.10A，疑似卡钳、线束或驱动支路开路；本次运行已隔离该通道，下次启动将重新检测",
                 ["ForwardFastOverCurrentCutoff"] = "峰值快速保护已断开正向供电，本圈继续释放",
                 ["FastRiseCandidate"] = "快速夹紧候选已断开正向供电，正在等待完整数据确认",
                 ["ClampReachedNearTargetPlateau"] = "接近目标的高负载平台，已停止正向供电并继续释放",

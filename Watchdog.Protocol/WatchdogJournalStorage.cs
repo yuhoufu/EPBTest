@@ -310,6 +310,12 @@ namespace MTTFTest.Watchdog.Protocol
         public static string ProjectSafetyHandoffPath(string directory, string sessionId) => Path.Combine(
             ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".safety-handoff.json");
 
+        public static string LocalApplicationExitPath(string sessionId) => Path.Combine(
+            LocalControlDirectory, "session-" + SafeName(sessionId) + ".application-exit.json");
+
+        public static string ProjectApplicationExitPath(string directory, string sessionId) => Path.Combine(
+            ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".application-exit.json");
+
         public static string LocalRecoveryCommitPath(string sessionId) => Path.Combine(
             LocalControlDirectory, "session-" + SafeName(sessionId) + ".recovery-committed");
 
@@ -384,6 +390,7 @@ namespace MTTFTest.Watchdog.Protocol
                     .Concat(directory.GetFiles("session-*.closing.json", SearchOption.TopDirectoryOnly))
                     .Concat(directory.GetFiles("session-*.manual-pause.json", SearchOption.TopDirectoryOnly))
                     .Concat(directory.GetFiles("session-*.safety-handoff.json", SearchOption.TopDirectoryOnly))
+                    .Concat(directory.GetFiles("session-*.application-exit.json", SearchOption.TopDirectoryOnly))
                     .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
                     .OrderBy(file => file.LastWriteTimeUtc).ToList();
                 foreach (var file in files.Where(file => file.LastWriteTimeUtc < cutoff).ToArray())

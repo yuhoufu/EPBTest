@@ -129,6 +129,7 @@ namespace MTTFTest.Watchdog.Protocol
             return string.Equals(messageType, WatchdogMessageType.RunStopped, StringComparison.Ordinal) ||
                    string.Equals(messageType, WatchdogMessageType.RunCompleted, StringComparison.Ordinal) ||
                    string.Equals(messageType, WatchdogMessageType.ApplicationClosing, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ApplicationExitRequested, StringComparison.Ordinal) ||
                    string.Equals(messageType, WatchdogMessageType.ShutdownExpected, StringComparison.Ordinal);
         }
 

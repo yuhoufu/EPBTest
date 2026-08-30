@@ -17,7 +17,8 @@ namespace AdaptiveControlTests
             Run("过冲第8个完整提交圈才锁存", OvershootLatchesAfterEighthCommit, ref passed);
             Run("已完成永久报警使用不可变触发圈号", CompletedAlarmKeepsConfirmedTerminalCycle, ref passed);
             Run("反向或落盘失败不得提交异常圈", IncompleteCycleCannotCommitEvidence, ref passed);
-            Run("四类客户报警使用持久禁用策略", CustomerFaultsDisableWithoutRecovery, ref passed);
+            Run("近零电流仅当前运行隔离且其余客户报警持久禁用",
+                CustomerFaultsDisableWithoutRecovery, ref passed);
             Run("高负载停滞只允许人工完整重学习", HighLoadStallRequiresOperatorRelearning, ref passed);
             Run("持久禁用只改Enabled且保留已落盘圈数", PersistentDisablePreservesDiskProgress, ref passed);
             Run("共享故障组一次原子禁用且失败不部分提交", PersistentDisableGroupIsAtomic, ref passed);
@@ -126,7 +127,6 @@ namespace AdaptiveControlTests
             foreach (var code in new[]
                      {
                          "ForwardLoadRiseNotStarted",
-                         "OpenCircuitOrOutputFault",
                          "ForwardLowPlateauConfirmed",
                          "ForwardPeakOvershoot2AConfirmed"
                      })
@@ -134,6 +134,11 @@ namespace AdaptiveControlTests
                     EpbManager.ResolveChannelFaultRecoveryPolicy(code, false) ==
                     FaultRecoveryPolicy.NonRecoverableDisableChannel,
                     $"{code} 未使用不可恢复持久禁用策略");
+            Assert(
+                EpbManager.ResolveChannelFaultRecoveryPolicy(
+                    "OpenCircuitOrOutputFault",
+                    false) == FaultRecoveryPolicy.CurrentRunDisableChannel,
+                "近零电流未使用当前进程隔离策略");
             Assert(
                 EpbManager.ResolveChannelFaultRecoveryPolicy("DaqSampleStale", false) ==
                 FaultRecoveryPolicy.Recoverable,

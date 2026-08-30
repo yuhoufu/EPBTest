@@ -514,7 +514,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (receipt == null) { reason = "ReceiptMissing"; return false; }
             if (message.Session != null || message.Heartbeat != null || message.StopSummary != null ||
                 message.CheckpointMirror != null || message.BatchStartFailure != null ||
-                message.SafetyHandoff != null ||
+                message.SafetyHandoff != null || message.ApplicationExit != null ||
                 !string.IsNullOrEmpty(message.Reason) ||
                 !string.IsNullOrEmpty(message.RecoveryFailureCode) || message.RecoveryFailurePermanent ||
                 !string.IsNullOrEmpty(message.RecoveryFailureDetail) ||
@@ -641,6 +641,7 @@ namespace MTTFTest.Watchdog.Protocol
         public const string RunStopped = "RunStopped";
         public const string RunCompleted = "RunCompleted";
         public const string ApplicationClosing = "ApplicationClosing";
+        public const string ApplicationExitRequested = "ApplicationExitRequested";
         public const string ShutdownExpected = "ShutdownExpected";
         public const string WatchdogTakeoverExit = "WatchdogTakeoverExit";
         public const string SafetyHandoffRequested = "SafetyHandoffRequested";
@@ -713,6 +714,7 @@ namespace MTTFTest.Watchdog.Protocol
         /// <summary>Structured durable failure decision (v4 exact wire shape).</summary>
         public RecoveryFailureReceipt RecoveryFailureReceipt { get; set; }
         public WatchdogSafetyHandoff SafetyHandoff { get; set; }
+        public WatchdogApplicationExitReceipt ApplicationExit { get; set; }
     }
 
     public sealed class WatchdogSafetyHandoff

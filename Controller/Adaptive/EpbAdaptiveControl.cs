@@ -292,8 +292,8 @@ namespace Controller.Adaptive
         private const int WindowMinimumSamples = 8;
         private const int WindowRetentionMs = 350;
         private const int PredictionSlopeWindowMs = 30;
-        private const int NearZeroFaultMs = 200;
-        private const double NearZeroA = 0.10;
+        internal const int NearZeroFaultMs = 200;
+        internal const double NearZeroA = 0.10;
         private const double MinimumPredictionSlopeAperMs = 0.001;
         private const double MaximumPredictionSlopeAperMs = 1.0;
         private const double MaximumPredictionLeadMs = 100.0;

@@ -162,6 +162,13 @@ namespace MTEmbTest
                 return Outcome != RuntimeShutdownMarkOutcome.IdentityMismatch &&
                        Outcome != RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
             }
+
+            public bool IsFinalSafetyResultDurable(
+                RuntimeTransportSessionContext context)
+            {
+                return Outcome != RuntimeShutdownMarkOutcome.IdentityMismatch &&
+                       Outcome != RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+            }
         }
 
         private sealed class ProductionPipelineDecorator : IRuntimeShutdownPipelinePort

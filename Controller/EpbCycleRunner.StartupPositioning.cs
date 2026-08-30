@@ -98,11 +98,14 @@ namespace Controller
             var trace = new List<StartupPositioningSample>();
             var slopeWindow = new Queue<(long Tick, double Current)>();
             var peakCurrentA = 0.0;
+            var lastCurrentA = double.NaN;
             var lastSlope = 0.0;
             var stage = StartupPositioningStage.ForwardPositioning;
             var lastFreshnessCheckTick = 0L;
             var freshnessReason = string.Empty;
             var forwardConfirmed = false;
+            var forwardCommandAccepted = false;
+            var daqEvidenceFresh = false;
             var holdMs = Math.Max(0, keepMs ?? DefaultPreReleaseKeepMs);
             var reverseAbsoluteOnTimeMs = Math.Max(
                 500,
@@ -137,15 +140,22 @@ namespace Controller
                 string code,
                 string reason)
             {
+                var rootCode = StartupPositioningFaultPolicy.NormalizeRootCode(code, reason);
                 return new StartupPositioningResult
                 {
                     Channel = _channel,
                     Succeeded = succeeded,
                     Stage = failedStage,
                     CompletionKind = completion,
-                    Code = code ?? string.Empty,
+                    Code = rootCode,
+                    RootFaultCode = rootCode,
                     Reason = reason ?? string.Empty,
                     PeakCurrentA = peakCurrentA,
+                    LastCurrentA = lastCurrentA,
+                    ForwardCommandAccepted = forwardCommandAccepted,
+                    DaqEvidenceFresh = daqEvidenceFresh,
+                    NearZeroThresholdA = EpbAdaptiveCurrentStateMachine.NearZeroA,
+                    NearZeroConfirmMs = EpbAdaptiveCurrentStateMachine.NearZeroFaultMs,
                     LastSlopeAperMs = lastSlope,
                     ElapsedMs = ElapsedSince(startedTick),
                     ForwardProgramProgressDeadlineMs = timing.ProgramProgressDeadlineMs,
@@ -166,6 +176,7 @@ namespace Controller
             {
                 var now = Stopwatch.GetTimestamp();
                 var magnitude = Math.Abs(currentA);
+                lastCurrentA = magnitude;
                 peakCurrentA = Math.Max(peakCurrentA, magnitude);
                 slopeWindow.Enqueue((now, magnitude));
                 while (slopeWindow.Count > 0 &&
@@ -218,6 +229,7 @@ namespace Controller
                 if (!CommandForward(nameof(StartupPositioningAsync)))
                     return Result(false, stage, StartupPositioningCompletionKind.None,
                         "ForwardCommandFailed", "正向输出命令失败。");
+                forwardCommandAccepted = true;
 
                 var forwardClassifier = new StartupPositioningCurrentClassifier(
                     _peakIgnoreMs,
@@ -245,6 +257,7 @@ namespace Controller
                                 : "InvalidCurrentSample",
                             "正向定位电流采样无效：" + sampleReason);
                     }
+                    daqEvidenceFresh = true;
                     var magnitude = Math.Abs(currentA);
                     var elapsed = ElapsedBetween(forwardStart, Stopwatch.GetTimestamp());
                     AddTrace(currentA, null);

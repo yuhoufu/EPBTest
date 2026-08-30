@@ -1325,6 +1325,42 @@ namespace AdaptiveControlTests
                 EpbManager.ClassifyStartupPositioningFailure(false, false, true) ==
                 FaultClassification.SoftwareTransient,
                 "启动定位输出关闭失败被错误锁存为卡钳硬件故障");
+            Assert(
+                StartupPositioningFaultPolicy.NormalizeRootCode(
+                    "ForwardPositioningFault",
+                    "OpenCircuitOrOutputFault I=0.082A") ==
+                "OpenCircuitOrOutputFault",
+                "启动定位近零电流根因仍被ForwardPositioningFault掩盖");
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(
+                    false, false, false,
+                    openCircuit: true,
+                    forwardCommandAccepted: true,
+                    daqEvidenceFresh: true,
+                    powerEnergizationPermitted: true,
+                    infrastructureTransition: false) ==
+                FaultClassification.HardwareConfirmed,
+                "命令/DAQ/供电证据完整的近零电流未确认通道故障");
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(
+                    false, false, false,
+                    openCircuit: true,
+                    forwardCommandAccepted: true,
+                    daqEvidenceFresh: true,
+                    powerEnergizationPermitted: true,
+                    infrastructureTransition: true) ==
+                FaultClassification.SoftwareTransient,
+                "基础设施切换窗口内近零电流被误锁存为卡钳故障");
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(
+                    false, false, false,
+                    openCircuit: true,
+                    forwardCommandAccepted: true,
+                    daqEvidenceFresh: false,
+                    powerEnergizationPermitted: true,
+                    infrastructureTransition: false) ==
+                FaultClassification.SoftwareTransient,
+                "缺少新鲜DAQ证据的近零电流被误锁存为卡钳故障");
         }
 
         private static void StartupPositioningConfirmsHighCurrentAfterInrush()
@@ -3692,6 +3728,15 @@ namespace AdaptiveControlTests
             Assert(fastRise.Contains("快速夹紧候选已断开正向供电") &&
                    !fastRise.Contains("FastRiseCandidate"),
                 "快速夹紧候选仍暴露英文码，或未明确已经执行安全断电");
+
+            var openCircuit = AlarmMessageLocalizer.ToUserMessage(
+                "OpenCircuitOrOutputFault I=0.082A");
+            Assert(openCircuit.Contains("连续约200ms") &&
+                   openCircuit.Contains("0.10A") &&
+                   openCircuit.Contains("本次运行已隔离") &&
+                   openCircuit.Contains("下次启动将重新检测") &&
+                   !openCircuit.Contains("OpenCircuitOrOutputFault"),
+                "近零电流报警未给出阈值、隔离范围和下次启动策略");
 
             var learningWarning = AlarmMessageLocalizer.ToUserWarningMessage(
                 "RapidLoadRiseWithoutObservedEmpty I=1.893A Threshold=1.189A");

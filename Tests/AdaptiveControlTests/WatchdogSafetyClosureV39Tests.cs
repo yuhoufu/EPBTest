@@ -14,6 +14,7 @@ namespace AdaptiveControlTests
             Run("schema v2完整安全证明才允许Sidecar终止", VersionTwoTerminalRequiresAllSafetyProof, ref passed);
             Run("handoff耐久状态拒绝revision和状态倒退并从损坏副本回退", HandoffStoreIsMonotonicAndRecoversCorruption, ref passed);
             Run("Watchdog v4安全交接结构化消息精确往返", SafetyHandoffWireRoundTrips, ref passed);
+            Run("应用退出意图绑定精确进程且状态单调", ApplicationExitReceiptIsExactAndMonotonic, ref passed);
             return passed;
         }
 
@@ -154,6 +155,79 @@ namespace AdaptiveControlTests
                    roundTrip.SafetyHandoff.ExecutionAuthorizationRevoked &&
                    roundTrip.SafetyHandoff.CallbacksIsolated,
                 "v4安全交接DTO未保持精确身份与进程隔离证明");
+        }
+
+        private static void ApplicationExitReceiptIsExactAndMonotonic()
+        {
+            var directory = Path.Combine(Path.GetTempPath(),
+                "MTTFTest.ApplicationExitV40." + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var session = Guid.NewGuid().ToString("N");
+            var now = DateTime.UtcNow;
+            try
+            {
+                var receipt = new WatchdogApplicationExitReceipt
+                {
+                    SessionId = session,
+                    SessionGeneration = 4,
+                    SessionLease = 8,
+                    ExitIntentId = Guid.NewGuid().ToString("N"),
+                    Revision = 1,
+                    State = WatchdogApplicationExitState.Requested,
+                    MainProcessId = 1234,
+                    MainProcessStartUtcTicks = now.AddMinutes(-1).Ticks,
+                    RequestedUtcTicks = now.Ticks,
+                    DiagnosticDeadlineUtcTicks = now.AddSeconds(25).Ticks,
+                    HardDeadlineUtcTicks = now.AddSeconds(30).Ticks,
+                    Reason = "UnitTest"
+                };
+                WatchdogApplicationExitReceiptStore.WriteThrough(directory, receipt);
+                var wire = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(
+                    new WatchdogMessage
+                    {
+                        Type = WatchdogMessageType.ApplicationExitRequested,
+                        SessionId = session,
+                        CorrelationId = receipt.ExitIntentId,
+                        ApplicationExit = receipt
+                    }));
+                Assert(wire.ApplicationExit != null &&
+                       wire.ApplicationExit.MainProcessId == 1234 &&
+                       wire.ApplicationExit.MainProcessStartUtcTicks ==
+                       receipt.MainProcessStartUtcTicks &&
+                       wire.ApplicationExit.HardDeadlineUtcTicks ==
+                       receipt.HardDeadlineUtcTicks,
+                    "应用退出意图线格式丢失精确进程或截止时间");
+
+                receipt.Revision = 2;
+                receipt.State = WatchdogApplicationExitState.DiagnosticsCaptured;
+                WatchdogApplicationExitReceiptStore.WriteThrough(directory, receipt);
+                var regressed = new WatchdogApplicationExitReceipt
+                {
+                    SessionId = session,
+                    SessionGeneration = 4,
+                    SessionLease = 8,
+                    ExitIntentId = receipt.ExitIntentId,
+                    Revision = 3,
+                    State = WatchdogApplicationExitState.Requested,
+                    MainProcessId = receipt.MainProcessId,
+                    MainProcessStartUtcTicks = receipt.MainProcessStartUtcTicks,
+                    RequestedUtcTicks = receipt.RequestedUtcTicks,
+                    DiagnosticDeadlineUtcTicks = receipt.DiagnosticDeadlineUtcTicks,
+                    HardDeadlineUtcTicks = receipt.HardDeadlineUtcTicks
+                };
+                AssertThrows(
+                    () => WatchdogApplicationExitReceiptStore.WriteThrough(directory, regressed),
+                    "应用退出意图允许状态倒退");
+                Assert(WatchdogLifecyclePolicy.IsTerminalMessage(
+                        WatchdogMessageType.ApplicationExitRequested),
+                    "应用退出意图未进入终态消息策略");
+            }
+            finally
+            {
+                DeleteFile(WatchdogJournalPaths.LocalApplicationExitPath(session));
+                DeleteFile(WatchdogJournalPaths.LocalApplicationExitPath(session) + ".bak");
+                try { Directory.Delete(directory, true); } catch { }
+            }
         }
 
         private static WatchdogClosingTombstone CreateClosing(

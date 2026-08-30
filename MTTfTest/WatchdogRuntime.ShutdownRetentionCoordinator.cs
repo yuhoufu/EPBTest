@@ -118,6 +118,34 @@ namespace MTEmbTest
             if (retained != null && active != null &&
                 !ReferenceEquals(retained.Context, active))
                 return CreatePreviousRuntimeShutdownIncomplete(retained);
+            if (retained != null && active != null &&
+                retained.Phase == RuntimeShutdownRetentionPhase.RetainedFailure &&
+                (retained.FailureKind ?? string.Empty).IndexOf(
+                    "FinalStopSafetyResultNotDurable",
+                    StringComparison.Ordinal) >= 0)
+            {
+                if (!_session.IsFinalSafetyResultDurable(active))
+                    return retained.RuntimeReceipt;
+                if (!_ownership.TryDetachActive(active))
+                    return CreatePreviousRuntimeShutdownIncomplete(active, retained.Version);
+                var resumed = retained.With(
+                    retained.ClosingAttempt,
+                    NextVersion(retained.Version),
+                    retained.EngineReceipt,
+                    retained.RuntimeReceipt,
+                    retained.EngineShutdownStarted,
+                    retained.SkipEngineShutdown,
+                    retained.JournalFlushCompleted,
+                    retained.JournalDisposed,
+                    retained.MarkOutcome,
+                    string.Empty,
+                    RuntimeShutdownRetentionPhase.SessionClosing);
+                if (!TryPublishOwnerStage(retained, resumed))
+                    return CaptureRetainedReceiptOr(
+                        retained.RuntimeReceipt,
+                        retained.EngineReceipt);
+                return ExecuteRetainedShutdown(resumed);
+            }
             if (retained != null) return ExecuteRetainedShutdown(retained);
 
             if (active == null)
@@ -163,6 +191,32 @@ namespace MTEmbTest
                 markOutcome, string.Empty, RuntimeShutdownRetentionPhase.OwnershipReserved);
             lock (_executionGate) _owner = owner;
             NotifyStagePublished(owner);
+            // The exact final StopSafetyResult must be durable before Engine,
+            // callback pipeline or journal ownership can be detached. A close
+            // fence with no StopSafety transaction represents a no-controller
+            // session and is explicitly accepted by the production port.
+            if (!_session.IsFinalSafetyResultDurable(active))
+            {
+                var blocked = CreateStageFailureReceipt(
+                    active,
+                    NextVersion(owner.Version),
+                    null,
+                    "FinalStopSafetyResultNotDurable",
+                    null);
+                var blockedOwner = owner.With(
+                    owner.ClosingAttempt,
+                    blocked.RetentionVersion,
+                    null,
+                    blocked,
+                    false,
+                    false,
+                    false,
+                    false,
+                    owner.MarkOutcome,
+                    blocked.TerminalReason,
+                    RuntimeShutdownRetentionPhase.RetainedFailure);
+                return PublishStageOrReturn(owner, blockedOwner, blocked);
+            }
             if (!_ownership.TryDetachActive(active))
                 return CreatePreviousRuntimeShutdownIncomplete(active, ownerVersion);
             var closingOwner = owner.With(

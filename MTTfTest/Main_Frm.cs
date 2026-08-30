@@ -6,9 +6,11 @@ using MTEmbTest;
 using System;
 using System.Collections.Concurrent;
 using System.Drawing;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using MTTFTest.Watchdog.Protocol;
 
 namespace MtEmbTest
 {
@@ -42,7 +44,43 @@ namespace MtEmbTest
             _ = typeof(TwoDeviceAiAcquirer).FullName; // 解决断电打不到TwoDeviceAiAcquirer中的问题
 
             _watchdogUiAdapter = new MainWatchdogUiLifecycleAdapter(this);
+            Shown += ShowPreviousForcedExitNoticeOnce;
 
+        }
+
+        private void ShowPreviousForcedExitNoticeOnce(object sender, EventArgs e)
+        {
+            WatchdogApplicationExitReceipt previous;
+            if (!WatchdogApplicationExitReceiptStore.TryReadLatestForced(out previous))
+                return;
+            var unresolved = string.Join("、", new[]
+            {
+                previous.MotorsOff ? null : "电机断能",
+                previous.PowerOff ? null : "程控电源关闭",
+                previous.PressureSafe ? null : "压力安全",
+                previous.PersistenceDrained ? null : "数据落盘",
+                previous.LogicalQuiescent ? null : "逻辑静默"
+            }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            ShowMainOperatorMessage(
+                "检测到上次程序因关闭超过30秒被强制结束。" +
+                (string.IsNullOrWhiteSpace(unresolved)
+                    ? "关闭证据已完整记录。"
+                    : "未确认事项：" + unresolved + "。") +
+                "\r\n请先确认设备状态和上一批数据，再开始新试验。",
+                "上次关闭异常",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            try
+            {
+                previous.OperatorNoticeAcknowledgedUtcTicks = DateTime.UtcNow.Ticks;
+                previous.Revision++;
+                previous.Detail = (previous.Detail ?? string.Empty) +
+                                  ";OperatorNoticeAcknowledged";
+                WatchdogApplicationExitReceiptStore.WriteThrough(
+                    string.Empty,
+                    previous);
+            }
+            catch { }
         }
 
         private DialogResult ShowMainOperatorMessage(

@@ -32,7 +32,12 @@ namespace Controller
         Recoverable = 0,
         NonRecoverable = 1,
         NonRecoverableDisableChannel = 2,
-        UnattendedBatchRecycle = 3
+        UnattendedBatchRecycle = 3,
+        /// <summary>
+        /// Isolate the channel for the lifetime of the current process without
+        /// changing the project's persistent Enabled/permanent-alarm state.
+        /// </summary>
+        CurrentRunDisableChannel = 4
     }
 
     public sealed class ControlFault
@@ -69,7 +74,8 @@ namespace Controller
         public FaultClassification Classification { get; }
         public FaultRecoveryPolicy RecoveryPolicy { get; }
         public bool DisableChannelOnLatch =>
-            RecoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel;
+            RecoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel ||
+            RecoveryPolicy == FaultRecoveryPolicy.CurrentRunDisableChannel;
     }
 
     public enum HydraulicPhaseKind

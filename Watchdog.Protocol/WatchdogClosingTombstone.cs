@@ -30,7 +30,7 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public sealed class WatchdogClosingTombstone
     {
-        public int SchemaVersion { get; set; } = 2;
+        public int SchemaVersion { get; set; } = 3;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -43,6 +43,14 @@ namespace MTTFTest.Watchdog.Protocol
         public WatchdogClosingTombstoneState State { get; set; }
         public WatchdogClosingSafetyStage SafetyStage { get; set; } =
             WatchdogClosingSafetyStage.ClosingIntent;
+        /// <summary>
+        /// Controller progress is diagnostic only. It must never synthesize
+        /// any of the final safety evidence flags below.
+        /// </summary>
+        public int ControllerStopStage { get; set; }
+        public long ControllerProgressVersion { get; set; }
+        public string ControllerProgressDetail { get; set; } = string.Empty;
+        public bool FinalSafetyResultCommitted { get; set; }
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
         public bool PressureSafe { get; set; }
@@ -56,7 +64,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         public bool IsValidFor(string sessionId)
         {
-            return (SchemaVersion == 1 || SchemaVersion == 2) &&
+            return (SchemaVersion == 1 || SchemaVersion == 2 || SchemaVersion == 3) &&
                    !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    SessionGeneration > 0 && SessionLease > 0 && StateVersion > 0 &&
@@ -65,7 +73,7 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public bool IsSafetyTerminal =>
-            SchemaVersion == 2 &&
+            SchemaVersion >= 2 &&
             State == WatchdogClosingTombstoneState.Terminal &&
             SafetyStage == WatchdogClosingSafetyStage.Terminal &&
             MotorsOff && PowerOff && PressureSafe && PersistenceDrained && LogicalQuiescent;
@@ -95,6 +103,8 @@ namespace MTTFTest.Watchdog.Protocol
                     tombstone.StateVersion < previous.StateVersion ||
                     tombstone.State < previous.State ||
                     tombstone.EffectiveSafetyStage < previous.EffectiveSafetyStage ||
+                    tombstone.ControllerProgressVersion < previous.ControllerProgressVersion ||
+                    previous.FinalSafetyResultCommitted && !tombstone.FinalSafetyResultCommitted ||
                     !SameOptionalIdentity(previous.StopSafetyTransactionId,
                         tombstone.StopSafetyTransactionId))
                     throw new InvalidOperationException("Watchdog closing tombstone revision or identity regressed.");

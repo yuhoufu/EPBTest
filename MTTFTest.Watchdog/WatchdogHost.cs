@@ -626,6 +626,7 @@ namespace MTTFTest.Watchdog
         private int _manualStopTakeoverStarted;
         private int _manualPauseSafetyTakeoverStarted;
         private int _safetyHandoffStarted;
+        private int _applicationExitDeadlineStarted;
         private int _physicalStopConfirmed;
         private int _transitionActive;
         private int _operatorTransitionStopStarted;
@@ -1504,6 +1505,12 @@ namespace MTTFTest.Watchdog
                     PublishTerminal("ExpectedApplicationExit", message.Reason);
                     _stop.Cancel();
                     break;
+                case WatchdogMessageType.ApplicationExitRequested:
+                    Record(
+                        "ApplicationExitRequested",
+                        message.ApplicationExit?.ExitIntentId ?? message.Reason);
+                    ObserveApplicationExitIntent();
+                    break;
                 case WatchdogMessageType.SafetyHandoffRequested:
                     Record("SafetyHandoffRequested", message.SafetyHandoff?.HandoffId ?? message.Reason);
                     WatchdogSafetyHandoffReceipt requested;
@@ -1518,10 +1525,11 @@ namespace MTTFTest.Watchdog
                     CancelAutomaticTakeover("ShutdownExpected");
                     Record(message.Type, message.Reason);
                     PublishTerminal("ExpectedApplicationExit", message.Reason);
-                    StartExpectedMainExitObserver(
-                        message.Type,
-                        message.Reason,
-                        completeHostOnExit: true);
+                    if (!ObserveApplicationExitIntent())
+                        StartExpectedMainExitObserver(
+                            message.Type,
+                            message.Reason,
+                            completeHostOnExit: true);
                     break;
                 case WatchdogMessageType.WatchdogTakeoverExit:
                     // Watchdog接管已完成StopCompleted后，旧主进程只交回UI/传输所有权。
@@ -1779,6 +1787,7 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     await Task.Delay(250, token).ConfigureAwait(false);
+                    ObserveApplicationExitIntent();
                     if (ObserveDurableSafetyState()) continue;
                     if (!_attached) continue;
                     if (WatchdogRecoveryCommitMarker.TryRead(
@@ -4113,7 +4122,8 @@ namespace MTTFTest.Watchdog
                     Record("DurableClosingTerminalObserved",
                         $"StateVersion={closing.StateVersion};SafetyStage={closing.EffectiveSafetyStage}");
                     PublishTerminal("DurableClosingTerminalObserved", closing.TerminalReason);
-                    _stop.Cancel();
+                    if (!ObserveApplicationExitIntent())
+                        _stop.Cancel();
                     return true;
                 }
             }
@@ -4145,6 +4155,207 @@ namespace MTTFTest.Watchdog
                 return !_attached;
             }
             return false;
+        }
+
+        private bool ObserveApplicationExitIntent()
+        {
+            WatchdogApplicationExitReceipt receipt;
+            if (!WatchdogApplicationExitReceiptStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out receipt) ||
+                receipt == null || !receipt.IsValidFor(_args.SessionId))
+                return false;
+
+            int processId;
+            long processStartUtcTicks;
+            lock (_journalGate)
+            {
+                processId = _journal.CurrentPid;
+                processStartUtcTicks = _journal.CurrentProcessStartUtcTicks;
+            }
+            if (processId != receipt.MainProcessId ||
+                processStartUtcTicks != receipt.MainProcessStartUtcTicks)
+            {
+                Record(
+                    "ApplicationExitIntentIdentityMismatch",
+                    $"IntentPid={receipt.MainProcessId};CurrentPid={processId};" +
+                    $"IntentStart={receipt.MainProcessStartUtcTicks};CurrentStart={processStartUtcTicks}");
+                return false;
+            }
+
+            WatchdogClosingTombstone closing;
+            if (WatchdogClosingTombstoneStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out closing) &&
+                (closing.SessionGeneration != receipt.SessionGeneration ||
+                 closing.SessionLease != receipt.SessionLease))
+            {
+                Record("ApplicationExitIntentLeaseMismatch", receipt.ExitIntentId);
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(
+                    ref _applicationExitDeadlineStarted,
+                    1,
+                    0) == 0)
+            {
+                CancelAutomaticTakeover("ApplicationExitRequested");
+                _journal.ManualStopRequested = true;
+                _ = Task.Run(() => RunApplicationExitDeadlineAsync(receipt.ExitIntentId));
+            }
+            return true;
+        }
+
+        private async Task RunApplicationExitDeadlineAsync(string exitIntentId)
+        {
+            try
+            {
+                WatchdogApplicationExitReceipt receipt;
+                if (!TryReadExactApplicationExit(exitIntentId, out receipt)) return;
+
+                await DelayUntilUtcTicks(receipt.DiagnosticDeadlineUtcTicks).ConfigureAwait(false);
+                if (IsExactProcessAlive(
+                        receipt.MainProcessId,
+                        receipt.MainProcessStartUtcTicks))
+                {
+                    Record(
+                        "ApplicationExitDiagnosticsDeadline",
+                        $"Intent={receipt.ExitIntentId};PID={receipt.MainProcessId}");
+                    try
+                    {
+                        using (var process = Process.GetProcessById(receipt.MainProcessId))
+                        {
+                            if (MatchesExactProcess(process, receipt.MainProcessStartUtcTicks))
+                            {
+                                var capture = CaptureMiniDumpBeforeTerminationAsync(
+                                    process,
+                                    "ApplicationExitDiagnosticsDeadline");
+                                await Task.WhenAny(capture, Task.Delay(2000)).ConfigureAwait(false);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Record("ApplicationExitDiagnosticFailed", ex.GetBaseException().Message);
+                    }
+                    UpdateApplicationExitReceipt(
+                        exitIntentId,
+                        WatchdogApplicationExitState.DiagnosticsCaptured,
+                        false,
+                        "BoundedDiagnosticsCaptured");
+                }
+
+                if (!TryReadExactApplicationExit(exitIntentId, out receipt)) return;
+                await DelayUntilUtcTicks(receipt.HardDeadlineUtcTicks).ConfigureAwait(false);
+                if (!IsExactProcessAlive(
+                        receipt.MainProcessId,
+                        receipt.MainProcessStartUtcTicks))
+                {
+                    UpdateApplicationExitReceipt(
+                        exitIntentId,
+                        WatchdogApplicationExitState.GracefulCompleted,
+                        false,
+                        "MainProcessExitedBeforeDeadline");
+                    _stop.Cancel();
+                    return;
+                }
+
+                using (var process = Process.GetProcessById(receipt.MainProcessId))
+                {
+                    if (!MatchesExactProcess(process, receipt.MainProcessStartUtcTicks))
+                    {
+                        Record("ApplicationExitDeadlineIdentityMismatch", receipt.ExitIntentId);
+                        return;
+                    }
+                    UpdateApplicationExitReceipt(
+                        exitIntentId,
+                        WatchdogApplicationExitState.ForcedDeadlineExit,
+                        true,
+                        "ExactMainProcessTerminatedAt30SecondDeadline");
+                    process.Kill();
+                    Record(
+                        "ApplicationExitDeadlineTerminationRequested",
+                        $"Intent={receipt.ExitIntentId};PID={receipt.MainProcessId}");
+                }
+                _stop.Cancel();
+            }
+            catch (Exception ex)
+            {
+                Record("ApplicationExitDeadlineSupervisorFailed", ex.GetBaseException().Message);
+                Interlocked.Exchange(ref _applicationExitDeadlineStarted, 0);
+            }
+        }
+
+        private static async Task DelayUntilUtcTicks(long deadlineUtcTicks)
+        {
+            while (DateTime.UtcNow.Ticks < deadlineUtcTicks)
+            {
+                var remaining = TimeSpan.FromTicks(
+                    Math.Max(0, deadlineUtcTicks - DateTime.UtcNow.Ticks));
+                await Task.Delay(remaining > TimeSpan.FromSeconds(1)
+                        ? TimeSpan.FromSeconds(1)
+                        : remaining)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        private bool TryReadExactApplicationExit(
+            string exitIntentId,
+            out WatchdogApplicationExitReceipt receipt)
+        {
+            if (!WatchdogApplicationExitReceiptStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out receipt))
+                return false;
+            return string.Equals(
+                receipt.ExitIntentId,
+                exitIntentId,
+                StringComparison.Ordinal);
+        }
+
+        private void UpdateApplicationExitReceipt(
+            string exitIntentId,
+            WatchdogApplicationExitState state,
+            bool terminationRequested,
+            string detail)
+        {
+            try
+            {
+                WatchdogApplicationExitReceipt receipt;
+                if (!TryReadExactApplicationExit(exitIntentId, out receipt) ||
+                    state < receipt.State)
+                    return;
+                WatchdogClosingTombstone closing;
+                if (WatchdogClosingTombstoneStore.TryRead(
+                        _args.JournalDirectory,
+                        _args.SessionId,
+                        out closing) &&
+                    closing.SessionGeneration == receipt.SessionGeneration &&
+                    closing.SessionLease == receipt.SessionLease)
+                {
+                    receipt.MotorsOff = closing.MotorsOff;
+                    receipt.PowerOff = closing.PowerOff;
+                    receipt.PressureSafe = closing.PressureSafe;
+                    receipt.PersistenceDrained = closing.PersistenceDrained;
+                    receipt.LogicalQuiescent = closing.LogicalQuiescent;
+                    receipt.DataContinuityVerified = closing.DataContinuityVerified;
+                    receipt.StopSafetyTransactionId = closing.StopSafetyTransactionId;
+                }
+                receipt.State = state;
+                receipt.ProcessTerminationRequested |= terminationRequested;
+                receipt.Revision++;
+                receipt.Detail = detail ?? string.Empty;
+                WatchdogApplicationExitReceiptStore.WriteThrough(
+                    _args.JournalDirectory,
+                    receipt);
+            }
+            catch (Exception ex)
+            {
+                Record("ApplicationExitReceiptUpdateFailed", ex.GetBaseException().Message);
+            }
         }
 
         private bool DurableStopOrPauseCompletionSupersedesTakeover()
