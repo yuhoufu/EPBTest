@@ -59,6 +59,13 @@ namespace MTTFTest.Watchdog
         StartupFailed = 2
     }
 
+    internal enum WatchdogCloseFenceAction
+    {
+        None = 0,
+        SuppressRelaunch = 1,
+        TerminateSession = 2
+    }
+
     internal sealed class WatchdogJournal
     {
         public int SchemaVersion { get; set; } = WatchdogJournalPolicy.CurrentSchemaVersion;
@@ -621,6 +628,7 @@ namespace MTTFTest.Watchdog
         private int _physicalStopConfirmed;
         private int _transitionActive;
         private int _operatorTransitionStopStarted;
+        private long _observedClosingFenceVersion;
         private string _activeTakeoverCorrelationId = string.Empty;
         private readonly TaskCompletionSource<bool> _operatorStopAcknowledged =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -796,27 +804,36 @@ namespace MTTFTest.Watchdog
 
         private async Task<int> RunAsync()
         {
-            WatchdogClosingTombstone closing;
-            if (WatchdogClosingTombstoneStore.TryRead(
-                    _args.JournalDirectory,
-                    _args.SessionId,
-                    out closing) || IsSessionRevoked())
+            var startupFenceAction = CaptureCloseFenceAction(
+                activeConnection: false,
+                currentProcessAlive: IsCurrentProcessAlive(),
+                out var closing,
+                out var legacyRevoked);
+            if (startupFenceAction != WatchdogCloseFenceAction.None)
             {
                 _journal.ManualStopRequested = true;
                 var revoked = _relaunchCoordinator.Revoke(
-                    "TerminalSessionObservedOnStartup");
+                    closing?.State == WatchdogClosingTombstoneState.Closing
+                        ? "ClosingSessionObservedOnStartup"
+                        : "TerminalSessionObservedOnStartup");
                 if (revoked?.Record != null)
                     lock (_journalGate) ApplyDurablePermitLocked(revoked.Record);
+                var startupEvent = closing?.State == WatchdogClosingTombstoneState.Closing
+                    ? "ClosingSessionObservedOnStartup"
+                    : "TerminalSessionObservedOnStartup";
                 RecordEvent(
-                    "TerminalSessionObservedOnStartup",
+                    startupEvent,
                     closing == null
-                        ? "LegacyRevocationMarker"
+                        ? legacyRevoked
+                            ? "LegacyRevocationMarker"
+                            : "UnknownCloseFence"
                         : $"State={closing.State};Version={closing.StateVersion};" +
                           $"Generation={closing.SessionGeneration};Lease={closing.SessionLease}");
                 _transitionWindow.Hide();
                 PublishTerminal(
-                    "TerminalSessionObservedOnStartup",
-                    closing?.TerminalReason ?? "SessionRevoked");
+                    startupEvent,
+                    closing?.TerminalReason ??
+                    (legacyRevoked ? "SessionRevoked" : "ClosingOwnerUnavailable"));
                 SaveJournal();
                 return 0;
             }
@@ -960,11 +977,20 @@ namespace MTTFTest.Watchdog
             switch (message.Type)
             {
                 case WatchdogMessageType.Attach:
-                    if (IsSessionRevoked())
+                    var attachFenceAction = CaptureCloseFenceAction(
+                        activeConnection: false,
+                        currentProcessAlive: IsCurrentProcessAlive(),
+                        out var attachClosing,
+                        out _);
+                    if (attachFenceAction != WatchdogCloseFenceAction.None)
                     {
                         _journal.ManualStopRequested = true;
-                        Record("SessionRevoked", "AttachRevocationMarker");
-                        PublishTerminal("SessionRevoked", "AttachRevocationMarker");
+                        var attachReason = attachClosing?.State ==
+                                           WatchdogClosingTombstoneState.Closing
+                            ? "AttachClosingFence"
+                            : "AttachRevocationMarker";
+                        Record("SessionRevoked", attachReason);
+                        PublishTerminal("SessionRevoked", attachReason);
                         _stop.Cancel();
                         break;
                     }
@@ -1461,14 +1487,14 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.RunStopped:
                 case WatchdogMessageType.RunCompleted:
                     _journal.ManualStopRequested = true;
+                    CancelAutomaticTakeover(message.Type);
                     Record(message.Type, message.Reason);
                     if (Interlocked.CompareExchange(ref _operatorTransitionStopStarted, 0, 0) != 0)
-                    {
                         _operatorStopAcknowledged.TrySetResult(true);
-                        break;
-                    }
-                    PublishTerminal(message.Type, message.Reason);
-                    _stop.Cancel();
+                    // RunStopped/RunCompleted only close the relaunch permit.
+                    // Keep the exact pipe alive until StopCompleted proves the
+                    // physical/data stop boundary, or an explicit application
+                    // exit completes the connection lifecycle.
                     break;
                 case WatchdogMessageType.ApplicationClosing:
                     _journal.ManualStopRequested = true;
@@ -1775,15 +1801,35 @@ namespace MTTFTest.Watchdog
                                 $"Generation={durableCommitGeneration}",
                                 commitHeartbeat);
                     }
-                    if (IsSessionRevoked())
+                    var closeFenceAction = CaptureCloseFenceAction(
+                        activeConnection: _attached,
+                        currentProcessAlive: IsCurrentProcessAlive(),
+                        out var closingFence,
+                        out var legacyRevoked);
+                    if (closeFenceAction == WatchdogCloseFenceAction.SuppressRelaunch)
+                    {
+                        ObserveClosingFence(closingFence);
+                        continue;
+                    }
+                    if (closeFenceAction == WatchdogCloseFenceAction.TerminateSession)
                     {
                         // 过渡窗人工停止会先写耐久撤权 marker，让主程序在管道失效时
                         // 也能主动全断能。此时 Sidecar 必须继续等待该停止收口，不能
                         // 被自己刚写的 marker 提前结束。
                         if (IsTransitionOperatorStopInProgress()) continue;
                         _journal.ManualStopRequested = true;
-                        Record("SessionRevoked", "RevocationMarker");
-                        PublishTerminal("SessionRevoked", "RevocationMarker");
+                        var closingOwnerExited = closingFence?.State ==
+                                                 WatchdogClosingTombstoneState.Closing;
+                        var eventType = closingOwnerExited
+                            ? "SessionClosingOwnerExited"
+                            : "SessionRevoked";
+                        var detail = closingOwnerExited
+                            ? $"StateVersion={closingFence.StateVersion};MainProcessAlive=False"
+                            : legacyRevoked
+                                ? "LegacyRevocationMarker"
+                                : $"ClosingTombstoneState={closingFence?.State}";
+                        Record(eventType, detail);
+                        PublishTerminal(eventType, detail);
                         _stop.Cancel();
                         continue;
                     }
@@ -4055,6 +4101,67 @@ namespace MTTFTest.Watchdog
                        _args.JournalDirectory,
                        _args.SessionId,
                        out _);
+        }
+
+        internal static WatchdogCloseFenceAction EvaluateCloseFenceAction(
+            bool legacyRevoked,
+            WatchdogClosingTombstone closing,
+            bool activeConnection,
+            bool currentProcessAlive)
+        {
+            if (legacyRevoked)
+                return WatchdogCloseFenceAction.TerminateSession;
+            if (closing == null)
+                return WatchdogCloseFenceAction.None;
+            if (closing.State == WatchdogClosingTombstoneState.Terminal)
+                return WatchdogCloseFenceAction.TerminateSession;
+            if (closing.State != WatchdogClosingTombstoneState.Closing)
+                return WatchdogCloseFenceAction.TerminateSession;
+            return activeConnection && currentProcessAlive
+                ? WatchdogCloseFenceAction.SuppressRelaunch
+                : WatchdogCloseFenceAction.TerminateSession;
+        }
+
+        private WatchdogCloseFenceAction CaptureCloseFenceAction(
+            bool activeConnection,
+            bool currentProcessAlive,
+            out WatchdogClosingTombstone closing,
+            out bool legacyRevoked)
+        {
+            legacyRevoked = WatchdogControlMarker.IsRevoked(
+                _args.JournalDirectory,
+                _args.SessionId);
+            WatchdogClosingTombstoneStore.TryRead(
+                _args.JournalDirectory,
+                _args.SessionId,
+                out closing);
+            return EvaluateCloseFenceAction(
+                legacyRevoked,
+                closing,
+                activeConnection,
+                currentProcessAlive);
+        }
+
+        private void ObserveClosingFence(WatchdogClosingTombstone closing)
+        {
+            if (closing == null) return;
+            _journal.ManualStopRequested = true;
+            if (Interlocked.Read(ref _observedClosingFenceVersion) ==
+                closing.StateVersion)
+                return;
+            Interlocked.Exchange(
+                ref _observedClosingFenceVersion,
+                closing.StateVersion);
+            CancelAutomaticTakeover("ClosingFenceObserved");
+            var revoked = _relaunchCoordinator.Revoke("ClosingFenceObserved");
+            if (revoked?.Record != null)
+                lock (_journalGate) ApplyDurablePermitLocked(revoked.Record);
+            Record(
+                "ClosingFenceObserved",
+                $"StateVersion={closing.StateVersion};" +
+                $"Generation={closing.SessionGeneration};Lease={closing.SessionLease};" +
+                "Action=SuppressRelaunchAndAwaitStopCompleted");
+            SaveJournal();
         }
 
         private bool MatchesCurrentProcess(Process process)

@@ -376,9 +376,11 @@ namespace MtEmbTest
             {
                 Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
                 UseWaitCursor = false;
-                Text = BuildWindowTitle();
+                Text = BuildWindowTitle() + BuildWatchdogCloseFailureTitle(receipt);
                 ProjectLogHub.Write(ProjectLogLevel.Warning,
-                    "Watchdog主窗体退出保留资源未完成；窗口继续保持可见，等待下一次安全收口。",
+                    "Watchdog主窗体退出保留资源未完成；窗口继续保持可见。" +
+                    " Reason=" + (receipt?.TerminalReason ?? "NoReceipt") +
+                    "; 再次点击将加入同一安全收口协议，不会绕过身份门禁。",
                     "独立看门狗");
                 return;
             }
@@ -439,6 +441,19 @@ namespace MtEmbTest
 
             Interlocked.Exchange(ref _watchdogAllowClose, 1);
             Close();
+        }
+
+        private static string BuildWatchdogCloseFailureTitle(
+            RuntimeShutdownReceipt receipt)
+        {
+            if (receipt?.IsStickyBlockingFailure == true)
+                return " - 退出受阻：Watchdog会话身份冲突，请导出诊断包";
+            if (receipt == null)
+                return " - 退出受阻：Watchdog未返回关闭回执，可重试关闭";
+            return " - 退出受阻：" +
+                   (string.IsNullOrWhiteSpace(receipt.TerminalReason)
+                       ? "Watchdog安全终态未完成，可重试关闭"
+                       : receipt.TerminalReason + "，可重试关闭");
         }
 
         internal bool ReleaseWatchdogUiResources(RuntimeShutdownReceipt receipt)

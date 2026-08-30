@@ -1202,6 +1202,13 @@ namespace MTEmbTest
         internal bool IsCloseAuthorized => Disposition == RuntimeShutdownDisposition.Terminal ||
             Disposition == RuntimeShutdownDisposition.DetachedRetained;
 
+        internal bool IsStickyBlockingFailure =>
+            Disposition == RuntimeShutdownDisposition.BlockingFailure &&
+            string.Equals(
+                TerminalReason,
+                "ShutdownIdentityMismatch",
+                StringComparison.Ordinal);
+
         internal RuntimeShutdownReceipt(long closingAttempt, ShutdownReceipt engineReceipt,
             RuntimeCallbackIngressDrainReceipt ingressReceipt, WatchdogStopAllDrainReceipt stopAllReceipt,
             WatchdogRuntimeCallbackDrainReceipt callbackReceipt, RuntimeCallbackPipelineState pipelineState,

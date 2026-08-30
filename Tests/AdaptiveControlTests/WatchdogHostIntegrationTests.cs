@@ -35,7 +35,72 @@ namespace AdaptiveControlTests
             Run("有效活动Run快照不被空RunId或恢复子进程心跳覆盖",
                 LastVerifiedActiveRunSurvivesCleanupHeartbeat,
                 ref passed);
+            Run("Closing只撤销重拉且终态判定独立",
+                ClosingFenceSuppressesRelaunchWithoutPrematureTerminal,
+                ref passed);
             return passed;
+        }
+
+        private static void ClosingFenceSuppressesRelaunchWithoutPrematureTerminal()
+        {
+            var closing = new WatchdogClosingTombstone
+            {
+                SessionId = Guid.NewGuid().ToString("N"),
+                SessionGeneration = 7,
+                SessionLease = 11,
+                StateVersion = 1,
+                State = WatchdogClosingTombstoneState.Closing
+            };
+            Assert(
+                WatchdogHost.EvaluateCloseFenceAction(
+                    legacyRevoked: false,
+                    closing: closing,
+                    activeConnection: true,
+                    currentProcessAlive: true) ==
+                WatchdogCloseFenceAction.SuppressRelaunch,
+                "活动NamedPipe和存活owner遇到Closing时错误发布终态");
+            Assert(
+                WatchdogHost.EvaluateCloseFenceAction(
+                    legacyRevoked: false,
+                    closing: closing,
+                    activeConnection: false,
+                    currentProcessAlive: true) ==
+                WatchdogCloseFenceAction.TerminateSession,
+                "启动/重连路径错误恢复了遗留Closing会话");
+            Assert(
+                WatchdogHost.EvaluateCloseFenceAction(
+                    legacyRevoked: false,
+                    closing: closing,
+                    activeConnection: true,
+                    currentProcessAlive: false) ==
+                WatchdogCloseFenceAction.TerminateSession,
+                "Closing owner退出后Sidecar仍保持会话");
+
+            closing.State = WatchdogClosingTombstoneState.Terminal;
+            Assert(
+                WatchdogHost.EvaluateCloseFenceAction(
+                    legacyRevoked: false,
+                    closing: closing,
+                    activeConnection: true,
+                    currentProcessAlive: true) ==
+                WatchdogCloseFenceAction.TerminateSession,
+                "Terminal tombstone未结束Sidecar");
+            Assert(
+                WatchdogHost.EvaluateCloseFenceAction(
+                    legacyRevoked: true,
+                    closing: null,
+                    activeConnection: true,
+                    currentProcessAlive: true) ==
+                WatchdogCloseFenceAction.TerminateSession,
+                "legacy revocation未保持立即终态兼容语义");
+            Assert(
+                WatchdogHost.EvaluateCloseFenceAction(
+                    legacyRevoked: false,
+                    closing: null,
+                    activeConnection: true,
+                    currentProcessAlive: true) ==
+                WatchdogCloseFenceAction.None,
+                "无关闭围栏时错误抑制正常会话");
         }
 
         private static void LastVerifiedActiveRunSurvivesCleanupHeartbeat()

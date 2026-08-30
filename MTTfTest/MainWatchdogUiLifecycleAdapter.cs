@@ -319,6 +319,15 @@ namespace MtEmbTest
                     ReleaseAfterTerminal(receipt);
                     return receipt;
                 }
+                // Exact identity mismatch is deliberately sticky inside the
+                // retention coordinator.  Replaying the same receipt for the
+                // remainder of the 15-second retry window cannot make progress
+                // and only makes repeated close clicks look unresponsive.
+                if (receipt?.IsStickyBlockingFailure == true)
+                {
+                    LogBlockedClose(reason, receipt, sticky: true);
+                    return receipt;
+                }
                 // Journal/archive cleanup is non-safety work only after the
                 // receipt proves SafeExitAllowed.  Retry it for a bounded
                 // window so ordinary transient I/O still reaches Terminal;
@@ -336,15 +345,30 @@ namespace MtEmbTest
             while (DateTime.UtcNow < deadlineUtc);
 
             if (receipt == null || !receipt.IsCloseAuthorized)
-                ProjectLogHub.Write(ProjectLogLevel.Warning,
-                    "Watchdog会话尚未达到终态（" + (reason ?? "unknown") +
-                    "），关闭被安全阻止。Disposition=" +
-                    (receipt?.Disposition.ToString() ?? "NoReceipt") +
-                    "; Reason=" + (receipt?.TerminalReason ?? "unknown") +
-                    "; PipelineTerminal=" + (receipt?.PipelineTerminal ?? false) +
-                    "; JournalFlush=" + (receipt?.JournalFlushCompleted ?? false) +
-                    "; JournalDisposed=" + (receipt?.JournalDisposed ?? false), "独立看门狗");
+                LogBlockedClose(reason, receipt, sticky: false);
             return receipt;
+        }
+
+        private void LogBlockedClose(
+            string reason,
+            RuntimeShutdownReceipt receipt,
+            bool sticky)
+        {
+            RuntimeTransportSessionContext context;
+            lock (_gate) context = _context;
+            var identity = WatchdogRuntime.DescribeSessionCloseIdentity(context);
+            ProjectLogHub.Write(
+                ProjectLogLevel.Warning,
+                "Watchdog会话尚未达到终态（" + (reason ?? "unknown") +
+                "），关闭被安全阻止。Disposition=" +
+                (receipt?.Disposition.ToString() ?? "NoReceipt") +
+                "; Reason=" + (receipt?.TerminalReason ?? "unknown") +
+                "; Sticky=" + sticky +
+                "; PipelineTerminal=" + (receipt?.PipelineTerminal ?? false) +
+                "; JournalFlush=" + (receipt?.JournalFlushCompleted ?? false) +
+                "; JournalDisposed=" + (receipt?.JournalDisposed ?? false) +
+                "; " + identity,
+                "独立看门狗");
         }
 
         private Task<RuntimeShutdownReceipt> EnsureShutdownTaskLocked(

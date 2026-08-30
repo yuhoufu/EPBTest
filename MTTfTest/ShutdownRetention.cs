@@ -34,7 +34,9 @@ namespace MTEmbTest
         internal bool TombstoneDurable { get; set; }
         internal string Error { get; set; } = string.Empty;
         internal bool IsIrreversible => TombstoneDurable &&
-                                        Tombstone?.SessionLease == Context?.SessionLease;
+                                        Tombstone?.SessionLease == Context?.SessionLease &&
+                                        MarkOutcome != RuntimeShutdownMarkOutcome.IdentityMismatch &&
+                                        MarkOutcome != RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
     }
 
     /// <summary>

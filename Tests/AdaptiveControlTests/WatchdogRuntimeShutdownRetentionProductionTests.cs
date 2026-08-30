@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MTEmbTest;
+using MTTFTest.Watchdog.Protocol;
 
 namespace AdaptiveControlTests
 {
@@ -47,10 +50,182 @@ namespace AdaptiveControlTests
                 ref passed, failures);
             Run("normal/recovery/emergency共用retention gate", AllEntryModesUseSharedGate,
                 ref passed, failures);
+            Run("真实Runtime与Sidecar两轮Closing等待StopCompleted后终态",
+                RealRuntimeClosingFenceWaitsForStopCompletedAcrossTwoRounds,
+                ref passed, failures);
             if (failures.Count != 0)
                 throw new InvalidOperationException(
                     "Runtime shutdown retention专项失败: " + string.Join("; ", failures));
             return passed;
+        }
+
+        private static void RealRuntimeClosingFenceWaitsForStopCompletedAcrossTwoRounds()
+        {
+            var journal = Path.Combine(
+                Path.GetTempPath(),
+                "MTTFTest.RuntimeClosingFence." + Guid.NewGuid().ToString("N"));
+            var sessions = new List<string>();
+            Directory.CreateDirectory(journal);
+            try
+            {
+                try { WatchdogRuntime.ShutdownRuntimeWithReceipt(); } catch { }
+                WatchdogRuntime.ConfigureJournalExportPath(journal);
+                var currentRunId = Guid.Empty;
+                WatchdogRuntime.SetHeartbeatProvider(() => new WatchdogHeartbeat
+                {
+                    Phase = "RuntimeClosingFenceAcceptance",
+                    RunId = currentRunId == Guid.Empty
+                        ? string.Empty
+                        : currentRunId.ToString("N"),
+                    RunEpoch = 1,
+                    RunActive = true,
+                    EnabledChannels = new[] { 4 }
+                });
+
+                for (var round = 1; round <= 2; round++)
+                {
+                    currentRunId = Guid.NewGuid();
+                    var transactionId = Guid.NewGuid();
+                    var start = WatchdogRuntime.StartSessionAsync(new[] { 4 })
+                        .GetAwaiter().GetResult();
+                    Assert(start != null && start.Attached,
+                        $"第{round}轮真实Runtime/Sidecar未达到Exact Attached：" +
+                        (start?.Warning ?? "<null>"));
+                    sessions.Add(start.SessionId);
+
+                    var before = WatchdogRuntime.CaptureTransportSnapshot();
+                    Assert(before != null && before.IsStable && before.Context != null &&
+                           before.Engine != null && before.Engine.IsAttached,
+                        $"第{round}轮缺少稳定Attached复合快照");
+                    var context = before.Context;
+                    var authorityPid = before.Engine.AuthorityProcessId;
+                    Assert(authorityPid > 0 && IsProcessAlive(authorityPid),
+                        $"第{round}轮Sidecar权威进程身份无效");
+
+                    WatchdogRuntime.NotifyManualStop(
+                        $"RuntimeClosingFenceRound{round}");
+                    var fence = WatchdogRuntime.BeginSessionCloseExact(
+                        context,
+                        "ManualStopIntent",
+                        transactionId,
+                        currentRunId,
+                        round,
+                        round);
+                    Assert(fence != null && fence.IsIrreversible &&
+                           fence.MarkOutcome == RuntimeShutdownMarkOutcome.Marked &&
+                           fence.Tombstone?.State == WatchdogClosingTombstoneState.Closing &&
+                           fence.Tombstone.StateVersion == 1,
+                        $"第{round}轮未建立原子Closing围栏：" +
+                        (fence?.Error ?? "<null>"));
+
+                    var reused = WatchdogRuntime.BeginSessionCloseExact(
+                        context,
+                        "ManualStopIntent",
+                        transactionId,
+                        currentRunId,
+                        round,
+                        round);
+                    Assert(reused != null && reused.IsIrreversible &&
+                           reused.Tombstone?.State == WatchdogClosingTombstoneState.Closing &&
+                           reused.Tombstone.StateVersion == 1,
+                        $"第{round}轮同一停止事务未幂等复用Closing围栏");
+                    Assert(!WatchdogControlMarker.IsRevoked(journal, context.SessionId),
+                        $"第{round}轮普通Closing错误写入legacy revoked");
+                    WatchdogRuntime.NotifyRunStopped(new WatchdogStopSummary
+                    {
+                        Detail = $"RuntimeClosingFenceRound{round}:RunStopped"
+                    });
+
+                    var sidecarEvents = Path.Combine(
+                        journal,
+                        "session-" + WatchdogJournalPaths.SafeName(context.SessionId) +
+                        ".sidecar-events.jsonl");
+                    Assert(WaitUntilWithDelay(
+                            () => WatchdogJournalStore.ReadValidEvents(sidecarEvents)
+                                .Any(item => string.Equals(
+                                    item.EventType,
+                                    "ClosingFenceObserved",
+                                    StringComparison.Ordinal)),
+                            3000),
+                        $"第{round}轮Sidecar未观察到Closing抑制重拉事件");
+                    Thread.Sleep(1000);
+                    var duringClosing = WatchdogRuntime.CaptureTransportSnapshot();
+                    Assert(duringClosing?.Engine?.SessionActive == true &&
+                           duringClosing.Engine.IsClosing &&
+                           duringClosing.Engine.AuthorityProcessId == authorityPid &&
+                           IsProcessAlive(authorityPid),
+                        $"第{round}轮Sidecar在StopCompleted前提前退出或被替代");
+                    Assert(!WatchdogControlMarker.IsRevoked(journal, context.SessionId),
+                        $"第{round}轮延迟窗口内出现legacy revoked");
+
+                    WatchdogRuntime.NotifyPhysicalStopConfirmed(
+                        $"RuntimeClosingFenceRound{round}");
+                    WatchdogRuntime.NotifyStopCompleted(
+                        new WatchdogStopSummary
+                        {
+                            Detail = $"RuntimeClosingFenceRound{round}:PhysicalStopConfirmed"
+                        },
+                        "ManualStopCompleted");
+
+                    var manifest = Path.Combine(
+                        journal,
+                        "session-" + WatchdogJournalPaths.SafeName(context.SessionId) +
+                        ".manifest.json");
+                    Assert(WaitUntilWithDelay(
+                            () => File.Exists(manifest) &&
+                                  File.ReadAllText(manifest).Contains("ManualStopCompleted"),
+                            5000),
+                        $"第{round}轮Sidecar journal缺少ManualStopCompleted终态");
+
+                    var terminal = WatchdogRuntime.ShutdownRuntimeWithReceipt(
+                        RuntimeShutdownIntent.SessionClose);
+                    Assert(terminal != null && terminal.IsTerminal &&
+                           terminal.SessionId == context.SessionId &&
+                           terminal.SessionGeneration == context.SessionGeneration &&
+                           terminal.SessionLease == context.SessionLease &&
+                           !string.Equals(
+                               terminal.TerminalReason,
+                               "ShutdownIdentityMismatch",
+                               StringComparison.Ordinal),
+                        $"第{round}轮Runtime二阶段关闭未正常收口：" +
+                        (terminal?.TerminalReason ?? "<null>") + ";" +
+                        WatchdogRuntime.DescribeSessionCloseIdentity(context));
+                    Assert(WatchdogClosingTombstoneStore.TryRead(
+                               journal,
+                               context.SessionId,
+                               out var tombstone) &&
+                           tombstone.State == WatchdogClosingTombstoneState.Terminal &&
+                           tombstone.StateVersion == 2 &&
+                           string.Equals(
+                               tombstone.StopSafetyTransactionId,
+                               transactionId.ToString("N"),
+                               StringComparison.OrdinalIgnoreCase) &&
+                           string.Equals(
+                               tombstone.StopRunId,
+                               currentRunId.ToString("N"),
+                               StringComparison.OrdinalIgnoreCase),
+                        $"第{round}轮Closing tombstone未从v1推进至Terminal v2");
+                    Assert(WatchdogControlMarker.IsRevoked(journal, context.SessionId),
+                        $"第{round}轮Terminal后未发布legacy兼容撤权");
+                }
+
+                Assert(sessions.Count == 2 &&
+                       !string.Equals(sessions[0], sessions[1], StringComparison.Ordinal),
+                    "连续两轮启动复用了旧Session授权");
+            }
+            finally
+            {
+                try { WatchdogRuntime.ShutdownRuntimeWithReceipt(); } catch { }
+                WatchdogRuntime.SetHeartbeatProvider(null);
+                WatchdogRuntime.ConfigureJournalExportPath(null);
+                foreach (var sessionId in sessions)
+                    DeleteLocalSessionCloseArtifacts(sessionId);
+                try
+                {
+                    if (Directory.Exists(journal)) Directory.Delete(journal, true);
+                }
+                catch { }
+            }
         }
 
         private static void ConcurrentShutdownUsesSingleTerminal()
@@ -252,7 +427,8 @@ namespace AdaptiveControlTests
             {
                 session.MarkOutcome = RuntimeShutdownMarkOutcome.IdentityMismatch;
                 var first = session.ShutdownOrRetry();
-                Assert(!first.IsTerminal && session.CaptureOwner() != null,
+                Assert(!first.IsTerminal && first.IsStickyBlockingFailure &&
+                       session.CaptureOwner() != null,
                     "IdentityMismatch应保留sticky owner");
                 Assert(session.TransportCalls == 0 && session.PipelineCalls == 0,
                     "IdentityMismatch不允许调用Engine/pipeline");
@@ -272,6 +448,7 @@ namespace AdaptiveControlTests
                 session.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
                 var receipt = session.ShutdownOrRetry();
                 Assert(receipt != null && !receipt.IsCloseAuthorized &&
+                       !receipt.IsStickyBlockingFailure &&
                        !receipt.SafeExitAllowed &&
                        receipt.Disposition == RuntimeShutdownDisposition.BlockingFailure,
                     "关闭墓碑未持久化时错误授权DetachedRetained退出");
@@ -395,6 +572,48 @@ namespace AdaptiveControlTests
         private static void Assert(bool condition, string message)
         {
             if (!condition) throw new InvalidOperationException(message);
+        }
+
+        private static bool WaitUntilWithDelay(Func<bool> predicate, int timeoutMs)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            while (stopwatch.ElapsedMilliseconds < Math.Max(1, timeoutMs))
+            {
+                try
+                {
+                    if (predicate()) return true;
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                Thread.Sleep(25);
+            }
+            try { return predicate(); }
+            catch { return false; }
+        }
+
+        private static bool IsProcessAlive(int processId)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                    return !process.HasExited;
+            }
+            catch { return false; }
+        }
+
+        private static void DeleteLocalSessionCloseArtifacts(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId)) return;
+            foreach (var path in new[]
+                     {
+                         WatchdogJournalPaths.LocalClosingPath(sessionId),
+                         WatchdogJournalPaths.LocalRevocationPath(sessionId),
+                         WatchdogJournalPaths.LocalRecoveryCommitPath(sessionId)
+                     })
+            {
+                try { if (File.Exists(path)) File.Delete(path); }
+                catch { }
+            }
         }
 
         private static bool WaitUntil(Func<bool> predicate, int timeoutMs)
