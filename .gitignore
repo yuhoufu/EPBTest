@@ -401,7 +401,7 @@ FodyWeavers.xsd
 DataStore/
 /tmp/
 # Field-operation screenshots are retained locally and must not enter commits.
-/docs/截图/
+**/截图/
 *.csv
 !Tests/AdaptiveControlTests/Fixtures/field_v20_epb10_cycle_-002094.csv
 !Tests/AdaptiveControlTests/Fixtures/field_v15_epb10_cycle_084529.csv
