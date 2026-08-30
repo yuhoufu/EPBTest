@@ -25,7 +25,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.13.0.38</ApplicationVersion>
+    <ApplicationVersion>2.13.0.39</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -146,6 +146,10 @@
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="FrmEpbMainMonitor.CloseOverlay.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FrmEpbMainMonitor.PauseResume.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>
@@ -207,6 +211,7 @@
     <Compile Include="Models\PressureSetting.cs" />
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="WatchdogSafetyShutdownWorker.cs" />
     <Compile Include="UnattendedRecovery.cs" />
     <Compile Include="WatchdogRuntime.cs" />
     <Compile Include="WatchdogRuntime.CallbackPipeline.cs" />
