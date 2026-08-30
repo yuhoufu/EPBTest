@@ -243,7 +243,13 @@ Assert-LegacyCompileItems -ProjectRelativePath 'IO.NI\IO.NI.csproj' -RequiredIte
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTfTest\MTTfTest.csproj' -RequiredItems @(
     'Editors\ToggleButton.cs',
-    'WatchdogRuntime.cs'
+    'FrmEpbMainMonitor.CloseOverlay.cs',
+    'WatchdogRuntime.cs',
+    'WatchdogSafetyShutdownWorker.cs'
+)
+Assert-LegacyCompileItems -ProjectRelativePath 'Watchdog.Protocol\Watchdog.Protocol.csproj' -RequiredItems @(
+    'WatchdogClosingTombstone.cs',
+    'WatchdogSafetyReceipts.cs'
 )
 
 $mainProjectPath = Join-Path $repo 'MTTfTest\MTTfTest.csproj'
