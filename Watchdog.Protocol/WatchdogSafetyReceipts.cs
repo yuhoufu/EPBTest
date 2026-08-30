@@ -14,18 +14,54 @@ namespace MTTFTest.Watchdog.Protocol
         ForcedDeadlineExit = 4
     }
 
+    public enum WatchdogExitDisposition
+    {
+        OperatorExit = 1,
+        NormalCompletionExit = 2,
+        TakeoverReplacementExit = 3
+    }
+
+    public enum WatchdogRelaunchDisposition
+    {
+        Forbidden = 1,
+        PreserveApprovedPermit = 2
+    }
+
+    public static class WatchdogExitDispositionPolicy
+    {
+        public static WatchdogExitDisposition ResolveApplicationExit(
+            bool preserveApprovedPermit,
+            WatchdogExitDisposition durableClosingDisposition)
+        {
+            if (preserveApprovedPermit)
+                return WatchdogExitDisposition.TakeoverReplacementExit;
+            return durableClosingDisposition ==
+                   WatchdogExitDisposition.NormalCompletionExit
+                ? WatchdogExitDisposition.NormalCompletionExit
+                : WatchdogExitDisposition.OperatorExit;
+        }
+    }
+
     /// <summary>
     /// Durable, exact-process exit deadline shared by the WinForms process
     /// and the independent Watchdog host.
     /// </summary>
     public sealed class WatchdogApplicationExitReceipt
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
         public string ExitIntentId { get; set; } = string.Empty;
         public string StopSafetyTransactionId { get; set; } = string.Empty;
+        public string TakeoverTransactionId { get; set; } = string.Empty;
+        public WatchdogExitDisposition ExitDisposition { get; set; } =
+            WatchdogExitDisposition.OperatorExit;
+        public WatchdogRelaunchDisposition RelaunchDisposition { get; set; } =
+            WatchdogRelaunchDisposition.Forbidden;
+        public long RelaunchPermitGeneration { get; set; }
+        public string RelaunchPermitId { get; set; } = string.Empty;
+        public string RelaunchPermitNonceSha256 { get; set; } = string.Empty;
         public long Revision { get; set; }
         public WatchdogApplicationExitState State { get; set; }
         public int MainProcessId { get; set; }
@@ -48,7 +84,8 @@ namespace MTTFTest.Watchdog.Protocol
         public bool IsValidFor(string sessionId)
         {
             Guid parsed;
-            return SchemaVersion == 1 && Revision > 0 && SessionGeneration > 0 &&
+            var common = (SchemaVersion == 1 || SchemaVersion == 2) &&
+                   Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && MainProcessId > 0 &&
                    MainProcessStartUtcTicks > 0 && RequestedUtcTicks > 0 &&
                    DiagnosticDeadlineUtcTicks >= RequestedUtcTicks &&
@@ -59,7 +96,25 @@ namespace MTTFTest.Watchdog.Protocol
                    Guid.TryParseExact(ExitIntentId ?? string.Empty, "N", out parsed) &&
                    State >= WatchdogApplicationExitState.Requested &&
                    State <= WatchdogApplicationExitState.ForcedDeadlineExit;
+            if (!common || SchemaVersion == 1) return common;
+            if (!Enum.IsDefined(typeof(WatchdogExitDisposition), ExitDisposition) ||
+                !Enum.IsDefined(typeof(WatchdogRelaunchDisposition), RelaunchDisposition))
+                return false;
+            if (RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden)
+                return RelaunchPermitGeneration == 0 &&
+                       string.IsNullOrWhiteSpace(RelaunchPermitId) &&
+                       string.IsNullOrWhiteSpace(RelaunchPermitNonceSha256);
+            return ExitDisposition == WatchdogExitDisposition.TakeoverReplacementExit &&
+                   RelaunchPermitGeneration > 0 &&
+                   Guid.TryParseExact(RelaunchPermitId ?? string.Empty, "N", out parsed) &&
+                   RecoveryFailureReceipt.IsSha256(RelaunchPermitNonceSha256) &&
+                   Guid.TryParseExact(TakeoverTransactionId ?? string.Empty, "N", out parsed);
         }
+
+        public bool PreservesApprovedPermit =>
+            SchemaVersion >= 2 &&
+            ExitDisposition == WatchdogExitDisposition.TakeoverReplacementExit &&
+            RelaunchDisposition == WatchdogRelaunchDisposition.PreserveApprovedPermit;
     }
 
     public enum WatchdogManualPauseStage
@@ -111,12 +166,13 @@ namespace MTTFTest.Watchdog.Protocol
         Requested = 1,
         Accepted = 2,
         WorkerStarted = 3,
-        Completed = 4
+        Completed = 4,
+        Failed = 5
     }
 
     public sealed class WatchdogSafetyHandoffReceipt
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -142,29 +198,59 @@ namespace MTTFTest.Watchdog.Protocol
         public int AttemptCount { get; set; }
         public string ProjectDirectory { get; set; } = string.Empty;
         public string MainExecutablePath { get; set; } = string.Empty;
+        public string ConfigSnapshotPath { get; set; } = string.Empty;
+        public string ConfigSnapshotManifestPath { get; set; } = string.Empty;
+        public string ConfigSnapshotManifestSha256 { get; set; } = string.Empty;
+        public int ConfigSnapshotSchemaVersion { get; set; }
+        public WatchdogRelaunchDisposition RelaunchDisposition { get; set; } =
+            WatchdogRelaunchDisposition.Forbidden;
+        public long RelaunchPermitGeneration { get; set; }
+        public string RelaunchPermitId { get; set; } = string.Empty;
+        public string RelaunchPermitNonceSha256 { get; set; } = string.Empty;
+        public string FailureCode { get; set; } = string.Empty;
         public string Detail { get; set; } = string.Empty;
         public long UpdatedUtcTicks { get; set; }
 
         public bool IsValidFor(string sessionId)
         {
             Guid parsed;
-            return SchemaVersion == 1 && Revision > 0 && SessionGeneration > 0 &&
+            var common = (SchemaVersion == 1 || SchemaVersion == 2) &&
+                   Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    Guid.TryParseExact(HandoffId ?? string.Empty, "N", out parsed) &&
                    WatchdogProcessIdentityPolicy.IsValidChallengeNonce(Nonce) &&
                    State >= WatchdogSafetyHandoffState.Requested &&
-                   State <= WatchdogSafetyHandoffState.Completed;
+                   State <= WatchdogSafetyHandoffState.Failed;
+            if (!common || SchemaVersion == 1) return common;
+            if (ConfigSnapshotSchemaVersion != 1 ||
+                string.IsNullOrWhiteSpace(ConfigSnapshotPath) ||
+                string.IsNullOrWhiteSpace(ConfigSnapshotManifestPath) ||
+                !RecoveryFailureReceipt.IsSha256(ConfigSnapshotManifestSha256) ||
+                !Enum.IsDefined(typeof(WatchdogRelaunchDisposition), RelaunchDisposition))
+                return false;
+            if (RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden)
+                return RelaunchPermitGeneration == 0 &&
+                       string.IsNullOrWhiteSpace(RelaunchPermitId) &&
+                       string.IsNullOrWhiteSpace(RelaunchPermitNonceSha256);
+            return RelaunchPermitGeneration > 0 &&
+                   Guid.TryParseExact(RelaunchPermitId ?? string.Empty, "N", out parsed) &&
+                   RecoveryFailureReceipt.IsSha256(RelaunchPermitNonceSha256);
         }
 
         public bool CanExitApplication =>
             State >= WatchdogSafetyHandoffState.Accepted &&
+            State <= WatchdogSafetyHandoffState.Completed &&
             PersistenceDrained && HardwareResourcesReleased &&
             ExecutionAuthorizationRevoked && CallbacksIsolated;
 
         public bool IsSafetyCompleted =>
             State == WatchdogSafetyHandoffState.Completed &&
             MotorsOff && PowerOff && PressureSafe;
+
+        public bool IsTerminal =>
+            State == WatchdogSafetyHandoffState.Completed ||
+            State == WatchdogSafetyHandoffState.Failed;
     }
 
     public static class WatchdogManualPauseReceiptStore
@@ -230,6 +316,15 @@ namespace MTTFTest.Watchdog.Protocol
                     previous.RequestedUtcTicks == current.RequestedUtcTicks &&
                     previous.DiagnosticDeadlineUtcTicks == current.DiagnosticDeadlineUtcTicks &&
                     previous.HardDeadlineUtcTicks == current.HardDeadlineUtcTicks &&
+                    previous.ExitDisposition == current.ExitDisposition &&
+                    previous.RelaunchDisposition == current.RelaunchDisposition &&
+                    previous.RelaunchPermitGeneration == current.RelaunchPermitGeneration &&
+                    string.Equals(previous.RelaunchPermitId, current.RelaunchPermitId,
+                        StringComparison.Ordinal) &&
+                    string.Equals(previous.RelaunchPermitNonceSha256,
+                        current.RelaunchPermitNonceSha256, StringComparison.Ordinal) &&
+                    string.Equals(previous.TakeoverTransactionId,
+                        current.TakeoverTransactionId, StringComparison.Ordinal) &&
                     current.State >= previous.State);
         }
 
@@ -307,6 +402,21 @@ namespace MTTFTest.Watchdog.Protocol
                     string.Equals(previous.Nonce, current.Nonce, StringComparison.Ordinal) &&
                     string.Equals(previous.StopSafetyTransactionId,
                         current.StopSafetyTransactionId, StringComparison.OrdinalIgnoreCase) &&
+                    previous.RelaunchDisposition == current.RelaunchDisposition &&
+                    previous.RelaunchPermitGeneration == current.RelaunchPermitGeneration &&
+                    string.Equals(previous.RelaunchPermitId, current.RelaunchPermitId,
+                        StringComparison.Ordinal) &&
+                    string.Equals(previous.RelaunchPermitNonceSha256,
+                        current.RelaunchPermitNonceSha256, StringComparison.Ordinal) &&
+                    string.Equals(previous.ConfigSnapshotPath, current.ConfigSnapshotPath,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(previous.ConfigSnapshotManifestPath,
+                        current.ConfigSnapshotManifestPath, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(previous.ConfigSnapshotManifestSha256,
+                        current.ConfigSnapshotManifestSha256, StringComparison.Ordinal) &&
+                    previous.ConfigSnapshotSchemaVersion == current.ConfigSnapshotSchemaVersion &&
+                    previous.State != WatchdogSafetyHandoffState.Completed &&
+                    previous.State != WatchdogSafetyHandoffState.Failed &&
                     current.State >= previous.State);
         }
 

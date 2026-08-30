@@ -739,6 +739,12 @@ namespace MTTFTest.Watchdog.Protocol
         public bool HardwareResourcesReleased { get; set; }
         public bool ExecutionAuthorizationRevoked { get; set; }
         public bool CallbacksIsolated { get; set; }
+        public string ConfigSnapshotManifestSha256 { get; set; }
+        public WatchdogRelaunchDisposition RelaunchDisposition { get; set; }
+        public long RelaunchPermitGeneration { get; set; }
+        public string RelaunchPermitId { get; set; }
+        public string RelaunchPermitNonceSha256 { get; set; }
+        public string FailureCode { get; set; }
         public long TimestampUtcTicks { get; set; }
     }
 

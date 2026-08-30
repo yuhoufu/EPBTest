@@ -1,5 +1,7 @@
 using System;
 using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Controller;
@@ -25,6 +27,10 @@ namespace AdaptiveControlTests
                 DurableAbortDispositionIsExplicit, ref passed);
             Run("SafetyUnproven形式终态必须阻断后续槽位",
                 SafetyUnprovenBlocksSlot, ref passed);
+            Run("正式槽先等待并行安全闭合再提交终态",
+                PendingSafetyClosureWaitsForRealEvidence, ref passed);
+            Run("重复OFF不得覆盖首次物理成功证据",
+                RepeatedOffPreservesFirstSuccess, ref passed);
             Run("墙钟边界计算禁止补跑历史槽",
                 FutureBoundaryNeverCatchesUp, ref passed);
             Run("迟到进入下一槽不会被二次顺延",
@@ -39,11 +45,54 @@ namespace AdaptiveControlTests
                 LateRetirementCannotPoisonNewParticipantGeneration, ref passed);
             Run("周期超限策略区分普通连续与硬截止",
                 PeriodOverrunPolicyClassifiesBoundaries, ref passed);
+            Run("周期硬截止只隔离本次运行且不调用项目永久禁用",
+                PeriodHardLimitDoesNotPersistProjectDisable, ref passed);
             Run("2倍周期的瞬时OFF不能伪装动作终止",
                 HardDeadlineRequiresTerminalGenerationAndOff, ref passed);
             Run("屏障等待是合法状态且仍要求正式运行资源",
                 WaitingStateHasLegalHealthContracts, ref passed);
             return passed;
+        }
+
+        private static void PendingSafetyClosureWaitsForRealEvidence()
+        {
+            var observations = 0;
+            var delays = 0;
+            var result = FormalSafetyClosurePolicy.AwaitAsync(
+                    () =>
+                    {
+                        var current = Interlocked.Increment(ref observations);
+                        return new FormalSafetyClosureObservation
+                        {
+                            MotorOffConfirmed = current >= 2,
+                            HydraulicReleased = current >= 3,
+                            PersistenceRequired = true,
+                            PersistenceClosed = current >= 4
+                        };
+                    },
+                    TimeSpan.FromSeconds(1),
+                    CancellationToken.None,
+                    (duration, token) =>
+                    {
+                        Interlocked.Increment(ref delays);
+                        return Task.CompletedTask;
+                    })
+                .GetAwaiter().GetResult();
+
+            Assert(result.State == FormalSafetyClosureState.Closed &&
+                   result.MotorOffConfirmed && result.HydraulicReleased &&
+                   result.PersistenceClosed && observations == 4 && delays == 3,
+                "安全闭合证据尚在到达时被提前升级为SafetyUnproven，或未在证据齐备后结束等待。");
+        }
+
+        private static void RepeatedOffPreservesFirstSuccess()
+        {
+            Assert(OffCommandEvidencePolicy.Resolve(false, true),
+                "首次OFF成功没有形成物理关闭证据。");
+            Assert(OffCommandEvidencePolicy.Resolve(true, false),
+                "后续重复OFF失败覆盖了首次物理成功证据。");
+            Assert(!OffCommandEvidencePolicy.Resolve(false, false),
+                "从未成功的OFF被错误证明为已关闭。");
         }
 
         private static void WaitsForAllParticipantsAndFutureBoundary()
@@ -264,10 +313,40 @@ namespace AdaptiveControlTests
                 "第7次普通超限被误隔离");
             Assert(EpbManager.ClassifyCompletedPeriodOverrun(16000, 15000, 8) ==
                    Controller.Adaptive.PeriodOverrunKind.ConsecutiveLimitReached,
-                "第8次连续超限没有进入永久报警");
+                "第8次连续超限没有进入本次运行隔离");
             Assert(EpbManager.ClassifyCompletedPeriodOverrun(30000, 15000, 1) ==
                    Controller.Adaptive.PeriodOverrunKind.HardLimitReached,
-                "2倍周期没有进入硬截止永久报警");
+                "2倍周期没有进入硬截止本次运行隔离");
+        }
+
+        private static void PeriodHardLimitDoesNotPersistProjectDisable()
+        {
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var isolation = typeof(EpbManager).GetMethod(
+                "LatchCurrentRunPeriodIsolationAsync",
+                flags);
+            var forbidden = typeof(EpbManager).GetMethod(
+                "PersistentlyDisableChannels",
+                flags);
+            Assert(isolation != null && forbidden != null,
+                "无法定位周期隔离或历史永久禁用生产方法");
+
+            var stateMachine = isolation.GetCustomAttribute<AsyncStateMachineAttribute>();
+            var body = stateMachine?.StateMachineType
+                .GetMethod("MoveNext", flags | BindingFlags.Public)
+                ?.GetMethodBody()
+                ?.GetILAsByteArray();
+            Assert(body != null && body.Length > 0,
+                "无法读取周期隔离生产状态机IL");
+
+            var forbiddenToken = forbidden.MetadataToken;
+            for (var index = 0; index + 4 < body.Length; index++)
+            {
+                if (body[index] != 0x28 && body[index] != 0x6F) continue;
+                var calledToken = BitConverter.ToInt32(body, index + 1);
+                Assert(calledToken != forbiddenToken,
+                    "周期硬截止仍调用PersistentlyDisableChannels并污染项目Enabled");
+            }
         }
 
         private static void HardDeadlineRequiresTerminalGenerationAndOff()

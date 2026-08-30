@@ -21,7 +21,8 @@ namespace MTEmbTest
         void NotifyStopCompleted(WatchdogStopSummary summary, string reason);
         void RequestWatchdogOwnedExit(
             string reason,
-            RuntimeShutdownIntent shutdownIntent);
+            RuntimeShutdownIntent shutdownIntent,
+            string takeoverTransactionId = null);
     }
 
     internal static class WinFormsWatchdogStopHandlerCore
@@ -86,7 +87,8 @@ namespace MTEmbTest
                     (handoff?.Error ?? "HandoffReceiptUnavailable"));
             port.RequestWatchdogOwnedExit(
                 "WatchdogStopAllCompleted:" + correlation,
-                RuntimeShutdownIntent.WatchdogTakeoverExit);
+                RuntimeShutdownIntent.WatchdogTakeoverExit,
+                correlation);
         }
 
         internal static WatchdogStopSummary ToWatchdogStopSummary(

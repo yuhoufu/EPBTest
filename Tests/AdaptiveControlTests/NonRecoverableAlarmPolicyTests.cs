@@ -132,8 +132,8 @@ namespace AdaptiveControlTests
                      })
                 Assert(
                     EpbManager.ResolveChannelFaultRecoveryPolicy(code, false) ==
-                    FaultRecoveryPolicy.NonRecoverableDisableChannel,
-                    $"{code} 未使用不可恢复持久禁用策略");
+                    FaultRecoveryPolicy.CurrentRunDisableChannel,
+                    $"{code} 未使用当前运行隔离策略");
             Assert(
                 EpbManager.ResolveChannelFaultRecoveryPolicy(
                     "OpenCircuitOrOutputFault",

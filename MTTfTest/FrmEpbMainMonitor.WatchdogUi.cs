@@ -23,6 +23,11 @@ namespace MTEmbTest
             _watchdogUiHandlerLease?.IsBound == true &&
             _watchdogUiHandlerLease.IsActive;
 
+        internal static bool ShouldPublishRunStoppedForBatchCancellation(
+            bool unattendedRecovery,
+            bool operatorStopRequested) =>
+            !unattendedRecovery && operatorStopRequested;
+
         internal void MarkWatchdogControllerReadyIfInitialized()
         {
             if (_epb != null && _cfg?.Test != null && IsHandleCreated)
@@ -160,11 +165,13 @@ namespace MTEmbTest
 
         void IWinFormsWatchdogStopSafetyPort.RequestWatchdogOwnedExit(
             string reason,
-            RuntimeShutdownIntent shutdownIntent)
+            RuntimeShutdownIntent shutdownIntent,
+            string takeoverTransactionId)
         {
             (MdiParent as Main_Frm)?.RequestWatchdogOwnedExit(
                 reason,
-                shutdownIntent);
+                shutdownIntent,
+                takeoverTransactionId);
         }
     }
 }

@@ -2599,10 +2599,22 @@ namespace MTEmbTest
                 {
                     LogInfo("批量启动取消。");
                     if (unattendedRecovery) throw;
-                    WatchdogRuntime.NotifyRunStopped(new MTTFTest.Watchdog.Protocol.WatchdogStopSummary
+                    if (ShouldPublishRunStoppedForBatchCancellation(
+                            unattendedRecovery,
+                            Volatile.Read(ref _operatorStopRequested) != 0))
                     {
-                        Detail = "BatchStartCancelled"
-                    });
+                        WatchdogRuntime.NotifyRunStopped(
+                            new MTTFTest.Watchdog.Protocol.WatchdogStopSummary
+                            {
+                                Detail = "OperatorBatchStartCancelled"
+                            });
+                    }
+                    else
+                    {
+                        LogInfo(
+                            "非人工批次取消由当前恢复/StopAll事务收口，" +
+                            "不发布RunStopped，避免撤销自动替换许可。");
+                    }
                     var main = MdiParent as Main_Frm;
                     if (main == null)
                         throw new InvalidOperationException(

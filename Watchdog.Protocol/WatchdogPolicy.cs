@@ -7,6 +7,25 @@ using System.Text;
 
 namespace MTTFTest.Watchdog.Protocol
 {
+    public static class ResponsiveControlRepairPolicy
+    {
+        public static bool ShouldRequest(
+            bool processAlive,
+            bool applicationTakeoverConfirmed,
+            bool stopActive,
+            bool logicalResidue,
+            bool inconsistentRecovery,
+            bool formalProgressStalled,
+            bool channelSupervisionFailed)
+        {
+            return processAlive &&
+                   !applicationTakeoverConfirmed &&
+                   !stopActive &&
+                   (logicalResidue || inconsistentRecovery ||
+                    formalProgressStalled || channelSupervisionFailed);
+        }
+    }
+
     public static class WatchdogTransportPolicy
     {
         // Both endpoints use the same bounded policy. A stale pipe must be
@@ -1538,6 +1557,153 @@ namespace MTTFTest.Watchdog.Protocol
             bool currentIdentityMatches)
         {
             return !sessionRevoked && currentIdentityMatches;
+        }
+    }
+
+    /// <summary>
+    /// A structured result for the durable safety prerequisite which gates a
+    /// replacement process. Pending is deliberately not represented here:
+    /// callers wait while a valid receipt is non-terminal and only publish one
+    /// of these auditable outcomes when the wait finishes.
+    /// </summary>
+    public enum WatchdogSafetyHandoffWaitOutcome
+    {
+        NotRequired = 1,
+        Completed = 2,
+        Failed = 3,
+        TimedOut = 4,
+        MissingOrCorrupt = 5
+    }
+
+    public static class WatchdogRecoveryReadinessPolicy
+    {
+        public const int OldProcessExitDeadlineSeconds = 30;
+        public const int ForcedExitConfirmationSeconds = 5;
+        public const int SafetyHandoffDeadlineSeconds = 90;
+        public const int InitialLaunchSlaSeconds = 5;
+        public const int RecoveryAttachSlaSeconds = 15;
+
+        /// <summary>
+        /// Dead proves the exact PID no longer exists. IdentityMismatch proves
+        /// the PID was reused by a different process. Alive/Unknown can never
+        /// authorize a second main process.
+        /// </summary>
+        public static bool IsOldProcessExitProven(
+            DurableRelaunchProcessObservation observation)
+        {
+            return observation == DurableRelaunchProcessObservation.Dead ||
+                   observation == DurableRelaunchProcessObservation.IdentityMismatch;
+        }
+
+        public static bool CanAuthorizeAfterExitObservation(
+            DurableRelaunchProcessObservation observation,
+            bool waitForExitWasRequired,
+            bool waitForExitSucceeded)
+        {
+            return (!waitForExitWasRequired || waitForExitSucceeded) &&
+                   IsOldProcessExitProven(observation);
+        }
+
+        /// <summary>
+        /// A no-handoff takeover may use only the final, exact StopCompleted
+        /// fence. Old schemas remain readable, but cannot authorize recovery
+        /// because they do not bind a typed replacement permit.
+        /// </summary>
+        public static bool IsCompleteStopProof(
+            WatchdogClosingTombstone closing)
+        {
+            return closing?.SchemaVersion >= 4 &&
+                   closing.PreservesApprovedPermit &&
+                   closing.FinalSafetyResultCommitted &&
+                   closing.IsSafetyTerminal;
+        }
+
+        public static bool IsCompleteSafetyHandoffProof(
+            WatchdogSafetyHandoffReceipt receipt)
+        {
+            return receipt?.State == WatchdogSafetyHandoffState.Completed &&
+                   receipt.IsSafetyCompleted &&
+                   receipt.PersistenceDrained &&
+                   receipt.LogicalQuiescent &&
+                   receipt.HardwareResourcesReleased &&
+                   receipt.ExecutionAuthorizationRevoked &&
+                   receipt.CallbacksIsolated;
+        }
+
+        public static bool TryResolveSafetyPrerequisite(
+            WatchdogClosingTombstone closing,
+            WatchdogSafetyHandoffReceipt receipt,
+            bool exactClosingPermitBinding,
+            bool exactReceiptIdentity,
+            bool configSnapshotValid,
+            bool timedOut,
+            out WatchdogSafetyHandoffWaitOutcome outcome)
+        {
+            outcome = WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt;
+            if (closing == null || !exactClosingPermitBinding ||
+                closing.SchemaVersion < 4 || !closing.PreservesApprovedPermit)
+                return true;
+
+            if (string.IsNullOrWhiteSpace(closing.SafetyHandoffId))
+            {
+                if (IsCompleteStopProof(closing))
+                {
+                    outcome = WatchdogSafetyHandoffWaitOutcome.NotRequired;
+                    return true;
+                }
+                if (closing.FinalSafetyResultCommitted &&
+                    closing.State == WatchdogClosingTombstoneState.Terminal)
+                {
+                    outcome = WatchdogSafetyHandoffWaitOutcome.Failed;
+                    return true;
+                }
+                if (!timedOut) return false;
+                outcome = WatchdogSafetyHandoffWaitOutcome.TimedOut;
+                return true;
+            }
+
+            if (receipt == null || !exactReceiptIdentity)
+                return true;
+            if (receipt.State == WatchdogSafetyHandoffState.Failed)
+            {
+                outcome = WatchdogSafetyHandoffWaitOutcome.Failed;
+                return true;
+            }
+            if (receipt.State == WatchdogSafetyHandoffState.Completed)
+            {
+                if (!IsCompleteSafetyHandoffProof(receipt))
+                {
+                    outcome = WatchdogSafetyHandoffWaitOutcome.Failed;
+                    return true;
+                }
+                outcome = configSnapshotValid
+                    ? WatchdogSafetyHandoffWaitOutcome.Completed
+                    : WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt;
+                return true;
+            }
+            if (!timedOut) return false;
+            outcome = WatchdogSafetyHandoffWaitOutcome.TimedOut;
+            return true;
+        }
+
+        public static bool ShouldApplyProcessBackoff(
+            bool initialSafetyReplacement,
+            int launchOrdinal)
+        {
+            return !initialSafetyReplacement || launchOrdinal > 1;
+        }
+
+        public static bool IsSlaExceeded(
+            long startTimestamp,
+            long observedTimestamp,
+            long timestampFrequency,
+            int slaSeconds)
+        {
+            if (startTimestamp <= 0 || observedTimestamp < startTimestamp ||
+                timestampFrequency <= 0 || slaSeconds < 0)
+                return true;
+            return observedTimestamp - startTimestamp >
+                   (long)slaSeconds * timestampFrequency;
         }
     }
 }

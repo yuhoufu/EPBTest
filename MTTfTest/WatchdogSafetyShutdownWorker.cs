@@ -57,12 +57,16 @@ namespace MtEmbTest
                         string.IsNullOrWhiteSpace(receipt.MainExecutablePath)
                             ? typeof(WatchdogSafetyShutdownWorker).Assembly.Location
                             : receipt.MainExecutablePath) ?? Environment.CurrentDirectory;
-                    var projectConfig = string.IsNullOrWhiteSpace(receipt.ProjectDirectory)
-                        ? string.Empty
-                        : Path.Combine(receipt.ProjectDirectory, "Config");
-                    var configDirectory = Directory.Exists(projectConfig)
-                        ? projectConfig
-                        : Path.Combine(appDirectory, "Config");
+                    var snapshot = WatchdogSafetyConfigSnapshotStore.Validate(
+                        journalDirectory,
+                        receipt.HandoffId,
+                        receipt.ConfigSnapshotPath,
+                        receipt.ConfigSnapshotManifestPath,
+                        receipt.ConfigSnapshotManifestSha256);
+                    if (snapshot?.Succeeded != true)
+                        throw new InvalidDataException(
+                            snapshot?.Error ?? "SafetyConfigSnapshotUnavailable");
+                    var configDirectory = snapshot.ConfigDirectory;
                     var config = ConfigLoader.LoadAll(configDirectory, Config.NullLogger.Instance);
 
                     bool motorsOff;
@@ -174,6 +178,28 @@ namespace MtEmbTest
         {
             try
             {
+                WatchdogSafetyHandoffReceipt receipt;
+                if (WatchdogSafetyHandoffReceiptStore.TryRead(
+                        journalDirectory,
+                        sessionId,
+                        out receipt) &&
+                    string.Equals(receipt.HandoffId, handoffId, StringComparison.Ordinal) &&
+                    string.Equals(receipt.Nonce, nonce, StringComparison.Ordinal) &&
+                    !receipt.IsTerminal)
+                {
+                    var root = exception?.GetBaseException();
+                    receipt.State = WatchdogSafetyHandoffState.Failed;
+                    receipt.FailureCode = root is FileNotFoundException ||
+                                          root is DirectoryNotFoundException ||
+                                          root is InvalidDataException
+                        ? "SafetyConfigSnapshotInvalid"
+                        : "SafetyWorkerExecutionFailed";
+                    receipt.Detail = root?.Message ?? "SafetyWorkerExecutionFailed";
+                    receipt.Revision++;
+                    WatchdogSafetyHandoffReceiptStore.WriteThrough(
+                        journalDirectory,
+                        receipt);
+                }
                 var path = Path.Combine(
                     WatchdogJournalPaths.ValidateProjectDirectory(journalDirectory),
                     "session-" + WatchdogJournalPaths.SafeName(sessionId) + ".safety-worker.log");

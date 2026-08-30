@@ -4965,7 +4965,7 @@ namespace Controller
                     faultCode,
                     "ForwardPeakOvershoot2AConfirmed",
                     StringComparison.OrdinalIgnoreCase))
-                return FaultRecoveryPolicy.NonRecoverableDisableChannel;
+                return FaultRecoveryPolicy.CurrentRunDisableChannel;
 
             return FaultRecoveryPolicy.Recoverable;
         }
@@ -9544,7 +9544,7 @@ namespace Controller
 
             var alarmUtc = fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc;
             var reason =
-                $"{domain}硬件故障已由连续新鲜证据确认；当前故障组所选卡钳永久停机，" +
+                $"{domain}硬件故障已由连续新鲜证据确认；当前故障组在本次运行中隔离，" +
                 $"健康独立组继续运行。Group={fault.GroupId}; Code={fault.Code}; {fault.Reason}";
             Dictionary<int, string> rejectedOff = null;
             ExecuteConfirmedInfrastructureIsolationOrder(
@@ -9594,11 +9594,6 @@ namespace Controller
                             sourceChannel: channel,
                             affectedChannels: channels,
                             correlationId: fault.CorrelationId);
-                    PersistentlyDisableChannels(
-                        channels,
-                        reasonCode,
-                        reason,
-                        fault.CorrelationId);
                 },
                 () =>
                 {
@@ -9685,23 +9680,23 @@ namespace Controller
             Action submitOffAll,
             Action startPowerDisable,
             Action startRejectedOffFallbacks,
-            Action persistDisable,
+            Action commitRuntimeIsolation,
             Action publishDiagnostics)
         {
             if (latchFreezeAndCancel == null)
                 throw new ArgumentNullException(nameof(latchFreezeAndCancel));
             if (submitOffAll == null)
                 throw new ArgumentNullException(nameof(submitOffAll));
-            if (persistDisable == null)
-                throw new ArgumentNullException(nameof(persistDisable));
+            if (commitRuntimeIsolation == null)
+                throw new ArgumentNullException(nameof(commitRuntimeIsolation));
 
-            // 安全动作和耐久禁用均先于日志、UI、串口报警与快照；任何诊断阻塞
-            // 都不能延迟故障组OFF，也不能扩大重启后重新启用的窗口。
+            // 安全动作和本次运行隔离状态均先于日志、UI、串口报警与快照；
+            // 任何诊断阻塞都不能延迟故障组OFF。
             latchFreezeAndCancel();
             submitOffAll();
             startPowerDisable?.Invoke();
             startRejectedOffFallbacks?.Invoke();
-            persistDisable();
+            commitRuntimeIsolation();
             publishDiagnostics?.Invoke();
         }
 

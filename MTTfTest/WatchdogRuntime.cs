@@ -2441,12 +2441,40 @@ namespace MTEmbTest
                         return existing;
                     return null;
                 }
+                var handoffId = Guid.NewGuid().ToString("N");
+                WatchdogApplicationExitReceipt applicationExit;
+                var hasTypedApplicationExit = WatchdogApplicationExitReceiptStore.TryRead(
+                                                  context.JournalDirectory,
+                                                  context.SessionId,
+                                                  out applicationExit) &&
+                                              applicationExit?.SchemaVersion >= 2 &&
+                                              applicationExit.SessionGeneration ==
+                                              context.SessionGeneration &&
+                                              applicationExit.SessionLease ==
+                                              context.SessionLease;
+                var projectDirectory = ResolveProjectDirectory(context.JournalDirectory);
+                var executableDirectory = Path.GetDirectoryName(
+                    string.IsNullOrWhiteSpace(context.MainExecutablePath)
+                        ? Assembly.GetEntryAssembly()?.Location ?? string.Empty
+                        : context.MainExecutablePath) ?? Environment.CurrentDirectory;
+                var configSnapshot = WatchdogSafetyConfigSnapshotStore.Create(
+                    context.JournalDirectory,
+                    handoffId,
+                    Path.Combine(executableDirectory, "Config"),
+                    string.IsNullOrWhiteSpace(projectDirectory)
+                        ? string.Empty
+                        : Path.Combine(projectDirectory, "Config"),
+                    RuntimeBuildIdentity.Capture().ToStartupLogLine());
+                if (configSnapshot?.Succeeded != true)
+                    throw new InvalidOperationException(
+                        configSnapshot?.Error ?? "SafetyConfigSnapshotUnavailable");
                 var receipt = new WatchdogSafetyHandoffReceipt
                 {
+                    SchemaVersion = 2,
                     SessionId = context.SessionId,
                     SessionGeneration = context.SessionGeneration,
                     SessionLease = context.SessionLease,
-                    HandoffId = Guid.NewGuid().ToString("N"),
+                    HandoffId = handoffId,
                     Nonce = Guid.NewGuid().ToString("N"),
                     StopSafetyTransactionId = safety.SafetyTransactionId.ToString("N"),
                     RunId = safety.RunId == Guid.Empty ? string.Empty : safety.RunId.ToString("N"),
@@ -2461,8 +2489,24 @@ namespace MTEmbTest
                     HardwareResourcesReleased = hardwareResourcesReleased,
                     ExecutionAuthorizationRevoked = true,
                     CallbacksIsolated = true,
-                    ProjectDirectory = ResolveProjectDirectory(context.JournalDirectory),
+                    ProjectDirectory = projectDirectory,
                     MainExecutablePath = context.MainExecutablePath,
+                    ConfigSnapshotPath = configSnapshot.ConfigDirectory,
+                    ConfigSnapshotManifestPath = configSnapshot.ManifestPath,
+                    ConfigSnapshotManifestSha256 = configSnapshot.ManifestSha256,
+                    ConfigSnapshotSchemaVersion = 1,
+                    RelaunchDisposition = hasTypedApplicationExit
+                        ? applicationExit.RelaunchDisposition
+                        : WatchdogRelaunchDisposition.Forbidden,
+                    RelaunchPermitGeneration = hasTypedApplicationExit
+                        ? applicationExit.RelaunchPermitGeneration
+                        : 0,
+                    RelaunchPermitId = hasTypedApplicationExit
+                        ? applicationExit.RelaunchPermitId
+                        : string.Empty,
+                    RelaunchPermitNonceSha256 = hasTypedApplicationExit
+                        ? applicationExit.RelaunchPermitNonceSha256
+                        : string.Empty,
                     Detail = "MainProcessRequestedBoundedSafetyHandoff"
                 };
                 WatchdogSafetyHandoffReceiptStore.WriteThrough(context.JournalDirectory, receipt);
@@ -2520,6 +2564,12 @@ namespace MTEmbTest
                 HardwareResourcesReleased = receipt.HardwareResourcesReleased,
                 ExecutionAuthorizationRevoked = receipt.ExecutionAuthorizationRevoked,
                 CallbacksIsolated = receipt.CallbacksIsolated,
+                ConfigSnapshotManifestSha256 = receipt.ConfigSnapshotManifestSha256,
+                RelaunchDisposition = receipt.RelaunchDisposition,
+                RelaunchPermitGeneration = receipt.RelaunchPermitGeneration,
+                RelaunchPermitId = receipt.RelaunchPermitId,
+                RelaunchPermitNonceSha256 = receipt.RelaunchPermitNonceSha256,
+                FailureCode = receipt.FailureCode,
                 TimestampUtcTicks = receipt.UpdatedUtcTicks
             };
         }
@@ -2548,7 +2598,9 @@ namespace MTEmbTest
                 Guid.Empty,
                 Guid.Empty,
                 0,
-                0);
+                0,
+                WatchdogExitDisposition.NormalCompletionExit,
+                WatchdogRelaunchDisposition.Forbidden);
             if (fence.MarkOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch)
                 return;
             RecordClientEvent(context, "RunCompleted", "FormalRunCompleted");
@@ -2590,10 +2642,49 @@ namespace MTEmbTest
             string reason,
             TimeSpan hardDeadline)
         {
+            return ArmApplicationExitDeadline(
+                reason,
+                hardDeadline,
+                RuntimeShutdownIntent.ApplicationExit,
+                null);
+        }
+
+        internal static WatchdogApplicationExitReceipt ArmApplicationExitDeadline(
+            string reason,
+            TimeSpan hardDeadline,
+            RuntimeShutdownIntent shutdownIntent,
+            string takeoverTransactionId)
+        {
             var context = CaptureContextOrLastDetached();
             if (context == null || context.SessionLease <= 0) return null;
             try
             {
+                var preservePermit =
+                    shutdownIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
+                    shutdownIntent == RuntimeShutdownIntent.WatchdogRecoveryExit;
+                WatchdogClosingTombstone durableClosing;
+                var durableClosingDisposition =
+                    WatchdogClosingTombstoneStore.TryRead(
+                        context.JournalDirectory,
+                        context.SessionId,
+                        out durableClosing) &&
+                    durableClosing.SessionGeneration == context.SessionGeneration &&
+                    durableClosing.SessionLease == context.SessionLease
+                        ? durableClosing.ExitDisposition
+                        : WatchdogExitDisposition.OperatorExit;
+                var exitDisposition = WatchdogExitDispositionPolicy.ResolveApplicationExit(
+                    preservePermit,
+                    durableClosingDisposition);
+                var relaunchDisposition = preservePermit
+                    ? WatchdogRelaunchDisposition.PreserveApprovedPermit
+                    : WatchdogRelaunchDisposition.Forbidden;
+                if (preservePermit &&
+                    !Guid.TryParseExact(
+                        takeoverTransactionId ?? string.Empty,
+                        "N",
+                        out _))
+                    return null;
+
                 WatchdogApplicationExitReceipt existing;
                 if (WatchdogApplicationExitReceiptStore.TryRead(
                         context.JournalDirectory,
@@ -2601,7 +2692,16 @@ namespace MTEmbTest
                         out existing) &&
                     existing.SessionGeneration == context.SessionGeneration &&
                     existing.SessionLease == context.SessionLease)
-                    return existing;
+                    return existing.SchemaVersion >= 2 &&
+                           existing.ExitDisposition == exitDisposition &&
+                           existing.RelaunchDisposition == relaunchDisposition
+                        ? existing
+                        : null;
+
+                var permit = preservePermit
+                    ? AwaitApprovedRelaunchPermit(context, TimeSpan.FromSeconds(2))
+                    : null;
+                if (preservePermit && permit == null) return null;
 
                 var now = DateTime.UtcNow;
                 var bounded = hardDeadline <= TimeSpan.Zero ||
@@ -2612,10 +2712,22 @@ namespace MTEmbTest
                 {
                     var receipt = new WatchdogApplicationExitReceipt
                     {
+                        SchemaVersion = 2,
                         SessionId = context.SessionId,
                         SessionGeneration = context.SessionGeneration,
                         SessionLease = context.SessionLease,
                         ExitIntentId = Guid.NewGuid().ToString("N"),
+                        TakeoverTransactionId = preservePermit
+                            ? takeoverTransactionId
+                            : string.Empty,
+                        ExitDisposition = exitDisposition,
+                        RelaunchDisposition = relaunchDisposition,
+                        RelaunchPermitGeneration = permit?.Generation ?? 0,
+                        RelaunchPermitId = permit?.PermitId ?? string.Empty,
+                        RelaunchPermitNonceSha256 = permit == null
+                            ? string.Empty
+                            : WatchdogTakeoverPermitBindingPolicy.HashNonce(
+                                permit.PermitNonce),
                         Revision = 1,
                         State = WatchdogApplicationExitState.Requested,
                         MainProcessId = process.Id,
@@ -2633,6 +2745,9 @@ namespace MTEmbTest
                         context,
                         "ApplicationExitRequested",
                         $"Intent={receipt.ExitIntentId};PID={receipt.MainProcessId};" +
+                        $"Disposition={receipt.ExitDisposition};" +
+                        $"Relaunch={receipt.RelaunchDisposition};" +
+                        $"PermitGeneration={receipt.RelaunchPermitGeneration};" +
                         $"HardDeadlineUtcTicks={receipt.HardDeadlineUtcTicks};Reason={receipt.Reason}");
                     Send(context, new WatchdogMessage
                     {
@@ -2652,6 +2767,31 @@ namespace MTEmbTest
                 FlushClientJournal(context);
                 return null;
             }
+        }
+
+        private static DurableRelaunchAuthorityRecord AwaitApprovedRelaunchPermit(
+            RuntimeTransportSessionContext context,
+            TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow.Add(timeout <= TimeSpan.Zero
+                ? TimeSpan.FromSeconds(2)
+                : timeout);
+            do
+            {
+                var opened = DurableRelaunchAuthorityV4Factory.TryOpenExisting(
+                    context.JournalDirectory,
+                    context.SessionId);
+                var record = opened?.Authority?.Snapshot;
+                if (record != null &&
+                    record.State == DurableRelaunchPermitState.Approved &&
+                    record.Generation > 0 &&
+                    !string.IsNullOrWhiteSpace(record.PermitId) &&
+                    !string.IsNullOrWhiteSpace(record.PermitNonce))
+                    return record;
+                if (DateTime.UtcNow >= deadline) break;
+                Thread.Sleep(25);
+            } while (true);
+            return null;
         }
 
         internal static void MarkApplicationExitGraceful(string detail)
@@ -2926,7 +3066,10 @@ namespace MTEmbTest
             Guid stopSafetyTransactionId,
             Guid stopRunId,
             long stopRunEpoch,
-            long stopSafetyBoundaryGeneration)
+            long stopSafetyBoundaryGeneration,
+            WatchdogExitDisposition exitDisposition = WatchdogExitDisposition.OperatorExit,
+            WatchdogRelaunchDisposition relaunchDisposition =
+                WatchdogRelaunchDisposition.Forbidden)
         {
             var receipt = new RuntimeSessionCloseFenceReceipt { Context = context };
             if (context == null || context.SessionLease <= 0)
@@ -2950,6 +3093,19 @@ namespace MTEmbTest
                 context.JournalDirectory,
                 context.SessionId,
                 out previous);
+            WatchdogApplicationExitReceipt typedExit;
+            var hasTypedExit = WatchdogApplicationExitReceiptStore.TryRead(
+                                   context.JournalDirectory,
+                                   context.SessionId,
+                                   out typedExit) &&
+                               typedExit?.SchemaVersion >= 2 &&
+                               typedExit.SessionGeneration == context.SessionGeneration &&
+                               typedExit.SessionLease == context.SessionLease;
+            if (hasTypedExit)
+            {
+                exitDisposition = typedExit.ExitDisposition;
+                relaunchDisposition = typedExit.RelaunchDisposition;
+            }
             if (hasPrevious &&
                 (!IsExactClosingTombstoneIdentity(context, previous) ||
                  !IsCompatibleClosingTransaction(
@@ -2988,6 +3144,46 @@ namespace MTEmbTest
 
             if (hasPrevious)
             {
+                if (previous.SchemaVersion < 4)
+                {
+                    if (relaunchDisposition ==
+                            WatchdogRelaunchDisposition.PreserveApprovedPermit &&
+                        !hasTypedExit)
+                        return RejectSessionCloseFence(
+                            receipt,
+                            context,
+                            "TakeoverCloseFenceMissingTypedExit",
+                            previous);
+                    previous.SchemaVersion = 4;
+                    previous.ExitDisposition = exitDisposition;
+                    previous.RelaunchDisposition = relaunchDisposition;
+                    previous.TakeoverTransactionId = hasTypedExit
+                        ? typedExit.TakeoverTransactionId
+                        : string.Empty;
+                    previous.RelaunchPermitGeneration = hasTypedExit
+                        ? typedExit.RelaunchPermitGeneration
+                        : 0;
+                    previous.RelaunchPermitId = hasTypedExit
+                        ? typedExit.RelaunchPermitId
+                        : string.Empty;
+                    previous.RelaunchPermitNonceSha256 = hasTypedExit
+                        ? typedExit.RelaunchPermitNonceSha256
+                        : string.Empty;
+                    previous.StateVersion++;
+                    try
+                    {
+                        previous = WatchdogClosingTombstoneStore.WriteThrough(
+                            context.JournalDirectory,
+                            previous);
+                    }
+                    catch (Exception ex)
+                    {
+                        receipt.Error = ex.GetBaseException().Message;
+                        receipt.MarkOutcome =
+                            RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+                        return receipt;
+                    }
+                }
                 receipt.Tombstone = previous;
                 receipt.TombstoneDurable = true;
                 receipt.MarkOutcome = mark;
@@ -3004,11 +3200,25 @@ namespace MTEmbTest
             const long version = 1;
             var tombstone = new WatchdogClosingTombstone
             {
-                SchemaVersion = 3,
+                SchemaVersion = 4,
                 SessionId = context.SessionId,
                 SessionGeneration = context.SessionGeneration,
                 SessionLease = context.SessionLease,
                 CloseIntent = closeIntent ?? string.Empty,
+                ExitDisposition = exitDisposition,
+                RelaunchDisposition = relaunchDisposition,
+                TakeoverTransactionId = hasTypedExit
+                    ? typedExit.TakeoverTransactionId
+                    : string.Empty,
+                RelaunchPermitGeneration = hasTypedExit
+                    ? typedExit.RelaunchPermitGeneration
+                    : 0,
+                RelaunchPermitId = hasTypedExit
+                    ? typedExit.RelaunchPermitId
+                    : string.Empty,
+                RelaunchPermitNonceSha256 = hasTypedExit
+                    ? typedExit.RelaunchPermitNonceSha256
+                    : string.Empty,
                 StopSafetyTransactionId = stopSafetyTransactionId == Guid.Empty
                     ? previous?.StopSafetyTransactionId ?? string.Empty
                     : stopSafetyTransactionId.ToString("N"),
@@ -3088,9 +3298,10 @@ namespace MTEmbTest
                 WatchdogClosingTombstoneStore.WriteThrough(
                     context.JournalDirectory,
                     existing);
-                WriteSessionRevocationMarker(
-                    context,
-                    existing.TerminalReason);
+                if (!existing.PreservesApprovedPermit)
+                    WriteSessionRevocationMarker(
+                        context,
+                        existing.TerminalReason);
                 return true;
             }
             catch { return false; }

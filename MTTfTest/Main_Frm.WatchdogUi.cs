@@ -183,7 +183,10 @@ namespace MtEmbTest
 
         internal bool HandleWatchdogMainFormClosing(FormClosingEventArgs e)
         {
-            ArmApplicationExitDeadlineOnce("MainFormClosing");
+            ArmApplicationExitDeadlineOnce(
+                "MainFormClosing",
+                RuntimeShutdownIntent.ApplicationExit,
+                null);
             if (HasApplicationCloseReceipt)
             {
                 Interlocked.Exchange(ref _watchdogAllowClose, 1);
@@ -210,23 +213,48 @@ namespace MtEmbTest
 
         internal void RequestWatchdogOwnedExit(
             string reason,
-            RuntimeShutdownIntent shutdownIntent)
+            RuntimeShutdownIntent shutdownIntent,
+            string takeoverTransactionId = null)
         {
             if (IsDisposed || Disposing) return;
-            ArmApplicationExitDeadlineOnce(reason ?? "WatchdogOwnedExit");
             if (InvokeRequired)
             {
                 try
                 {
                     BeginInvoke((Action)(() => RequestWatchdogOwnedExit(
                         reason,
-                        shutdownIntent)));
+                        shutdownIntent,
+                        takeoverTransactionId)));
                 }
                 catch { }
                 return;
             }
-            Interlocked.Exchange(ref _watchdogOwnedExitRequested, 1);
+            var preservePermit =
+                shutdownIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
+                shutdownIntent == RuntimeShutdownIntent.WatchdogRecoveryExit;
+            if (preservePermit &&
+                !Guid.TryParseExact(
+                    takeoverTransactionId ?? string.Empty,
+                    "N",
+                    out _))
+                takeoverTransactionId = Guid.NewGuid().ToString("N");
             Interlocked.Exchange(ref _watchdogExitIntent, (int)shutdownIntent);
+            if (!ArmApplicationExitDeadlineOnce(
+                    reason ?? "WatchdogOwnedExit",
+                    shutdownIntent,
+                    takeoverTransactionId))
+            {
+                Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
+                UseWaitCursor = false;
+                Text = BuildWindowTitle() + " - 自动替换许可未形成，已阻止旧进程退出";
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "TakeoverExitBlockedWithoutApprovedPermit " +
+                    $"Intent={shutdownIntent};Transaction={takeoverTransactionId};Reason={reason}",
+                    "独立看门狗");
+                return;
+            }
+            Interlocked.Exchange(ref _watchdogOwnedExitRequested, 1);
             if (shutdownIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
                 shutdownIntent == RuntimeShutdownIntent.WatchdogRecoveryExit)
             {
@@ -236,17 +264,31 @@ namespace MtEmbTest
             BeginWatchdogClose(reason ?? "WatchdogOwnedExit");
         }
 
-        private void ArmApplicationExitDeadlineOnce(string reason)
+        private bool ArmApplicationExitDeadlineOnce(
+            string reason,
+            RuntimeShutdownIntent shutdownIntent,
+            string takeoverTransactionId)
         {
             if (Interlocked.CompareExchange(
                     ref _applicationExitDeadlineArmed,
                     1,
                     0) != 0)
-                return;
+                return _applicationExitDeadlineReceipt != null ||
+                       shutdownIntent == RuntimeShutdownIntent.ApplicationExit;
             var requestedUtc = DateTime.UtcNow;
             _applicationExitDeadlineReceipt = WatchdogRuntime.ArmApplicationExitDeadline(
                 reason,
-                TimeSpan.FromSeconds(ApplicationExitHardDeadlineSeconds));
+                TimeSpan.FromSeconds(ApplicationExitHardDeadlineSeconds),
+                shutdownIntent,
+                takeoverTransactionId);
+            var preservePermit =
+                shutdownIntent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
+                shutdownIntent == RuntimeShutdownIntent.WatchdogRecoveryExit;
+            if (preservePermit && _applicationExitDeadlineReceipt == null)
+            {
+                Interlocked.Exchange(ref _applicationExitDeadlineArmed, 0);
+                return false;
+            }
             var deadlineUtc = _applicationExitDeadlineReceipt?.HardDeadlineUtcTicks > 0
                 ? new DateTime(
                     _applicationExitDeadlineReceipt.HardDeadlineUtcTicks,
@@ -256,6 +298,7 @@ namespace MtEmbTest
                 requestedUtc,
                 deadlineUtc,
                 reason));
+            return true;
         }
 
         private async Task RunLocalApplicationExitDeadlineAsync(

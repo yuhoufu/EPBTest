@@ -30,11 +30,19 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public sealed class WatchdogClosingTombstone
     {
-        public int SchemaVersion { get; set; } = 3;
+        public int SchemaVersion { get; set; } = 4;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
         public string CloseIntent { get; set; } = string.Empty;
+        public string TakeoverTransactionId { get; set; } = string.Empty;
+        public WatchdogExitDisposition ExitDisposition { get; set; } =
+            WatchdogExitDisposition.OperatorExit;
+        public WatchdogRelaunchDisposition RelaunchDisposition { get; set; } =
+            WatchdogRelaunchDisposition.Forbidden;
+        public long RelaunchPermitGeneration { get; set; }
+        public string RelaunchPermitId { get; set; } = string.Empty;
+        public string RelaunchPermitNonceSha256 { get; set; } = string.Empty;
         public string StopSafetyTransactionId { get; set; } = string.Empty;
         public string StopRunId { get; set; } = string.Empty;
         public long StopRunEpoch { get; set; }
@@ -64,13 +72,33 @@ namespace MTTFTest.Watchdog.Protocol
 
         public bool IsValidFor(string sessionId)
         {
-            return (SchemaVersion == 1 || SchemaVersion == 2 || SchemaVersion == 3) &&
+            var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
+                          SchemaVersion == 3 || SchemaVersion == 4) &&
                    !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    SessionGeneration > 0 && SessionLease > 0 && StateVersion > 0 &&
                    (State == WatchdogClosingTombstoneState.Closing ||
                     State == WatchdogClosingTombstoneState.Terminal);
+            if (!common || SchemaVersion < 4) return common;
+            if (!Enum.IsDefined(typeof(WatchdogExitDisposition), ExitDisposition) ||
+                !Enum.IsDefined(typeof(WatchdogRelaunchDisposition), RelaunchDisposition))
+                return false;
+            if (RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden)
+                return RelaunchPermitGeneration == 0 &&
+                       string.IsNullOrWhiteSpace(RelaunchPermitId) &&
+                       string.IsNullOrWhiteSpace(RelaunchPermitNonceSha256);
+            Guid parsed;
+            return ExitDisposition == WatchdogExitDisposition.TakeoverReplacementExit &&
+                   RelaunchPermitGeneration > 0 &&
+                   Guid.TryParseExact(RelaunchPermitId ?? string.Empty, "N", out parsed) &&
+                   Guid.TryParseExact(TakeoverTransactionId ?? string.Empty, "N", out parsed) &&
+                   RecoveryFailureReceipt.IsSha256(RelaunchPermitNonceSha256);
         }
+
+        public bool PreservesApprovedPermit =>
+            SchemaVersion >= 4 &&
+            ExitDisposition == WatchdogExitDisposition.TakeoverReplacementExit &&
+            RelaunchDisposition == WatchdogRelaunchDisposition.PreserveApprovedPermit;
 
         public bool IsSafetyTerminal =>
             SchemaVersion >= 2 &&
@@ -106,7 +134,17 @@ namespace MTTFTest.Watchdog.Protocol
                     tombstone.ControllerProgressVersion < previous.ControllerProgressVersion ||
                     previous.FinalSafetyResultCommitted && !tombstone.FinalSafetyResultCommitted ||
                     !SameOptionalIdentity(previous.StopSafetyTransactionId,
-                        tombstone.StopSafetyTransactionId))
+                        tombstone.StopSafetyTransactionId) ||
+                    previous.SchemaVersion >= 4 &&
+                    (previous.ExitDisposition != tombstone.ExitDisposition ||
+                     previous.RelaunchDisposition != tombstone.RelaunchDisposition ||
+                     previous.RelaunchPermitGeneration != tombstone.RelaunchPermitGeneration ||
+                     !string.Equals(previous.RelaunchPermitId,
+                         tombstone.RelaunchPermitId, StringComparison.Ordinal) ||
+                     !string.Equals(previous.RelaunchPermitNonceSha256,
+                         tombstone.RelaunchPermitNonceSha256, StringComparison.Ordinal) ||
+                     !string.Equals(previous.TakeoverTransactionId,
+                         tombstone.TakeoverTransactionId, StringComparison.Ordinal)))
                     throw new InvalidOperationException("Watchdog closing tombstone revision or identity regressed.");
                 if (tombstone.StateVersion == previous.StateVersion &&
                     !string.Equals(Serializer.Serialize(previous), Serializer.Serialize(tombstone),

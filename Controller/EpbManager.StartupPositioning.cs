@@ -343,11 +343,9 @@ namespace Controller
                 DateTime.UtcNow,
                 Guid.NewGuid(),
                 classification,
-                classification == FaultClassification.HardwareConfirmed && openCircuit
+                classification == FaultClassification.HardwareConfirmed
                     ? FaultRecoveryPolicy.CurrentRunDisableChannel
-                    : classification == FaultClassification.HardwareConfirmed
-                        ? FaultRecoveryPolicy.NonRecoverable
-                        : FaultRecoveryPolicy.Recoverable);
+                    : FaultRecoveryPolicy.Recoverable);
 
             if (classification != FaultClassification.HardwareConfirmed)
             {

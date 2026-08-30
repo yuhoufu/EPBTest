@@ -22,6 +22,8 @@ namespace AdaptiveControlTests
             Run("Stop总45秒期限最终兜底", StopTotalHardDeadlineIsIndependent, ref passed);
             Run("Stop材料证据仅接受单调版本", StopMaterialEvidenceMustBeMonotonic, ref passed);
             Run("Stop阶段顺序包含液压释放后DAQ停止", StopStageOrderIsMonotonic, ref passed);
+            Run("StopAll活动期间逻辑残留不得发起第二个安全事务",
+                StopAllOwnsResponsiveControlRepair, ref passed);
             Run("恢复过渡窗显示详细倒计时且仅在稳定态隐藏", RecoveryTransitionPresentationIsDeterministic, ref passed);
             Run("ManualStopIntent保留Kill权限", ManualStopIntentKeepsAuthority, ref passed);
             Run("启动失败和恢复失败不得伪装会话终止", RetryableFailuresAreNotTerminal, ref passed);
@@ -75,6 +77,37 @@ namespace AdaptiveControlTests
             Run("必须重启终态统一闭锁开始入口且无矛盾文案",
                 ProcessRestartUiPolicyIsNonContradictory, ref passed);
             return passed;
+        }
+
+        private static void StopAllOwnsResponsiveControlRepair()
+        {
+            Assert(!ResponsiveControlRepairPolicy.ShouldRequest(
+                    processAlive: true,
+                    applicationTakeoverConfirmed: false,
+                    stopActive: true,
+                    logicalResidue: true,
+                    inconsistentRecovery: true,
+                    formalProgressStalled: true,
+                    channelSupervisionFailed: true),
+                "StopAll活动时Timer/Runner残留仍触发了第二个响应修复事务。");
+            Assert(ResponsiveControlRepairPolicy.ShouldRequest(
+                    processAlive: true,
+                    applicationTakeoverConfirmed: false,
+                    stopActive: false,
+                    logicalResidue: true,
+                    inconsistentRecovery: false,
+                    formalProgressStalled: false,
+                    channelSupervisionFailed: false),
+                "非Stop阶段的真实逻辑残留没有触发响应修复事务。");
+            Assert(!ResponsiveControlRepairPolicy.ShouldRequest(
+                    processAlive: true,
+                    applicationTakeoverConfirmed: true,
+                    stopActive: false,
+                    logicalResidue: true,
+                    inconsistentRecovery: false,
+                    formalProgressStalled: false,
+                    channelSupervisionFailed: false),
+                "已经确认接管后仍重复发起响应修复事务。");
         }
 
         private static void WatchdogTransportWritesAreBounded()

@@ -38,7 +38,242 @@ namespace AdaptiveControlTests
             Run("Closing只撤销重拉且终态判定独立",
                 ClosingFenceSuppressesRelaunchWithoutPrematureTerminal,
                 ref passed);
+            Run("旧进程只有Dead或IdentityMismatch且WaitForExit成功才形成退出证明",
+                OldProcessExitProofFailsClosed,
+                ref passed);
+            Run("恢复安全证明要求完整StopCompleted或完整Handoff证据",
+                RecoverySafetyProofRequiresCompleteEvidence,
+                ref passed);
+            Run("初次安全替换无预退避且使用5秒拉起15秒附着契约",
+                RecoverySlaAndBackoffPolicyAreExact,
+                ref passed);
             return passed;
+        }
+
+        private static void OldProcessExitProofFailsClosed()
+        {
+            Assert(
+                WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(
+                    DurableRelaunchProcessObservation.Dead),
+                "Dead未形成旧进程退出证明");
+            Assert(
+                WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(
+                    DurableRelaunchProcessObservation.IdentityMismatch),
+                "PID复用的IdentityMismatch未形成旧进程退出证明");
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(
+                    DurableRelaunchProcessObservation.Alive) &&
+                !WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(
+                    DurableRelaunchProcessObservation.Unknown),
+                "Alive或Unknown错误放行第二主进程");
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.CanAuthorizeAfterExitObservation(
+                    DurableRelaunchProcessObservation.Dead,
+                    waitForExitWasRequired: true,
+                    waitForExitSucceeded: false),
+                "WaitForExit=false仍允许消费Permit或拉起");
+            Assert(
+                WatchdogRecoveryReadinessPolicy.CanAuthorizeAfterExitObservation(
+                    DurableRelaunchProcessObservation.Dead,
+                    waitForExitWasRequired: true,
+                    waitForExitSucceeded: true) &&
+                WatchdogRecoveryReadinessPolicy.CanAuthorizeAfterExitObservation(
+                    DurableRelaunchProcessObservation.IdentityMismatch,
+                    waitForExitWasRequired: false,
+                    waitForExitSucceeded: false),
+                "已证明退出被错误阻断");
+        }
+
+        private static void RecoverySafetyProofRequiresCompleteEvidence()
+        {
+            var closing = new WatchdogClosingTombstone
+            {
+                SchemaVersion = 4,
+                ExitDisposition = WatchdogExitDisposition.TakeoverReplacementExit,
+                RelaunchDisposition = WatchdogRelaunchDisposition.PreserveApprovedPermit,
+                State = WatchdogClosingTombstoneState.Terminal,
+                SafetyStage = WatchdogClosingSafetyStage.Terminal,
+                FinalSafetyResultCommitted = true,
+                MotorsOff = true,
+                PowerOff = true,
+                PressureSafe = true,
+                PersistenceDrained = true,
+                LogicalQuiescent = true
+            };
+            Assert(
+                WatchdogRecoveryReadinessPolicy.IsCompleteStopProof(closing),
+                "完整StopCompleted关闭围栏未被接受为无Handoff替代证明");
+            WatchdogSafetyHandoffWaitOutcome outcome;
+            Assert(
+                WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    null,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: false,
+                    configSnapshotValid: false,
+                    timedOut: false,
+                    out outcome) &&
+                outcome == WatchdogSafetyHandoffWaitOutcome.NotRequired,
+                "未声明Handoff的完整StopCompleted未形成NotRequired结果");
+            closing.PersistenceDrained = false;
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.IsCompleteStopProof(closing),
+                "持久化未闭合的StopCompleted围栏错误放行");
+            closing.PersistenceDrained = true;
+            closing.SchemaVersion = 3;
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.IsCompleteStopProof(closing),
+                "缺少强类型Permit身份的旧schema错误放行接管续跑");
+
+            var handoff = new WatchdogSafetyHandoffReceipt
+            {
+                State = WatchdogSafetyHandoffState.Completed,
+                MotorsOff = true,
+                PowerOff = true,
+                PressureSafe = true,
+                PersistenceDrained = true,
+                LogicalQuiescent = true,
+                HardwareResourcesReleased = true,
+                ExecutionAuthorizationRevoked = true,
+                CallbacksIsolated = true
+            };
+            Assert(
+                WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
+                "完整Handoff安全证明未放行");
+            handoff.CallbacksIsolated = false;
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
+                "回调未隔离的Handoff错误放行");
+            handoff.CallbacksIsolated = true;
+            handoff.State = WatchdogSafetyHandoffState.Failed;
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
+                "Failed Handoff错误放行");
+
+            closing.SchemaVersion = 4;
+            closing.SafetyHandoffId = Guid.NewGuid().ToString("N");
+            handoff.State = WatchdogSafetyHandoffState.Accepted;
+            Assert(
+                WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    null,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: false,
+                    configSnapshotValid: false,
+                    timedOut: false,
+                    out outcome) &&
+                outcome == WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt,
+                "已声明Handoff但回执缺失未安全阻断");
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    handoff,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: true,
+                    configSnapshotValid: true,
+                    timedOut: false,
+                    out outcome) &&
+                WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    handoff,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: true,
+                    configSnapshotValid: true,
+                    timedOut: true,
+                    out outcome) &&
+                outcome == WatchdogSafetyHandoffWaitOutcome.TimedOut,
+                "非终态Handoff未等待或90秒超时未结构化为TimedOut");
+            Assert(
+                WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    handoff,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: false,
+                    configSnapshotValid: true,
+                    timedOut: false,
+                    out outcome) &&
+                outcome == WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt,
+                "Handoff身份不匹配未安全阻断");
+            handoff.State = WatchdogSafetyHandoffState.Failed;
+            Assert(
+                WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    handoff,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: true,
+                    configSnapshotValid: true,
+                    timedOut: false,
+                    out outcome) &&
+                outcome == WatchdogSafetyHandoffWaitOutcome.Failed,
+                "Failed Handoff未形成Failed结果");
+            handoff.State = WatchdogSafetyHandoffState.Completed;
+            Assert(
+                WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    handoff,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: true,
+                    configSnapshotValid: false,
+                    timedOut: false,
+                    out outcome) &&
+                outcome == WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt,
+                "配置快照损坏未安全阻断");
+            Assert(
+                WatchdogRecoveryReadinessPolicy.TryResolveSafetyPrerequisite(
+                    closing,
+                    handoff,
+                    exactClosingPermitBinding: true,
+                    exactReceiptIdentity: true,
+                    configSnapshotValid: true,
+                    timedOut: false,
+                    out outcome) &&
+                outcome == WatchdogSafetyHandoffWaitOutcome.Completed,
+                "完整Handoff未形成Completed结果");
+        }
+
+        private static void RecoverySlaAndBackoffPolicyAreExact()
+        {
+            Assert(
+                WatchdogRecoveryReadinessPolicy.InitialLaunchSlaSeconds == 5 &&
+                WatchdogRecoveryReadinessPolicy.RecoveryAttachSlaSeconds == 15 &&
+                WatchdogRecoveryReadinessPolicy.SafetyHandoffDeadlineSeconds == 90,
+                "恢复SLA常量不是5秒拉起/15秒附着/90秒Handoff");
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.ShouldApplyProcessBackoff(
+                    initialSafetyReplacement: true,
+                    launchOrdinal: 1) &&
+                WatchdogRecoveryReadinessPolicy.ShouldApplyProcessBackoff(
+                    initialSafetyReplacement: true,
+                    launchOrdinal: 2) &&
+                WatchdogRecoveryReadinessPolicy.ShouldApplyProcessBackoff(
+                    initialSafetyReplacement: false,
+                    launchOrdinal: 1),
+                "初次安全替换或后续失败的退避策略错误");
+
+            const long frequency = 1000;
+            const long ready = 10000;
+            Assert(
+                !WatchdogRecoveryReadinessPolicy.IsSlaExceeded(
+                    ready,
+                    ready + 5000,
+                    frequency,
+                    WatchdogRecoveryReadinessPolicy.InitialLaunchSlaSeconds) &&
+                WatchdogRecoveryReadinessPolicy.IsSlaExceeded(
+                    ready,
+                    ready + 5001,
+                    frequency,
+                    WatchdogRecoveryReadinessPolicy.InitialLaunchSlaSeconds) &&
+                !WatchdogRecoveryReadinessPolicy.IsSlaExceeded(
+                    ready,
+                    ready + 15000,
+                    frequency,
+                    WatchdogRecoveryReadinessPolicy.RecoveryAttachSlaSeconds) &&
+                WatchdogRecoveryReadinessPolicy.IsSlaExceeded(
+                    ready,
+                    ready + 15001,
+                    frequency,
+                    WatchdogRecoveryReadinessPolicy.RecoveryAttachSlaSeconds),
+                "可注入单调时钟下的5秒/15秒边界判定错误");
         }
 
         private static void ClosingFenceSuppressesRelaunchWithoutPrematureTerminal()

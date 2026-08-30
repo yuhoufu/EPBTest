@@ -32,6 +32,7 @@ namespace AdaptiveControlTests
                 WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
                 ApplicationExitUsesDedicatedShutdownExpectedMessage,
                 WatchdogOwnedFinalClosePreservesRecoveryCheckpoint,
+                AutomaticBatchCancellationDoesNotPublishOperatorRunStopped,
                 WinFormsTargetPostsOnStaMessagePump,
                 AcceptedPostSurvivesDispose,
                 BeginInvokeFaultIsReturned,
@@ -164,6 +165,22 @@ namespace AdaptiveControlTests
             Assert(FrmEpbMainMonitor.ResolveMonitorCloseStopSource(false) ==
                    StopSource.ApplicationClosing,
                 "普通人工关闭被错误伪装成Watchdog系统故障接管");
+        }
+
+        private static void AutomaticBatchCancellationDoesNotPublishOperatorRunStopped()
+        {
+            Assert(!FrmEpbMainMonitor.ShouldPublishRunStoppedForBatchCancellation(
+                       unattendedRecovery: false,
+                       operatorStopRequested: false),
+                "Watchdog/恢复事务引起的批次取消仍会发布RunStopped并撤销自动替换许可。");
+            Assert(FrmEpbMainMonitor.ShouldPublishRunStoppedForBatchCancellation(
+                       unattendedRecovery: false,
+                       operatorStopRequested: true),
+                "人工停止引起的批次取消没有发布RunStopped。");
+            Assert(!FrmEpbMainMonitor.ShouldPublishRunStoppedForBatchCancellation(
+                       unattendedRecovery: true,
+                       operatorStopRequested: true),
+                "无人值守恢复取消被错误伪装成人工停止。");
         }
 
         private static void WinFormsTargetPostsOnStaMessagePump()
@@ -1472,7 +1489,8 @@ namespace AdaptiveControlTests
 
             public void RequestWatchdogOwnedExit(
                 string reason,
-                RuntimeShutdownIntent shutdownIntent)
+                RuntimeShutdownIntent shutdownIntent,
+                string takeoverTransactionId = null)
             {
                 LastExitIntent = shutdownIntent;
                 Interlocked.Increment(ref ExitCalls);

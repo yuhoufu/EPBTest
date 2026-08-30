@@ -34,10 +34,10 @@ namespace AdaptiveControlTests
             Run("旧RunEpoch恢复owner隔离后退出活动集合且迟到终态无效", SupersedeThroughEpochQuarantinesOldOwners, ref passed);
             Run("恢复任务清退取消令牌可到达内部等待", RecoveryDrainCancellationIsBounded, ref passed);
             Run("x86恢复内存熔断按600与800MiB分级", RecoveryMemoryCircuitBreakerIsDeterministic, ref passed);
-            Run("液压硬件确认仅永久禁用故障组所选卡钳", ConfirmedHydraulicDisableIsScoped, ref passed);
-            Run("PSU4硬件确认仅永久禁用EPB10/11且EPB9继续", ConfirmedPowerDisableIsScoped, ref passed);
+            Run("液压硬件确认仅隔离本次运行故障组所选卡钳", ConfirmedHydraulicDisableIsScoped, ref passed);
+            Run("PSU4硬件确认仅隔离本次运行EPB10/11且EPB9继续", ConfirmedPowerDisableIsScoped, ref passed);
             Run("硬件锁存到达后旧软件恢复不得再次使能", HardwareLatchTerminatesSoftwareRecovery, ref passed);
-            Run("硬件确认先OFF和持久禁用再发布诊断", ConfirmedHardwareIsolationOrderIsSafetyFirst, ref passed);
+            Run("硬件确认先OFF和提交本次运行隔离再发布诊断", ConfirmedHardwareIsolationOrderIsSafetyFirst, ref passed);
             Run("启动组级硬件隔离后仅健康通道继续", StartupInfrastructureIsolationKeepsHealthyChannels, ref passed);
             Run("恢复阶段忽略取消仍受硬期限约束", IgnoredCancellationCannotHoldRecoveryStage, ref passed);
             Run("DAQ恢复先到必须等待整组截止且重入后才能提交", RecoveryWaitsForCutoffAndRejoin, ref passed);
@@ -968,7 +968,7 @@ namespace AdaptiveControlTests
                 () => order.Add("off"),
                 () => order.Add("power-off"),
                 () => order.Add("off-fallback"),
-                () => order.Add("persist-disable"),
+                () => order.Add("commit-runtime-isolation"),
                 () => order.Add("diagnostics"));
             Assert(order.SequenceEqual(new[]
                 {
@@ -976,10 +976,10 @@ namespace AdaptiveControlTests
                     "off",
                     "power-off",
                     "off-fallback",
-                    "persist-disable",
+                    "commit-runtime-isolation",
                     "diagnostics"
                 }),
-                "硬件确认的日志/UI/报警发布抢在OFF或耐久禁用之前");
+                "硬件确认的日志/UI/报警发布抢在OFF或本次运行隔离之前");
         }
 
         private static void StartupInfrastructureIsolationKeepsHealthyChannels()

@@ -34,6 +34,12 @@ namespace Controller
         OffHighPriority
     }
 
+    internal static class OffCommandEvidencePolicy
+    {
+        internal static bool Resolve(bool alreadyOffConfirmed, bool currentCommandSucceeded) =>
+            alreadyOffConfirmed || currentCommandSucceeded;
+    }
+
     internal sealed class DoControlTraceEvent
     {
         public DateTime Utc { get; set; }
@@ -126,6 +132,7 @@ namespace Controller
         private readonly ConcurrentDictionary<int, Guid> _runIdByChannel = new();
         private readonly ConcurrentDictionary<int, ChannelStaggerAssignment> _staggerAssignmentByChannel = new();
         private readonly ConcurrentDictionary<int, DateTime> _electricalPhaseDueByChannel = new();
+        private readonly ConcurrentDictionary<int, long> _confirmedPhysicalOffByChannel = new();
         private readonly ConcurrentDictionary<Guid, ElectricalStaggerPlan> _staggerPlansByRun = new();
         private readonly ConcurrentQueue<Guid> _staggerPlanOrder = new();
 
@@ -373,16 +380,50 @@ namespace Controller
 
         internal bool CommandEpbOff(int channel, string stage)
         {
-            return ExecuteDoCommand(channel, stage, EpbDoCommand.Off, () => _do.SetEpbOff(channel));
+            var alreadyConfirmed = _confirmedPhysicalOffByChannel.ContainsKey(channel);
+            try
+            {
+                return OffCommandEvidencePolicy.Resolve(
+                    alreadyConfirmed,
+                    ExecuteDoCommand(
+                        channel,
+                        stage,
+                        EpbDoCommand.Off,
+                        () => _do.SetEpbOff(channel)));
+            }
+            catch when (alreadyConfirmed)
+            {
+                _log?.Info(
+                    $"AlreadyOffConfirmed EPB={channel} Stage={stage}",
+                    "EPB-DO");
+                return true;
+            }
         }
 
         internal bool CommandEpbOffHighPriority(int channel, string stage)
         {
-            return ExecuteDoCommand(
-                channel,
-                stage,
-                EpbDoCommand.OffHighPriority,
-                () => _do.SetEpbOffHighPriority(channel));
+            var alreadyConfirmed = _confirmedPhysicalOffByChannel.ContainsKey(channel);
+            try
+            {
+                var current = ExecuteDoCommand(
+                    channel,
+                    stage,
+                    EpbDoCommand.OffHighPriority,
+                    () => _do.SetEpbOffHighPriority(channel));
+                var resolved = OffCommandEvidencePolicy.Resolve(alreadyConfirmed, current);
+                if (!current && alreadyConfirmed)
+                    _log?.Info(
+                        $"AlreadyOffConfirmed EPB={channel} Stage={stage}",
+                        "EPB-DO");
+                return resolved;
+            }
+            catch when (alreadyConfirmed)
+            {
+                _log?.Info(
+                    $"AlreadyOffConfirmed EPB={channel} Stage={stage}",
+                    "EPB-DO");
+                return true;
+            }
         }
 
         /// <summary>
@@ -420,8 +461,14 @@ namespace Controller
         internal bool CommandEpbOffSafetyImmediate(int channel)
         {
             var result = _do.SetEpbOffHighPriority(channel);
-            if (result) SetChannelEnergized(channel, false);
-            return result;
+            if (result)
+            {
+                _confirmedPhysicalOffByChannel[channel] = Stopwatch.GetTimestamp();
+                SetChannelEnergized(channel, false);
+            }
+            return OffCommandEvidencePolicy.Resolve(
+                _confirmedPhysicalOffByChannel.ContainsKey(channel),
+                result);
         }
 
         private void EnsureChannelExecutionPermit(
@@ -488,9 +535,17 @@ namespace Controller
                 result = execute();
                 commandCompletedTicks = Stopwatch.GetTimestamp();
                 if (result)
+                {
+                    if (command == EpbDoCommand.Forward ||
+                        command == EpbDoCommand.Reverse)
+                        _confirmedPhysicalOffByChannel.TryRemove(channel, out _);
+                    else
+                        _confirmedPhysicalOffByChannel[channel] =
+                            commandCompletedTicks;
                     SetChannelEnergized(
                         channel,
                         command == EpbDoCommand.Forward || command == EpbDoCommand.Reverse);
+                }
                 return result;
             }
             finally

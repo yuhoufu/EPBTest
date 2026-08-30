@@ -141,6 +141,68 @@ namespace Controller
         }
     }
 
+    internal enum FormalSafetyClosureState
+    {
+        PendingSafetyClosure = 1,
+        Closed = 2,
+        TimedOut = 3
+    }
+
+    internal sealed class FormalSafetyClosureObservation
+    {
+        public FormalSafetyClosureState State { get; set; }
+        public bool MotorOffConfirmed { get; set; }
+        public bool HydraulicReleased { get; set; }
+        public bool PersistenceRequired { get; set; }
+        public bool PersistenceClosed { get; set; }
+        public CycleAttemptClosureReceipt ClosureReceipt { get; set; }
+
+        public bool IsClosed =>
+            MotorOffConfirmed && HydraulicReleased &&
+            (!PersistenceRequired || PersistenceClosed);
+    }
+
+    internal static class FormalSafetyClosurePolicy
+    {
+        internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
+
+        internal static async Task<FormalSafetyClosureObservation> AwaitAsync(
+            Func<FormalSafetyClosureObservation> observe,
+            TimeSpan timeout,
+            CancellationToken token,
+            Func<TimeSpan, CancellationToken, Task> delay = null)
+        {
+            if (observe == null) throw new ArgumentNullException(nameof(observe));
+            var bounded = timeout <= TimeSpan.Zero ? DefaultTimeout : timeout;
+            var deadline = DateTime.UtcNow.Add(bounded);
+            var wait = delay ?? ((duration, cancellation) =>
+                Task.Delay(duration, cancellation));
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var current = observe() ?? new FormalSafetyClosureObservation();
+                if (current.IsClosed)
+                {
+                    current.State = FormalSafetyClosureState.Closed;
+                    return current;
+                }
+                if (DateTime.UtcNow >= deadline)
+                {
+                    current.State = FormalSafetyClosureState.TimedOut;
+                    return current;
+                }
+                current.State = FormalSafetyClosureState.PendingSafetyClosure;
+                var remaining = deadline - DateTime.UtcNow;
+                await wait(
+                        remaining < TimeSpan.FromMilliseconds(25)
+                            ? remaining
+                            : TimeSpan.FromMilliseconds(25),
+                        token)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
     internal sealed class UnattendedRemainingCyclePlan
     {
         internal UnattendedRemainingCyclePlan(
@@ -2174,6 +2236,63 @@ namespace Controller
             }
         }
 
+        private async Task<FormalSafetyClosureObservation>
+            AwaitFormalSafetyClosureAsync(
+                int channel,
+                long formalSlot,
+                CycleAttemptContext attempt,
+                bool persistenceRequired)
+        {
+            if (IsChannelEnergized(channel))
+            {
+                try
+                {
+                    CommandEpbOffHighPriority(
+                        channel,
+                        "FormalSlotPendingSafetyClosure");
+                }
+                catch { }
+            }
+
+            FormalSafetyClosureObservation Observe()
+            {
+                var receipt = attempt?.CaptureClosureReceipt();
+                var hydraulicReleased =
+                    !_hydraulicLeaseByChannel.TryGetValue(channel, out var lease) ||
+                    lease.IsClosed;
+                return new FormalSafetyClosureObservation
+                {
+                    MotorOffConfirmed = !IsChannelEnergized(channel),
+                    HydraulicReleased = hydraulicReleased,
+                    PersistenceRequired = persistenceRequired,
+                    PersistenceClosed = !persistenceRequired || receipt?.Durable == true,
+                    ClosureReceipt = receipt
+                };
+            }
+
+            var first = Observe();
+            if (!first.IsClosed)
+                _log?.Warn(
+                    $"FormalSlotPendingSafetyClosure Slot={formalSlot} EPB={channel} " +
+                    $"MotorOff={first.MotorOffConfirmed} " +
+                    $"HydraulicReleased={first.HydraulicReleased} " +
+                    $"Persistence={first.PersistenceClosed} " +
+                    $"DeadlineMs={FormalSafetyClosurePolicy.DefaultTimeout.TotalMilliseconds:F0}",
+                    "EPB-Safety");
+            var result = await FormalSafetyClosurePolicy.AwaitAsync(
+                    Observe,
+                    FormalSafetyClosurePolicy.DefaultTimeout,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            _log?.Info(
+                $"FormalSlotSafetyClosureResolved Slot={formalSlot} EPB={channel} " +
+                $"State={result.State} MotorOff={result.MotorOffConfirmed} " +
+                $"HydraulicReleased={result.HydraulicReleased} " +
+                $"Persistence={result.PersistenceClosed}",
+                "EPB-Safety");
+            return result;
+        }
+
         internal static int[] ResolveBatchStartFailureChannels(
             SoftwareSelfHealingExhaustedException circuitFailure,
             IEnumerable<ChannelStartFault> startFaults,
@@ -3638,16 +3757,19 @@ namespace Controller
                                 timer.Stop();
                             }
 
-                            var motorOffConfirmed = !IsChannelEnergized(ch);
-                            var hydraulicReleased =
-                                !_hydraulicLeaseByChannel.TryGetValue(ch, out var finalLease) ||
-                                finalLease.IsClosed;
-                            var closureReceipt = EnrichFormalClosureReceipt(
-                                cycleAttempt.CaptureClosureReceipt(),
-                                phaseSlot);
                             var persistenceRequired = !IsAlarmStopRequested(ch);
-                            var persistenceBoundaryClosed =
-                                !persistenceRequired || closureReceipt?.Durable == true;
+                            var safetyClosure = await AwaitFormalSafetyClosureAsync(
+                                    ch,
+                                    phaseSlot,
+                                    cycleAttempt,
+                                    persistenceRequired)
+                                .ConfigureAwait(false);
+                            var motorOffConfirmed = safetyClosure.MotorOffConfirmed;
+                            var hydraulicReleased = safetyClosure.HydraulicReleased;
+                            var closureReceipt = EnrichFormalClosureReceipt(
+                                safetyClosure.ClosureReceipt,
+                                phaseSlot);
+                            var persistenceBoundaryClosed = safetyClosure.PersistenceClosed;
                             var formalDisposition = ResolveFormalSlotDisposition(
                                 motorOffConfirmed,
                                 hydraulicReleased,

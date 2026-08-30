@@ -57,7 +57,7 @@ namespace Controller
                 {
                     if (!TryPersistPeriodOverrunState(channel, 0, null, out var error))
                     {
-                        await EscalatePeriodAlarmPersistenceFailureAsync(
+                        await EscalatePeriodSafetyOrStatePersistenceFailureAsync(
                                 channel,
                                 "PeriodOverrunResetPersistenceFailed: " + error)
                             .ConfigureAwait(false);
@@ -78,7 +78,7 @@ namespace Controller
                 : 0) + 1;
             if (!TryPersistPeriodOverrunState(channel, next, nowUtc, out var persistError))
             {
-                await EscalatePeriodAlarmPersistenceFailureAsync(
+                await EscalatePeriodSafetyOrStatePersistenceFailureAsync(
                         channel,
                         "PeriodOverrunPersistenceFailed: " + persistError)
                     .ConfigureAwait(false);
@@ -92,7 +92,7 @@ namespace Controller
             if (classification == Adaptive.PeriodOverrunKind.HardLimitReached)
             {
                 outcome.PeriodOverrunKind = classification;
-                return await LatchPermanentPeriodAlarmAsync(
+                return await LatchCurrentRunPeriodIsolationAsync(
                         channel,
                         timer,
                         "PeriodOverrunHardLimit",
@@ -104,7 +104,7 @@ namespace Controller
             if (classification == Adaptive.PeriodOverrunKind.ConsecutiveLimitReached)
             {
                 outcome.PeriodOverrunKind = classification;
-                return await LatchPermanentPeriodAlarmAsync(
+                return await LatchCurrentRunPeriodIsolationAsync(
                         channel,
                         timer,
                         "ConsecutivePeriodOverrun",
@@ -166,7 +166,7 @@ namespace Controller
                     $"EPB[{channel}] 周期硬截止后的高优先级 OFF 未确认，" +
                     "不得把运行位图伪装为已断电；将升级整批安全停止。",
                     "周期屏障");
-            var isolated = await LatchPermanentPeriodAlarmAsync(
+            await LatchCurrentRunPeriodIsolationAsync(
                     channel,
                     timer,
                     "PeriodOverrunHardLimit",
@@ -195,7 +195,7 @@ namespace Controller
             return false;
         }
 
-        private async Task<bool> LatchPermanentPeriodAlarmAsync(
+        private async Task<bool> LatchCurrentRunPeriodIsolationAsync(
             int channel,
             HighPrecisionTimer timer,
             string code,
@@ -207,33 +207,26 @@ namespace Controller
             _alarmStopLatch.TryRequestStop(channel);
             timer?.Stop();
             var safe = RevokeChannelExecutionBeforeTerminalState(channel, code);
-            var persisted = PersistentlyDisableChannels(
-                new[] { channel },
-                code,
-                reason,
-                correlationId);
 
             PublishChannelRuntimeState(
                 channel,
-                safe && persisted
+                safe
                     ? ChannelRuntimeState.AlarmStopped
                     : ChannelRuntimeState.SystemFault,
-                safe && persisted ? code : code + "SafetyOrPersistenceFailed",
-                safe && persisted
-                    ? "永久报警已锁存；重新勾选或右键人工重置前保持禁用"
-                    : "永久报警隔离后的 OFF、安全释放或项目持久化未确认；整批停止",
+                safe ? code : code + "SafetyClosureFailed",
+                safe
+                    ? "本次运行隔离已锁存；项目启用配置保持不变，下次启动必须重新执行硬件预检"
+                    : "本次运行隔离后的 OFF 或安全释放未确认；整批停止",
                 channel,
                 new[] { channel },
                 correlationId,
                 allowTerminalReset: false,
                 allowSystemFaultReset: false);
-            if (!safe || !persisted)
+            if (!safe)
             {
-                await EscalatePeriodAlarmPersistenceFailureAsync(
+                await EscalatePeriodSafetyOrStatePersistenceFailureAsync(
                         channel,
-                        !safe
-                            ? "PeriodAlarmSafetyClosureFailed"
-                            : "PeriodAlarmPersistenceFailed")
+                        "PeriodAlarmSafetyClosureFailed")
                     .ConfigureAwait(false);
             }
             return true;
@@ -295,7 +288,7 @@ namespace Controller
             }
         }
 
-        private async Task EscalatePeriodAlarmPersistenceFailureAsync(
+        private async Task EscalatePeriodSafetyOrStatePersistenceFailureAsync(
             int channel,
             string reason)
         {
@@ -316,7 +309,7 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                _log?.Error("周期报警持久化失败后的整批安全停止异常。", "周期屏障", ex);
+                _log?.Error("周期隔离安全闭合或状态持久化失败后的整批安全停止异常。", "周期屏障", ex);
             }
         }
 
