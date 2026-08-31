@@ -70,7 +70,7 @@ namespace MTTFTest.SafetyAgent
                 {
                     WatchdogSafetyHandoffReceipt receipt;
                     if (!TryReadExact(args, out receipt) ||
-                        receipt.SchemaVersion != 3 ||
+                        (receipt.SchemaVersion != 3 && receipt.SchemaVersion != 4) ||
                         receipt.State < WatchdogSafetyHandoffState.Accepted)
                         return 3;
                     if (receipt.IsSafetyCompleted) return 0;

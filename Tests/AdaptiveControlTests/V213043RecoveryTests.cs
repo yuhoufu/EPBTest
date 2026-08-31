@@ -25,6 +25,8 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("SafetyAgent使用快照参数并从最后阶段幂等续跑",
                 SafetyAgentUsesSnapshotAndResumesStages, ref passed);
+            Run("强杀恢复使用schema4安全回执并由独立代理完成物理确认",
+                CrashRecoverySafetyAgentCompletesPhysicalProof, ref passed);
             Run("快照篡改在创建硬件前被证据门禁拒绝",
                 SnapshotTamperFailsBeforeHardwareOpen, ref passed);
             Run("正式SafetyAgent新进程拒绝篡改快照",
@@ -108,6 +110,35 @@ namespace AdaptiveControlTests
                        receipt.FailureDomain == RecoveryFailureDomain.EvidenceBinding &&
                        receipt.FailureCode == "SafetyAgentConfigInvalid",
                     "篡改快照在硬件打开前未失败，或污染了错误失败域。");
+            }
+        }
+
+        private static void CrashRecoverySafetyAgentCompletesPhysicalProof()
+        {
+            using (var fixture = SafetyFixture.Create())
+            {
+                var receipt = fixture.ReadReceipt();
+                receipt.SchemaVersion = 4;
+                receipt.CrashRecovery = true;
+                receipt.OldProcessExitProven = true;
+                receipt.PersistenceDrained = false;
+                receipt.Revision++;
+                WatchdogSafetyHandoffReceiptStore.WriteThrough(
+                    fixture.JournalDirectory,
+                    receipt);
+
+                var factory = new RecordingHardwareFactory(
+                    failFirstPowerConfirmation: false);
+                Assert(SafetyAgentRunner.Run(fixture.Arguments, factory) == 0,
+                    "独立SafetyAgent拒绝了强杀恢复schema4回执");
+                var completed = fixture.ReadReceipt();
+                Assert(completed.SchemaVersion == 4 &&
+                       completed.CrashRecovery &&
+                       completed.OldProcessExitProven &&
+                       !completed.PersistenceDrained &&
+                       WatchdogRecoveryReadinessPolicy
+                           .IsCompleteSafetyHandoffProof(completed),
+                    "强杀后物理安全证据未形成可恢复闭环");
             }
         }
 

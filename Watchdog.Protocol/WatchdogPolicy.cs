@@ -1696,13 +1696,33 @@ namespace MTTFTest.Watchdog.Protocol
         public static bool IsCompleteSafetyHandoffProof(
             WatchdogSafetyHandoffReceipt receipt)
         {
+            var persistenceReady = receipt?.PersistenceDrained == true ||
+                receipt?.SchemaVersion >= 4 &&
+                receipt.CrashRecovery && receipt.OldProcessExitProven;
             return receipt?.State == WatchdogSafetyHandoffState.Completed &&
                    receipt.IsSafetyCompleted &&
-                   receipt.PersistenceDrained &&
+                   persistenceReady &&
                    receipt.LogicalQuiescent &&
                    receipt.HardwareResourcesReleased &&
                    receipt.ExecutionAuthorizationRevoked &&
                    receipt.CallbacksIsolated;
+        }
+
+        public static bool CanPrepareCrashSafetyHandoff(
+            WatchdogCrashRecoverySeed seed,
+            string sessionId,
+            DurableRelaunchProcessObservation oldProcessObservation,
+            DurableRelaunchPermitRecord authority)
+        {
+            return seed?.IsValidFor(sessionId) == true &&
+                   IsOldProcessExitProven(oldProcessObservation) &&
+                   authority != null &&
+                   string.Equals(authority.SessionId, sessionId, StringComparison.Ordinal) &&
+                   authority.State == DurableRelaunchPermitState.Approved &&
+                   authority.Generation > 0 &&
+                   !string.IsNullOrWhiteSpace(authority.PermitId) &&
+                   WatchdogProcessIdentityPolicy.IsValidChallengeNonce(
+                       authority.PermitNonce);
         }
 
         public static bool TryResolveSafetyPrerequisite(

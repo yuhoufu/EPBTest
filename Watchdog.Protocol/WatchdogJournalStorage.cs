@@ -310,6 +310,12 @@ namespace MTTFTest.Watchdog.Protocol
         public static string ProjectSafetyHandoffPath(string directory, string sessionId) => Path.Combine(
             ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".safety-handoff.json");
 
+        public static string LocalCrashRecoverySeedPath(string sessionId) => Path.Combine(
+            LocalControlDirectory, "session-" + SafeName(sessionId) + ".crash-recovery-seed.json");
+
+        public static string ProjectCrashRecoverySeedPath(string directory, string sessionId) => Path.Combine(
+            ValidateProjectDirectory(directory), "session-" + SafeName(sessionId) + ".crash-recovery-seed.json");
+
         public static string LocalApplicationExitPath(string sessionId) => Path.Combine(
             LocalControlDirectory, "session-" + SafeName(sessionId) + ".application-exit.json");
 

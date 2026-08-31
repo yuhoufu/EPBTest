@@ -1749,6 +1749,8 @@ namespace MTEmbTest
                     begunSnapshot.ActiveSessionLease != begunSnapshot.SessionLease)
                     throw new InvalidOperationException("Watchdog BeginSession 未发布可绑定的精确会话租约。");
                 context.BindSessionLease(begunSnapshot.SessionLease);
+                if (context.JournalMode == RuntimeJournalMode.CreateNewInitial)
+                    EnsureCrashRecoverySeed(context);
                 var startTask = TransportEngine.StartAsync();
                 var waitCoordinator = new WatchdogAttachWaitCoordinator();
                 var compositeResult = await waitCoordinator.WaitAsync(
@@ -1778,6 +1780,122 @@ namespace MTEmbTest
             // attach budget from transport primitives.  The protocol policy
             // is the single source of truth for the complete session gate.
             return WatchdogTransportPolicy.SessionAttachDeadline;
+        }
+
+        private static void EnsureCrashRecoverySeed(
+            RuntimeTransportSessionContext context)
+        {
+            if (context == null || context.SessionLease <= 0)
+                throw new InvalidOperationException("CrashRecoverySeedIdentityMissing");
+            WatchdogCrashRecoverySeed existing;
+            if (WatchdogCrashRecoverySeedStore.TryRead(
+                    context.JournalDirectory,
+                    context.SessionId,
+                    out existing) &&
+                existing.SessionGeneration == context.SessionGeneration &&
+                existing.SessionLease == context.SessionLease)
+                return;
+
+            var projectDirectory = ResolveProjectDirectory(context.JournalDirectory);
+            var mainExecutablePath = Path.GetFullPath(context.MainExecutablePath);
+            var executableDirectory = Path.GetDirectoryName(mainExecutablePath) ??
+                                      Environment.CurrentDirectory;
+            var safetyAgentPath = Path.Combine(
+                executableDirectory,
+                "MTTFTest.SafetyAgent.exe");
+            if (!File.Exists(mainExecutablePath) || !File.Exists(safetyAgentPath))
+                throw new FileNotFoundException(
+                    "CrashRecoverySeedExecutableMissing");
+
+            var projectTestPath = string.IsNullOrWhiteSpace(projectDirectory)
+                ? string.Empty
+                : Path.Combine(projectDirectory, "Config", "TestConfig.xml");
+            var appTestPath = Path.Combine(
+                executableDirectory,
+                "Config",
+                "TestConfig.xml");
+            var testConfig = ConfigLoader.LoadTest(
+                File.Exists(projectTestPath) ? projectTestPath : appTestPath,
+                NullLogger.Instance);
+            var hydraulics = testConfig.Hydraulics
+                .Where(value => value.Enabled)
+                .OrderBy(value => value.Id)
+                .ToArray();
+            if (hydraulics.Length == 0)
+                throw new InvalidDataException(
+                    "CrashRecoverySeedHydraulicConfigMissing");
+
+            var daqRuntime = CaptureDaqRuntimeSettings();
+            var runtime = new SafetyRuntimeSnapshot
+            {
+                SampleRateHz = daqRuntime.SampleRateHz,
+                SamplesPerChannel = daqRuntime.SamplesPerChannel,
+                PressureChannels = hydraulics
+                    .Select(value => "Pressure_" + value.Id)
+                    .ToArray(),
+                ReleaseSafePressureBar = hydraulics
+                    .Select(value => Math.Max(0, value.ReleaseSafePressureBar))
+                    .ToArray(),
+                PressureSampleMaxAgeMs = hydraulics.Min(value =>
+                    Math.Max(1, value.PressureSampleMaxAgeMs)),
+                ReleaseStableMs = hydraulics.Max(value =>
+                    Math.Max(0, value.ReleaseStableMs)),
+                ReleaseTimeoutMs = hydraulics.Max(value =>
+                    Math.Max(1000, value.ReleaseTimeoutMs))
+            };
+            runtime.Validate();
+
+            var mainSha = DurableJsonFileStore.ComputeSha256(
+                File.ReadAllBytes(mainExecutablePath));
+            var agentSha = DurableJsonFileStore.ComputeSha256(
+                File.ReadAllBytes(safetyAgentPath));
+            var seedId = Guid.NewGuid().ToString("N");
+            var buildIdentity = RuntimeBuildIdentity.Capture().ToStartupLogLine();
+            var snapshot = WatchdogSafetyConfigSnapshotStore.Create(
+                context.JournalDirectory,
+                seedId,
+                Path.Combine(executableDirectory, "Config"),
+                string.IsNullOrWhiteSpace(projectDirectory)
+                    ? string.Empty
+                    : Path.Combine(projectDirectory, "Config"),
+                buildIdentity,
+                runtime,
+                context.SessionId,
+                context.SessionGeneration,
+                context.SessionLease,
+                0,
+                string.Empty,
+                mainSha,
+                agentSha);
+            if (snapshot?.Succeeded != true)
+                throw new InvalidOperationException(
+                    snapshot?.Error ?? "CrashRecoverySeedSnapshotUnavailable");
+
+            WatchdogCrashRecoverySeedStore.WriteThrough(
+                context.JournalDirectory,
+                new WatchdogCrashRecoverySeed
+                {
+                    SessionId = context.SessionId,
+                    SessionGeneration = context.SessionGeneration,
+                    SessionLease = context.SessionLease,
+                    SeedId = seedId,
+                    Revision = 1,
+                    ProjectDirectory = projectDirectory,
+                    MainExecutablePath = mainExecutablePath,
+                    MainExecutableSha256 = mainSha,
+                    SafetyAgentExecutablePath = safetyAgentPath,
+                    SafetyAgentExecutableSha256 = agentSha,
+                    ConfigSnapshotPath = snapshot.ConfigDirectory,
+                    ConfigSnapshotManifestPath = snapshot.ManifestPath,
+                    ConfigSnapshotManifestSha256 = snapshot.ManifestSha256,
+                    ConfigSnapshotSchemaVersion = 2,
+                    BuildIdentity = buildIdentity
+                });
+            RecordClientEvent(
+                context,
+                "CrashRecoverySeedCommitted",
+                $"SeedId={seedId};Generation={context.SessionGeneration};" +
+                $"Lease={context.SessionLease}");
         }
 
         private static bool IsExactAttached(RuntimeTransportSnapshot composite)

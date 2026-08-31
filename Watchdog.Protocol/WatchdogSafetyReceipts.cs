@@ -203,6 +203,100 @@ namespace MTTFTest.Watchdog.Protocol
         CheckpointCommitted = 8
     }
 
+    /// <summary>
+    /// 主程序在会话附着前固化的只读安全恢复种子。它只提供经过哈希绑定的
+    /// 可执行文件与不可变配置，不提供任何“设备已安全”结论。
+    /// </summary>
+    public sealed class WatchdogCrashRecoverySeed
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public string SessionId { get; set; } = string.Empty;
+        public long SessionGeneration { get; set; }
+        public long SessionLease { get; set; }
+        public string SeedId { get; set; } = string.Empty;
+        public long Revision { get; set; }
+        public string ProjectDirectory { get; set; } = string.Empty;
+        public string MainExecutablePath { get; set; } = string.Empty;
+        public string MainExecutableSha256 { get; set; } = string.Empty;
+        public string SafetyAgentExecutablePath { get; set; } = string.Empty;
+        public string SafetyAgentExecutableSha256 { get; set; } = string.Empty;
+        public string ConfigSnapshotPath { get; set; } = string.Empty;
+        public string ConfigSnapshotManifestPath { get; set; } = string.Empty;
+        public string ConfigSnapshotManifestSha256 { get; set; } = string.Empty;
+        public int ConfigSnapshotSchemaVersion { get; set; }
+        public string BuildIdentity { get; set; } = string.Empty;
+        public long UpdatedUtcTicks { get; set; }
+
+        public bool IsValidFor(string sessionId)
+        {
+            Guid parsed;
+            return SchemaVersion == 1 && Revision > 0 &&
+                   SessionGeneration > 0 && SessionLease > 0 &&
+                   string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
+                   Guid.TryParseExact(SessionId ?? string.Empty, "N", out parsed) &&
+                   Guid.TryParseExact(SeedId ?? string.Empty, "N", out parsed) &&
+                   RecoveryFailureReceipt.IsSha256(MainExecutableSha256) &&
+                   RecoveryFailureReceipt.IsSha256(SafetyAgentExecutableSha256) &&
+                   RecoveryFailureReceipt.IsSha256(ConfigSnapshotManifestSha256) &&
+                   !string.IsNullOrWhiteSpace(MainExecutablePath) &&
+                   !string.IsNullOrWhiteSpace(SafetyAgentExecutablePath) &&
+                   !string.IsNullOrWhiteSpace(ConfigSnapshotPath) &&
+                   !string.IsNullOrWhiteSpace(ConfigSnapshotManifestPath) &&
+                   ConfigSnapshotSchemaVersion == 2;
+        }
+    }
+
+    public static class WatchdogCrashRecoverySeedStore
+    {
+        public static WatchdogCrashRecoverySeed WriteThrough(
+            string projectDirectory,
+            WatchdogCrashRecoverySeed seed)
+        {
+            return WatchdogSafetyReceiptStore.WriteThrough(
+                projectDirectory,
+                seed,
+                value => value.SessionId,
+                value => value.SessionGeneration,
+                value => value.SessionLease,
+                value => value.Revision,
+                WatchdogJournalPaths.LocalCrashRecoverySeedPath,
+                WatchdogJournalPaths.ProjectCrashRecoverySeedPath,
+                value => value.UpdatedUtcTicks = DateTime.UtcNow.Ticks,
+                value => value.IsValidFor(value.SessionId),
+                (previous, current) =>
+                    string.Equals(previous.SeedId, current.SeedId, StringComparison.Ordinal) &&
+                    string.Equals(previous.MainExecutablePath,
+                        current.MainExecutablePath, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(previous.MainExecutableSha256,
+                        current.MainExecutableSha256, StringComparison.Ordinal) &&
+                    string.Equals(previous.SafetyAgentExecutablePath,
+                        current.SafetyAgentExecutablePath, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(previous.SafetyAgentExecutableSha256,
+                        current.SafetyAgentExecutableSha256, StringComparison.Ordinal) &&
+                    string.Equals(previous.ConfigSnapshotPath,
+                        current.ConfigSnapshotPath, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(previous.ConfigSnapshotManifestPath,
+                        current.ConfigSnapshotManifestPath, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(previous.ConfigSnapshotManifestSha256,
+                        current.ConfigSnapshotManifestSha256, StringComparison.Ordinal));
+        }
+
+        public static bool TryRead(
+            string projectDirectory,
+            string sessionId,
+            out WatchdogCrashRecoverySeed seed)
+        {
+            return WatchdogSafetyReceiptStore.TryRead(
+                projectDirectory,
+                sessionId,
+                WatchdogJournalPaths.LocalCrashRecoverySeedPath,
+                WatchdogJournalPaths.ProjectCrashRecoverySeedPath,
+                value => value.Revision,
+                value => value.IsValidFor(sessionId),
+                out seed);
+        }
+    }
+
     public sealed class WatchdogSafetyHandoffReceipt
     {
         public int SchemaVersion { get; set; } = 3;
@@ -228,6 +322,8 @@ namespace MTTFTest.Watchdog.Protocol
         public bool HardwareResourcesReleased { get; set; }
         public bool ExecutionAuthorizationRevoked { get; set; }
         public bool CallbacksIsolated { get; set; }
+        public bool CrashRecovery { get; set; }
+        public bool OldProcessExitProven { get; set; }
         public int SidecarProcessId { get; set; }
         public long SidecarProcessStartUtcTicks { get; set; }
         public int WorkerProcessId { get; set; }
@@ -255,7 +351,8 @@ namespace MTTFTest.Watchdog.Protocol
         public bool IsValidFor(string sessionId)
         {
             Guid parsed;
-            var common = (SchemaVersion == 1 || SchemaVersion == 2 || SchemaVersion == 3) &&
+            var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
+                          SchemaVersion == 3 || SchemaVersion == 4) &&
                    Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
@@ -277,6 +374,8 @@ namespace MTTFTest.Watchdog.Protocol
                  !RecoveryFailureReceipt.IsSha256(MainExecutableSha256) ||
                  string.IsNullOrWhiteSpace(SafetyAgentExecutablePath) ||
                  !RecoveryFailureReceipt.IsSha256(SafetyAgentExecutableSha256)))
+                return false;
+            if (SchemaVersion >= 4 && CrashRecovery && !OldProcessExitProven)
                 return false;
             if (RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden)
                 return RelaunchPermitGeneration == 0 &&
@@ -457,6 +556,9 @@ namespace MTTFTest.Watchdog.Protocol
             WatchdogSafetyHandoffReceipt current)
         {
             return string.Equals(previous.HandoffId, current.HandoffId, StringComparison.Ordinal) &&
+                    current.SchemaVersion >= previous.SchemaVersion &&
+                    (!previous.CrashRecovery || current.CrashRecovery) &&
+                    (!previous.OldProcessExitProven || current.OldProcessExitProven) &&
                     string.Equals(previous.Nonce, current.Nonce, StringComparison.Ordinal) &&
                     string.Equals(previous.StopSafetyTransactionId,
                         current.StopSafetyTransactionId, StringComparison.OrdinalIgnoreCase) &&
@@ -483,8 +585,9 @@ namespace MTTFTest.Watchdog.Protocol
             WatchdogSafetyHandoffReceipt previous,
             WatchdogSafetyHandoffReceipt current)
         {
-            return previous.SchemaVersion == 3 && previous.IsSafetyCompleted &&
-                   current.SchemaVersion == 3 &&
+            return (previous.SchemaVersion == 3 || previous.SchemaVersion == 4) &&
+                   previous.IsSafetyCompleted &&
+                   (current.SchemaVersion == 3 || current.SchemaVersion == 4) &&
                    current.RelaunchDisposition ==
                        WatchdogRelaunchDisposition.PreserveApprovedPermit &&
                    current.RelaunchPermitGeneration >

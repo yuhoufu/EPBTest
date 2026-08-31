@@ -44,6 +44,9 @@ namespace AdaptiveControlTests
             Run("恢复安全证明要求完整StopCompleted或完整Handoff证据",
                 RecoverySafetyProofRequiresCompleteEvidence,
                 ref passed);
+            Run("强杀恢复只在旧进程退出、种子和许可精确绑定后放行",
+                CrashRecoveryRequiresExactSeedExitAndPermit,
+                ref passed);
             Run("初次安全替换无预退避且使用5秒拉起15秒附着契约",
                 RecoverySlaAndBackoffPolicyAreExact,
                 ref passed);
@@ -82,6 +85,75 @@ namespace AdaptiveControlTests
                     waitForExitWasRequired: false,
                     waitForExitSucceeded: false),
                 "已证明退出被错误阻断");
+        }
+
+        private static void CrashRecoveryRequiresExactSeedExitAndPermit()
+        {
+            var sessionId = Guid.NewGuid().ToString("N");
+            var seed = new WatchdogCrashRecoverySeed
+            {
+                SessionId = sessionId,
+                SessionGeneration = 2,
+                SessionLease = 3,
+                SeedId = Guid.NewGuid().ToString("N"),
+                Revision = 1,
+                MainExecutablePath = "main.exe",
+                MainExecutableSha256 = new string('a', 64),
+                SafetyAgentExecutablePath = "agent.exe",
+                SafetyAgentExecutableSha256 = new string('b', 64),
+                ConfigSnapshotPath = "snapshot",
+                ConfigSnapshotManifestPath = "manifest.json",
+                ConfigSnapshotManifestSha256 = new string('c', 64),
+                ConfigSnapshotSchemaVersion = 2
+            };
+            var authority = new DurableRelaunchPermitRecord
+            {
+                SessionId = sessionId,
+                State = DurableRelaunchPermitState.Approved,
+                Generation = 4,
+                PermitId = Guid.NewGuid().ToString("N"),
+                PermitNonce = Guid.NewGuid().ToString("N")
+            };
+
+            Assert(WatchdogRecoveryReadinessPolicy.CanPrepareCrashSafetyHandoff(
+                    seed,
+                    sessionId,
+                    DurableRelaunchProcessObservation.Dead,
+                    authority),
+                "精确退出证明、恢复种子和许可未能授权安全代理");
+            Assert(!WatchdogRecoveryReadinessPolicy.CanPrepareCrashSafetyHandoff(
+                       seed,
+                       sessionId,
+                       DurableRelaunchProcessObservation.Alive,
+                       authority) &&
+                   !WatchdogRecoveryReadinessPolicy.CanPrepareCrashSafetyHandoff(
+                       seed,
+                       Guid.NewGuid().ToString("N"),
+                       DurableRelaunchProcessObservation.Dead,
+                       authority),
+                "存活旧进程或错误会话仍能合成强杀恢复回执");
+
+            var handoff = new WatchdogSafetyHandoffReceipt
+            {
+                SchemaVersion = 4,
+                State = WatchdogSafetyHandoffState.Completed,
+                Stage = WatchdogSafetyStage.Completed,
+                MotorsOff = true,
+                PowerOff = true,
+                PressureSafe = true,
+                PersistenceDrained = false,
+                LogicalQuiescent = true,
+                HardwareResourcesReleased = true,
+                ExecutionAuthorizationRevoked = true,
+                CallbacksIsolated = true,
+                CrashRecovery = true,
+                OldProcessExitProven = true
+            };
+            Assert(WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
+                "强杀恢复的物理安全证据未接受启动后数据修复");
+            handoff.OldProcessExitProven = false;
+            Assert(!WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
+                "缺少旧进程退出证明仍绕过了PersistenceDrained要求");
         }
 
         private static void RecoverySafetyProofRequiresCompleteEvidence()

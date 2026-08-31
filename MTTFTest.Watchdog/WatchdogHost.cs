@@ -2754,6 +2754,18 @@ namespace MTTFTest.Watchdog
                     }
                     if (_journal.ManualStopRequested || IsSessionRevoked()) return;
 
+                    SafetyHandoffWaitResult crashPreparationFailure;
+                    if (!EnsureCrashRecoverySafetyHandoffIfRequired(
+                            permitGeneration,
+                            oldIdentity,
+                            out crashPreparationFailure))
+                    {
+                        BlockSafetyPrerequisite(
+                            permitGeneration,
+                            crashPreparationFailure);
+                        return;
+                    }
+
                     var safety = await AwaitSafetyHandoffBeforeRelaunchAsync(
                             permitGeneration,
                             TimeSpan.FromSeconds(
@@ -2976,6 +2988,304 @@ namespace MTTFTest.Watchdog
             if (remaining > maximum) remaining = maximum;
             return Stopwatch.GetTimestamp() +
                    (long)Math.Ceiling(remaining.TotalSeconds * Stopwatch.Frequency);
+        }
+
+        private bool EnsureCrashRecoverySafetyHandoffIfRequired(
+            long permitGeneration,
+            OldProcessIdentitySnapshot oldIdentity,
+            out SafetyHandoffWaitResult failure)
+        {
+            failure = null;
+            try
+            {
+                var authority = _relaunchCoordinator.Snapshot;
+                WatchdogClosingTombstone closing;
+                var hasClosing = WatchdogClosingTombstoneStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out closing);
+                if (hasClosing && closing != null)
+                {
+                    var exactClosing = closing.SchemaVersion >= 4 &&
+                        closing.PreservesApprovedPermit &&
+                        closing.RelaunchPermitGeneration == permitGeneration &&
+                        WatchdogTakeoverPermitBindingPolicy.Matches(
+                            authority,
+                            _args.SessionId,
+                            closing.RelaunchPermitGeneration,
+                            closing.RelaunchPermitId,
+                            closing.RelaunchPermitNonceSha256);
+                    if (!exactClosing)
+                    {
+                        failure = new SafetyHandoffWaitResult
+                        {
+                            Outcome = WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt,
+                            Detail = "ExistingClosingTombstonePermitMismatch"
+                        };
+                        return false;
+                    }
+                    if (closing.State == WatchdogClosingTombstoneState.Terminal ||
+                        !string.IsNullOrWhiteSpace(closing.SafetyHandoffId))
+                        return true;
+                }
+
+                WatchdogCrashRecoverySeed seed;
+                if (!WatchdogCrashRecoverySeedStore.TryRead(
+                        _args.JournalDirectory,
+                        _args.SessionId,
+                        out seed))
+                {
+                    failure = new SafetyHandoffWaitResult
+                    {
+                        Outcome = WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt,
+                        Detail = "CrashRecoverySeedMissingOrCorrupt"
+                    };
+                    return false;
+                }
+                var oldObservation = ProbeProcessIdentity(
+                    oldIdentity.ProcessId,
+                    oldIdentity.ProcessStartUtcTicks);
+                if (!WatchdogRecoveryReadinessPolicy.CanPrepareCrashSafetyHandoff(
+                        seed,
+                        _args.SessionId,
+                        oldObservation,
+                        authority) ||
+                    authority.Generation != permitGeneration)
+                {
+                    failure = new SafetyHandoffWaitResult
+                    {
+                        Outcome = WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt,
+                        Detail = "CrashRecoverySeedOldProcessOrAuthorityMismatch"
+                    };
+                    return false;
+                }
+
+                var seedSnapshot = WatchdogSafetyConfigSnapshotStore.Validate(
+                    _args.JournalDirectory,
+                    seed.SeedId,
+                    seed.ConfigSnapshotPath,
+                    seed.ConfigSnapshotManifestPath,
+                    seed.ConfigSnapshotManifestSha256);
+                if (seedSnapshot?.Succeeded != true)
+                    throw new InvalidDataException(
+                        "CrashRecoverySeedSnapshotInvalid:" +
+                        (seedSnapshot?.Error ?? "Unavailable"));
+                if (!File.Exists(seed.MainExecutablePath) ||
+                    !File.Exists(seed.SafetyAgentExecutablePath))
+                    throw new FileNotFoundException(
+                        "CrashRecoverySeedExecutableMissing");
+                var mainSha = DurableJsonFileStore.ComputeSha256(
+                    File.ReadAllBytes(seed.MainExecutablePath));
+                var agentSha = DurableJsonFileStore.ComputeSha256(
+                    File.ReadAllBytes(seed.SafetyAgentExecutablePath));
+                if (!string.Equals(mainSha, seed.MainExecutableSha256,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(agentSha, seed.SafetyAgentExecutableSha256,
+                        StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        "CrashRecoverySeedExecutableHashChanged");
+
+                WatchdogSafetyHandoffReceipt priorHandoff;
+                if (WatchdogSafetyHandoffReceiptStore.TryRead(
+                        _args.JournalDirectory,
+                        _args.SessionId,
+                        out priorHandoff) && priorHandoff != null)
+                {
+                    var exactPrior = priorHandoff.SessionGeneration ==
+                                         seed.SessionGeneration &&
+                                     priorHandoff.SessionLease == seed.SessionLease &&
+                                     priorHandoff.RelaunchDisposition ==
+                                         WatchdogRelaunchDisposition.PreserveApprovedPermit &&
+                                     priorHandoff.RelaunchPermitGeneration ==
+                                         permitGeneration &&
+                                     WatchdogTakeoverPermitBindingPolicy.Matches(
+                                         authority,
+                                         _args.SessionId,
+                                         priorHandoff.RelaunchPermitGeneration,
+                                         priorHandoff.RelaunchPermitId,
+                                         priorHandoff.RelaunchPermitNonceSha256);
+                    if (!exactPrior)
+                        throw new InvalidDataException(
+                            "ExistingSafetyHandoffPermitMismatch");
+                    if (closing == null ||
+                        string.IsNullOrWhiteSpace(closing.SafetyHandoffId))
+                    {
+                        closing = CreateCrashRecoveryClosingTombstone(
+                            seed,
+                            authority,
+                            priorHandoff.HandoffId,
+                            priorHandoff.StopSafetyTransactionId,
+                            closing);
+                        WatchdogClosingTombstoneStore.WriteThrough(
+                            _args.JournalDirectory,
+                            closing);
+                    }
+                    if (!priorHandoff.IsTerminal)
+                        BeginSafetyHandoff(priorHandoff);
+                    return true;
+                }
+
+                var handoffId = Guid.NewGuid().ToString("N");
+                var snapshot = WatchdogSafetyConfigSnapshotStore.Create(
+                    _args.JournalDirectory,
+                    handoffId,
+                    seedSnapshot.ConfigDirectory,
+                    string.Empty,
+                    seed.BuildIdentity,
+                    seedSnapshot.Runtime,
+                    _args.SessionId,
+                    seed.SessionGeneration,
+                    seed.SessionLease,
+                    authority.Generation,
+                    authority.PermitId,
+                    mainSha,
+                    agentSha);
+                if (snapshot?.Succeeded != true)
+                    throw new InvalidDataException(
+                        "CrashRecoverySafetySnapshotCreateFailed:" +
+                        (snapshot?.Error ?? "Unavailable"));
+
+                var stopSafetyTransactionId = closing != null &&
+                                              !string.IsNullOrWhiteSpace(
+                                                  closing.StopSafetyTransactionId)
+                    ? closing.StopSafetyTransactionId
+                    : Guid.NewGuid().ToString("N");
+                var receipt = new WatchdogSafetyHandoffReceipt
+                {
+                    SchemaVersion = 4,
+                    SessionId = _args.SessionId,
+                    SessionGeneration = seed.SessionGeneration,
+                    SessionLease = seed.SessionLease,
+                    HandoffId = handoffId,
+                    Nonce = Guid.NewGuid().ToString("N"),
+                    StopSafetyTransactionId = stopSafetyTransactionId,
+                    RunId = _journal.RunId ?? string.Empty,
+                    RunEpoch = _journal.LastHeartbeat?.RunEpoch ?? 0,
+                    Revision = 1,
+                    State = WatchdogSafetyHandoffState.Accepted,
+                    Stage = WatchdogSafetyStage.None,
+                    PersistenceDrained = false,
+                    LogicalQuiescent = true,
+                    HardwareResourcesReleased = true,
+                    ExecutionAuthorizationRevoked = true,
+                    CallbacksIsolated = true,
+                    CrashRecovery = true,
+                    OldProcessExitProven = true,
+                    SidecarProcessId = _sidecarProcessId,
+                    SidecarProcessStartUtcTicks = _sidecarProcessStartUtcTicks,
+                    ProjectDirectory = seed.ProjectDirectory,
+                    MainExecutablePath = seed.MainExecutablePath,
+                    MainExecutableSha256 = mainSha,
+                    SafetyAgentExecutablePath = seed.SafetyAgentExecutablePath,
+                    SafetyAgentExecutableSha256 = agentSha,
+                    ConfigSnapshotPath = snapshot.ConfigDirectory,
+                    ConfigSnapshotManifestPath = snapshot.ManifestPath,
+                    ConfigSnapshotManifestSha256 = snapshot.ManifestSha256,
+                    ConfigSnapshotSchemaVersion = 2,
+                    RelaunchDisposition =
+                        WatchdogRelaunchDisposition.PreserveApprovedPermit,
+                    RelaunchPermitGeneration = authority.Generation,
+                    RelaunchPermitId = authority.PermitId,
+                    RelaunchPermitNonceSha256 =
+                        WatchdogTakeoverPermitBindingPolicy.HashNonce(
+                            authority.PermitNonce),
+                    Detail = "MainProcessExitedWithoutClosingTombstone"
+                };
+                WatchdogSafetyHandoffReceiptStore.WriteThrough(
+                    _args.JournalDirectory,
+                    receipt);
+                closing = CreateCrashRecoveryClosingTombstone(
+                    seed,
+                    authority,
+                    handoffId,
+                    stopSafetyTransactionId,
+                    closing);
+                WatchdogClosingTombstoneStore.WriteThrough(
+                    _args.JournalDirectory,
+                    closing);
+                Record(
+                    "CrashRecoverySafetyHandoffCreated",
+                    $"HandoffId={handoffId};PermitGeneration={permitGeneration};" +
+                    $"OldProcessObservation={oldObservation}");
+                BeginSafetyHandoff(receipt);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = new SafetyHandoffWaitResult
+                {
+                    Outcome = WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt,
+                    Detail = ex.GetBaseException().Message
+                };
+                return false;
+            }
+        }
+
+        private WatchdogClosingTombstone CreateCrashRecoveryClosingTombstone(
+            WatchdogCrashRecoverySeed seed,
+            DurableRelaunchPermitRecord authority,
+            string handoffId,
+            string stopSafetyTransactionId,
+            WatchdogClosingTombstone existing)
+        {
+            var takeoverTransactionId = existing?.TakeoverTransactionId;
+            Guid parsed;
+            if (!Guid.TryParseExact(
+                    takeoverTransactionId ?? string.Empty,
+                    "N",
+                    out parsed))
+                takeoverTransactionId = Guid.TryParseExact(
+                        _activeTakeoverCorrelationId ?? string.Empty,
+                        "N",
+                        out parsed)
+                    ? _activeTakeoverCorrelationId
+                    : Guid.NewGuid().ToString("N");
+            return new WatchdogClosingTombstone
+            {
+                SchemaVersion = 4,
+                SessionId = _args.SessionId,
+                SessionGeneration = seed.SessionGeneration,
+                SessionLease = seed.SessionLease,
+                CloseIntent = existing?.CloseIntent ?? "WatchdogCrashRecovery",
+                TakeoverTransactionId = takeoverTransactionId,
+                ExitDisposition = WatchdogExitDisposition.TakeoverReplacementExit,
+                RelaunchDisposition =
+                    WatchdogRelaunchDisposition.PreserveApprovedPermit,
+                RelaunchPermitGeneration = authority.Generation,
+                RelaunchPermitId = authority.PermitId,
+                RelaunchPermitNonceSha256 =
+                    WatchdogTakeoverPermitBindingPolicy.HashNonce(
+                        authority.PermitNonce),
+                StopSafetyTransactionId = stopSafetyTransactionId,
+                StopRunId = existing?.StopRunId ?? (_journal.RunId ?? string.Empty),
+                StopRunEpoch = existing?.StopRunEpoch ??
+                               (_journal.LastHeartbeat?.RunEpoch ?? 0),
+                StopSafetyBoundaryGeneration =
+                    existing?.StopSafetyBoundaryGeneration ?? 0,
+                StateVersion = (existing?.StateVersion ?? 0) + 1,
+                State = existing?.State ?? WatchdogClosingTombstoneState.Closing,
+                SafetyStage = existing?.SafetyStage ??
+                              WatchdogClosingSafetyStage.ClosingIntent,
+                ControllerStopStage = existing?.ControllerStopStage ?? 0,
+                ControllerProgressVersion =
+                    existing?.ControllerProgressVersion ?? 0,
+                ControllerProgressDetail =
+                    existing?.ControllerProgressDetail ?? string.Empty,
+                FinalSafetyResultCommitted =
+                    existing?.FinalSafetyResultCommitted ?? false,
+                MotorsOff = existing?.MotorsOff ?? false,
+                PowerOff = existing?.PowerOff ?? false,
+                PressureSafe = existing?.PressureSafe ?? false,
+                PersistenceDrained = existing?.PersistenceDrained ?? false,
+                LogicalQuiescent = existing?.LogicalQuiescent ?? false,
+                DataContinuityVerified =
+                    existing?.DataContinuityVerified ?? false,
+                SafetyOwner = "IndependentSafetyAgentCrashRecovery",
+                SafetyHandoffId = handoffId,
+                TerminalReason = string.IsNullOrWhiteSpace(existing?.TerminalReason)
+                    ? "MainProcessExitedWithoutClosingTombstone"
+                    : existing.TerminalReason
+            };
         }
 
         private async Task<SafetyHandoffWaitResult> AwaitSafetyHandoffBeforeRelaunchAsync(
