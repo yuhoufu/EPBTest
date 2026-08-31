@@ -2490,6 +2490,50 @@ namespace MTEmbTest
                     string.IsNullOrWhiteSpace(context.MainExecutablePath)
                         ? Assembly.GetEntryAssembly()?.Location ?? string.Empty
                         : context.MainExecutablePath) ?? Environment.CurrentDirectory;
+                var mainExecutablePath = string.IsNullOrWhiteSpace(context.MainExecutablePath)
+                    ? Assembly.GetEntryAssembly()?.Location ?? string.Empty
+                    : context.MainExecutablePath;
+                var safetyAgentPath = Path.Combine(executableDirectory, "MTTFTest.SafetyAgent.exe");
+                if (!File.Exists(mainExecutablePath) || !File.Exists(safetyAgentPath))
+                    throw new FileNotFoundException(
+                        "SafetyAgentConfigInvalid: main executable or SafetyAgent is missing.");
+                var projectTestPath = string.IsNullOrWhiteSpace(projectDirectory)
+                    ? string.Empty
+                    : Path.Combine(projectDirectory, "Config", "TestConfig.xml");
+                var appTestPath = Path.Combine(executableDirectory, "Config", "TestConfig.xml");
+                var testConfig = ConfigLoader.LoadTest(
+                    File.Exists(projectTestPath) ? projectTestPath : appTestPath,
+                    NullLogger.Instance);
+                var hydraulics = testConfig.Hydraulics
+                    .Where(value => value.Enabled)
+                    .OrderBy(value => value.Id)
+                    .ToArray();
+                if (hydraulics.Length == 0)
+                    throw new InvalidDataException(
+                        "SafetyAgentConfigInvalid: no enabled hydraulic pressure channel.");
+                var daqRuntime = CaptureDaqRuntimeSettings();
+                var safetyRuntime = new SafetyRuntimeSnapshot
+                {
+                    SampleRateHz = daqRuntime.SampleRateHz,
+                    SamplesPerChannel = daqRuntime.SamplesPerChannel,
+                    PressureChannels = hydraulics.Select(value => "Pressure_" + value.Id).ToArray(),
+                    ReleaseSafePressureBar = hydraulics
+                        .Select(value => Math.Max(0, value.ReleaseSafePressureBar)).ToArray(),
+                    PressureSampleMaxAgeMs = hydraulics.Min(value =>
+                        Math.Max(1, value.PressureSampleMaxAgeMs)),
+                    ReleaseStableMs = hydraulics.Max(value => Math.Max(0, value.ReleaseStableMs)),
+                    ReleaseTimeoutMs = hydraulics.Max(value => Math.Max(1000, value.ReleaseTimeoutMs))
+                };
+                var mainSha256 = DurableJsonFileStore.ComputeSha256(
+                    File.ReadAllBytes(mainExecutablePath));
+                var safetyAgentSha256 = DurableJsonFileStore.ComputeSha256(
+                    File.ReadAllBytes(safetyAgentPath));
+                var permitGeneration = hasTypedApplicationExit
+                    ? applicationExit.RelaunchPermitGeneration
+                    : 0;
+                var permitId = hasTypedApplicationExit
+                    ? applicationExit.RelaunchPermitId
+                    : string.Empty;
                 var configSnapshot = WatchdogSafetyConfigSnapshotStore.Create(
                     context.JournalDirectory,
                     handoffId,
@@ -2497,13 +2541,21 @@ namespace MTEmbTest
                     string.IsNullOrWhiteSpace(projectDirectory)
                         ? string.Empty
                         : Path.Combine(projectDirectory, "Config"),
-                    RuntimeBuildIdentity.Capture().ToStartupLogLine());
+                    RuntimeBuildIdentity.Capture().ToStartupLogLine(),
+                    safetyRuntime,
+                    context.SessionId,
+                    context.SessionGeneration,
+                    context.SessionLease,
+                    permitGeneration,
+                    permitId,
+                    mainSha256,
+                    safetyAgentSha256);
                 if (configSnapshot?.Succeeded != true)
                     throw new InvalidOperationException(
                         configSnapshot?.Error ?? "SafetyConfigSnapshotUnavailable");
                 var receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = 2,
+                    SchemaVersion = 3,
                     SessionId = context.SessionId,
                     SessionGeneration = context.SessionGeneration,
                     SessionLease = context.SessionLease,
@@ -2514,6 +2566,7 @@ namespace MTEmbTest
                     RunEpoch = safety.RunEpoch,
                     Revision = 1,
                     State = WatchdogSafetyHandoffState.Requested,
+                    Stage = WatchdogSafetyStage.None,
                     MotorsOff = safety.MotorOffCommandSucceeded,
                     PowerOff = safety.PowerOffConfirmed,
                     PressureSafe = safety.PressureSafeConfirmed,
@@ -2523,11 +2576,14 @@ namespace MTEmbTest
                     ExecutionAuthorizationRevoked = true,
                     CallbacksIsolated = true,
                     ProjectDirectory = projectDirectory,
-                    MainExecutablePath = context.MainExecutablePath,
+                    MainExecutablePath = mainExecutablePath,
+                    MainExecutableSha256 = mainSha256,
+                    SafetyAgentExecutablePath = safetyAgentPath,
+                    SafetyAgentExecutableSha256 = safetyAgentSha256,
                     ConfigSnapshotPath = configSnapshot.ConfigDirectory,
                     ConfigSnapshotManifestPath = configSnapshot.ManifestPath,
                     ConfigSnapshotManifestSha256 = configSnapshot.ManifestSha256,
-                    ConfigSnapshotSchemaVersion = 1,
+                    ConfigSnapshotSchemaVersion = 2,
                     RelaunchDisposition = hasTypedApplicationExit
                         ? applicationExit.RelaunchDisposition
                         : WatchdogRelaunchDisposition.Forbidden,
@@ -2589,6 +2645,7 @@ namespace MTEmbTest
                 SidecarProcessStartUtcTicks = receipt.SidecarProcessStartUtcTicks,
                 WorkerProcessId = receipt.WorkerProcessId,
                 WorkerProcessStartUtcTicks = receipt.WorkerProcessStartUtcTicks,
+                Stage = receipt.Stage,
                 MotorsOff = receipt.MotorsOff,
                 PowerOff = receipt.PowerOff,
                 PressureSafe = receipt.PressureSafe,
@@ -2603,6 +2660,7 @@ namespace MTEmbTest
                 RelaunchPermitId = receipt.RelaunchPermitId,
                 RelaunchPermitNonceSha256 = receipt.RelaunchPermitNonceSha256,
                 FailureCode = receipt.FailureCode,
+                FailureDomain = receipt.FailureDomain,
                 TimestampUtcTicks = receipt.UpdatedUtcTicks
             };
         }

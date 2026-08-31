@@ -170,9 +170,42 @@ namespace MTTFTest.Watchdog.Protocol
         Failed = 5
     }
 
+    public enum WatchdogSafetyStage
+    {
+        None = 0,
+        AgentStarted = 1,
+        DoOffConfirmed = 2,
+        AoZeroConfirmed = 3,
+        PowerOffConfirmed = 4,
+        PressureSafeConfirmed = 5,
+        Completed = 6
+    }
+
+    public enum RecoveryFailureDomain
+    {
+        None = 0,
+        SafetyAgent = 1,
+        EvidenceBinding = 2,
+        MainLaunch = 3,
+        HardwareUnavailable = 4
+    }
+
+    public enum RecoveryReplacementState
+    {
+        None = 0,
+        Approved = 1,
+        OldProcessExitProven = 2,
+        SafetyAgentRunning = 3,
+        SafetyCompleted = 4,
+        MainLaunchIntent = 5,
+        MainStarted = 6,
+        Attached = 7,
+        CheckpointCommitted = 8
+    }
+
     public sealed class WatchdogSafetyHandoffReceipt
     {
-        public int SchemaVersion { get; set; } = 2;
+        public int SchemaVersion { get; set; } = 3;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -183,6 +216,10 @@ namespace MTTFTest.Watchdog.Protocol
         public long RunEpoch { get; set; }
         public long Revision { get; set; }
         public WatchdogSafetyHandoffState State { get; set; }
+        public WatchdogSafetyStage Stage { get; set; }
+        public string PreviousStageReceiptSha256 { get; set; } = string.Empty;
+        public double StageMonotonicElapsedMs { get; set; }
+        public long StageUtcTicks { get; set; }
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
         public bool PressureSafe { get; set; }
@@ -198,6 +235,9 @@ namespace MTTFTest.Watchdog.Protocol
         public int AttemptCount { get; set; }
         public string ProjectDirectory { get; set; } = string.Empty;
         public string MainExecutablePath { get; set; } = string.Empty;
+        public string MainExecutableSha256 { get; set; } = string.Empty;
+        public string SafetyAgentExecutablePath { get; set; } = string.Empty;
+        public string SafetyAgentExecutableSha256 { get; set; } = string.Empty;
         public string ConfigSnapshotPath { get; set; } = string.Empty;
         public string ConfigSnapshotManifestPath { get; set; } = string.Empty;
         public string ConfigSnapshotManifestSha256 { get; set; } = string.Empty;
@@ -208,13 +248,14 @@ namespace MTTFTest.Watchdog.Protocol
         public string RelaunchPermitId { get; set; } = string.Empty;
         public string RelaunchPermitNonceSha256 { get; set; } = string.Empty;
         public string FailureCode { get; set; } = string.Empty;
+        public RecoveryFailureDomain FailureDomain { get; set; }
         public string Detail { get; set; } = string.Empty;
         public long UpdatedUtcTicks { get; set; }
 
         public bool IsValidFor(string sessionId)
         {
             Guid parsed;
-            var common = (SchemaVersion == 1 || SchemaVersion == 2) &&
+            var common = (SchemaVersion == 1 || SchemaVersion == 2 || SchemaVersion == 3) &&
                    Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
@@ -223,11 +264,19 @@ namespace MTTFTest.Watchdog.Protocol
                    State >= WatchdogSafetyHandoffState.Requested &&
                    State <= WatchdogSafetyHandoffState.Failed;
             if (!common || SchemaVersion == 1) return common;
-            if (ConfigSnapshotSchemaVersion != 1 ||
+            var expectedSnapshotSchema = SchemaVersion >= 3 ? 2 : 1;
+            if (ConfigSnapshotSchemaVersion != expectedSnapshotSchema ||
                 string.IsNullOrWhiteSpace(ConfigSnapshotPath) ||
                 string.IsNullOrWhiteSpace(ConfigSnapshotManifestPath) ||
                 !RecoveryFailureReceipt.IsSha256(ConfigSnapshotManifestSha256) ||
                 !Enum.IsDefined(typeof(WatchdogRelaunchDisposition), RelaunchDisposition))
+                return false;
+            if (SchemaVersion >= 3 &&
+                (!Enum.IsDefined(typeof(WatchdogSafetyStage), Stage) ||
+                 !Enum.IsDefined(typeof(RecoveryFailureDomain), FailureDomain) ||
+                 !RecoveryFailureReceipt.IsSha256(MainExecutableSha256) ||
+                 string.IsNullOrWhiteSpace(SafetyAgentExecutablePath) ||
+                 !RecoveryFailureReceipt.IsSha256(SafetyAgentExecutableSha256)))
                 return false;
             if (RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden)
                 return RelaunchPermitGeneration == 0 &&
@@ -246,6 +295,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         public bool IsSafetyCompleted =>
             State == WatchdogSafetyHandoffState.Completed &&
+            (SchemaVersion < 3 || Stage == WatchdogSafetyStage.Completed) &&
             MotorsOff && PowerOff && PressureSafe;
 
         public bool IsTerminal =>
@@ -398,7 +448,15 @@ namespace MTTFTest.Watchdog.Protocol
                 value => value.UpdatedUtcTicks = DateTime.UtcNow.Ticks,
                 value => value.IsValidFor(value.SessionId),
                 (previous, current) =>
-                    string.Equals(previous.HandoffId, current.HandoffId, StringComparison.Ordinal) &&
+                    IsSameHandoffTransition(previous, current) ||
+                    IsNextPermitHandoff(previous, current));
+        }
+
+        private static bool IsSameHandoffTransition(
+            WatchdogSafetyHandoffReceipt previous,
+            WatchdogSafetyHandoffReceipt current)
+        {
+            return string.Equals(previous.HandoffId, current.HandoffId, StringComparison.Ordinal) &&
                     string.Equals(previous.Nonce, current.Nonce, StringComparison.Ordinal) &&
                     string.Equals(previous.StopSafetyTransactionId,
                         current.StopSafetyTransactionId, StringComparison.OrdinalIgnoreCase) &&
@@ -417,7 +475,27 @@ namespace MTTFTest.Watchdog.Protocol
                     previous.ConfigSnapshotSchemaVersion == current.ConfigSnapshotSchemaVersion &&
                     previous.State != WatchdogSafetyHandoffState.Completed &&
                     previous.State != WatchdogSafetyHandoffState.Failed &&
-                    current.State >= previous.State);
+                    current.State >= previous.State &&
+                    (current.SchemaVersion < 3 || current.Stage >= previous.Stage);
+        }
+
+        private static bool IsNextPermitHandoff(
+            WatchdogSafetyHandoffReceipt previous,
+            WatchdogSafetyHandoffReceipt current)
+        {
+            return previous.SchemaVersion == 3 && previous.IsSafetyCompleted &&
+                   current.SchemaVersion == 3 &&
+                   current.RelaunchDisposition ==
+                       WatchdogRelaunchDisposition.PreserveApprovedPermit &&
+                   current.RelaunchPermitGeneration >
+                       previous.RelaunchPermitGeneration &&
+                   !string.Equals(
+                       current.RelaunchPermitId,
+                       previous.RelaunchPermitId,
+                       StringComparison.Ordinal) &&
+                   current.Stage == WatchdogSafetyStage.None &&
+                   (current.State == WatchdogSafetyHandoffState.Requested ||
+                    current.State == WatchdogSafetyHandoffState.Accepted);
         }
 
         public static bool TryRead(

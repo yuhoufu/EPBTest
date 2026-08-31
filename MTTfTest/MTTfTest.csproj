@@ -391,10 +391,20 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <Private>false</Private>
     </ProjectReference>
+    <ProjectReference Include="..\MTTFTest.SafetyAgent\MTTFTest.SafetyAgent.csproj">
+      <Project>{2F691519-C5A2-4A90-A05A-9B4E739D7E43}</Project>
+      <Name>MTTFTest.SafetyAgent</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
   </ItemGroup>
   <Target Name="CopyWatchdogSidecar" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb')" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.pdb')" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.pdb')" />
   </Target>
   <ItemGroup>
     <BootstrapperPackage Include=".NETFramework,Version=v4.8">

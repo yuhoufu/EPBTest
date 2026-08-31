@@ -18,8 +18,15 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class WatchdogSafetyConfigSnapshotManifest
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public string HandoffId { get; set; } = string.Empty;
+        public string SessionId { get; set; } = string.Empty;
+        public long SessionGeneration { get; set; }
+        public long SessionLease { get; set; }
+        public long PermitGeneration { get; set; }
+        public string PermitId { get; set; } = string.Empty;
+        public string MainExecutableSha256 { get; set; } = string.Empty;
+        public string SafetyAgentExecutableSha256 { get; set; } = string.Empty;
         public string BuildIdentity { get; set; } = string.Empty;
         public long CreatedUtcTicks { get; set; }
         public WatchdogSafetyConfigSnapshotEntry[] Files { get; set; } =
@@ -34,7 +41,43 @@ namespace MTTFTest.Watchdog.Protocol
         public string ManifestPath { get; internal set; } = string.Empty;
         public string ManifestSha256 { get; internal set; } = string.Empty;
         public WatchdogSafetyConfigSnapshotManifest Manifest { get; internal set; }
+        public SafetyRuntimeSnapshot Runtime { get; internal set; }
         public string Error { get; internal set; } = string.Empty;
+    }
+
+    /// <summary>安全代理唯一允许使用的不可变运行参数。</summary>
+    public sealed class SafetyRuntimeSnapshot
+    {
+        public int SchemaVersion { get; set; } = 2;
+        public double SampleRateHz { get; set; }
+        public int SamplesPerChannel { get; set; }
+        public string[] PressureChannels { get; set; } = Array.Empty<string>();
+        public double[] ReleaseSafePressureBar { get; set; } = Array.Empty<double>();
+        public int PressureSampleMaxAgeMs { get; set; }
+        public int ReleaseStableMs { get; set; }
+        public int ReleaseTimeoutMs { get; set; }
+
+        public void Validate()
+        {
+            if (SchemaVersion != 2 || double.IsNaN(SampleRateHz) ||
+                double.IsInfinity(SampleRateHz) || SampleRateHz <= 0 ||
+                SamplesPerChannel < 1)
+                throw new InvalidDataException("SafetyAgentConfigInvalid:DaqRuntime");
+            var periodMs = SamplesPerChannel * 1000.0 / SampleRateHz;
+            if (periodMs < 0.1 || periodMs > 1000)
+                throw new InvalidDataException("SafetyAgentConfigInvalid:BatchPeriod");
+            if (PressureChannels == null || PressureChannels.Length == 0 ||
+                PressureChannels.Any(string.IsNullOrWhiteSpace) ||
+                PressureChannels.Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+                PressureChannels.Length ||
+                ReleaseSafePressureBar == null ||
+                ReleaseSafePressureBar.Length != PressureChannels.Length ||
+                ReleaseSafePressureBar.Any(value => double.IsNaN(value) ||
+                                                    double.IsInfinity(value) || value < 0) ||
+                PressureSampleMaxAgeMs < 1 || ReleaseStableMs < 0 ||
+                ReleaseTimeoutMs < Math.Max(1000, ReleaseStableMs))
+                throw new InvalidDataException("SafetyAgentConfigInvalid:PressureRuntime");
+        }
     }
 
     public static class WatchdogTakeoverPermitBindingPolicy
@@ -91,7 +134,8 @@ namespace MTTFTest.Watchdog.Protocol
             "AOConfig.xml",
             "DOConfig.xml",
             "PowerSupplyConfig.xml",
-            "TestConfig.xml"
+            "TestConfig.xml",
+            "safety-runtime.json"
         };
 
         public static WatchdogSafetyConfigSnapshotResult Create(
@@ -99,7 +143,15 @@ namespace MTTFTest.Watchdog.Protocol
             string handoffId,
             string applicationConfigDirectory,
             string projectConfigDirectory,
-            string buildIdentity)
+            string buildIdentity,
+            SafetyRuntimeSnapshot runtime,
+            string sessionId,
+            long sessionGeneration,
+            long sessionLease,
+            long permitGeneration,
+            string permitId,
+            string mainExecutableSha256,
+            string safetyAgentExecutableSha256)
         {
             var result = new WatchdogSafetyConfigSnapshotResult();
             string temporaryRoot = null;
@@ -132,6 +184,11 @@ namespace MTTFTest.Watchdog.Protocol
                              .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
                 {
                     var relative = RelativePath(appConfig, source);
+                    if (string.Equals(
+                            relative,
+                            "safety-runtime.json",
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
                     CopySnapshotFile(source, temporaryConfig, relative);
                     sources[relative] = Tuple.Create(source, "ApplicationConfig");
                 }
@@ -147,6 +204,14 @@ namespace MTTFTest.Watchdog.Protocol
                             Tuple.Create(projectTest, "ProjectTestConfig");
                     }
                 }
+
+                if (runtime == null)
+                    throw new InvalidDataException("SafetyAgentConfigInvalid:RuntimeMissing");
+                runtime.Validate();
+                var runtimePath = Path.Combine(temporaryConfig, "safety-runtime.json");
+                WriteDurable(runtimePath, Utf8.GetBytes(Serializer.Serialize(runtime)));
+                sources["safety-runtime.json"] = Tuple.Create(
+                    "GeneratedFromValidatedRuntime", "SafetyRuntime");
 
                 var missing = RequiredFiles
                     .Where(name => !File.Exists(Path.Combine(temporaryConfig, name)))
@@ -176,6 +241,13 @@ namespace MTTFTest.Watchdog.Protocol
                 var manifest = new WatchdogSafetyConfigSnapshotManifest
                 {
                     HandoffId = handoffId,
+                    SessionId = sessionId ?? string.Empty,
+                    SessionGeneration = sessionGeneration,
+                    SessionLease = sessionLease,
+                    PermitGeneration = permitGeneration,
+                    PermitId = permitId ?? string.Empty,
+                    MainExecutableSha256 = mainExecutableSha256 ?? string.Empty,
+                    SafetyAgentExecutableSha256 = safetyAgentExecutableSha256 ?? string.Empty,
                     BuildIdentity = buildIdentity ?? string.Empty,
                     CreatedUtcTicks = DateTime.UtcNow.Ticks,
                     Files = entries
@@ -256,8 +328,12 @@ namespace MTTFTest.Watchdog.Protocol
                     throw new InvalidDataException("SafetyConfigSnapshotManifestHashMismatch");
                 var manifest = Serializer.Deserialize<WatchdogSafetyConfigSnapshotManifest>(
                     Utf8.GetString(bytes));
-                if (manifest == null || manifest.SchemaVersion != 1 ||
+                if (manifest == null || manifest.SchemaVersion != 2 ||
                     !string.Equals(manifest.HandoffId, handoffId, StringComparison.Ordinal) ||
+                    string.IsNullOrWhiteSpace(manifest.SessionId) ||
+                    manifest.SessionGeneration <= 0 || manifest.SessionLease <= 0 ||
+                    !RecoveryFailureReceipt.IsSha256(manifest.MainExecutableSha256) ||
+                    !RecoveryFailureReceipt.IsSha256(manifest.SafetyAgentExecutableSha256) ||
                     manifest.Files == null || manifest.Files.Length == 0)
                     throw new InvalidDataException("SafetyConfigSnapshotManifestInvalid");
 
@@ -289,12 +365,19 @@ namespace MTTFTest.Watchdog.Protocol
                     throw new InvalidDataException(
                         "SafetyConfigSnapshotIncomplete:" + string.Join(",", missing));
 
+                var runtimeBytes = File.ReadAllBytes(Path.Combine(configRoot, "safety-runtime.json"));
+                var runtime = Serializer.Deserialize<SafetyRuntimeSnapshot>(Utf8.GetString(runtimeBytes));
+                if (runtime == null)
+                    throw new InvalidDataException("SafetyAgentConfigInvalid:RuntimeMissing");
+                runtime.Validate();
+
                 result.Succeeded = true;
                 result.SnapshotDirectory = Directory.GetParent(configRoot)?.FullName ?? configRoot;
                 result.ConfigDirectory = configRoot;
                 result.ManifestPath = manifestFullPath;
                 result.ManifestSha256 = manifestSha;
                 result.Manifest = manifest;
+                result.Runtime = runtime;
                 return result;
             }
             catch (Exception ex)

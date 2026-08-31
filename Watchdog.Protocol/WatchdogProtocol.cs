@@ -731,6 +731,7 @@ namespace MTTFTest.Watchdog.Protocol
         public long SidecarProcessStartUtcTicks { get; set; }
         public int WorkerProcessId { get; set; }
         public long WorkerProcessStartUtcTicks { get; set; }
+        public WatchdogSafetyStage Stage { get; set; }
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
         public bool PressureSafe { get; set; }
@@ -745,6 +746,7 @@ namespace MTTFTest.Watchdog.Protocol
         public string RelaunchPermitId { get; set; }
         public string RelaunchPermitNonceSha256 { get; set; }
         public string FailureCode { get; set; }
+        public RecoveryFailureDomain FailureDomain { get; set; }
         public long TimestampUtcTicks { get; set; }
     }
 
