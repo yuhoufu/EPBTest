@@ -29,8 +29,8 @@ using System.Runtime.InteropServices;
 //      生成号
 //      修订号
 //
-[assembly: AssemblyVersion("2.13.0.44")]
-[assembly: AssemblyFileVersion("2.13.0.44")]
-[assembly: AssemblyInformationalVersion("2.13.0.44")]
+[assembly: AssemblyVersion("2.13.0.45")]
+[assembly: AssemblyFileVersion("2.13.0.45")]
+[assembly: AssemblyInformationalVersion("2.13.0.45")]
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]
 [assembly: InternalsVisibleTo("MTTFTest")]
