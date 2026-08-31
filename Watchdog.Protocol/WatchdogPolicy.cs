@@ -32,12 +32,15 @@ namespace MTTFTest.Watchdog.Protocol
     {
         public static bool CanRetire(
             bool sameProductScope,
+            bool sameProjectScope,
             bool candidateStartedEarlier,
             bool candidateIdentityExact,
-            DurableRelaunchProcessObservation supervisedProcessObservation)
+            DurableRelaunchProcessObservation supervisedProcessObservation,
+            bool safetyTransactionActive)
         {
-            return sameProductScope && candidateStartedEarlier &&
+            return sameProductScope && sameProjectScope && candidateStartedEarlier &&
                    candidateIdentityExact &&
+                   !safetyTransactionActive &&
                    WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(
                        supervisedProcessObservation);
         }

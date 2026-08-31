@@ -885,6 +885,33 @@ namespace MTTFTest.Watchdog
             foreach (var candidate in candidates)
             {
                 var reason = "SupersededByNewSession:" + current.SessionId;
+                var precheckParent = ObserveProcessIdentity(
+                    candidate.ParentProcessId,
+                    candidate.ParentProcessStartUtcTicks);
+                var precheckSafetyActive = HasActiveSafetyTransaction(
+                    candidate.JournalDirectory,
+                    candidate.SessionId);
+                if (!StaleSidecarCleanupPolicy.CanRetire(
+                        SameProductScope(
+                            current.ExecutablePath,
+                            candidate.MainExecutablePath),
+                        SameJournalScope(
+                            current.JournalDirectory,
+                            candidate.JournalDirectory),
+                        candidate.ProcessStartUtcTicks < currentStartUtcTicks,
+                        candidateIdentityExact: true,
+                        precheckParent,
+                        precheckSafetyActive))
+                {
+                    results.Add(new StaleSidecarCleanupResult
+                    {
+                        Detail = $"PID={candidate.ProcessId};Session={candidate.SessionId};" +
+                                 $"Parent={precheckParent};" +
+                                 $"SafetyTransactionActive={precheckSafetyActive};" +
+                                 "ScopeOrSafetyPrecheckRejected=true"
+                    });
+                    continue;
+                }
                 try
                 {
                     // 先持久撤销旧会话的重拉权威，再允许终止旧Sidecar。
@@ -919,19 +946,27 @@ namespace MTTFTest.Watchdog
                     var parentObservation = ObserveProcessIdentity(
                         candidate.ParentProcessId,
                         candidate.ParentProcessStartUtcTicks);
+                    var safetyTransactionActive = HasActiveSafetyTransaction(
+                        candidate.JournalDirectory,
+                        candidate.SessionId);
                     if (!StaleSidecarCleanupPolicy.CanRetire(
                             SameProductScope(
                                 current.ExecutablePath,
                                 candidate.MainExecutablePath),
+                            SameJournalScope(
+                                current.JournalDirectory,
+                                candidate.JournalDirectory),
                             candidate.ProcessStartUtcTicks <
                                 currentStartUtcTicks,
                             exact,
-                            parentObservation))
+                            parentObservation,
+                            safetyTransactionActive))
                     {
                         results.Add(new StaleSidecarCleanupResult
                         {
                             Detail = $"PID={candidate.ProcessId};Session={candidate.SessionId};" +
-                                     $"Parent={parentObservation};IdentityExact={exact}"
+                                     $"Parent={parentObservation};IdentityExact={exact};" +
+                                     $"SafetyTransactionActive={safetyTransactionActive}"
                         });
                         continue;
                     }
@@ -1051,12 +1086,18 @@ namespace MTTFTest.Watchdog
                                         SameProductScope(
                                             current.ExecutablePath,
                                             executable),
+                                        SameJournalScope(
+                                            current.JournalDirectory,
+                                            journal),
                                         candidateStartUtcTicks <
                                             currentStartUtcTicks,
                                         candidateIdentityExact: true,
                                         ObserveProcessIdentity(
                                             parentPid,
-                                            parentStart)))
+                                            parentStart),
+                                        HasActiveSafetyTransaction(
+                                            journal,
+                                            sessionId)))
                                     continue;
                                 candidates.Add(new StaleSidecarCandidate
                                 {
@@ -1157,6 +1198,70 @@ namespace MTTFTest.Watchdog
             {
                 return false;
             }
+        }
+
+        private static bool SameJournalScope(string current, string candidate)
+        {
+            try
+            {
+                var left = Path.GetFullPath(
+                    WatchdogJournalPaths.ValidateProjectDirectory(current))
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var right = Path.GetFullPath(
+                    WatchdogJournalPaths.ValidateProjectDirectory(candidate))
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static bool HasActiveSafetyTransaction(
+            string journalDirectory,
+            string sessionId)
+        {
+            try
+            {
+                var localHandoff = WatchdogJournalPaths.LocalSafetyHandoffPath(sessionId);
+                var projectHandoff = WatchdogJournalPaths.ProjectSafetyHandoffPath(
+                    journalDirectory,
+                    sessionId);
+                WatchdogSafetyHandoffReceipt handoff;
+                if (WatchdogSafetyHandoffReceiptStore.TryRead(
+                        journalDirectory,
+                        sessionId,
+                        out handoff) && handoff != null)
+                    return !handoff.IsTerminal;
+                if (DurableEvidenceExists(localHandoff, projectHandoff))
+                    return true;
+
+                var localClosing = WatchdogJournalPaths.LocalClosingPath(sessionId);
+                var projectClosing = WatchdogJournalPaths.ProjectClosingPath(
+                    journalDirectory,
+                    sessionId);
+                WatchdogClosingTombstone closing;
+                if (WatchdogClosingTombstoneStore.TryRead(
+                        journalDirectory,
+                        sessionId,
+                        out closing) && closing != null)
+                    return closing.State != WatchdogClosingTombstoneState.Terminal ||
+                           !string.IsNullOrWhiteSpace(closing.SafetyHandoffId) &&
+                           !closing.IsSafetyTerminal;
+                return DurableEvidenceExists(localClosing, projectClosing);
+            }
+            catch
+            {
+                // 清退不是当前会话安全运行的前置条件。旧会话证据无法读取时保持不动。
+                return true;
+            }
+        }
+
+        private static bool DurableEvidenceExists(string localPath, string projectPath)
+        {
+            return File.Exists(localPath) || File.Exists(localPath + ".bak") ||
+                   File.Exists(projectPath) || File.Exists(projectPath + ".bak");
         }
 
         private async Task<int> RunAsync()

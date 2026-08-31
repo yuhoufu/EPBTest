@@ -26,8 +26,10 @@ namespace AdaptiveControlTests
                 StopAllOwnsResponsiveControlRepair, ref passed);
             Run("窗口响应但控制修复未确认时五秒后自动接管",
                 ResponsiveControlRepairHasBoundedDeadline, ref passed);
-            Run("新会话只清退同产品且旧主进程已退出的孤儿看门狗",
+            Run("新会话只清退同项目同产品且无安全交接的孤儿看门狗",
                 StaleSidecarCleanupIsIdentityBound, ref passed);
+            Run("孤儿清退遇到损坏安全证据保持旧Sidecar不动",
+                StaleSidecarCleanupFailsSafeOnCorruptEvidence, ref passed);
             Run("同一运行多通道形式槽失败只建立一个根停止事务",
                 FormalSlotFailuresCoalesceByRun, ref passed);
             Run("恢复过渡窗显示详细倒计时且仅在稳定态隐藏", RecoveryTransitionPresentationIsDeterministic, ref passed);
@@ -154,32 +156,85 @@ namespace AdaptiveControlTests
         {
             Assert(StaleSidecarCleanupPolicy.CanRetire(
                     sameProductScope: true,
+                    sameProjectScope: true,
                     candidateStartedEarlier: true,
                     candidateIdentityExact: true,
                     supervisedProcessObservation:
-                        DurableRelaunchProcessObservation.Dead),
+                        DurableRelaunchProcessObservation.Dead,
+                    safetyTransactionActive: false),
                 "同产品孤儿看门狗未能自动清退");
             Assert(!StaleSidecarCleanupPolicy.CanRetire(
                        true,
                        true,
                        true,
-                       DurableRelaunchProcessObservation.Alive) &&
+                       true,
+                       DurableRelaunchProcessObservation.Alive,
+                       false) &&
                    !StaleSidecarCleanupPolicy.CanRetire(
                        false,
                        true,
                        true,
-                       DurableRelaunchProcessObservation.Dead) &&
+                       true,
+                       DurableRelaunchProcessObservation.Dead,
+                       false) &&
                    !StaleSidecarCleanupPolicy.CanRetire(
                        true,
                        false,
                        true,
-                       DurableRelaunchProcessObservation.Dead) &&
+                       true,
+                       DurableRelaunchProcessObservation.Dead,
+                       false) &&
                    !StaleSidecarCleanupPolicy.CanRetire(
                        true,
                        true,
                        false,
-                       DurableRelaunchProcessObservation.Dead),
-                "活动主进程、其他产品、新进程或身份不明的Sidecar被误清退");
+                       true,
+                       DurableRelaunchProcessObservation.Dead,
+                       false) &&
+                   !StaleSidecarCleanupPolicy.CanRetire(
+                       true,
+                       true,
+                       true,
+                       false,
+                       DurableRelaunchProcessObservation.Dead,
+                       false) &&
+                   !StaleSidecarCleanupPolicy.CanRetire(
+                       true,
+                       true,
+                       true,
+                       true,
+                       DurableRelaunchProcessObservation.Dead,
+                       safetyTransactionActive: true),
+                "活动主进程、其他项目/产品、新进程、身份不明或安全交接中的Sidecar被误清退");
+        }
+
+        private static void StaleSidecarCleanupFailsSafeOnCorruptEvidence()
+        {
+            var root = Path.Combine(
+                Path.GetTempPath(),
+                "StaleSidecarCleanupTests",
+                Guid.NewGuid().ToString("N"));
+            var sessionId = Guid.NewGuid().ToString("N");
+            Directory.CreateDirectory(root);
+            try
+            {
+                Assert(!MTTFTest.Watchdog.WatchdogHost.HasActiveSafetyTransaction(
+                        root,
+                        sessionId),
+                    "无安全事务证据的旧会话被误判为活动");
+                File.WriteAllText(
+                    WatchdogJournalPaths.ProjectSafetyHandoffPath(root, sessionId),
+                    "{corrupt",
+                    new UTF8Encoding(false));
+                Assert(MTTFTest.Watchdog.WatchdogHost.HasActiveSafetyTransaction(
+                        root,
+                        sessionId),
+                    "损坏安全交接证据未保持fail-safe，可能误杀活动Sidecar");
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
         }
 
         private static void FormalSlotFailuresCoalesceByRun()
