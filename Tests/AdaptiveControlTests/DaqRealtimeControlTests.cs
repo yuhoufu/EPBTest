@@ -106,6 +106,8 @@ namespace AdaptiveControlTests
             Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
             Run("UI最新值唤醒在阻塞期间只保留一个待处理信号", UiLatestValueSignalCoalescesBacklog, ref passed);
             Run("UI双设备邮箱十万批阻塞后每设备只保留最新一批", UiLatestPairMailboxStaysBounded, ref passed);
+            Run("WinForms状态风暴只保留一个待处理回调", WinFormsLatestDispatchStaysBounded, ref passed);
+            Run("液压样本陈旧提示指向DAQ采集而非压力不足", HydraulicStaleHintIsAccurate, ref passed);
             Run("UI跳过显示批次保持连线而真实DAQ断点仍断笔", UiCurveBreakUsesAcquisitionTimeline, ref passed);
             Run("UI日志原位裁剪与滚动限频保持有界无分配", UiLogDisplayPolicyIsBoundedAndAllocationFree, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
@@ -3595,6 +3597,35 @@ namespace AdaptiveControlTests
                 "UI邮箱没有保留每块设备各自的最新批次");
             Assert(!mailbox.HasPending && mailbox.PendingSlotCount == 0,
                 "消费最新批次后仍残留历史UI工作");
+        }
+
+        private static void WinFormsLatestDispatchStaysBounded()
+        {
+            var gate = new MTEmbTest.LatestUiDispatchGate(12);
+            var admissions = 0;
+            Parallel.For(0, 100000, index =>
+            {
+                if (gate.MarkDirtyAndTrySchedule(index % 12))
+                    Interlocked.Increment(ref admissions);
+            });
+            Assert(admissions == 1 && gate.PendingCallbackCount == 1,
+                "UI风暴生成了多个待处理回调");
+            Assert(gate.TakeDirtyMask() == 0xFFF, "UI最新槽未覆盖全部12通道");
+            Assert(!gate.CompleteAndTryReschedule(), "无新状态时仍重复调度UI回调");
+
+            Assert(gate.MarkDirtyAndTrySchedule(4), "消费后新状态未能重新调度");
+            gate.TakeDirtyMask();
+            Assert(!gate.MarkDirtyAndTrySchedule(5), "在途回调期间生成了第二个回调");
+            Assert(gate.CompleteAndTryReschedule(), "在途期间的新状态未请求下一轮唯一回调");
+            gate.TakeDirtyMask();
+            Assert(!gate.CompleteAndTryReschedule(), "第二轮消费后仍残留调度");
+        }
+
+        private static void HydraulicStaleHintIsAccurate()
+        {
+            var hint = MTEmbTest.FrmEpbMainMonitor.GetHydraulicFaultHint("HydraulicSampleStale");
+            Assert(hint.Contains("DAQ采集") && !hint.StartsWith("压力不足", StringComparison.Ordinal),
+                "HydraulicSampleStale仍被提示为压力不足");
         }
 
         private sealed class MailboxValue

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,6 +14,45 @@ using DataOperation;
 
 namespace MTEmbTest
 {
+    internal sealed class LatestUiDispatchGate
+    {
+        private readonly int _slotCount;
+        private int _dirtyMask;
+        private int _scheduled;
+
+        internal LatestUiDispatchGate(int slotCount)
+        {
+            if (slotCount < 1 || slotCount > 30)
+                throw new ArgumentOutOfRangeException(nameof(slotCount));
+            _slotCount = slotCount;
+        }
+
+        internal bool MarkDirtyAndTrySchedule(int slot)
+        {
+            if (slot < 0 || slot >= _slotCount)
+                throw new ArgumentOutOfRangeException(nameof(slot));
+            var bit = 1 << slot;
+            int current;
+            do
+            {
+                current = Volatile.Read(ref _dirtyMask);
+            } while (Interlocked.CompareExchange(ref _dirtyMask, current | bit, current) != current);
+            return Interlocked.CompareExchange(ref _scheduled, 1, 0) == 0;
+        }
+
+        internal int TakeDirtyMask() => Interlocked.Exchange(ref _dirtyMask, 0);
+
+        internal bool CompleteAndTryReschedule()
+        {
+            Interlocked.Exchange(ref _scheduled, 0);
+            return Volatile.Read(ref _dirtyMask) != 0 &&
+                   Interlocked.CompareExchange(ref _scheduled, 1, 0) == 0;
+        }
+
+        internal void CancelSchedule() => Interlocked.Exchange(ref _scheduled, 0);
+        internal int PendingCallbackCount => Volatile.Read(ref _scheduled);
+    }
+
     public partial class FrmEpbMainMonitor
     {
         private int _powerSupplyUiAttached;
@@ -31,6 +71,14 @@ namespace MTEmbTest
         private readonly object _powerSupplyTelemetryGate = new object();
         private readonly Dictionary<int, PowerSupplyTelemetry> _latestPowerSupplyTelemetry =
             new Dictionary<int, PowerSupplyTelemetry>();
+        private readonly Dictionary<int, PowerSupplyFault> _latestPowerSupplyFaults =
+            new Dictionary<int, PowerSupplyFault>();
+        private readonly Dictionary<int, string> _appliedPowerSupplyFaultUiKeys =
+            new Dictionary<int, string>();
+        private readonly LatestUiDispatchGate _channelRuntimeUiDispatch =
+            new LatestUiDispatchGate(12);
+        private readonly LatestUiDispatchGate _powerSupplyUiDispatch =
+            new LatestUiDispatchGate(4);
 
         protected override void OnShown(EventArgs e)
         {
@@ -318,14 +366,7 @@ namespace MTEmbTest
             }
             UpdateUnattendedRunAuthorization(state);
             if (IsDisposed || Disposing) return;
-            try
-            {
-                if (InvokeRequired)
-                    BeginInvoke((Action)(() => ApplyLatestChannelRuntimeState(state.Channel)));
-                else
-                    ApplyLatestChannelRuntimeState(state.Channel);
-            }
-            catch { }
+            ScheduleChannelRuntimeUi(state.Channel);
         }
 
         private void ApplyLatestChannelRuntimeState(int channel)
@@ -349,14 +390,41 @@ namespace MTEmbTest
                 _channelWarningOverlays[warning.Channel] = warning.Clone();
             }
             if (IsDisposed || Disposing) return;
+            ScheduleChannelRuntimeUi(warning.Channel);
+        }
+
+        private void ScheduleChannelRuntimeUi(int channel)
+        {
+            if (!_channelRuntimeUiDispatch.MarkDirtyAndTrySchedule(channel - 1)) return;
+            PostChannelRuntimeUiDrain();
+        }
+
+        private void PostChannelRuntimeUiDrain()
+        {
             try
             {
                 if (InvokeRequired)
-                    BeginInvoke((Action)(() => ApplyLatestChannelRuntimeState(warning.Channel)));
+                    BeginInvoke((Action)DrainChannelRuntimeUi);
                 else
-                    ApplyLatestChannelRuntimeState(warning.Channel);
+                    DrainChannelRuntimeUi();
             }
-            catch { }
+            catch { _channelRuntimeUiDispatch.CancelSchedule(); }
+        }
+
+        private void DrainChannelRuntimeUi()
+        {
+            try
+            {
+                var dirty = _channelRuntimeUiDispatch.TakeDirtyMask();
+                for (var channel = 1; channel <= 12; channel++)
+                    if ((dirty & (1 << (channel - 1))) != 0)
+                        ApplyLatestChannelRuntimeState(channel);
+            }
+            finally
+            {
+                if (_channelRuntimeUiDispatch.CompleteAndTryReschedule())
+                    PostChannelRuntimeUiDrain();
+            }
         }
 
         private void LogEpbChannelAlarm(int channel, string reason)
@@ -820,15 +888,11 @@ namespace MTEmbTest
         private void PostSafetyStatus(string message, bool important)
         {
             if (IsDisposed || Disposing) return;
-            try
-            {
-                BeginInvoke((Action)(() =>
-                    LogInfo((important ? "[安全] " : string.Empty) + message)));
-            }
-            catch { }
+            // LogInfo只向有界ConcurrentQueue追加，UI定时器批量消费；无需逐条BeginInvoke。
+            LogInfo((important ? "[安全] " : string.Empty) + message);
         }
 
-        private static string GetHydraulicFaultHint(string reason)
+        internal static string GetHydraulicFaultHint(string reason)
         {
             if (!string.IsNullOrEmpty(reason) &&
                 reason.IndexOf("AboveToleranceWindow", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -836,7 +900,9 @@ namespace MTEmbTest
 
             if (!string.IsNullOrEmpty(reason) &&
                 (reason.IndexOf("PressureSample", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                 reason.IndexOf("NoPressureSample", StringComparison.OrdinalIgnoreCase) >= 0))
+                 reason.IndexOf("NoPressureSample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 reason.IndexOf("HydraulicSampleStale", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 reason.IndexOf("HydraulicSampleUnavailable", StringComparison.OrdinalIgnoreCase) >= 0))
                 return "压力采样无效或过期，请优先检查压力传感器接线、DAQ采集及液压通道映射。";
 
             return "压力不足，请优先检查制动液液位及泄漏、卡钳开裂、接头、管路、泵输出和压力标定。";
@@ -855,6 +921,12 @@ namespace MTEmbTest
             try
             {
                 await _epb.ResetPowerSupplyFaultAsync(groupId);
+                lock (_powerSupplyTelemetryGate)
+                {
+                    _latestPowerSupplyFaults.Remove(groupId);
+                    _appliedPowerSupplyFaultUiKeys.Remove(groupId);
+                }
+                SchedulePowerSupplyUi(groupId);
                 LogInfo($"电源组{groupId}故障锁存已人工复位；下次启动仍执行完整预检。");
             }
             catch (Exception ex)
@@ -872,13 +944,51 @@ namespace MTEmbTest
             if (telemetry == null || IsDisposed || Disposing) return;
             lock (_powerSupplyTelemetryGate)
                 _latestPowerSupplyTelemetry[telemetry.ElectricalGroupId] = telemetry;
+            SchedulePowerSupplyUi(telemetry.ElectricalGroupId);
+        }
+
+        private void SchedulePowerSupplyUi(int electricalGroupId)
+        {
+            if (electricalGroupId < 1 || electricalGroupId > 4) return;
+            if (!_powerSupplyUiDispatch.MarkDirtyAndTrySchedule(electricalGroupId - 1)) return;
+            PostPowerSupplyUiDrain();
+        }
+
+        private void PostPowerSupplyUiDrain()
+        {
             try
             {
-                BeginInvoke((Action)(() => ApplyPowerSupplyStatus(telemetry)));
+                if (InvokeRequired)
+                    BeginInvoke((Action)DrainPowerSupplyUi);
+                else
+                    DrainPowerSupplyUi();
             }
-            catch
+            catch { _powerSupplyUiDispatch.CancelSchedule(); }
+        }
+
+        private void DrainPowerSupplyUi()
+        {
+            try
             {
-                // 窗口退出期间忽略晚到的遥测。
+                var dirty = _powerSupplyUiDispatch.TakeDirtyMask();
+                for (var groupId = 1; groupId <= 4; groupId++)
+                {
+                    if ((dirty & (1 << (groupId - 1))) == 0) continue;
+                    PowerSupplyTelemetry telemetry;
+                    PowerSupplyFault fault;
+                    lock (_powerSupplyTelemetryGate)
+                    {
+                        _latestPowerSupplyTelemetry.TryGetValue(groupId, out telemetry);
+                        _latestPowerSupplyFaults.TryGetValue(groupId, out fault);
+                    }
+                    if (fault != null) ApplyPowerSupplyFault(fault);
+                    else if (telemetry != null) ApplyPowerSupplyStatus(telemetry);
+                }
+            }
+            finally
+            {
+                if (_powerSupplyUiDispatch.CompleteAndTryReschedule())
+                    PostPowerSupplyUiDrain();
             }
         }
 
@@ -916,24 +1026,40 @@ namespace MTEmbTest
         private void ShowPowerSupplyFault(PowerSupplyFault fault)
         {
             if (fault == null || IsDisposed || Disposing) return;
-            try
+            lock (_powerSupplyTelemetryGate)
+                _latestPowerSupplyFaults[fault.ElectricalGroupId] = fault;
+            SchedulePowerSupplyUi(fault.ElectricalGroupId);
+        }
+
+        private void ApplyPowerSupplyFault(PowerSupplyFault fault)
+        {
+            var faultKey = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}:{1}:{2}",
+                fault.TimestampUtc.ToUniversalTime().Ticks,
+                fault.Code ?? string.Empty,
+                fault.Reason ?? string.Empty);
+            string appliedFaultKey;
+            var shouldLog = !_appliedPowerSupplyFaultUiKeys.TryGetValue(
+                                fault.ElectricalGroupId,
+                                out appliedFaultKey) ||
+                            !string.Equals(appliedFaultKey, faultKey, StringComparison.Ordinal);
+            _appliedPowerSupplyFaultUiKeys[fault.ElectricalGroupId] = faultKey;
+
+            var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
+            if (fault.SupplyId >= 1 && fault.SupplyId <= boxes.Length)
             {
-                BeginInvoke((Action)(() =>
-                {
-                    var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
-                    if (fault.SupplyId >= 1 && fault.SupplyId <= boxes.Length)
-                    {
-                        boxes[fault.SupplyId - 1].Text =
-                            $"电源{fault.SupplyId} 故障【{AlarmMessageLocalizer.GetCodeName(fault.Code)}】";
-                        boxes[fault.SupplyId - 1].ForeColor = Color.Red;
-                    }
-                    LogInfo(
-                        $"电源组{fault.ElectricalGroupId}硬故障【{AlarmMessageLocalizer.GetCodeName(fault.Code)}】：" +
-                        $"{AlarmMessageLocalizer.ToUserMessage(fault.Reason)}；" +
-                        $"联动EPB={string.Join(",", fault.AffectedChannels ?? Array.Empty<int>())}");
-                }));
+                boxes[fault.SupplyId - 1].Text =
+                    $"电源{fault.SupplyId} 故障【{AlarmMessageLocalizer.GetCodeName(fault.Code)}】";
+                boxes[fault.SupplyId - 1].ForeColor = Color.Red;
             }
-            catch { }
+            if (shouldLog)
+            {
+                LogInfo(
+                    $"电源组{fault.ElectricalGroupId}硬故障【{AlarmMessageLocalizer.GetCodeName(fault.Code)}】：" +
+                    $"{AlarmMessageLocalizer.ToUserMessage(fault.Reason)}；" +
+                    $"联动EPB={string.Join(",", fault.AffectedChannels ?? Array.Empty<int>())}");
+            }
         }
 
     }
