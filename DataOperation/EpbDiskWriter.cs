@@ -3501,7 +3501,9 @@ SELECT mechanical_completed_at FROM {TABLE_CYCLES}
 UPDATE {TABLE_CYCLES}
    SET status='aborted_on_startup',
        end_time=CASE
-           WHEN end_time IS NOT NULL THEN end_time
+           WHEN end_time IS NOT NULL AND
+                julianday(end_time) >= julianday(start_time) THEN end_time
+           WHEN end_time IS NOT NULL THEN start_time
            WHEN julianday(@now) < julianday(start_time) THEN start_time
            ELSE @now
        END
@@ -3525,7 +3527,9 @@ UPDATE {TABLE_CYCLES}
 UPDATE {TABLE_CYCLES}
    SET status='AbortedBySoftwareRecovery',
        end_time=CASE
-           WHEN end_time IS NOT NULL THEN end_time
+           WHEN end_time IS NOT NULL AND
+                julianday(end_time) >= julianday(start_time) THEN end_time
+           WHEN end_time IS NOT NULL THEN start_time
            WHEN julianday(@now) < julianday(start_time) THEN start_time
            ELSE @now
        END

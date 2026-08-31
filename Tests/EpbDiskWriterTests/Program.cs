@@ -49,6 +49,7 @@ namespace EpbDiskWriterTests
                 Run("重启后写指针连续", RestartRestoresWritePosition);
                 Run("running 圈重启后不覆盖", RestartAfterRunningCycle);
                 Run("Watchdog强制接管只作废旧running圈", WatchdogTakeoverAbortsInterruptedCycles);
+                Run("启动修复纠正旧running圈的倒置终止时间", StartupRepairClampsExistingEndBeforeStart);
                 Run("圈进度和终态时间不早于圈头且状态单向迁移", CycleTimeAndStatusRemainMonotonic);
                 Run("串圈数据整圈拒绝且无半成品", MixedCycleIsRejectedAtomically);
                 Run("样本序号跳变被拒绝", SampleIndexJumpIsRejected);
@@ -445,6 +446,49 @@ namespace EpbDiskWriterTests
                     Assert(string.Equals(Convert.ToString(command.ExecuteScalar()),
                             "aborted_on_startup", StringComparison.OrdinalIgnoreCase),
                         "启动恢复事故圈终态不正确");
+                }
+            });
+        }
+
+        private static void StartupRepairClampsExistingEndBeforeStart()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var started = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                    writer.BeginCycle(4, 5557, started);
+
+                using (var connection = OpenIndex(policy))
+                using (var corrupt = connection.CreateCommand())
+                {
+                    corrupt.CommandText =
+                        "UPDATE epb_cycles SET end_time=@bad WHERE epb_id=4 AND cycle_number=5557;";
+                    corrupt.Parameters.AddWithValue(
+                        "@bad",
+                        started.AddMilliseconds(-27.681).ToLocalTime().ToString("o"));
+                    Assert(corrupt.ExecuteNonQuery() == 1, "未构造事故形态的倒置终止时间");
+                }
+
+                using (var writer = new EpbDiskWriter(policy))
+                using (var connection = OpenIndex(policy))
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText =
+                        "SELECT start_time,end_time,status FROM epb_cycles " +
+                        "WHERE epb_id=4 AND cycle_number=5557;";
+                    using var reader = command.ExecuteReader();
+                    Assert(reader.Read(), "启动修复后事故圈不存在");
+                    var persistedStart = DateTime.Parse(
+                        reader.GetString(0), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+                    var persistedEnd = DateTime.Parse(
+                        reader.GetString(1), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+                    Assert(persistedEnd >= persistedStart, "启动修复仍保留end_time早于start_time");
+                    Assert(string.Equals(
+                            reader.GetString(2),
+                            "aborted_on_startup",
+                            StringComparison.OrdinalIgnoreCase),
+                        "启动修复未把旧running圈闭合为作废终态");
                 }
             });
         }
