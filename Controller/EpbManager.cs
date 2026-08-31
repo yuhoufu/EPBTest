@@ -12942,11 +12942,21 @@ namespace Controller
 
             var sourceDevice = _acq.GetDeviceForEpbChannel(sourceChannel);
             DaqIncidentContext daqIncident = null;
-            var daqDerived = !string.IsNullOrWhiteSpace(reason) &&
-                reason.IndexOf(
+            var daqStaleReason = !string.IsNullOrWhiteSpace(reason) &&
+                                 reason.IndexOf(
+                                     "OffCurrentUnverifiableDaqStale",
+                                     StringComparison.OrdinalIgnoreCase) >= 0;
+            if (daqStaleReason && !string.IsNullOrWhiteSpace(sourceDevice) &&
+                !_daqIncidentLatch.TryGet(_activeBatchId, sourceDevice, out daqIncident))
+            {
+                daqIncident = ObserveDaqIncident(
+                    sourceDevice,
                     "OffCurrentUnverifiableDaqStale",
-                    StringComparison.OrdinalIgnoreCase) >= 0 &&
-                _daqIncidentLatch.TryGet(_activeBatchId, sourceDevice, out daqIncident);
+                    reason,
+                    DateTime.UtcNow,
+                    GetAllDaqDeviceChannels(sourceDevice)).Context;
+            }
+            var daqDerived = daqStaleReason && daqIncident != null;
             var registration = _emergencyPowerGroupLatch.Register(
                 groupId,
                 daqDerived ? daqIncident.CorrelationId : Guid.NewGuid(),

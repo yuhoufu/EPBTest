@@ -3500,7 +3500,11 @@ SELECT mechanical_completed_at FROM {TABLE_CYCLES}
             cmd.CommandText = $@"
 UPDATE {TABLE_CYCLES}
    SET status='aborted_on_startup',
-       end_time=COALESCE(end_time, @now)
+       end_time=CASE
+           WHEN end_time IS NOT NULL THEN end_time
+           WHEN julianday(@now) < julianday(start_time) THEN start_time
+           ELSE @now
+       END
  WHERE status='running'
 ;";
             cmd.Parameters.AddWithValue("@now", DateTime.Now.ToString("o"));
@@ -3520,7 +3524,11 @@ UPDATE {TABLE_CYCLES}
             cmd.CommandText = $@"
 UPDATE {TABLE_CYCLES}
    SET status='AbortedBySoftwareRecovery',
-       end_time=COALESCE(end_time, @now)
+       end_time=CASE
+           WHEN end_time IS NOT NULL THEN end_time
+           WHEN julianday(@now) < julianday(start_time) THEN start_time
+           ELSE @now
+       END
  WHERE status='running';";
             cmd.Parameters.AddWithValue("@now", recoveryUtc.ToLocalTime().ToString("o"));
             return cmd.ExecuteNonQuery();
@@ -3575,18 +3583,44 @@ VALUES(@e,@c,@st,@pos,'running',0);";
             cmd.Transaction = _activeBatchTransaction;
             cmd.CommandText = $@"
 UPDATE {TABLE_CYCLES}
-   SET sample_count=@n, end_time=@et, status=@status
- WHERE epb_id=@e AND cycle_number=@c";
+   SET sample_count=CASE
+           WHEN @n > COALESCE(sample_count, 0) THEN @n
+           ELSE COALESCE(sample_count, 0)
+       END,
+       end_time=CASE
+           WHEN julianday(@et) < julianday(start_time) THEN start_time
+           WHEN end_time IS NULL OR julianday(@et) > julianday(end_time) THEN @et
+           ELSE end_time
+       END,
+       status=@status
+ WHERE epb_id=@e AND cycle_number=@c AND status='running'";
             cmd.Parameters.AddWithValue("@n", sampleCount);
             cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
             cmd.Parameters.AddWithValue("@status", status);
             cmd.Parameters.AddWithValue("@e", epbId);
             cmd.Parameters.AddWithValue("@c", cycleNumber);
             var affected = cmd.ExecuteNonQuery();
-            if (affected != 1)
-                throw new InvalidOperationException(
-                    $"圈终态更新未命中唯一记录。EPB={epbId} Cycle={cycleNumber} " +
-                    $"Status={status} Affected={affected}。");
+            if (affected == 1) return;
+
+            using var inspect = _conn.CreateCommand();
+            inspect.Transaction = _activeBatchTransaction;
+            inspect.CommandText = $@"
+SELECT status FROM {TABLE_CYCLES}
+ WHERE epb_id=@e AND cycle_number=@c
+ LIMIT 1";
+            inspect.Parameters.AddWithValue("@e", epbId);
+            inspect.Parameters.AddWithValue("@c", cycleNumber);
+            var existing = Convert.ToString(inspect.ExecuteScalar(), CultureInfo.InvariantCulture);
+            if (!string.Equals(status, "running", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing, status, StringComparison.OrdinalIgnoreCase))
+                return;
+            if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(existing) &&
+                !string.Equals(existing, "running", StringComparison.OrdinalIgnoreCase))
+                return;
+            throw new InvalidOperationException(
+                $"圈状态迁移未命中running唯一记录。EPB={epbId} Cycle={cycleNumber} " +
+                $"Requested={status} Existing={existing ?? "Missing"} Affected={affected}。");
         }
     }
 

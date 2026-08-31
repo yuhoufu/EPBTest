@@ -24,6 +24,8 @@ namespace AdaptiveControlTests
             Run("Stop阶段顺序包含液压释放后DAQ停止", StopStageOrderIsMonotonic, ref passed);
             Run("StopAll活动期间逻辑残留不得发起第二个安全事务",
                 StopAllOwnsResponsiveControlRepair, ref passed);
+            Run("同一运行多通道形式槽失败只建立一个根停止事务",
+                FormalSlotFailuresCoalesceByRun, ref passed);
             Run("恢复过渡窗显示详细倒计时且仅在稳定态隐藏", RecoveryTransitionPresentationIsDeterministic, ref passed);
             Run("ManualStopIntent保留Kill权限", ManualStopIntentKeepsAuthority, ref passed);
             Run("启动失败和恢复失败不得伪装会话终止", RetryableFailuresAreNotTerminal, ref passed);
@@ -108,6 +110,18 @@ namespace AdaptiveControlTests
                     formalProgressStalled: false,
                     channelSupervisionFailed: false),
                 "已经确认接管后仍重复发起响应修复事务。");
+        }
+
+        private static void FormalSlotFailuresCoalesceByRun()
+        {
+            var gate = new FormalSlotSafetyFailureGate();
+            var run = Guid.NewGuid();
+            Assert(gate.TryLatch(run, out var first) && first != Guid.Empty,
+                "首个形式槽失败未建立根事务");
+            Assert(!gate.TryLatch(run, out var duplicate) && duplicate == first,
+                "同运行重复形式槽失败未复用根关联号");
+            Assert(gate.TryLatch(Guid.NewGuid(), out var next) && next != first,
+                "新运行未获得新的根停止事务");
         }
 
         private static void WatchdogTransportWritesAreBounded()

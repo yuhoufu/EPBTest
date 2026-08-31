@@ -81,6 +81,38 @@ namespace Controller
         }
     }
 
+    /// <summary>
+    /// 同一运行中的形式槽安全边界失败只允许建立一个根事务。多通道观察者仍可
+    /// 记录各自的闭合结果，但不得重复撤权、推进RunEpoch或创建StopAll关联号。
+    /// </summary>
+    internal sealed class FormalSlotSafetyFailureGate
+    {
+        private readonly object _gate = new object();
+        private Guid _runId;
+        private bool _latched;
+        private Guid _correlationId;
+
+        internal bool TryLatch(
+            Guid runId,
+            out Guid correlationId)
+        {
+            lock (_gate)
+            {
+                if (!_latched || _runId != runId)
+                {
+                    _runId = runId;
+                    _latched = true;
+                    _correlationId = Guid.NewGuid();
+                    correlationId = _correlationId;
+                    return true;
+                }
+
+                correlationId = _correlationId;
+                return false;
+            }
+        }
+    }
+
     public partial class EpbManager
     {
         // StopAll has one process-wide escape deadline, but every stage exposes its
@@ -97,6 +129,8 @@ namespace Controller
         private readonly object _stopProgressGate = new object();
         private readonly StopSafetyMaterialEvidenceGate _stopMaterialEvidenceGate =
             new StopSafetyMaterialEvidenceGate();
+        private readonly FormalSlotSafetyFailureGate _formalSlotSafetyFailureGate =
+            new FormalSlotSafetyFailureGate();
         private StopSafetyProgressSnapshot _stopSafetyProgress = new StopSafetyProgressSnapshot();
         // Compatibility mirror only.  All live progress clocks and material
         // evidence are owned by the active transaction runner.

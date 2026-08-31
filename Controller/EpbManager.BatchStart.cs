@@ -3826,6 +3826,9 @@ namespace Controller
             bool hydraulicReleased,
             bool persistenceBoundaryClosed)
         {
+            var runId = _activeBatchId;
+            if (!_formalSlotSafetyFailureGate.TryLatch(runId, out var correlationId))
+                return;
             var reason =
                 $"FormalSlotSafetyBoundaryFailed Slot={slot} EPB={channel} " +
                 $"MotorOff={motorOffConfirmed} HydraulicReleased={hydraulicReleased} " +
@@ -3839,7 +3842,7 @@ namespace Controller
                 "正式周期槽安全边界未闭合，已撤销整批执行授权并启动安全停止",
                 channel,
                 new[] { channel },
-                Guid.NewGuid(),
+                correlationId,
                 allowSystemFaultReset: false);
             ObserveBackgroundTask(
                 StopAllAsync(
@@ -3848,7 +3851,7 @@ namespace Controller
                         Source = StopSource.SystemFault,
                         Reason = reason,
                         Initiator = nameof(ReportFormalSlotSafetyBoundaryFailure),
-                        CorrelationId = Guid.NewGuid().ToString("N"),
+                        CorrelationId = correlationId.ToString("N"),
                         RequestedUtc = DateTime.UtcNow
                     },
                     CancellationToken.None),

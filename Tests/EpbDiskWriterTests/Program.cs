@@ -9,6 +9,7 @@ using System.Data.SQLite;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Security.Cryptography;
+using System.Reflection;
 using System.Text;
 using Config;
 using DataOperation;
@@ -48,6 +49,7 @@ namespace EpbDiskWriterTests
                 Run("重启后写指针连续", RestartRestoresWritePosition);
                 Run("running 圈重启后不覆盖", RestartAfterRunningCycle);
                 Run("Watchdog强制接管只作废旧running圈", WatchdogTakeoverAbortsInterruptedCycles);
+                Run("圈进度和终态时间不早于圈头且状态单向迁移", CycleTimeAndStatusRemainMonotonic);
                 Run("串圈数据整圈拒绝且无半成品", MixedCycleIsRejectedAtomically);
                 Run("样本序号跳变被拒绝", SampleIndexJumpIsRejected);
                 Run("旧时间戳回退仍可完整导出", LegacyTimestampRollbackStillExports);
@@ -108,6 +110,40 @@ namespace EpbDiskWriterTests
                 Console.Error.WriteLine("FAIL " + ex);
                 return 1;
             }
+        }
+
+        private static void CycleTimeAndStatusRemainMonotonic()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                using var writer = new EpbDiskWriter(policy);
+                writer.BeginCycle(1, 42, start);
+                writer.WriteSample(1, start.AddSeconds(-2), 1, 10);
+                writer.CompleteCycle(1, 42, 1, start.AddSeconds(-1));
+
+                var update = typeof(EpbDiskWriter).GetMethod(
+                    "ExecuteCycleUpdate",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert(update != null, "未找到圈状态迁移入口");
+                update.Invoke(writer, new object[] { 1, 42, 99, start.AddSeconds(2), "running" });
+
+                using var connection = OpenIndex(policy);
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    "SELECT start_time,end_time,status,sample_count FROM epb_cycles " +
+                    "WHERE epb_id=1 AND cycle_number=42";
+                using var reader = command.ExecuteReader();
+                Assert(reader.Read(), "单调圈记录不存在");
+                var persistedStart = DateTime.Parse(
+                    reader.GetString(0), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+                var persistedEnd = DateTime.Parse(
+                    reader.GetString(1), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+                Assert(persistedEnd >= persistedStart, "圈终态时间早于圈头");
+                Assert(reader.GetString(2) == "completed", "迟到进度把终态回退为running");
+                Assert(reader.GetInt32(3) == 1, "迟到进度修改了终态样本数");
+            });
         }
 
         private static int InspectIndex(string databasePath)
