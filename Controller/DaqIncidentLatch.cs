@@ -223,6 +223,7 @@ namespace Controller
 
         private static int Priority(string code)
         {
+            if (string.Equals(code, "DaqInputBufferOverflow", StringComparison.OrdinalIgnoreCase)) return 500;
             if (string.Equals(code, "ControlQueueFull", StringComparison.OrdinalIgnoreCase)) return 400;
             if (string.Equals(code, "ControlLatencyExceeded", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(code, "DaqCallbackStale", StringComparison.OrdinalIgnoreCase) ||

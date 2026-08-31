@@ -81,6 +81,8 @@ namespace AdaptiveControlTests
             Run("恢复轮询跨多批仍按连续序号累计", RecoveryVerifierAcceptsBurstProgress, ref passed);
             Run("恢复连续性故障后重新建立干净窗口", RecoveryVerifierResetsOnRealDiscontinuity, ref passed);
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
+            Run("DAQ输入缓冲覆盖现场调度抖动且保持批周期", DaqInputBufferHasRecoveryMargin, ref passed);
+            Run("NI -200279明确归类为输入缓冲溢出", DaqInputOverflowClassification, ref passed);
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("DAQ按250/1500/5000ms分级且历史峰值不反向升级", IndependentDaqLivenessSupervisorPolicy, ref passed);
             Run("DAQ存活日志转换按批次关联与参与设备有界去重", DaqLivenessLogTransitionDedup, ref passed);
@@ -909,6 +911,38 @@ namespace AdaptiveControlTests
             Assert(!EpbManager.RequiresDaqTaskRecreate("DaqWallClockStep") &&
                    !EpbManager.IsDaqClockRecoveryTrigger("DaqWallClockStep"),
                 "墙钟跳变仍触发DAQ任务或机械恢复");
+        }
+
+        private static void DaqInputBufferHasRecoveryMargin()
+        {
+            Assert(TwoDeviceAiAcquirer.SelectInputBufferSamplesPerChannel(2000, 20, 10) == 20000,
+                "2kHz配置未得到10秒输入缓冲");
+            Assert(TwoDeviceAiAcquirer.SelectInputBufferSamplesPerChannel(2000, 20, 0) == 20000,
+                "非法窗口未回落到10秒安全默认值");
+            Assert(TwoDeviceAiAcquirer.SelectInputBufferSamplesPerChannel(100, 20, 2) == 200,
+                "输入缓冲未按完整批次对齐");
+        }
+
+        private static void DaqInputOverflowClassification()
+        {
+            Assert(TwoDeviceAiAcquirer.ClassifyCallbackFault(
+                       new SyntheticDaqException(-200279, "application is not able to keep up")) ==
+                   "DaqInputBufferOverflow",
+                "NI -200279未归类为DAQ输入缓冲溢出");
+            Assert(TwoDeviceAiAcquirer.ClassifyCallbackFault(
+                       new InvalidOperationException("other callback failure")) ==
+                   "DaqCallbackException",
+                "普通回调异常被误归类为输入缓冲溢出");
+        }
+
+        private sealed class SyntheticDaqException : Exception
+        {
+            public SyntheticDaqException(int errorCode, string message) : base(message)
+            {
+                ErrorCode = errorCode;
+            }
+
+            public int ErrorCode { get; }
         }
 
         private static void DaqSelfMaintenancePolicy()

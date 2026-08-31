@@ -862,6 +862,7 @@ namespace IO.NI
         private Func<string, bool> _controlActivityProvider;
         private readonly double _sampleRate;
         private readonly int _samplesPerChannel;
+        private readonly int _inputBufferSamplesPerChannel;
         public double SampleRate => _sampleRate;
 
         // 时间戳（模仿 FrmMainMonitor）
@@ -1773,6 +1774,10 @@ namespace IO.NI
             _enabled = cfg.Enabled();
             _sampleRate = sampleRate;
             _samplesPerChannel = samplesPerChannel;
+            _inputBufferSamplesPerChannel = SelectInputBufferSamplesPerChannel(
+                sampleRate,
+                samplesPerChannel,
+                ParseDoubleOrDefault(SafeGetAppSetting("DaqInputBufferSeconds"), 10));
             _medianLens = Math.Max(1, medianLens);
             _log = log ?? NLogger.Instance;
             _backgroundTasks = new CoalescingTaskSupervisor(_log);
@@ -5083,10 +5088,37 @@ namespace IO.NI
 
             task.Timing.ConfigureSampleClock("", _sampleRate, SampleClockActiveEdge.Rising,
                 SampleQuantityMode.ContinuousSamples, _samplesPerChannel);
-            //task.Stream.ConfigureInputBuffer(0);
+            // 输入缓冲只扩大驱动侧的抗调度抖动窗口，不改变每次读取点数和10ms控制节拍。
+            // 必须在 Verify 前配置；现场 -200279 即为应用线程约3秒未及时取数后覆盖旧样本。
+            task.Stream.ConfigureInputBuffer(_inputBufferSamplesPerChannel);
 
             task.Control(TaskAction.Verify);
             return task;
+        }
+
+        internal static int SelectInputBufferSamplesPerChannel(
+            double sampleRate,
+            int samplesPerChannel,
+            double recoveryWindowSeconds)
+        {
+            if (sampleRate <= 0 || double.IsNaN(sampleRate) || double.IsInfinity(sampleRate))
+                throw new ArgumentOutOfRangeException(nameof(sampleRate));
+            if (samplesPerChannel <= 0)
+                throw new ArgumentOutOfRangeException(nameof(samplesPerChannel));
+
+            // 配置异常时回落到10秒；允许2~30秒，避免现场误配置造成极小缓冲或无界内存。
+            var seconds = recoveryWindowSeconds >= 2 && recoveryWindowSeconds <= 30 &&
+                          !double.IsNaN(recoveryWindowSeconds) &&
+                          !double.IsInfinity(recoveryWindowSeconds)
+                ? recoveryWindowSeconds
+                : 10;
+            var desired = Math.Max(
+                samplesPerChannel * 8.0,
+                Math.Ceiling(sampleRate * seconds));
+            desired = Math.Min(1000000, desired);
+            var batches = Math.Max(1L, (long)Math.Ceiling(desired / samplesPerChannel));
+            var aligned = Math.Min(1000000L, batches * samplesPerChannel);
+            return (int)Math.Max(samplesPerChannel, aligned);
         }
 
         private void BuildColumnIndex(IEnumerable<AiConfigDetailRecord> all, string dev, string[] physicals,
@@ -5483,6 +5515,7 @@ namespace IO.NI
                         EffectiveSampleRateHz = nominalSampleRate,
                         ClockState = ClockState.WarmingUp.ToString(),
                         Detail = $"ConfiguredRateHz={_sampleRate:F6}; CoercedRateHz={nominalSampleRate:F6}"
+                                 + $"; InputBufferSamplesPerChannel={_inputBufferSamplesPerChannel}"
                     });
                     if (isDev1)
                     {
@@ -5554,12 +5587,28 @@ namespace IO.NI
         {
             if (!IsCurrentGeneration(device, generation)) return;
             // 采集层只发布事实；Stop/Start 和恢复终态全部交给 EpbManager 的唯一恢复状态机。
+            var code = ClassifyCallbackFault(cause);
+            var nativeCode = GetNativeErrorCode(cause);
             PublishQueueFullFault(
                 device,
                 generation,
-                "DaqCallbackException",
+                code,
                 "Callback",
-                reasonOverride: $"Device={device} DAQ回调异常：{cause?.Message}");
+                reasonOverride: $"Device={device} DAQ回调异常 Code={nativeCode?.ToString() ?? "Unknown"} " +
+                                $"Classification={code}：{cause?.Message}");
+        }
+
+        internal static string ClassifyCallbackFault(Exception exception)
+        {
+            if (GetNativeErrorCode(exception) == -200279)
+                return "DaqInputBufferOverflow";
+            var message = exception?.ToString() ?? string.Empty;
+            if (message.IndexOf("samples that are no longer available", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("application is not able to keep up", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("input buffer", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                message.IndexOf("overwrite", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "DaqInputBufferOverflow";
+            return "DaqCallbackException";
         }
 
         private static int? GetNativeErrorCode(Exception exception)
