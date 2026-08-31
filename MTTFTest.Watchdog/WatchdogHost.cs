@@ -616,7 +616,8 @@ namespace MTTFTest.Watchdog
         private long _lastHeartbeatCheckpointTimestamp;
         private long _pendingCommitGenerationAwaitingRunIdentity;
         private long _sameAuthorityReconnectAwaitingHeartbeatGeneration;
-        private int _controlRepairStopRequested;
+        private readonly ResponsiveControlRepairSupervisor _responsiveControlRepair =
+            new ResponsiveControlRepairSupervisor();
         private string _lastSuppressedControlRepairStopTransaction = string.Empty;
         private int _diagnosticSinkStallLogged;
         private readonly object _recoveryCommitRetryGate = new object();
@@ -1270,7 +1271,7 @@ namespace MTTFTest.Watchdog
                         _channelProgressTracker.Reset();
                         Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
                         Interlocked.Exchange(ref _lastFormalProgressTimestamp, Stopwatch.GetTimestamp());
-                        Interlocked.Exchange(ref _controlRepairStopRequested, 0);
+                        _responsiveControlRepair.Reset();
                         RecordEvent(
                             "AttachedReconnectValidated",
                             "FreshHeartbeat;ConnectionGeneration=" + connectionGeneration);
@@ -2127,6 +2128,27 @@ namespace MTTFTest.Watchdog
                         inconsistentRecovery,
                         formalProgressStalled,
                         channelSupervisionFailed);
+                    var repairReason = channelSupervisionFailed
+                        ? channelSupervisionReason
+                        : formalProgressStalled
+                            ? "FormalProgressStalled"
+                            : logicalResidue
+                                ? "LogicalResidue"
+                                : "InconsistentRecovery";
+                    var responsiveRepair = _responsiveControlRepair.Evaluate(
+                        responsiveControlFault,
+                        stopActive,
+                        Stopwatch.GetTimestamp(),
+                        Stopwatch.Frequency);
+                    if (responsiveRepair.ReportTakeoverConfirmation)
+                    {
+                        RecordEvent(
+                            "ResponsiveControlRepairDeadlineExceeded",
+                            $"Reason={repairReason};" +
+                            $"ElapsedSeconds={responsiveRepair.ElapsedSeconds:F3};" +
+                            "UiResponsive=true;StopTransactionObserved=false");
+                    }
+                    applicationTakeoverConfirmed |= responsiveRepair.TakeoverConfirmed;
                     if (stopActive &&
                         (logicalResidue || inconsistentRecovery ||
                          formalProgressStalled || channelSupervisionFailed) &&
@@ -2147,16 +2169,8 @@ namespace MTTFTest.Watchdog
                     }
                     else if (!stopActive)
                         _lastSuppressedControlRepairStopTransaction = string.Empty;
-                    if (responsiveControlFault &&
-                        Interlocked.CompareExchange(ref _controlRepairStopRequested, 1, 0) == 0)
+                    if (responsiveRepair.RequestStopAll)
                     {
-                        var repairReason = channelSupervisionFailed
-                            ? channelSupervisionReason
-                            : formalProgressStalled
-                                ? "FormalProgressStalled"
-                                : logicalResidue
-                                    ? "LogicalResidue"
-                                    : "InconsistentRecovery";
                         RecordEvent(
                             "ResponsiveApplicationControlRepairRequested",
                             repairReason);
@@ -2164,10 +2178,6 @@ namespace MTTFTest.Watchdog
                             WatchdogMessageType.RequestStopAll,
                             "ResponsiveApplicationControlRepair:" + repairReason,
                             Guid.NewGuid().ToString("N"));
-                    }
-                    else if (!responsiveControlFault)
-                    {
-                        Interlocked.Exchange(ref _controlRepairStopRequested, 0);
                     }
                     var manualPauseDeadlineUtc = heartbeat?.ManualPauseHardDeadlineUtc ?? 0;
                     if (manualPauseCommanded && manualPauseDeadlineUtc <= 0)
@@ -2250,7 +2260,9 @@ namespace MTTFTest.Watchdog
                         0);
                     if (shouldTakeover)
                     {
-                        var reason = !processAlive || heartbeatAgeForTakeover >= 5
+                        var reason = responsiveRepair.TakeoverConfirmed
+                            ? "ResponsiveControlRepairDeadlineExceeded:" + repairReason
+                            : !processAlive || heartbeatAgeForTakeover >= 5
                             ? (heartbeatAgeForTakeover >= 5 ? "HeartbeatUnresponsive" : "ProcessExitedUnexpectedly")
                             : heartbeat?.PowerOffUnconfirmed == true && stageAgeSeconds >= 5
                                 ? "PowerOffUnconfirmedTimeout"

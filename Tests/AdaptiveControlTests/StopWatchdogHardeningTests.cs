@@ -24,6 +24,8 @@ namespace AdaptiveControlTests
             Run("Stop阶段顺序包含液压释放后DAQ停止", StopStageOrderIsMonotonic, ref passed);
             Run("StopAll活动期间逻辑残留不得发起第二个安全事务",
                 StopAllOwnsResponsiveControlRepair, ref passed);
+            Run("窗口响应但控制修复未确认时五秒后自动接管",
+                ResponsiveControlRepairHasBoundedDeadline, ref passed);
             Run("同一运行多通道形式槽失败只建立一个根停止事务",
                 FormalSlotFailuresCoalesceByRun, ref passed);
             Run("恢复过渡窗显示详细倒计时且仅在稳定态隐藏", RecoveryTransitionPresentationIsDeterministic, ref passed);
@@ -110,6 +112,40 @@ namespace AdaptiveControlTests
                     formalProgressStalled: false,
                     channelSupervisionFailed: false),
                 "已经确认接管后仍重复发起响应修复事务。");
+        }
+
+        private static void ResponsiveControlRepairHasBoundedDeadline()
+        {
+            var supervisor = new ResponsiveControlRepairSupervisor();
+            const long frequency = 1000;
+            var first = supervisor.Evaluate(true, false, 1000, frequency);
+            var beforeDeadline = supervisor.Evaluate(
+                true,
+                false,
+                1000 + ResponsiveControlRepairPolicy.AcknowledgementDeadlineMilliseconds - 1,
+                frequency);
+            var deadline = supervisor.Evaluate(
+                true,
+                false,
+                1000 + ResponsiveControlRepairPolicy.AcknowledgementDeadlineMilliseconds,
+                frequency);
+            var repeated = supervisor.Evaluate(true, false, 7000, frequency);
+
+            Assert(first.RequestStopAll && !first.TakeoverConfirmed,
+                "首个逻辑故障没有只请求一次主程序自处理");
+            Assert(!beforeDeadline.RequestStopAll && !beforeDeadline.TakeoverConfirmed,
+                "控制修复在五秒宽限期内提前接管");
+            Assert(deadline.TakeoverConfirmed && deadline.ReportTakeoverConfirmation,
+                "窗口响应掩盖了超时未确认的控制失活");
+            Assert(repeated.TakeoverConfirmed && !repeated.ReportTakeoverConfirmation,
+                "同一控制失活重复发布接管确认");
+
+            var stopOwned = supervisor.Evaluate(true, true, 7100, frequency);
+            var recovered = supervisor.Evaluate(false, false, 7200, frequency);
+            var next = supervisor.Evaluate(true, false, 8000, frequency);
+            Assert(stopOwned.TransferredToStopTransaction &&
+                   !recovered.TakeoverConfirmed && next.RequestStopAll,
+                "StopAll接管或逻辑恢复后未正确复位响应修复事务");
         }
 
         private static void FormalSlotFailuresCoalesceByRun()

@@ -9,6 +9,8 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class ResponsiveControlRepairPolicy
     {
+        public const int AcknowledgementDeadlineMilliseconds = 5000;
+
         public static bool ShouldRequest(
             bool processAlive,
             bool applicationTakeoverConfirmed,
@@ -23,6 +25,79 @@ namespace MTTFTest.Watchdog.Protocol
                    !stopActive &&
                    (logicalResidue || inconsistentRecovery ||
                     formalProgressStalled || channelSupervisionFailed);
+        }
+    }
+
+    public sealed class ResponsiveControlRepairDecision
+    {
+        public bool RequestStopAll { get; internal set; }
+        public bool TakeoverConfirmed { get; internal set; }
+        public bool ReportTakeoverConfirmation { get; internal set; }
+        public bool TransferredToStopTransaction { get; internal set; }
+        public double ElapsedSeconds { get; internal set; }
+    }
+
+    /// <summary>
+    /// 窗口消息泵仍可响应时，先给主程序一次有界的自处理机会；若控制故障在
+    /// 截止前既未消失、也未进入StopAll事务，则确认逻辑失活并允许独立接管。
+    /// </summary>
+    public sealed class ResponsiveControlRepairSupervisor
+    {
+        private long _startedTimestamp;
+        private bool _requestIssued;
+        private bool _takeoverConfirmed;
+
+        public ResponsiveControlRepairDecision Evaluate(
+            bool controlFaultActive,
+            bool stopActive,
+            long nowTimestamp,
+            long timestampFrequency)
+        {
+            if (timestampFrequency <= 0)
+                throw new ArgumentOutOfRangeException(nameof(timestampFrequency));
+
+            if (stopActive)
+            {
+                var transferred = _startedTimestamp > 0 || _requestIssued;
+                Reset();
+                return new ResponsiveControlRepairDecision
+                {
+                    TransferredToStopTransaction = transferred
+                };
+            }
+            if (!controlFaultActive)
+            {
+                Reset();
+                return new ResponsiveControlRepairDecision();
+            }
+
+            if (_startedTimestamp <= 0)
+                _startedTimestamp = Math.Max(1, nowTimestamp);
+            var elapsedTicks = Math.Max(0, nowTimestamp - _startedTimestamp);
+            var elapsedSeconds = elapsedTicks / (double)timestampFrequency;
+            var request = !_requestIssued;
+            _requestIssued = true;
+            var takeoverConfirmed = elapsedTicks >=
+                (long)Math.Ceiling(
+                    ResponsiveControlRepairPolicy.AcknowledgementDeadlineMilliseconds /
+                    1000.0 *
+                    timestampFrequency);
+            var reportTakeoverConfirmation = takeoverConfirmed && !_takeoverConfirmed;
+            _takeoverConfirmed = takeoverConfirmed;
+            return new ResponsiveControlRepairDecision
+            {
+                RequestStopAll = request,
+                TakeoverConfirmed = takeoverConfirmed,
+                ReportTakeoverConfirmation = reportTakeoverConfirmation,
+                ElapsedSeconds = elapsedSeconds
+            };
+        }
+
+        public void Reset()
+        {
+            _startedTimestamp = 0;
+            _requestIssued = false;
+            _takeoverConfirmed = false;
         }
     }
 
