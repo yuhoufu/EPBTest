@@ -42,6 +42,7 @@
     <Compile Include="WatchdogSafetyReceipts.cs" />
     <Compile Include="WatchdogSafetyConfigSnapshot.cs" />
     <Compile Include="RecoveryBootstrapOutcome.cs" />
+    <Compile Include="RecoveryReplacementTransaction.cs" />
     <Compile Include="DurableJsonFileStore.cs" />
     <Compile Include="DurableRelaunchFileStore.cs" />
     <Compile Include="DurableRelaunchAuthorityV4.cs" />

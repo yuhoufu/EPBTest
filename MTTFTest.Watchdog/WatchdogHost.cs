@@ -597,6 +597,9 @@ namespace MTTFTest.Watchdog
         private const string OperatorTransitionStopMarkerReason =
             "OperatorCanceledAutomaticRecoveryFromTransitionWindow";
         private WatchdogHostSendQueueOwner _sendOwner;
+        private readonly IUnattendedAlarmSink _unattendedAlarmSink;
+        private readonly RepeatedEventSummarizer _repeatedEventSummarizer =
+            new RepeatedEventSummarizer(30L * Stopwatch.Frequency);
         private readonly WatchdogApplicationLivenessSupervisor _applicationLiveness =
             new WatchdogApplicationLivenessSupervisor(new WindowsWatchdogUiProbe());
         private WatchdogJournal _journal;
@@ -626,6 +629,8 @@ namespace MTTFTest.Watchdog
         private int _heartbeatSuspectLogged;
         private int _unstructuredRecoveryLogged;
         private int _terminalPublished;
+        private int _circuitHalfOpenStarted;
+        private long _nextCircuitHalfOpenTimestamp;
         private long _manualStopIntentTimestamp;
         private long _manualPauseStartedTimestamp;
         private long _manualPauseProgressTimestamp = Stopwatch.GetTimestamp();
@@ -684,6 +689,9 @@ namespace MTTFTest.Watchdog
         private WatchdogHost(WatchdogArguments args)
         {
             _args = args;
+            _unattendedAlarmSink = UnattendedAlarmSink.Create(
+                Path.GetDirectoryName(args.ExecutablePath) ?? Environment.CurrentDirectory,
+                args.JournalDirectory);
             _processLauncher = new GuardedProcessLauncher(
                 capability => _relaunchCoordinator != null &&
                               _relaunchCoordinator.IsCapabilityCurrent(capability),
@@ -770,6 +778,7 @@ namespace MTTFTest.Watchdog
             SaveJournal();
             if (_journal.RecoveryBlocked)
             {
+                ScheduleNextCircuitHalfOpen();
                 RecordEvent(
                     "RecoveryBlockedRestored",
                     $"Code={_journal.RecoveryFailureCode};" +
@@ -1856,6 +1865,12 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     await Task.Delay(250, token).ConfigureAwait(false);
+                    if (ObserveSafetyHandoffProgress()) continue;
+                    if (ShouldProbeCircuitHalfOpen(IsRecoveryBlocked(), _attached))
+                    {
+                        TryBeginAutomaticCircuitHalfOpen();
+                        continue;
+                    }
                     ObserveApplicationExitIntent();
                     if (ObserveDurableSafetyState()) continue;
                     if (!_attached) continue;
@@ -1920,10 +1935,6 @@ namespace MTTFTest.Watchdog
                         Record(eventType, detail);
                         PublishTerminal(eventType, detail);
                         _stop.Cancel();
-                        continue;
-                    }
-                    if (_journal.RecoveryBlocked)
-                    {
                         continue;
                     }
                     var permit = _relaunchCoordinator.Snapshot;
@@ -2578,10 +2589,14 @@ namespace MTTFTest.Watchdog
                                         Record("OldProcessTerminated", reason);
                                     return oldProcess.HasExited;
                                 },
-                            permit => RelaunchAfterProvenExitAndSafetyAsync(
-                                reason,
-                                permit,
-                                oldIdentity),
+                            permit =>
+                            {
+                                // AutomaticTakeover 与 ApplicationExit 只提交给同一个
+                                // permit-scoped replacement coordinator。后续重复观察由
+                                // _relaunchAfterExitStarted 幂等合并。
+                                BeginRelaunchAfterExit(permit);
+                                return Task.CompletedTask;
+                            },
                             (current, requested, failure) => Record(
                                 requested == TakeoverTransactionStage.RelaunchPermit &&
                                 string.Equals(failure, "PermitNotConsumable", StringComparison.Ordinal)
@@ -2697,11 +2712,34 @@ namespace MTTFTest.Watchdog
                             $"Generation={permitGeneration}");
                         return;
                     }
+                    var approvedRecord = _relaunchCoordinator.Snapshot;
+                    if (approvedRecord == null ||
+                        approvedRecord.Generation != permitGeneration ||
+                        !AdvanceReplacementState(
+                            permitGeneration,
+                            approvedRecord.PermitId,
+                            RecoveryReplacementState.Approved,
+                            "Approved recovery permit observed"))
+                    {
+                        BlockLaunchOutcomeUnknown(
+                            "ReplacementTransactionPersistFailed:Approved");
+                        return;
+                    }
                     if (!await WaitForOldProcessExitProofAsync(
                             oldIdentity,
                             "StopCompleted")
                         .ConfigureAwait(false))
                         return;
+                    if (!AdvanceReplacementState(
+                            permitGeneration,
+                            approvedRecord.PermitId,
+                            RecoveryReplacementState.OldProcessExitProven,
+                            "Exact old process exit proven"))
+                    {
+                        BlockLaunchOutcomeUnknown(
+                            "ReplacementTransactionPersistFailed:OldProcessExitProven");
+                        return;
+                    }
                     if (_journal.ManualStopRequested || IsSessionRevoked()) return;
 
                     var safety = await AwaitSafetyHandoffBeforeRelaunchAsync(
@@ -2713,6 +2751,21 @@ namespace MTTFTest.Watchdog
                     if (!safety.AllowsRelaunch)
                     {
                         BlockSafetyPrerequisite(permitGeneration, safety);
+                        return;
+                    }
+                    if (!AdvanceReplacementState(
+                            permitGeneration,
+                            approvedRecord.PermitId,
+                            RecoveryReplacementState.SafetyAgentRunning,
+                            "SafetyAgent stage evidence observed") ||
+                        !AdvanceReplacementState(
+                            permitGeneration,
+                            approvedRecord.PermitId,
+                            RecoveryReplacementState.SafetyCompleted,
+                            "Physical safety handoff completed"))
+                    {
+                        BlockLaunchOutcomeUnknown(
+                            "ReplacementTransactionPersistFailed:SafetyCompleted");
                         return;
                     }
                     Record(
@@ -2911,55 +2964,6 @@ namespace MTTFTest.Watchdog
             if (remaining > maximum) remaining = maximum;
             return Stopwatch.GetTimestamp() +
                    (long)Math.Ceiling(remaining.TotalSeconds * Stopwatch.Frequency);
-        }
-
-        private async Task RelaunchAfterProvenExitAndSafetyAsync(
-            string reason,
-            long permitGeneration,
-            OldProcessIdentitySnapshot oldIdentity)
-        {
-            var observation = oldIdentity?.IsValid == true
-                ? ProbeProcessIdentity(
-                    oldIdentity.ProcessId,
-                    oldIdentity.ProcessStartUtcTicks)
-                : DurableRelaunchProcessObservation.Unknown;
-            if (!WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(observation))
-            {
-                Record(
-                    "OldProcessExitUnproven",
-                    $"PID={oldIdentity?.ProcessId ?? 0};StartUtcTicks=" +
-                    $"{oldIdentity?.ProcessStartUtcTicks ?? 0};Observation={observation}");
-                BlockLaunchOutcomeUnknown(
-                    "OldProcessExitUnproven:AutomaticTakeover:" + observation);
-                return;
-            }
-            Record(
-                "OldProcessExitProven",
-                $"PID={oldIdentity.ProcessId};StartUtcTicks=" +
-                $"{oldIdentity.ProcessStartUtcTicks};Observation={observation};" +
-                "Source=AutomaticTakeover");
-
-            var safety = await AwaitSafetyHandoffBeforeRelaunchAsync(
-                    permitGeneration,
-                    TimeSpan.FromSeconds(
-                        WatchdogRecoveryReadinessPolicy.SafetyHandoffDeadlineSeconds))
-                .ConfigureAwait(false);
-            if (!safety.AllowsRelaunch)
-            {
-                BlockSafetyPrerequisite(permitGeneration, safety);
-                return;
-            }
-            Record(
-                "RecoveryReady",
-                $"PermitGeneration={permitGeneration};" +
-                $"SafetyOutcome={safety.Outcome};" +
-                $"ReadyTimestamp={safety.ReadyTimestamp};Detail={safety.Detail}");
-            await RelaunchLoopAsync(
-                    reason,
-                    permitGeneration,
-                    initialSafetyReplacement: true,
-                    recoveryReadyTimestamp: safety.ReadyTimestamp)
-                .ConfigureAwait(false);
         }
 
         private async Task<SafetyHandoffWaitResult> AwaitSafetyHandoffBeforeRelaunchAsync(
@@ -3491,6 +3495,41 @@ namespace MTTFTest.Watchdog
             }
         }
 
+        private bool AdvanceReplacementState(
+            long permitGeneration,
+            string permitId,
+            RecoveryReplacementState state,
+            string detail)
+        {
+            var result = RecoveryReplacementTransactionStore.Advance(
+                _args.JournalDirectory,
+                _args.SessionId,
+                permitGeneration,
+                permitId,
+                state,
+                detail);
+            if (result?.Succeeded == true)
+            {
+                if (!result.AlreadyApplied)
+                    Record(
+                        "RecoveryReplacementAdvanced",
+                        $"PermitGeneration={permitGeneration};State={state};" +
+                        $"Revision={result.Transaction?.Revision};Detail={detail}");
+                return true;
+            }
+            Record(
+                "RecoveryReplacementAdvanceFailed",
+                $"PermitGeneration={permitGeneration};State={state};" +
+                $"Reason={result?.Reason ?? "Unknown"}");
+            _unattendedAlarmSink.Publish(
+                "P0",
+                "RecoveryReplacementEvidenceFailed",
+                result?.Reason ?? detail ?? string.Empty,
+                RecoveryFailureDomain.EvidenceBinding,
+                null);
+            return false;
+        }
+
         private bool IsRecoveryBlocked()
         {
             lock (_journalGate) return _journal.RecoveryBlocked;
@@ -3665,6 +3704,18 @@ namespace MTTFTest.Watchdog
                     try { TryPersistJournalSnapshotLocked(); } catch { }
                     return false;
                 }
+                if (!AdvanceReplacementState(
+                        permitGeneration,
+                        frozenIdentity.PermitId,
+                        RecoveryReplacementState.MainLaunchIntent,
+                        "Durable main launch intent committed"))
+                {
+                    identity = null;
+                    MarkRecoveryBlockedLocked(
+                        "ReplacementTransactionPersistFailed:MainLaunchIntent");
+                    try { TryPersistJournalSnapshotLocked(); } catch { }
+                    return false;
+                }
                 attempt = Math.Max(1, _journal.ConsecutiveStartupFailures + 1);
                 _journal.RecoveryAttempt = attempt;
                 try { TryPersistJournalSnapshotLocked(); } catch { }
@@ -3708,6 +3759,15 @@ namespace MTTFTest.Watchdog
                     _relaunchCoordinator.Snapshot.State != DurableRelaunchPermitState.Started)
                 {
                     failure = result.Reason ?? "StartedCommitFailed";
+                    return false;
+                }
+                if (!AdvanceReplacementState(
+                        identity.Generation,
+                        identity.PermitId,
+                        RecoveryReplacementState.MainStarted,
+                        "Main Process.Start and exact identity committed"))
+                {
+                    failure = "ReplacementTransactionPersistFailed:MainStarted";
                     return false;
                 }
                 return true;
@@ -3974,6 +4034,15 @@ namespace MTTFTest.Watchdog
                     failure = result.Reason ?? "AttachedCommitFailed";
                     return false;
                 }
+                if (!AdvanceReplacementState(
+                        record.Generation,
+                        record.PermitId,
+                        RecoveryReplacementState.Attached,
+                        "Authenticated recovery process attached"))
+                {
+                    failure = "ReplacementTransactionPersistFailed:Attached";
+                    return false;
+                }
                 return true;
             }
         }
@@ -4070,6 +4139,19 @@ namespace MTTFTest.Watchdog
                         _journal.RecoveryBlocked = true;
                         _journal.RecoveryFailurePermanent = true;
                     }
+                    try { TryPersistJournalSnapshotLocked(); } catch { }
+                    return false;
+                }
+                if (!AdvanceReplacementState(
+                        record.Generation,
+                        record.PermitId,
+                        RecoveryReplacementState.CheckpointCommitted,
+                        "Recovery checkpoint committed"))
+                {
+                    _journal.LastReason =
+                        "ReplacementTransactionPersistFailed:CheckpointCommitted";
+                    _journal.RecoveryBlocked = true;
+                    _journal.RecoveryFailurePermanent = true;
                     try { TryPersistJournalSnapshotLocked(); } catch { }
                     return false;
                 }
@@ -4274,7 +4356,261 @@ namespace MTTFTest.Watchdog
             Record(
                 "SafeIdleRecoveryBlocked",
                 $"ProcessRelaunchCircuitOpen;Count={consecutiveCount};Fingerprint={fingerprint};Detail={detail}");
+            ScheduleNextCircuitHalfOpen();
+            _unattendedAlarmSink.Publish(
+                "P0",
+                "MainLaunchCircuitOpen",
+                detail ?? string.Empty,
+                RecoveryFailureDomain.MainLaunch,
+                null);
             ShowRecoveryBlockedTransition(detail);
+        }
+
+        internal static bool IsAutomaticHalfOpenEligible(
+            string failureCode,
+            bool permanent)
+        {
+            if (permanent || string.IsNullOrWhiteSpace(failureCode)) return false;
+            return failureCode.StartsWith("RecoveryLaunchFailed", StringComparison.Ordinal) ||
+                   failureCode.StartsWith("RecoveryAttachFailed", StringComparison.Ordinal) ||
+                   failureCode.StartsWith("RecoveryBootstrapStartupFailed", StringComparison.Ordinal) ||
+                   failureCode.StartsWith("RecoveryProcessExitedBeforeBatchCommit", StringComparison.Ordinal);
+        }
+
+        internal static bool ShouldProbeCircuitHalfOpen(bool recoveryBlocked, bool attached)
+        {
+            // Attachment describes the old main process.  A circuit probe replaces that process,
+            // so an already-exited (_attached=false) owner must never prevent the half-open timer.
+            return recoveryBlocked;
+        }
+
+        private bool ScheduleNextCircuitHalfOpen()
+        {
+            int attempt;
+            string failureCode;
+            bool permanent;
+            lock (_journalGate)
+            {
+                attempt = Math.Max(0, _journal.CircuitProbeAttempt);
+                failureCode = _journal.RecoveryFailureCode;
+                permanent = _journal.RecoveryFailurePermanent;
+            }
+            if (!IsAutomaticHalfOpenEligible(failureCode, permanent))
+            {
+                Interlocked.Exchange(ref _nextCircuitHalfOpenTimestamp, 0);
+                Interlocked.Exchange(ref _circuitHalfOpenStarted, 0);
+                return false;
+            }
+            var seconds = attempt <= 0 ? 30 : attempt == 1 ? 60 : 300;
+            Interlocked.Exchange(
+                ref _nextCircuitHalfOpenTimestamp,
+                Stopwatch.GetTimestamp() + seconds * Stopwatch.Frequency);
+            return true;
+        }
+
+        private void TryBeginAutomaticCircuitHalfOpen()
+        {
+            var due = Interlocked.Read(ref _nextCircuitHalfOpenTimestamp);
+            if (due <= 0 || Stopwatch.GetTimestamp() < due ||
+                Interlocked.CompareExchange(ref _circuitHalfOpenStarted, 1, 0) != 0)
+                return;
+
+            string failureCode;
+            string fingerprint;
+            int count;
+            bool permanent;
+            lock (_journalGate)
+            {
+                failureCode = _journal.RecoveryFailureCode;
+                fingerprint = _journal.RecoveryFailureFingerprint;
+                count = _journal.ConsecutiveStartupFailures;
+                permanent = _journal.RecoveryFailurePermanent;
+            }
+            if (!IsAutomaticHalfOpenEligible(failureCode, permanent))
+            {
+                Interlocked.Exchange(ref _nextCircuitHalfOpenTimestamp, 0);
+                Interlocked.Exchange(ref _circuitHalfOpenStarted, 0);
+                return;
+            }
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var opened = _relaunchCoordinator.TryAutomaticHalfOpen(
+                        fingerprint,
+                        count);
+                    if (opened?.Succeeded != true ||
+                        opened.Record?.State != DurableRelaunchPermitState.Approved)
+                    {
+                        Record(
+                            "RecoveryCircuitHalfOpenDeferred",
+                            opened?.Reason ?? "AutomaticHalfOpenFailed");
+                        lock (_journalGate) _journal.CircuitProbeAttempt++;
+                        ScheduleNextCircuitHalfOpen();
+                        return;
+                    }
+
+                    var permit = opened.Record;
+                    if (!TryCreateHalfOpenSafetyHandoff(permit, out var safetyReceipt,
+                            out var safetyFailure))
+                    {
+                        _relaunchCoordinator.Block(
+                            "HalfOpenSafetySnapshotFailed:" + safetyFailure);
+                        Record("RecoveryCircuitHalfOpenSafetyFailed", safetyFailure);
+                        lock (_journalGate) _journal.CircuitProbeAttempt++;
+                        ScheduleNextCircuitHalfOpen();
+                        return;
+                    }
+
+                    lock (_journalGate)
+                    {
+                        ApplyDurablePermitLocked(permit);
+                        _journal.RecoveryBlocked = false;
+                        _journal.RecoveryFailurePermanent = false;
+                        _journal.CircuitProbeAttempt++;
+                        _journal.LastReason = "AutomaticHalfOpenApproved";
+                        try { TryPersistJournalSnapshotLocked(); } catch { }
+                    }
+                    Interlocked.Exchange(ref _transitionActive, 1);
+                    _transitionWindow.Show(
+                        "自动恢复正在重试",
+                        "设备保持断能，正在执行新的安全确认和主程序半开探测。",
+                        0,
+                        Math.Max(1, count + 1));
+                    Record(
+                        "RecoveryCircuitHalfOpenApproved",
+                        $"Generation={permit.Generation};PermitId={permit.PermitId};" +
+                        $"PreviousFailureCount={count}");
+                    BeginSafetyHandoff(safetyReceipt);
+                    BeginRelaunchAfterExit(permit.Generation);
+                }
+                catch (Exception ex)
+                {
+                    Record(
+                        "RecoveryCircuitHalfOpenFailed",
+                        ex.GetBaseException().Message);
+                    ScheduleNextCircuitHalfOpen();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _circuitHalfOpenStarted, 0);
+                }
+            });
+        }
+
+        private bool TryCreateHalfOpenSafetyHandoff(
+            DurableRelaunchPermitRecord permit,
+            out WatchdogSafetyHandoffReceipt receipt,
+            out string failure)
+        {
+            receipt = null;
+            failure = string.Empty;
+            try
+            {
+                WatchdogSafetyHandoffReceipt previous;
+                if (permit == null ||
+                    !WatchdogSafetyHandoffReceiptStore.TryRead(
+                        _args.JournalDirectory,
+                        _args.SessionId,
+                        out previous) ||
+                    previous?.IsSafetyCompleted != true)
+                    throw new InvalidDataException("PreviousSafetyEvidenceMissing");
+                var priorSnapshot = WatchdogSafetyConfigSnapshotStore.Validate(
+                    _args.JournalDirectory,
+                    previous.HandoffId,
+                    previous.ConfigSnapshotPath,
+                    previous.ConfigSnapshotManifestPath,
+                    previous.ConfigSnapshotManifestSha256);
+                if (priorSnapshot?.Succeeded != true)
+                    throw new InvalidDataException(
+                        "PreviousSafetySnapshotInvalid:" + priorSnapshot?.Error);
+                if (!File.Exists(previous.MainExecutablePath) ||
+                    !File.Exists(previous.SafetyAgentExecutablePath))
+                    throw new FileNotFoundException("HalfOpenExecutableMissing");
+                var mainSha = DurableJsonFileStore.ComputeSha256(
+                    File.ReadAllBytes(previous.MainExecutablePath));
+                var agentSha = DurableJsonFileStore.ComputeSha256(
+                    File.ReadAllBytes(previous.SafetyAgentExecutablePath));
+                if (!string.Equals(mainSha, previous.MainExecutableSha256,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(agentSha, previous.SafetyAgentExecutableSha256,
+                        StringComparison.Ordinal))
+                    throw new InvalidDataException("HalfOpenExecutableHashChanged");
+
+                var handoffId = Guid.NewGuid().ToString("N");
+                var created = WatchdogSafetyConfigSnapshotStore.Create(
+                    _args.JournalDirectory,
+                    handoffId,
+                    priorSnapshot.ConfigDirectory,
+                    null,
+                    priorSnapshot.Manifest.BuildIdentity,
+                    priorSnapshot.Runtime,
+                    _args.SessionId,
+                    previous.SessionGeneration,
+                    previous.SessionLease,
+                    permit.Generation,
+                    permit.PermitId,
+                    mainSha,
+                    agentSha);
+                if (created?.Succeeded != true)
+                    throw new InvalidDataException(
+                        "HalfOpenSafetySnapshotCreateFailed:" + created?.Error);
+
+                receipt = new WatchdogSafetyHandoffReceipt
+                {
+                    SchemaVersion = 3,
+                    SessionId = _args.SessionId,
+                    SessionGeneration = previous.SessionGeneration,
+                    SessionLease = previous.SessionLease,
+                    HandoffId = handoffId,
+                    Nonce = Guid.NewGuid().ToString("N"),
+                    StopSafetyTransactionId = Guid.NewGuid().ToString("N"),
+                    RunId = previous.RunId,
+                    RunEpoch = previous.RunEpoch,
+                    Revision = previous.Revision + 1,
+                    State = WatchdogSafetyHandoffState.Accepted,
+                    Stage = WatchdogSafetyStage.None,
+                    PersistenceDrained = true,
+                    LogicalQuiescent = true,
+                    HardwareResourcesReleased = true,
+                    ExecutionAuthorizationRevoked = true,
+                    CallbacksIsolated = true,
+                    SidecarProcessId = _sidecarProcessId,
+                    SidecarProcessStartUtcTicks = _sidecarProcessStartUtcTicks,
+                    ProjectDirectory = previous.ProjectDirectory,
+                    MainExecutablePath = previous.MainExecutablePath,
+                    MainExecutableSha256 = mainSha,
+                    SafetyAgentExecutablePath = previous.SafetyAgentExecutablePath,
+                    SafetyAgentExecutableSha256 = agentSha,
+                    ConfigSnapshotPath = created.ConfigDirectory,
+                    ConfigSnapshotManifestPath = created.ManifestPath,
+                    ConfigSnapshotManifestSha256 = created.ManifestSha256,
+                    ConfigSnapshotSchemaVersion = 2,
+                    RelaunchDisposition = WatchdogRelaunchDisposition.PreserveApprovedPermit,
+                    RelaunchPermitGeneration = permit.Generation,
+                    RelaunchPermitId = permit.PermitId,
+                    RelaunchPermitNonceSha256 =
+                        WatchdogTakeoverPermitBindingPolicy.HashNonce(permit.PermitNonce),
+                    Detail = "AutomaticHalfOpenSafetyRequested"
+                };
+                WatchdogSafetyHandoffReceiptStore.WriteThrough(
+                    _args.JournalDirectory,
+                    receipt);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = ex.GetBaseException().Message;
+                receipt = null;
+                _unattendedAlarmSink.Publish(
+                    "P0",
+                    "AutomaticHalfOpenSafetyFailed",
+                    failure,
+                    RecoveryFailureDomain.EvidenceBinding,
+                    null);
+                return false;
+            }
         }
 
         private void ShowRecoveryBlockedTransition(string detail)
@@ -4285,7 +4621,11 @@ namespace MTTFTest.Watchdog
                 "自动恢复已阻断，设备保持安全",
                 $"恢复失败已进入持久终态（Code={_journal.RecoveryFailureCode ?? "Unknown"}，" +
                 $"Count={Math.Max(1, _journal.ConsecutiveStartupFailures)}）。" +
-                "不会再启动主程序；请处理配置/程序或设备问题后由操作员重新开始新会话。" +
+                (IsAutomaticHalfOpenEligible(
+                    _journal.RecoveryFailureCode,
+                    _journal.RecoveryFailurePermanent)
+                    ? "设备持续断能；冷却后将自动执行安全复核和半开重试，无需人工点击。"
+                    : "证据或配置无法安全验证，系统保持断能并持续告警。") +
                 "可点击下方按钮停止并关闭。\r\n" +
                 (detail ?? string.Empty),
                 0,
@@ -4849,19 +5189,6 @@ namespace MTTFTest.Watchdog
                 }
             }
 
-            WatchdogSafetyHandoffReceipt handoff;
-            if (WatchdogSafetyHandoffReceiptStore.TryRead(
-                    _args.JournalDirectory,
-                    _args.SessionId,
-                    out handoff) &&
-                (closing == null ||
-                 closing.SessionGeneration == handoff.SessionGeneration &&
-                 closing.SessionLease == handoff.SessionLease))
-            {
-                BeginSafetyHandoff(handoff);
-                return true;
-            }
-
             WatchdogManualPauseReceipt pause;
             if (WatchdogManualPauseReceiptStore.TryRead(
                     _args.JournalDirectory,
@@ -4880,6 +5207,29 @@ namespace MTTFTest.Watchdog
                 return !_attached;
             }
             return false;
+        }
+
+        private bool ObserveSafetyHandoffProgress()
+        {
+            WatchdogSafetyHandoffReceipt handoff;
+            if (!WatchdogSafetyHandoffReceiptStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out handoff) || handoff == null)
+                return false;
+
+            WatchdogClosingTombstone closing;
+            WatchdogClosingTombstoneStore.TryRead(
+                _args.JournalDirectory,
+                _args.SessionId,
+                out closing);
+            if (closing != null &&
+                (closing.SessionGeneration != handoff.SessionGeneration ||
+                 closing.SessionLease != handoff.SessionLease))
+                return false;
+
+            var started = BeginSafetyHandoff(handoff);
+            return started || !handoff.IsTerminal;
         }
 
         private bool ObserveApplicationExitIntent()
@@ -4902,8 +5252,16 @@ namespace MTTFTest.Watchdog
             if (processId != receipt.MainProcessId ||
                 processStartUtcTicks != receipt.MainProcessStartUtcTicks)
             {
-                Record(
+                RecordRepeatedObservation(
                     "ApplicationExitIntentIdentityMismatch",
+                    string.Join("|", new[]
+                    {
+                        receipt.ExitIntentId ?? string.Empty,
+                        receipt.MainProcessId.ToString(CultureInfo.InvariantCulture),
+                        receipt.MainProcessStartUtcTicks.ToString(CultureInfo.InvariantCulture),
+                        processId.ToString(CultureInfo.InvariantCulture),
+                        processStartUtcTicks.ToString(CultureInfo.InvariantCulture)
+                    }),
                     $"IntentPid={receipt.MainProcessId};CurrentPid={processId};" +
                     $"IntentStart={receipt.MainProcessStartUtcTicks};CurrentStart={processStartUtcTicks}");
                 return false;
@@ -4920,8 +5278,15 @@ namespace MTTFTest.Watchdog
                         receipt.RelaunchPermitId,
                         receipt.RelaunchPermitNonceSha256))
                 {
-                    Record(
+                    RecordRepeatedObservation(
                         "TakeoverExitPermitIdentityMismatch",
+                        string.Join("|", new[]
+                        {
+                            receipt.ExitIntentId ?? string.Empty,
+                            receipt.RelaunchPermitGeneration.ToString(CultureInfo.InvariantCulture),
+                            receipt.RelaunchPermitId ?? string.Empty,
+                            authority?.Fingerprint ?? string.Empty
+                        }),
                         $"Intent={receipt.ExitIntentId};" +
                         $"Generation={receipt.RelaunchPermitGeneration};" +
                         $"PermitId={receipt.RelaunchPermitId}");
@@ -4937,7 +5302,17 @@ namespace MTTFTest.Watchdog
                 (closing.SessionGeneration != receipt.SessionGeneration ||
                  closing.SessionLease != receipt.SessionLease))
             {
-                Record("ApplicationExitIntentLeaseMismatch", receipt.ExitIntentId);
+                RecordRepeatedObservation(
+                    "ApplicationExitIntentLeaseMismatch",
+                    string.Join("|", new[]
+                    {
+                        receipt.ExitIntentId ?? string.Empty,
+                        receipt.SessionGeneration.ToString(CultureInfo.InvariantCulture),
+                        receipt.SessionLease.ToString(CultureInfo.InvariantCulture),
+                        closing.SessionGeneration.ToString(CultureInfo.InvariantCulture),
+                        closing.SessionLease.ToString(CultureInfo.InvariantCulture)
+                    }),
+                    receipt.ExitIntentId);
                 return false;
             }
 
@@ -5147,11 +5522,11 @@ namespace MTTFTest.Watchdog
                     pause.Stage == WatchdogManualPauseStage.Resumed);
         }
 
-        private void BeginSafetyHandoff(WatchdogSafetyHandoffReceipt receipt)
+        private bool BeginSafetyHandoff(WatchdogSafetyHandoffReceipt receipt)
         {
-            if (receipt == null || !receipt.IsValidFor(_args.SessionId) ||
+            if (receipt == null || receipt.IsTerminal || !receipt.IsValidFor(_args.SessionId) ||
                 Interlocked.CompareExchange(ref _safetyHandoffStarted, 1, 0) != 0)
-                return;
+                return false;
             var snapshot = WatchdogSafetyConfigSnapshotStore.Validate(
                 _args.JournalDirectory,
                 receipt.HandoffId,
@@ -5164,7 +5539,7 @@ namespace MTTFTest.Watchdog
                     receipt,
                     "SafetyConfigSnapshotInvalid",
                     snapshot?.Error ?? "SnapshotValidationUnavailable");
-                return;
+                return true;
             }
             if (receipt.RelaunchDisposition ==
                     WatchdogRelaunchDisposition.PreserveApprovedPermit)
@@ -5180,7 +5555,7 @@ namespace MTTFTest.Watchdog
                         receipt,
                         "SafetyHandoffPermitMismatch",
                         "Typed handoff does not match durable authority.");
-                    return;
+                    return true;
                 }
             }
             else
@@ -5189,6 +5564,38 @@ namespace MTTFTest.Watchdog
                 _journal.ManualStopRequested = true;
             }
             _ = Task.Run(() => RunSafetyHandoffAsync(receipt.HandoffId, receipt.Nonce));
+            return true;
+        }
+
+        private void RecordRepeatedObservation(string eventType, string identity, string reason)
+        {
+            var recoveryFingerprint = string.Empty;
+            lock (_journalGate)
+                recoveryFingerprint = _journal.RecoveryFailureFingerprint ?? string.Empty;
+            var authority = _relaunchCoordinator.Snapshot;
+            var observationFingerprint = DurableJsonFileStore.ComputeSha256(
+                new UTF8Encoding(false).GetBytes(
+                    (identity ?? string.Empty) + "|" + recoveryFingerprint));
+            var key = string.Join("|", new[]
+            {
+                eventType ?? string.Empty,
+                _args.SessionId ?? string.Empty,
+                (authority?.Generation ?? 0).ToString(CultureInfo.InvariantCulture),
+                authority?.PermitId ?? string.Empty,
+                observationFingerprint
+            });
+            var decision = _repeatedEventSummarizer.Observe(key, Stopwatch.GetTimestamp());
+            if (decision.EmitFirst)
+            {
+                RecordEvent(eventType, reason);
+                return;
+            }
+            if (decision.EmitSummary)
+                RecordEvent(
+                    (eventType ?? "RepeatedObservation") + "Summary",
+                    (reason ?? string.Empty) + ";SuppressedCount=" +
+                    decision.SuppressedCount.ToString(CultureInfo.InvariantCulture) +
+                    ";WindowMs=30000");
         }
 
         private void FailSafetyHandoff(
@@ -5201,6 +5608,7 @@ namespace MTTFTest.Watchdog
                 if (receipt == null || receipt.IsTerminal) return;
                 receipt.State = WatchdogSafetyHandoffState.Failed;
                 receipt.FailureCode = code ?? "SafetyHandoffFailed";
+                receipt.FailureDomain = RecoveryFailureDomain.EvidenceBinding;
                 receipt.Detail = detail ?? string.Empty;
                 receipt.Revision++;
                 WatchdogSafetyHandoffReceiptStore.WriteThrough(
@@ -5211,6 +5619,12 @@ namespace MTTFTest.Watchdog
             Record(
                 "SafetyHandoffTerminalFailure",
                 $"Code={code};Detail={detail};HandoffId={receipt?.HandoffId}");
+            _unattendedAlarmSink.Publish(
+                "P0",
+                code ?? "SafetyHandoffFailed",
+                detail ?? string.Empty,
+                RecoveryFailureDomain.EvidenceBinding,
+                receipt);
         }
 
         private async Task RunSafetyHandoffAsync(string handoffId, string nonce)
@@ -5239,6 +5653,20 @@ namespace MTTFTest.Watchdog
                     if (receipt.State == WatchdogSafetyHandoffState.Completed &&
                         receipt.IsSafetyCompleted)
                     {
+                        if (receipt.RelaunchDisposition ==
+                                WatchdogRelaunchDisposition.PreserveApprovedPermit &&
+                            !AdvanceReplacementState(
+                                receipt.RelaunchPermitGeneration,
+                                receipt.RelaunchPermitId,
+                                RecoveryReplacementState.SafetyCompleted,
+                                "SafetyAgent completed all physical safety stages"))
+                        {
+                            FailSafetyHandoff(
+                                receipt,
+                                "ReplacementTransactionPersistFailed",
+                                "SafetyCompleted could not be durably committed.");
+                            return;
+                        }
                         SendSafetyHandoff(WatchdogMessageType.SafetyHandoffCompleted, receipt);
                         if (receipt.RelaunchDisposition ==
                             WatchdogRelaunchDisposition.PreserveApprovedPermit)
@@ -5261,6 +5689,12 @@ namespace MTTFTest.Watchdog
                         Record(
                             "SafetyHandoffFailed",
                             $"Code={receipt.FailureCode};Detail={receipt.Detail}");
+                        _unattendedAlarmSink.Publish(
+                            "P0",
+                            receipt.FailureCode,
+                            receipt.Detail,
+                            receipt.FailureDomain,
+                            receipt);
                         return;
                     }
 
@@ -5280,12 +5714,28 @@ namespace MTTFTest.Watchdog
                     Process worker = null;
                     try
                     {
-                        var executable = string.IsNullOrWhiteSpace(receipt.MainExecutablePath)
-                            ? _args.ExecutablePath
-                            : receipt.MainExecutablePath;
+                        var executable = receipt.SafetyAgentExecutablePath;
+                        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+                            throw new FileNotFoundException("SafetyAgentExecutableMissing", executable);
+                        var executableSha = DurableJsonFileStore.ComputeSha256(
+                            File.ReadAllBytes(executable));
+                        if (!string.Equals(executableSha, receipt.SafetyAgentExecutableSha256,
+                                StringComparison.Ordinal))
+                            throw new InvalidDataException("SafetyAgentExecutableHashMismatch");
+                        // Persist the attempt before Process.Start.  The independent agent may
+                        // advance the receipt immediately after it starts; writing an older
+                        // WorkerStarted receipt afterwards would otherwise race and regress its
+                        // stage evidence.
+                        receipt.AttemptCount++;
+                        receipt.Revision++;
+                        receipt.Detail = "SafetyAgentLaunchIntent";
+                        receipt.FailureCode = string.Empty;
+                        receipt.FailureDomain = RecoveryFailureDomain.None;
+                        WatchdogSafetyHandoffReceiptStore.WriteThrough(
+                            _args.JournalDirectory, receipt);
                         var arguments = string.Format(
                             CultureInfo.InvariantCulture,
-                            "--watchdog-safety-shutdown {0} --handoff-id {1} --handoff-nonce {2} " +
+                            "--session-id {0} --handoff-id {1} --handoff-nonce {2} " +
                             "--journal-directory {3}",
                             Quote(_args.SessionId),
                             Quote(handoffId),
@@ -5301,13 +5751,30 @@ namespace MTTFTest.Watchdog
                             WindowStyle = ProcessWindowStyle.Hidden
                         });
                         if (worker == null) throw new InvalidOperationException("SafetyWorkerStartReturnedNull");
-                        receipt.WorkerProcessId = worker.Id;
-                        receipt.WorkerProcessStartUtcTicks = worker.StartTime.ToUniversalTime().Ticks;
-                        receipt.AttemptCount++;
-                        receipt.State = WatchdogSafetyHandoffState.WorkerStarted;
-                        receipt.Revision++;
-                        receipt.Detail = "SafetyWorkerStarted";
-                        WatchdogSafetyHandoffReceiptStore.WriteThrough(_args.JournalDirectory, receipt);
+                        if (receipt.RelaunchDisposition ==
+                            WatchdogRelaunchDisposition.PreserveApprovedPermit)
+                        {
+                            if (!AdvanceReplacementState(
+                                    receipt.RelaunchPermitGeneration,
+                                    receipt.RelaunchPermitId,
+                                    RecoveryReplacementState.Approved,
+                                    "SafetyAgent observer joined approved transaction") ||
+                                !AdvanceReplacementState(
+                                    receipt.RelaunchPermitGeneration,
+                                    receipt.RelaunchPermitId,
+                                    RecoveryReplacementState.OldProcessExitProven,
+                                    "SafetyAgent launch observed exact old process exit") ||
+                                !AdvanceReplacementState(
+                                    receipt.RelaunchPermitGeneration,
+                                    receipt.RelaunchPermitId,
+                                    RecoveryReplacementState.SafetyAgentRunning,
+                                    "Independent SafetyAgent process started"))
+                            {
+                                try { if (!worker.HasExited) worker.Kill(); } catch { }
+                                throw new InvalidDataException(
+                                    "ReplacementTransactionPersistFailed:SafetyAgentRunning");
+                            }
+                        }
                         Record("SafetyHandoffWorkerStarted",
                             $"PID={worker.Id};Attempt={receipt.AttemptCount};HandoffId={handoffId}");
                         await Task.Run(() => worker.WaitForExit()).ConfigureAwait(false);
@@ -5325,14 +5792,29 @@ namespace MTTFTest.Watchdog
                         receipt.State == WatchdogSafetyHandoffState.Completed &&
                         receipt.IsSafetyCompleted)
                         continue;
+                    if (receipt != null &&
+                        receipt.FailureDomain != RecoveryFailureDomain.None &&
+                        receipt.AttemptCount == 1)
+                    {
+                        _unattendedAlarmSink.Publish(
+                            "P0",
+                            receipt.FailureCode,
+                            receipt.Detail,
+                            receipt.FailureDomain,
+                            receipt);
+                    }
                     var attempt = Math.Max(1, receipt?.AttemptCount ?? 1);
-                    var delay = attempt <= 1 ? 250 : attempt == 2 ? 1000 : 5000;
+                    var delay = attempt == 1 ? 1000 :
+                        attempt == 2 ? 5000 : attempt == 3 ? 15000 : 30000;
                     await Task.Delay(delay).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
             {
                 Record("SafetyHandoffSupervisorFailed", ex.GetBaseException().Message);
+            }
+            finally
+            {
                 Interlocked.Exchange(ref _safetyHandoffStarted, 0);
             }
         }
@@ -5371,6 +5853,7 @@ namespace MTTFTest.Watchdog
                     SidecarProcessStartUtcTicks = receipt.SidecarProcessStartUtcTicks,
                     WorkerProcessId = receipt.WorkerProcessId,
                     WorkerProcessStartUtcTicks = receipt.WorkerProcessStartUtcTicks,
+                    Stage = receipt.Stage,
                     MotorsOff = receipt.MotorsOff,
                     PowerOff = receipt.PowerOff,
                     PressureSafe = receipt.PressureSafe,
@@ -5385,6 +5868,7 @@ namespace MTTFTest.Watchdog
                     RelaunchPermitId = receipt.RelaunchPermitId,
                     RelaunchPermitNonceSha256 = receipt.RelaunchPermitNonceSha256,
                     FailureCode = receipt.FailureCode,
+                    FailureDomain = receipt.FailureDomain,
                     TimestampUtcTicks = receipt.UpdatedUtcTicks
                 }
             });
@@ -5804,6 +6288,7 @@ namespace MTTFTest.Watchdog
 
         public void Dispose()
         {
+            try { _unattendedAlarmSink.Dispose(); } catch { }
             try { _transitionWindow.Hide(); } catch { }
             try { _transitionWindow.Dispose(); } catch { }
             try { _journalStore.Flush(TimeSpan.FromSeconds(2)); } catch { }

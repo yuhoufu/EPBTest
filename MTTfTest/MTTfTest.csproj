@@ -211,7 +211,6 @@
     <Compile Include="Models\PressureSetting.cs" />
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
-    <Compile Include="WatchdogSafetyShutdownWorker.cs" />
     <Compile Include="UnattendedRecovery.cs" />
     <Compile Include="WatchdogRuntime.cs" />
     <Compile Include="WatchdogRuntime.CallbackPipeline.cs" />
@@ -347,6 +346,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Config\UIConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Config\UnattendedAlarmConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="License-LGPL.txt" />

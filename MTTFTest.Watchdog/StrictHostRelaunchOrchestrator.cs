@@ -83,7 +83,8 @@ namespace MTTFTest.Watchdog
     /// </summary>
     internal sealed class StrictHostV4AuthorityAdapter
     {
-        private readonly DurableRelaunchAuthorityV4 _authority;
+        private DurableRelaunchAuthorityV4 _authority;
+        private readonly string _journalDirectory;
         private readonly string _sessionId;
         private readonly string _sessionNonce;
         private readonly int _sidecarPid;
@@ -100,6 +101,7 @@ namespace MTTFTest.Watchdog
         {
             if (args == null) throw new ArgumentNullException(nameof(args));
             _sessionId = args.SessionId;
+            _journalDirectory = args.JournalDirectory;
             _sessionNonce = args.SidecarInstanceNonce;
             _sidecarPid = sidecarPid;
             _sidecarStartTicks = sidecarStartTicks;
@@ -280,6 +282,48 @@ namespace MTTFTest.Watchdog
             return Result(transition?.Succeeded == true, false, false,
                 transition?.Reason ?? "AuthorityBlockFailed", transition?.Record ?? _authority.Snapshot,
                 transition?.Status ?? DurableAuthorityTransitionStatus.Unproven);
+        }
+
+        internal DurableRelaunchResult TryAutomaticHalfOpen(
+            string expectedFailureFingerprint,
+            int expectedConsecutiveFailures)
+        {
+            var store = new DurableRelaunchAuthorityFileStore(
+                _journalDirectory,
+                _sessionId);
+            var commit = store.TryOpenAutomaticHalfOpen(
+                expectedFailureFingerprint,
+                expectedConsecutiveFailures);
+            if (commit?.Status != DurableAuthorityCommitStatus.CandidateApplied ||
+                commit.Record?.State != DurableRelaunchPermitState.Approved)
+                return Result(
+                    false,
+                    false,
+                    false,
+                    commit?.Reason ?? "AutomaticHalfOpenFailed",
+                    commit?.Record ?? _authority.Snapshot,
+                    MapStatus(commit?.Status));
+            var reopened = DurableRelaunchAuthorityV4Factory.TryOpenExisting(
+                _journalDirectory,
+                _sessionId);
+            if (reopened?.Succeeded != true || reopened.Authority == null)
+                return Result(
+                    false,
+                    false,
+                    false,
+                    reopened?.Reason ?? "HalfOpenAuthorityReloadFailed",
+                    commit.Record,
+                    DurableAuthorityTransitionStatus.Unproven);
+            _authority = reopened.Authority;
+            _capabilities.Clear();
+            _arguments.Clear();
+            return Result(
+                true,
+                false,
+                true,
+                "AutomaticHalfOpenApproved",
+                _authority.Snapshot,
+                DurableAuthorityTransitionStatus.Committed);
         }
 
         internal DurableRelaunchResult Revoke(string reason)

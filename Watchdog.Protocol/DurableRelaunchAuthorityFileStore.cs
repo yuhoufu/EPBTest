@@ -248,6 +248,127 @@ namespace MTTFTest.Watchdog.Protocol
             finally { if (held) try { mutex?.ReleaseMutex(); } catch { } mutex?.Dispose(); }
         }
 
+        /// <summary>
+        /// Opens one automatic half-open probe after a retryable main-launch
+        /// circuit.  It never reuses the consumed permit: a new generation,
+        /// PermitId and nonce are written in one durable replacement.
+        /// Permanent, identity-conflict and unproven circuits remain closed.
+        /// </summary>
+        public DurableAuthorityStoreCommitResult TryOpenAutomaticHalfOpen(
+            string expectedFailureFingerprint,
+            int expectedConsecutiveFailures)
+        {
+            Mutex mutex = null;
+            var held = false;
+            try
+            {
+                mutex = new Mutex(false, _mutexName);
+                try { held = WaitForMutex(mutex); }
+                catch (AbandonedMutexException) { held = true; }
+                if (!held) return Result(DurableAuthorityCommitStatus.Busy, "AuthorityMutexBusy");
+                var current = ReadCore(_sessionId);
+                if (current == null || current.Record == null || current.Blocked || current.Unproven)
+                    return ReadFailureCommit(current);
+                var record = current.Record;
+                if (record.State != DurableRelaunchPermitState.Blocked ||
+                    !record.CircuitOpen)
+                    return Result(DurableAuthorityCommitStatus.Conflict, "CircuitNotOpen");
+                if (record.LastFailurePermanent ||
+                    string.Equals(record.LastFailureDisposition,
+                        RecoveryFailureDispositions.IdentityConflict,
+                        StringComparison.Ordinal) ||
+                    string.IsNullOrWhiteSpace(record.LastFailureCanonicalSha256))
+                    return new DurableAuthorityStoreCommitResult
+                    {
+                        Status = DurableAuthorityCommitStatus.ExistingBlocked,
+                        Record = record.Clone(),
+                        Sha256 = current.Sha256,
+                        Revision = current.Revision,
+                        Reason = "CircuitNotRetryable"
+                    };
+                if (!string.Equals(
+                        record.LastFailureFingerprint,
+                        expectedFailureFingerprint,
+                        StringComparison.Ordinal) ||
+                    record.ConsecutiveFailures != expectedConsecutiveFailures)
+                    return Result(
+                        DurableAuthorityCommitStatus.Conflict,
+                        "HalfOpenEvidenceChanged");
+
+                var candidate = record.Clone();
+                candidate.AuthorityRevision = current.Revision + 1;
+                candidate.State = DurableRelaunchPermitState.Approved;
+                candidate.CircuitOpen = false;
+                candidate.Generation = Math.Max(0, candidate.Generation) + 1;
+                candidate.PermitId = Guid.NewGuid().ToString("N");
+                candidate.PermitNonce = Guid.NewGuid().ToString("N");
+                candidate.ProcessId = 0;
+                candidate.ProcessStartUtcTicks = 0;
+                candidate.RecoveryCommitGeneration = 0;
+                candidate.LastFailurePermitGeneration = candidate.Generation;
+                candidate.LastFailurePermitId = candidate.PermitId;
+                candidate.LastFailurePermitNonce = candidate.PermitNonce;
+                candidate.LastFailureDisposition =
+                    RecoveryFailureDispositions.RelaunchApproved;
+                candidate.DetailCode = "AutomaticHalfOpenApproved";
+                candidate.LastTransitionUtcTicks = DateTime.UtcNow.Ticks;
+                candidate.LaunchIntentId = null;
+                candidate.LaunchExecutablePath = null;
+                candidate.LaunchExecutableSha256 = null;
+                candidate.LaunchArguments = null;
+                candidate.LaunchWorkingDirectory = null;
+                candidate.LaunchOptionsCanonical = null;
+                candidate.LaunchSpecSha256 = null;
+                candidate.LaunchAuthorityRevision = 0;
+                candidate.LaunchAuthoritySha256 = null;
+                candidate.LaunchConsumed = false;
+                string validation;
+                if (!DurableRelaunchAuthorityV4Validator.TryValidateRecord(
+                        candidate, _sessionId, out validation))
+                    return Result(
+                        DurableAuthorityCommitStatus.WriteFailed,
+                        "HalfOpenCandidateInvalid:" + validation);
+
+                var bytes = Serialize(candidate);
+                var temporary = Path.Combine(
+                    _directory,
+                    ".authority-half-open-" + Guid.NewGuid().ToString("N") + ".tmp");
+                try
+                {
+                    _io.CreateAndFlush(temporary, bytes);
+                    _io.Replace(temporary, _path);
+                    var after = ReadCore(_sessionId);
+                    if (after == null || after.Record == null || after.Blocked ||
+                        after.Unproven || after.Revision != candidate.AuthorityRevision ||
+                        !string.Equals(after.Sha256, Sha256Hex(bytes), StringComparison.Ordinal))
+                        return ReadFailureCommit(after, "HalfOpenReadBackMismatch");
+                    return new DurableAuthorityStoreCommitResult
+                    {
+                        Status = DurableAuthorityCommitStatus.CandidateApplied,
+                        Record = after.Record.Clone(),
+                        Sha256 = after.Sha256,
+                        Revision = after.Revision,
+                        Reason = "AutomaticHalfOpenApproved"
+                    };
+                }
+                finally
+                {
+                    _io.Delete(temporary);
+                }
+            }
+            catch (Exception ex)
+            {
+                return Result(
+                    DurableAuthorityCommitStatus.WriteFailed,
+                    ex.GetBaseException().Message);
+            }
+            finally
+            {
+                if (held) try { mutex?.ReleaseMutex(); } catch { }
+                mutex?.Dispose();
+            }
+        }
+
         private DurableAuthorityStoreReadResult ReadCore(string expectedSessionId)
         {
             if (!_io.Exists(_path)) return new DurableAuthorityStoreReadResult { Blocked = true, Unproven = true, FailureKind = DurableAuthorityFailureKind.Missing, Reason = "AuthorityMissing" };
