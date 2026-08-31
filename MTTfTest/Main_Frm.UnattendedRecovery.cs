@@ -61,7 +61,7 @@ namespace MtEmbTest
         {
             UnattendedRecoveryCoordinator.Disarm("ManualStopWatchdogIdleRestart");
             UnattendedRunCheckpointStore.ClearGracefulPause("ManualStopWatchdogIdleRestart");
-            var monitor = new FrmEpbMainMonitor { Name = "实时监视" };
+            var monitor = new FrmEpbMainMonitor(_daqRuntimeSettings) { Name = "实时监视" };
             OpenChildForm(monitor);
             try
             {
@@ -234,7 +234,8 @@ namespace MtEmbTest
                         Sha256 = checkpoint.LastRecoveryLoadSha256,
                         UpdatedUtc = checkpoint.UpdatedUtc
                     });
-                monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
+                monitor = new FrmEpbMainMonitor(
+                    ProtectedRoot(checkpoint), _daqRuntimeSettings) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 if (!await monitor.WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                     throw new InvalidOperationException("恢复监视窗口未完成控制对象初始化。");
@@ -425,7 +426,8 @@ namespace MtEmbTest
                         out _))
                     return;
 
-                var monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
+                var monitor = new FrmEpbMainMonitor(
+                    ProtectedRoot(checkpoint), _daqRuntimeSettings) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 await monitor.PrepareGracefulPauseCheckpointAsync(checkpoint);
             }
@@ -460,7 +462,8 @@ namespace MtEmbTest
                     return;
                 }
 
-                var monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
+                var monitor = new FrmEpbMainMonitor(
+                    ProtectedRoot(checkpoint), _daqRuntimeSettings) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 await monitor.ResumeFromUnattendedCheckpointAsync(checkpoint);
             }

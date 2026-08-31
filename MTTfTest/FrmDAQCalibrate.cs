@@ -1,5 +1,6 @@
 ﻿using DataOperation;
 using MtEmbTest;
+using Config;
 using NationalInstruments.DAQmx;
 using Sunny.UI;
 using System;
@@ -20,6 +21,7 @@ namespace MTEmbTest
 {
     public partial class FrmDAQCalibrate: Form
     {
+        private readonly DaqRuntimeSettings _daqRuntimeSettings;
         [DllImport("user32.dll")]
         public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
 
@@ -132,7 +134,15 @@ namespace MTEmbTest
 
 
         public FrmDAQCalibrate()
+            : this(DaqRuntimeSettings.Load(
+                System.Configuration.ConfigurationManager.AppSettings))
         {
+        }
+
+        internal FrmDAQCalibrate(DaqRuntimeSettings daqRuntimeSettings)
+        {
+            _daqRuntimeSettings = daqRuntimeSettings ??
+                throw new ArgumentNullException(nameof(daqRuntimeSettings));
             InitializeComponent();
             // 创建自定义标题栏
             Panel titleBar = new Panel
@@ -445,10 +455,10 @@ namespace MTEmbTest
                     AIVoltageUnits.Volts);
                 }
                 Dev1analogTask.Timing.ConfigureSampleClock("",
-                           ClsGlobal.DaqFrequency,
+                           _daqRuntimeSettings.SampleRateHz,
                            SampleClockActiveEdge.Rising,
                            SampleQuantityMode.ContinuousSamples,
-                           ClsGlobal.SamplesPerChannel);
+                           _daqRuntimeSettings.SamplesPerChannel);
 
                 // Verify the tasks
                 Dev1analogTask.Control(TaskAction.Verify);
@@ -472,7 +482,7 @@ namespace MTEmbTest
                 Dev1analogReader.SynchronizeCallbacks = true;
 
 
-                Dev1analogReader.BeginReadMultiSample(ClsGlobal.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
+                Dev1analogReader.BeginReadMultiSample(_daqRuntimeSettings.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
 
 
 
@@ -551,20 +561,20 @@ namespace MTEmbTest
                     if (IsRunning)
                     {
                         int DaqDispCurrentNo = ParaNameToActChannel["EMB1_current"]; 
-                        double[] DispCurrentData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispCurrentNo * 8 * ClsGlobal.SamplesPerChannel, DispCurrentData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispCurrentData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispCurrentNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispCurrentData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
                         int DaqDispTorqueNo = ParaNameToActChannel["EMB1_torque"];
-                        double[] DispTorqueData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispTorqueNo * 8 * ClsGlobal.SamplesPerChannel, DispTorqueData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispTorqueData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispTorqueNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispTorqueData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
                         int DaqDispPressureNo = ParaNameToActChannel["EMB1_valveBar"];
-                        double[] DispPressureData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispPressureNo * 8 * ClsGlobal.SamplesPerChannel, DispPressureData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispPressureData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispPressureNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispPressureData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
                         int DaqDispDistanceNo = ParaNameToActChannel["EMB1_distance"];
-                        double[] DispDistanceData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispDistanceNo * 8 * ClsGlobal.SamplesPerChannel, DispDistanceData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispDistanceData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispDistanceNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispDistanceData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
 
                         AddToDaqAiDispCache(DaqAiDispDataLens, DispCurrentData, ref DaqAiCurrentDispData);
@@ -582,7 +592,7 @@ namespace MTEmbTest
 
 
 
-                    Dev1analogReader.BeginReadMultiSample(ClsGlobal.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
+                    Dev1analogReader.BeginReadMultiSample(_daqRuntimeSettings.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
                 }
 
 
@@ -1058,9 +1068,8 @@ namespace MTEmbTest
            IsCalcZero = true;            
             ZeroCounter = 0;
 
-            DaqDeltTime = 1.0 / ClsGlobal.DaqFrequency* (double)ClsGlobal.MedianLens;
-
-            ClsGlobal.SamplesPerChannel = (int)(ClsGlobal.DaqFrequency / 1000.0 * TimerCalibrate.Interval);
+            DaqDeltTime = 1.0 / _daqRuntimeSettings.SampleRateHz *
+                          (double)ClsGlobal.MedianLens;
 
             CurrentZeroList.Clear();
             TorqueZeroList.Clear();

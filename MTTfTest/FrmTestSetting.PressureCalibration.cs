@@ -341,7 +341,8 @@ namespace MtEmbTest
 
             try
             {
-                var hardware = new PressureCalibrationHardware(_cfg, logger, Application.StartupPath);
+                var hardware = new PressureCalibrationHardware(
+                    _cfg, logger, Application.StartupPath, _daqRuntimeSettings);
                 _pressureCalibrationCoordinator = new PressureCalibrationCoordinator(
                     hardware,
                     _cfg.AO,

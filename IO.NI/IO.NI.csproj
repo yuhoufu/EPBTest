@@ -78,6 +78,7 @@
     <Compile Include="FastCurrentEvidenceRing.cs" />
     <Compile Include="DaqDiagnosticRing.cs" />
     <Compile Include="CurrentGuard.cs" />
+    <Compile Include="DaqRuntimeConfigException.cs" />
     <Compile Include="DaqHardwareProbe.cs" />
     <Compile Include="DoController.cs" />
     <Compile Include="HighResolutionSampleClock.cs" />

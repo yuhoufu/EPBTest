@@ -968,6 +968,8 @@ namespace Controller
         private readonly int _daqClockRecoveryFreshBatches;
         private readonly int _daqClockRecoveryMaxAttempts;
         private readonly int _daqClockRecoveryWindowMinutes;
+        private readonly int _daqRecoveryStableWindowMs;
+        private Func<bool> _recoveryInfrastructureHealthProvider = () => true;
         private readonly double _epbPowerSupplyOffProofThresholdA;
         private readonly int _epbPowerSupplyOffProofMaxAgeMs;
         private readonly DaqRecoveryAttemptWindow _daqClockRecoveryAttempts;
@@ -2642,6 +2644,8 @@ namespace Controller
                 "DaqClockRecoveryMaxAttempts", 3, 1, 20);
             _daqClockRecoveryWindowMinutes = ReadIntAppSetting(
                 "DaqClockRecoveryWindowMinutes", 10, 1, 1440);
+            _daqRecoveryStableWindowMs = ReadIntAppSetting(
+                "DaqRecoveryStableWindowMs", 5000, 1000, 30000);
             _epbPowerSupplyOffProofThresholdA = ReadDoubleAppSetting(
                 "EpbPowerSupplyOffProofThresholdA", 0.5, 0.01, 20.0);
             _epbPowerSupplyOffProofMaxAgeMs = ReadIntAppSetting(
@@ -5785,6 +5789,11 @@ namespace Controller
                 .ConfigureAwait(false);
         }
 
+        public void SetRecoveryInfrastructureHealthProvider(Func<bool> provider)
+        {
+            _recoveryInfrastructureHealthProvider = provider ?? (() => false);
+        }
+
         internal static bool RequiresDaqTaskRecreate(string triggerCode)
         {
             // Consumer/backlog faults can recover by dropping stale history only after the
@@ -5804,6 +5813,8 @@ namespace Controller
                    !string.Equals(triggerCode, "RawPersistenceTransferFault", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "RawPersistencePermanentFault", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "DaqCallbackStale", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "DaqClockModelInvalid", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "DaqWallClockStep", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "DaqPersistenceLag", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "DaqPersistenceQueueFull", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "DaqPersistenceWriteStall", StringComparison.OrdinalIgnoreCase);
@@ -5814,10 +5825,6 @@ namespace Controller
             return string.Equals(
                        triggerCode,
                        "DaqClockModelInvalid",
-                       StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(
-                       triggerCode,
-                       "DaqWallClockStep",
                        StringComparison.OrdinalIgnoreCase);
         }
 
@@ -7283,6 +7290,36 @@ namespace Controller
                     rejoinPlan = GetCompatibleStaggerPlan(rejoinChannels);
                 if (!holdForBatchPause && powerRecoveryChannels.Length > 0)
                 {
+                    context.ValidationDetail = "StableRejoinGate";
+                    await DaqRecoveryRejoinGate.WaitAsync(
+                            TimeSpan.FromMilliseconds(_daqRecoveryStableWindowMs),
+                            TimeSpan.FromMilliseconds(Math.Max(
+                                _daqPersistenceRecoveryTimeoutMs,
+                                _daqRecoveryStableWindowMs * 3)),
+                            () =>
+                            {
+                                var freshness = _acq.GetDaqFreshnessSnapshot(
+                                    device,
+                                    _daqPersistenceResumeAgeMs);
+                                var persistence = _persistence.GetSnapshot(device);
+                                var infrastructureHealthy =
+                                    _recoveryInfrastructureHealthProvider();
+                                return new DaqRecoveryRejoinObservation(
+                                    freshness.IsFresh,
+                                    freshness.Generation,
+                                    freshness.LastProcessedSequence,
+                                    freshness.CallbackGapEventCount,
+                                    freshness.ControlDiscontinuityCount,
+                                    persistence.QueueDepth <= _daqPersistenceResumeDepth &&
+                                    persistence.OldestBatchAgeMs <= _daqPersistenceResumeAgeMs &&
+                                    persistence.Generation == freshness.Generation,
+                                    HasDaqRecoverySafeOffEvidence(context),
+                                    infrastructureHealthy,
+                                    !infrastructureHealthy);
+                            },
+                            context.Cancellation.Token)
+                        .ConfigureAwait(false);
+                    if (!IsCurrentRecovery(context)) return;
                     context.ValidationDetail = "EmergencyPowerOffBarrier";
                     if (_powerSupply != null)
                     {

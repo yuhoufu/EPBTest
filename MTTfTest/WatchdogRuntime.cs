@@ -8,6 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Config;
 using Controller;
 using MTTFTest.Watchdog.Client;
 using MTTFTest.Watchdog.Protocol;
@@ -819,11 +820,33 @@ namespace MTEmbTest
         private static Func<WatchdogHeartbeat> _pendingHeartbeatProvider;
         private static string _journalExportDirectory;
         private static long _sessionGeneration;
+        private static DaqRuntimeSettings _daqRuntimeSettings;
 
         internal static event Action<string, string> TransportLost;
         internal static event Action<string, string> TransportError;
 
         internal static bool IsAttached => IsExactAttached(CaptureTransportSnapshot());
+
+        internal static void ConfigureDaqRuntimeSettings(DaqRuntimeSettings settings)
+        {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            lock (Gate)
+            {
+                if (_daqRuntimeSettings != null &&
+                    (Math.Abs(_daqRuntimeSettings.SampleRateHz - settings.SampleRateHz) > 0.000001 ||
+                     _daqRuntimeSettings.SamplesPerChannel != settings.SamplesPerChannel))
+                    throw new InvalidOperationException(
+                        "DaqRuntimeConfigInvalid: session DAQ settings cannot change after validation.");
+                _daqRuntimeSettings = settings;
+            }
+        }
+
+        private static DaqRuntimeSettings CaptureDaqRuntimeSettings()
+        {
+            lock (Gate)
+                return _daqRuntimeSettings ?? DaqRuntimeSettings.Load(
+                    ConfigurationManager.AppSettings);
+        }
 
         /// <summary>
         /// The one production exact-transport predicate used by both the
@@ -870,6 +893,16 @@ namespace MTEmbTest
             {
                 lock (Gate) return _activeContext?.SessionId;
             }
+        }
+
+        internal static bool IsRecoveryInfrastructureHealthy()
+        {
+            var context = CaptureContext();
+            return context != null &&
+                   context.PipelineState == RuntimeCallbackPipelineState.Ready &&
+                   context.CallbackPipelineActive &&
+                   Volatile.Read(ref context.State.SessionClosing) == 0 &&
+                   !HasActiveTakeover(context);
         }
 
         internal static bool IsActiveTakeoverCancellation(Exception exception)

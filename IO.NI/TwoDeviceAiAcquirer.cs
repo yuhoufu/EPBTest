@@ -64,7 +64,7 @@ namespace IO.NI
             var timingPath = Path.Combine(directory, "daq_timing.csv");
             using (var writer = new StreamWriter(timingPath, false, new UTF8Encoding(true)))
             {
-                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs,BatchSequence,ProducerThreadId,ProducerReentryCount,SampleLeadMs,EffectiveSampleRateHz,EstimatedSkewPpm,ClockResidualMs,ClockWindowSeconds,ClockCorrectionPpm,ClockState,QualityFlags");
+                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs,BatchSequence,ProducerThreadId,ProducerReentryCount,SampleLeadMs,EffectiveSampleRateHz,EstimatedSkewPpm,ClockResidualMs,ClockWindowSeconds,ClockCorrectionPpm,ClockState,EpochId,InvalidReason,CandidateRateHz,CandidateSkewPpm,OutOfRangeConfirmations,ResidualConfirmations,QualityFlags");
                 foreach (var x in Records.Where(x => !string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
                     writer.WriteLine(
                         $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Generation},{x.BatchSize},{x.QueueDepth}," +
@@ -74,7 +74,9 @@ namespace IO.NI
                         $"{x.ControlQueueCapacity},{x.SubscriberMaxMs:F3},{(x.ProcessedSampleUtc == default ? string.Empty : x.ProcessedSampleUtc.ToString("O"))},{x.DriftMs:F3}," +
                         $"{x.BatchSequence},{x.ProducerThreadId},{x.ProducerReentryCount},{x.SampleLeadMs:F3}," +
                         $"{x.EffectiveSampleRateHz:F6},{x.EstimatedSkewPpm:F3},{x.ClockResidualMs:F3}," +
-                        $"{x.ClockWindowSeconds:F3},{x.ClockCorrectionPpm:F3},{Csv(x.ClockState)},{Csv(x.QualityFlags)}");
+                        $"{x.ClockWindowSeconds:F3},{x.ClockCorrectionPpm:F3},{Csv(x.ClockState)},{x.EpochId}," +
+                        $"{Csv(x.InvalidReason)},{x.CandidateRateHz:F6},{x.CandidateSkewPpm:F3}," +
+                        $"{x.OutOfRangeConfirmations},{x.ResidualConfirmations},{Csv(x.QualityFlags)}");
             }
             var runtimePath = Path.Combine(directory, "daq_runtime.csv");
             using (var writer = new StreamWriter(runtimePath, false, new UTF8Encoding(true)))
@@ -365,6 +367,12 @@ namespace IO.NI
         public double ClockWindowSeconds { get; set; }
         public double ClockCorrectionPpm { get; set; }
         public string ClockState { get; set; } = string.Empty;
+        public long EpochId { get; set; }
+        public string InvalidReason { get; set; } = string.Empty;
+        public double CandidateRateHz { get; set; }
+        public double CandidateSkewPpm { get; set; }
+        public int OutOfRangeConfirmations { get; set; }
+        public int ResidualConfirmations { get; set; }
         public string QualityFlags { get; set; } = string.Empty;
         public string Detail { get; set; } = string.Empty;
     }
@@ -956,6 +964,7 @@ namespace IO.NI
             public DaqCallbackProducerGate ProducerGate { get; } = new DaqCallbackProducerGate();
             public WallClockStepDetector WallClockStepDetector { get; } =
                 new WallClockStepDetector();
+            public long UtcEpochId = 1;
         }
 
         // 动态置零偏移（参数名 -> offset，工程值单位）
@@ -1745,6 +1754,22 @@ namespace IO.NI
             int medianLens, // 走 ClsDataFilter 的中值窗长（用你全局配置传入）
             ILogger log = null)
         {
+            if (cfg == null)
+                throw new DaqRuntimeConfigException("AI configuration is null.", nameof(cfg));
+            if (double.IsNaN(sampleRate) || double.IsInfinity(sampleRate) || sampleRate <= 0)
+                throw new DaqRuntimeConfigException("sampleRate must be finite and greater than zero.",
+                    nameof(sampleRate));
+            if (samplesPerChannel < 1)
+                throw new DaqRuntimeConfigException("samplesPerChannel must be at least one.",
+                    nameof(samplesPerChannel));
+            var configuredChannels = cfg.Enabled();
+            if (configuredChannels.Count == 0)
+                throw new DaqRuntimeConfigException("at least one enabled AI channel is required.",
+                    nameof(cfg));
+            if (configuredChannels.Any(record =>
+                    record == null || string.IsNullOrWhiteSpace(record.物理通道)))
+                throw new DaqRuntimeConfigException("enabled AI channels require physical paths.",
+                    nameof(cfg));
             _enabled = cfg.Enabled();
             _sampleRate = sampleRate;
             _samplesPerChannel = samplesPerChannel;
@@ -3214,10 +3239,26 @@ namespace IO.NI
                     callbackEntrySwTick,
                     Stopwatch.Frequency);
                 if (wallClockStep != null)
+                {
+                    var epochId = Interlocked.Increment(ref state.UtcEpochId);
                     LogWallClockStepDetected(
                         device,
                         generation,
                         wallClockStep);
+                    AppendDiagnostic(new DaqTimingValue
+                    {
+                        TimestampUtc = arrivalUtc,
+                        Device = device,
+                        Kind = "WallClockEpochChanged",
+                        Generation = generation,
+                        EpochId = epochId,
+                        InvalidReason = "WallClockStep",
+                        Detail = $"EpochId={epochId};Direction={wallClockStep.Direction};" +
+                                 $"StepMs={wallClockStep.StepMilliseconds:F3};" +
+                                 $"WallElapsedMs={wallClockStep.WallElapsedMilliseconds:F3};" +
+                                 $"MonotonicElapsedMs={wallClockStep.MonotonicElapsedMilliseconds:F3}"
+                    });
+                }
 
                 var endReadStartSwTick = Stopwatch.GetTimestamp();
                 var raw = reader.EndReadMultiSample(ar); // [ch, n]
@@ -3226,27 +3267,6 @@ namespace IO.NI
                 // 不得写快照、入队或给新任务 re-arm。
                 if (!IsCurrentGeneration(device, generation)) return;
                 int n = raw.GetLength(1);
-                if (wallClockStep != null)
-                {
-                    // 样本时间轴仍属于旧墙钟映射。该批不得继续进入控制/落盘；立即按
-                    // 软件时钟故障安全断能并重建 generation，避免后续圈被 UTC 边界截头。
-                    PublishQueueFullFault(
-                        device,
-                        generation,
-                        "DaqWallClockStep",
-                        "Control",
-                        0,
-                        string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
-                            ? _controlRingDev1.Capacity
-                            : _controlRingDev2.Capacity,
-                        0,
-                        $"Device={device} Generation={generation} 检测到系统墙钟{wallClockStep.Direction}跳变" +
-                        $"{wallClockStep.StepMilliseconds:F3}ms；已丢弃映射不确定批次并安全重建DAQ时间代次。" +
-                        $"WallElapsedMs={wallClockStep.WallElapsedMilliseconds:F3} " +
-                        $"MonotonicElapsedMs={wallClockStep.MonotonicElapsedMilliseconds:F3}。");
-                    return;
-                }
-
                 // 同设备生产区必须严格串行。下一次读取只在控制批入环后 re-arm，
                 // 从结构上保证 SPSC 控制环只有一个活动生产者。
                 if (!state.ProducerGate.TryEnter())
@@ -3330,6 +3350,12 @@ namespace IO.NI
                             ClockWindowSeconds = timeline.EstimatorWindowSeconds,
                             ClockCorrectionPpm = timeline.CorrectionPpm,
                             ClockState = timeline.ClockState.ToString(),
+                            EpochId = Volatile.Read(ref state.UtcEpochId),
+                            InvalidReason = timeline.RequiresRecovery
+                                ? "EstimatorInvalid"
+                                : string.Empty,
+                            CandidateRateHz = timeline.EffectiveSampleRateHz,
+                            CandidateSkewPpm = timeline.EstimatedSkewPpm,
                             Detail = $"Sequence={sequence}; State={timeline.ClockState}; " +
                                      $"RateHz={timeline.EffectiveSampleRateHz:F6}; " +
                                      $"SkewPpm={timeline.EstimatedSkewPpm:F3}; " +
@@ -3338,22 +3364,12 @@ namespace IO.NI
                     }
                     if (timeline.RequiresRecovery)
                     {
-                        PublishQueueFullFault(
-                            device,
-                            generation,
-                            "DaqClockModelInvalid",
-                            "Control",
-                            0,
-                            string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
-                                ? _controlRingDev1.Capacity
-                                : _controlRingDev2.Capacity,
-                            0,
-                            $"Device={device} Generation={generation} DAQ时钟模型连续不可用，" +
-                            $"将安全暂停并自动重建。State={timeline.ClockState} " +
-                            $"RateHz={timeline.EffectiveSampleRateHz:F6} " +
-                            $"SkewPpm={timeline.EstimatedSkewPpm:F3} " +
-                            $"ResidualMs={timeline.ResidualMs:F3}。"
-                        );
+                        // 估算器失效不等于 NI Task 失效。保持已经成功读取的控制批次，
+                        // 从当前单调边界重新建模；只有独立的回调陈旧/序号/硬件异常才升级。
+                        state.Timeline.Reset(
+                            timeline.BatchEndUtc,
+                            timeline.BatchEndMonotonicTicks,
+                            state.NominalSampleRateHz);
                     }
 
                     if (_fastSource == FastSource.DaqCallback)

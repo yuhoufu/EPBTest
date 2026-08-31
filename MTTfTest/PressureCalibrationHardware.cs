@@ -14,11 +14,17 @@ namespace MtEmbTest
         private readonly TwoDeviceAiAcquirer _acquirer;
         private bool _disposed;
 
-        public PressureCalibrationHardware(GlobalConfig config, AppLogger logger, string applicationDirectory)
+        public PressureCalibrationHardware(
+            GlobalConfig config,
+            AppLogger logger,
+            string applicationDirectory,
+            DaqRuntimeSettings runtimeSettings = null)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
             if (config.DO == null) throw new InvalidOperationException("DO 配置为空，无法开始压力校正。");
             if (config.AO == null) throw new InvalidOperationException("AO 配置为空，无法开始压力校正。");
+            runtimeSettings = runtimeSettings ?? DaqRuntimeSettings.Load(
+                System.Configuration.ConfigurationManager.AppSettings);
 
             DoController doController = null;
             AoController aoController = null;
@@ -42,8 +48,8 @@ namespace MtEmbTest
                 var aiConfig = AiConfigLoader.Load(aiPath);
                 acquirer = new TwoDeviceAiAcquirer(
                     aiConfig,
-                    ClsGlobal.DaqFrequency,
-                    ClsGlobal.SamplesPerChannel,
+                    runtimeSettings.SampleRateHz,
+                    runtimeSettings.SamplesPerChannel,
                     10,
                     logger);
                 acquirer.Start();

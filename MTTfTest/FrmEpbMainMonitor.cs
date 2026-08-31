@@ -156,6 +156,7 @@ namespace MTEmbTest
 
         private CancellationTokenSource _batchCts; // 批量操作取消令牌源
         private GlobalConfig _cfg;
+        private readonly DaqRuntimeSettings _daqRuntimeSettings;
 
         /// <summary>防止 OnFormClosing 重入执行。</summary>
         private int _closingReentry = 0;
@@ -187,7 +188,7 @@ namespace MTEmbTest
         ///     每帧样本时间跨度（毫秒），与旧项目一致：1000 / 采样频率。
         ///     数据落盘使用
         /// </summary>
-        private double _daqTimeSpanMs = 10.0; // 会在 Load 中设为 1000.0 / ClsGlobal.DaqFrequency 可以使用DaqTimeSpanMilSeconds
+        private double _daqTimeSpanMs = 10.0; // Load 时按不可变 DAQ 运行参数计算。
 
         /// <summary>本次试验的数据根目录（每次试验一个唯一文件夹）。</summary>
         private string _dataStorePath = string.Empty;
@@ -452,7 +453,15 @@ namespace MTEmbTest
 
 
         public FrmEpbMainMonitor()
+            : this(DaqRuntimeSettings.Load(
+                System.Configuration.ConfigurationManager.AppSettings))
         {
+        }
+
+        internal FrmEpbMainMonitor(DaqRuntimeSettings daqRuntimeSettings)
+        {
+            _daqRuntimeSettings = daqRuntimeSettings ??
+                throw new ArgumentNullException(nameof(daqRuntimeSettings));
             InitializeComponent();
 
             Activated += (_, __) =>
@@ -680,7 +689,15 @@ namespace MTEmbTest
             };
         }
 
-        internal FrmEpbMainMonitor(Guid protectedLearningRootId) : this()
+        internal FrmEpbMainMonitor(Guid protectedLearningRootId)
+            : this(protectedLearningRootId, DaqRuntimeSettings.Load(
+                System.Configuration.ConfigurationManager.AppSettings))
+        {
+        }
+
+        internal FrmEpbMainMonitor(
+            Guid protectedLearningRootId,
+            DaqRuntimeSettings daqRuntimeSettings) : this(daqRuntimeSettings)
         {
             _protectedLearningRootId = protectedLearningRootId;
         }
@@ -859,7 +876,7 @@ namespace MTEmbTest
         {
             try
             {
-                DaqTimeSpanMilSeconds = 1000.0 / ClsGlobal.DaqFrequency;
+                DaqTimeSpanMilSeconds = 1000.0 / _daqRuntimeSettings.SampleRateHz;
 
                 activeWriteBuffer = bufferA;
                 readyReadBuffer = bufferB;
@@ -1103,8 +1120,10 @@ namespace MTEmbTest
                 aiConfigDetail =
                     AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
 
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, ClsGlobal.DaqFrequency,
-                    ClsGlobal.SamplesPerChannel,
+                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(
+                    aiConfigDetail,
+                    _daqRuntimeSettings.SampleRateHz,
+                    _daqRuntimeSettings.SamplesPerChannel,
                     10, logger);
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
@@ -1132,6 +1151,8 @@ namespace MTEmbTest
                     protectedLearningRootIds: _protectedLearningRootId == Guid.Empty
                         ? null
                         : new[] { _protectedLearningRootId });
+                _epb.SetRecoveryInfrastructureHealthProvider(
+                    WatchdogRuntime.IsRecoveryInfrastructureHealthy);
 
                 // ★ 新增：订阅 EPB 单圈完成事件，用于更新 _uiEpbRecords
                 _epb.ChannelCycleCompleted += OnEpbChannelCycleCompleted;
@@ -1195,7 +1216,7 @@ namespace MTEmbTest
                 //数据落盘相关
 
                 // 1) 计算每帧毫秒跨度（旧工程做法） 数据落盘中使用  On 2025/09/09
-                _daqTimeSpanMs = 1000.0 / ClsGlobal.DaqFrequency; // 设置单个试验的采用周期
+                _daqTimeSpanMs = 1000.0 / _daqRuntimeSettings.SampleRateHz; // 设置单个试验的采样周期
 
                 // 2) 仅在程序级 Raw 开关显式启用时准备时间戳目录和原始落盘定时器。
                 //    禁用时不创建 W\DataStore 下的空日期目录；未来可通过该开关恢复显式 Raw 路径。
@@ -2158,13 +2179,13 @@ namespace MTEmbTest
             var cols = eng.GetLength(1);
             if (rows <= 0 || cols <= 0) return;
 
-            if (ClsGlobal.DaqFrequency <= 0)
+            if (_daqRuntimeSettings.SampleRateHz <= 0)
             {
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "DaqFrequency 未正确设置", "曲线显示");
                 return;
             }
 
-            var dt = 1.0 / ClsGlobal.DaqFrequency;
+            var dt = 1.0 / _daqRuntimeSettings.SampleRateHz;
 
             // —— 时间轴对齐 ——
             // 旧的 gapSec 逻辑已移除，改用绝对时间戳 current 对齐，彻底解决多设备不同步问题。
@@ -2262,9 +2283,9 @@ namespace MTEmbTest
             var stride = 1;
             try
             {
-                if (ClsGlobal.DaqFrequency > 0)
+                if (_daqRuntimeSettings.SampleRateHz > 0)
                 {
-                    stride = (int)Math.Round(ClsGlobal.DaqFrequency / (double)UiMaxPlotHz);
+                    stride = (int)Math.Round(_daqRuntimeSettings.SampleRateHz / UiMaxPlotHz);
                     if (stride < 1) stride = 1;
                 }
             }
@@ -2341,9 +2362,9 @@ namespace MTEmbTest
             var stride = 1;
             try
             {
-                if (ClsGlobal.DaqFrequency > 0)
+                if (_daqRuntimeSettings.SampleRateHz > 0)
                 {
-                    stride = (int)Math.Round(ClsGlobal.DaqFrequency / (double)UiMaxPlotHz);
+                    stride = (int)Math.Round(_daqRuntimeSettings.SampleRateHz / UiMaxPlotHz);
                     if (stride < 1) stride = 1;
                 }
             }
@@ -5154,10 +5175,10 @@ namespace MTEmbTest
 
                 // ===== 把采样映射到时间轴 =====
                 // 采样周期（秒/点）
-                if (ClsGlobal.DaqFrequency <= 0)
+                if (_daqRuntimeSettings.SampleRateHz <= 0)
                     throw new InvalidOperationException("DaqFrequency 未正确设置。");
 
-                var dt = 1.0 / ClsGlobal.DaqFrequency;
+                var dt = 1.0 / _daqRuntimeSettings.SampleRateHz;
 
                 // 本次追加的起始 X（秒）。
                 // 若已有点，则从最后一个点的下一步开始；否则从 0 开始。
@@ -5196,7 +5217,7 @@ namespace MTEmbTest
                 // 以样点数与采样率推前 lastGraphyTime，保持与旧代码兼容
                 if (daqData.Length > 0)
                 {
-                    var spanSec = daqData.Length * (1.0 / ClsGlobal.DaqFrequency);
+                    var spanSec = daqData.Length * (1.0 / _daqRuntimeSettings.SampleRateHz);
                     lastGraphyTime = lastGraphyTime.AddSeconds(spanSec);
                 }
             }
@@ -5835,7 +5856,7 @@ namespace MTEmbTest
                 ClsGlobal.FileChangeMinutes,
                 _daqTimeSpanMs, // 或用 DaqTimeSpanMilSeconds
                 dev1ChannelCount,
-                ClsGlobal.SamplesPerChannel,
+                _daqRuntimeSettings.SamplesPerChannel,
                 _dataStorePath)
             {
                 // Dev1：建立通道映射（EPB1..6电流 + Pressure_1压力 -> Dev1各通道序号）
@@ -5856,7 +5877,7 @@ namespace MTEmbTest
                 ClsGlobal.FileChangeMinutes,
                 _daqTimeSpanMs,
                 dev2ChannelCount,
-                ClsGlobal.SamplesPerChannel,
+                _daqRuntimeSettings.SamplesPerChannel,
                 _dataStorePath);
 
             // Dev2 的 EMB->通道映射：建议再次调用配置读取方法获取 Dev2 的映射

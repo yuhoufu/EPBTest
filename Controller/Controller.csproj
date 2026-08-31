@@ -125,6 +125,7 @@
     <Compile Include="EpbManager.StopSafetyOperations.cs" />
     <Compile Include="StopSafetyWatchdogHeartbeatMapper.cs" />
     <Compile Include="EpbManager.cs" />
+    <Compile Include="DaqRecoveryRejoinGate.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />
     <Compile Include="HydraulicGroupCoordinator.cs" />

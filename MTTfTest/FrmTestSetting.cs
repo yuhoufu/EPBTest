@@ -28,6 +28,7 @@ namespace MtEmbTest
     {
         private readonly BindingList<EpbRow> _epbRows = new();
         private readonly GlobalConfig _cfg; // 全部配置对象
+        private readonly DaqRuntimeSettings _daqRuntimeSettings;
         private List<PressureSettingControl> _pressureSettings; // 压力设置
         public FormLoggerAdapter logger;
         private const int MaxErrors = 2000;
@@ -79,12 +80,14 @@ namespace MtEmbTest
         /// </summary>
         private EpbProgressView[] _epbProgressViews;
 
-        public FrmTestSetting(GlobalConfig cfg)
+        public FrmTestSetting(GlobalConfig cfg, DaqRuntimeSettings daqRuntimeSettings = null)
         {
             logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
                 LogInformation, LogWarn, LogError, this);
             // 主窗体已经恢复最后项目时复用同一个配置对象；独立打开时再重新加载。
             _cfg = cfg ?? ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+            _daqRuntimeSettings = daqRuntimeSettings ?? DaqRuntimeSettings.Load(
+                System.Configuration.ConfigurationManager.AppSettings);
 
             
             _pressureSettings = new List<PressureSettingControl>(); // 初始化

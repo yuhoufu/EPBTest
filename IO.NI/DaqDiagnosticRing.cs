@@ -65,6 +65,12 @@ namespace IO.NI
         public double ClockWindowSeconds;
         public double ClockCorrectionPpm;
         public string ClockState;
+        public long EpochId;
+        public string InvalidReason;
+        public double CandidateRateHz;
+        public double CandidateSkewPpm;
+        public int OutOfRangeConfirmations;
+        public int ResidualConfirmations;
         public string QualityFlags;
         public string Detail;
 
@@ -132,6 +138,12 @@ namespace IO.NI
                 ClockWindowSeconds = value.ClockWindowSeconds,
                 ClockCorrectionPpm = value.ClockCorrectionPpm,
                 ClockState = value.ClockState,
+                EpochId = value.EpochId,
+                InvalidReason = value.InvalidReason,
+                CandidateRateHz = value.CandidateRateHz,
+                CandidateSkewPpm = value.CandidateSkewPpm,
+                OutOfRangeConfirmations = value.OutOfRangeConfirmations,
+                ResidualConfirmations = value.ResidualConfirmations,
                 QualityFlags = value.QualityFlags,
                 Detail = value.Detail
             };

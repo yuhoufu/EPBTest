@@ -28,6 +28,7 @@ namespace MtEmbTest
         private const int MaxInfos = 2000;
         private const int MaxWarns = 2000;
         public GlobalConfig Cfg;
+        private DaqRuntimeSettings _daqRuntimeSettings;
 
         #endregion
         
@@ -261,8 +262,13 @@ namespace MtEmbTest
                 ClsGlobal.CanRecvTimeSpanMillSecs = double.Parse(ConfigOperation.SetOneItem("CanRecvTimeSpanMillSecs"));
                 ClsGlobal.XDuration = double.Parse(ConfigOperation.SetOneItem("XDuration"));
                 ClsGlobal.FileChangeMinutes = double.Parse(ConfigOperation.SetOneItem("FileChangeMinutes"));
-                ClsGlobal.DaqFrequency = double.Parse(ConfigOperation.SetOneItem("DaqFrequency")); // 全局采样率设置
-                ClsGlobal.SamplesPerChannel = int.Parse(ConfigOperation.SetOneItem("SamplesPerChannel"));
+                _daqRuntimeSettings = DaqRuntimeSettings.Load(
+                    System.Configuration.ConfigurationManager.AppSettings);
+                WatchdogRuntime.ConfigureDaqRuntimeSettings(_daqRuntimeSettings);
+                // 仅为未迁移的显示/回放兼容代码保留镜像；所有硬件入口显式接收
+                // _daqRuntimeSettings，不再把该全局值作为配置源。
+                ClsGlobal.DaqFrequency = _daqRuntimeSettings.SampleRateHz;
+                ClsGlobal.SamplesPerChannel = _daqRuntimeSettings.SamplesPerChannel;
 
                 ClsGlobal.VppmWorkMode = ConfigOperation.SetOneItem("VppmWorkMode");
                 ClsGlobal.DoChannel = ConfigOperation.SetOneItem("DoChannel");
@@ -390,7 +396,7 @@ namespace MtEmbTest
                 }
 
 
-            var Setting = new FrmTestSetting(Cfg);
+            var Setting = new FrmTestSetting(Cfg, _daqRuntimeSettings);
             var screen = Screen.FromControl(this);
             var workingArea = screen.WorkingArea;
             float dpiScale;
@@ -524,7 +530,7 @@ namespace MtEmbTest
 
 
             //FrmMainMonitor frmRealMonitor = new FrmMainMonitor();
-            var frmRealMonitor = new FrmEpbMainMonitor();
+            var frmRealMonitor = new FrmEpbMainMonitor(_daqRuntimeSettings);
             frmRealMonitor.Name = "实时监视";
             OpenChildForm(frmRealMonitor);
         }
