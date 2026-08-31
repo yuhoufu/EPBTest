@@ -4,8 +4,10 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
+using System.Management;
 using System.Text;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
@@ -840,9 +842,320 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     using (var host = new WatchdogHost(args))
+                    {
+                        foreach (var cleanup in RetireStaleSidecars(args))
+                            host.RecordEvent(
+                                cleanup.Succeeded
+                                    ? "StaleSidecarRetired"
+                                    : "StaleSidecarCleanupSkipped",
+                                cleanup.Detail);
                         return host.RunAsync().GetAwaiter().GetResult();
+                    }
                 }
                 finally { try { singleton.ReleaseMutex(); } catch { } }
+            }
+        }
+
+        private sealed class StaleSidecarCleanupResult
+        {
+            internal bool Succeeded;
+            internal string Detail;
+        }
+
+        private sealed class StaleSidecarCandidate
+        {
+            internal int ProcessId;
+            internal long ProcessStartUtcTicks;
+            internal int ParentProcessId;
+            internal long ParentProcessStartUtcTicks;
+            internal string SessionId;
+            internal string JournalDirectory;
+            internal string MainExecutablePath;
+        }
+
+        private static IEnumerable<StaleSidecarCleanupResult> RetireStaleSidecars(
+            WatchdogArguments current)
+        {
+            var results = new List<StaleSidecarCleanupResult>();
+            var candidates = DiscoverStaleSidecars(current).ToArray();
+            long currentStartUtcTicks;
+            using (var currentProcess = Process.GetCurrentProcess())
+                currentStartUtcTicks = currentProcess.StartTime
+                    .ToUniversalTime().Ticks;
+            foreach (var candidate in candidates)
+            {
+                var reason = "SupersededByNewSession:" + current.SessionId;
+                try
+                {
+                    // 先持久撤销旧会话的重拉权威，再允许终止旧Sidecar。
+                    WatchdogControlMarker.WriteLocal(candidate.SessionId, reason);
+                    try
+                    {
+                        WatchdogControlMarker.WriteProject(
+                            candidate.JournalDirectory,
+                            candidate.SessionId,
+                            reason);
+                    }
+                    catch { }
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new StaleSidecarCleanupResult
+                    {
+                        Detail = $"PID={candidate.ProcessId};Session={candidate.SessionId};" +
+                                 "RevocationWriteFailed=" +
+                                 ex.GetBaseException().Message
+                    });
+                    continue;
+                }
+
+                Process process = null;
+                try
+                {
+                    process = Process.GetProcessById(candidate.ProcessId);
+                    var exact = !process.HasExited &&
+                        process.StartTime.ToUniversalTime().Ticks ==
+                        candidate.ProcessStartUtcTicks;
+                    var parentObservation = ObserveProcessIdentity(
+                        candidate.ParentProcessId,
+                        candidate.ParentProcessStartUtcTicks);
+                    if (!StaleSidecarCleanupPolicy.CanRetire(
+                            SameProductScope(
+                                current.ExecutablePath,
+                                candidate.MainExecutablePath),
+                            candidate.ProcessStartUtcTicks <
+                                currentStartUtcTicks,
+                            exact,
+                            parentObservation))
+                    {
+                        results.Add(new StaleSidecarCleanupResult
+                        {
+                            Detail = $"PID={candidate.ProcessId};Session={candidate.SessionId};" +
+                                     $"Parent={parentObservation};IdentityExact={exact}"
+                        });
+                        continue;
+                    }
+
+                    if (!process.WaitForExit(3000))
+                    {
+                        // Process对象持有原进程句柄；在kill前再次核对启动时间，
+                        // 避免PID复用误伤无关进程。
+                        if (process.HasExited ||
+                            process.StartTime.ToUniversalTime().Ticks !=
+                            candidate.ProcessStartUtcTicks)
+                            continue;
+                        process.Kill();
+                        process.WaitForExit(2000);
+                    }
+                    results.Add(new StaleSidecarCleanupResult
+                    {
+                        Succeeded = process.HasExited,
+                        Detail = $"PID={candidate.ProcessId};Session={candidate.SessionId};" +
+                                 $"Parent={parentObservation};Revoked=true;" +
+                                 $"Exited={process.HasExited}"
+                    });
+                }
+                catch (ArgumentException)
+                {
+                    results.Add(new StaleSidecarCleanupResult
+                    {
+                        Succeeded = true,
+                        Detail = $"PID={candidate.ProcessId};Session={candidate.SessionId};" +
+                                 "Revoked=true;ExitedBeforeOpen=true"
+                    });
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new StaleSidecarCleanupResult
+                    {
+                        Detail = $"PID={candidate.ProcessId};Session={candidate.SessionId};" +
+                                 "CleanupFailed=" + ex.GetBaseException().Message
+                    });
+                }
+                finally
+                {
+                    try { process?.Dispose(); } catch { }
+                }
+            }
+            return results;
+        }
+
+        private static IEnumerable<StaleSidecarCandidate> DiscoverStaleSidecars(
+            WatchdogArguments current)
+        {
+            var candidates = new List<StaleSidecarCandidate>();
+            try
+            {
+                long currentStartUtcTicks;
+                using (var currentProcess = Process.GetCurrentProcess())
+                    currentStartUtcTicks = currentProcess.StartTime
+                        .ToUniversalTime().Ticks;
+                using (var searcher = new ManagementObjectSearcher(
+                           "SELECT ProcessId,CommandLine FROM Win32_Process " +
+                           "WHERE Name='MTTFTest.Watchdog.exe'"))
+                using (var processes = searcher.Get())
+                {
+                    foreach (ManagementObject item in processes)
+                    {
+                        using (item)
+                        {
+                            var processId = Convert.ToInt32(
+                                item["ProcessId"],
+                                CultureInfo.InvariantCulture);
+                            if (processId <= 0 ||
+                                processId == Process.GetCurrentProcess().Id)
+                                continue;
+                            var commandLine = item["CommandLine"] as string;
+                            var sessionId = ReadCommandLineArgument(
+                                commandLine,
+                                "--session");
+                            if (!Guid.TryParseExact(
+                                    sessionId ?? string.Empty,
+                                    "N",
+                                    out _) ||
+                                string.Equals(
+                                    sessionId,
+                                    current.SessionId,
+                                    StringComparison.Ordinal))
+                                continue;
+                            if (!int.TryParse(
+                                    ReadCommandLineArgument(commandLine, "--parent-pid"),
+                                    NumberStyles.Integer,
+                                    CultureInfo.InvariantCulture,
+                                    out var parentPid) || parentPid <= 0 ||
+                                !long.TryParse(
+                                    ReadCommandLineArgument(
+                                        commandLine,
+                                        "--parent-start-ticks"),
+                                    NumberStyles.Integer,
+                                    CultureInfo.InvariantCulture,
+                                    out var parentStart) || parentStart <= 0)
+                                continue;
+                            var journal = ReadCommandLineArgument(
+                                commandLine,
+                                "--journal-directory");
+                            var executable = ReadCommandLineArgument(
+                                commandLine,
+                                "--executable");
+                            if (string.IsNullOrWhiteSpace(journal) ||
+                                string.IsNullOrWhiteSpace(executable))
+                                continue;
+                            journal = WatchdogJournalPaths.ValidateProjectDirectory(journal);
+                            executable = Path.GetFullPath(executable);
+                            using (var process = Process.GetProcessById(processId))
+                            {
+                                if (process.HasExited) continue;
+                                var candidateStartUtcTicks = process.StartTime
+                                    .ToUniversalTime().Ticks;
+                                if (!StaleSidecarCleanupPolicy.CanRetire(
+                                        SameProductScope(
+                                            current.ExecutablePath,
+                                            executable),
+                                        candidateStartUtcTicks <
+                                            currentStartUtcTicks,
+                                        candidateIdentityExact: true,
+                                        ObserveProcessIdentity(
+                                            parentPid,
+                                            parentStart)))
+                                    continue;
+                                candidates.Add(new StaleSidecarCandidate
+                                {
+                                    ProcessId = processId,
+                                    ProcessStartUtcTicks = candidateStartUtcTicks,
+                                    ParentProcessId = parentPid,
+                                    ParentProcessStartUtcTicks = parentStart,
+                                    SessionId = sessionId,
+                                    JournalDirectory = journal,
+                                    MainExecutablePath = executable
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // WMI不可用时不影响当前会话启动；不做任何猜测性进程操作。
+            }
+            return candidates;
+        }
+
+        private static string ReadCommandLineArgument(
+            string commandLine,
+            string name)
+        {
+            if (string.IsNullOrWhiteSpace(commandLine) ||
+                string.IsNullOrWhiteSpace(name))
+                return string.Empty;
+            var match = Regex.Match(
+                commandLine,
+                "(?:^|\\s)" + Regex.Escape(name) +
+                "\\s+(?:\"(?<quoted>[^\"]*)\"|(?<plain>\\S+))",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            return !match.Success
+                ? string.Empty
+                : match.Groups["quoted"].Success
+                    ? match.Groups["quoted"].Value
+                    : match.Groups["plain"].Value;
+        }
+
+        private static DurableRelaunchProcessObservation ObserveProcessIdentity(
+            int processId,
+            long processStartUtcTicks)
+        {
+            if (processId <= 0 || processStartUtcTicks <= 0)
+                return DurableRelaunchProcessObservation.Unknown;
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    if (process.HasExited)
+                        return DurableRelaunchProcessObservation.Dead;
+                    return process.StartTime.ToUniversalTime().Ticks ==
+                           processStartUtcTicks
+                        ? DurableRelaunchProcessObservation.Alive
+                        : DurableRelaunchProcessObservation.IdentityMismatch;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return DurableRelaunchProcessObservation.Dead;
+            }
+            catch
+            {
+                return DurableRelaunchProcessObservation.Unknown;
+            }
+        }
+
+        private static bool SameProductScope(string current, string candidate)
+        {
+            try
+            {
+                if (!File.Exists(current) || !File.Exists(candidate)) return false;
+                var left = FileVersionInfo.GetVersionInfo(current);
+                var right = FileVersionInfo.GetVersionInfo(candidate);
+                var leftOriginal = string.IsNullOrWhiteSpace(left.OriginalFilename)
+                    ? Path.GetFileName(current)
+                    : left.OriginalFilename;
+                var rightOriginal = string.IsNullOrWhiteSpace(right.OriginalFilename)
+                    ? Path.GetFileName(candidate)
+                    : right.OriginalFilename;
+                return string.Equals(
+                           leftOriginal,
+                           rightOriginal,
+                           StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(
+                           left.ProductName ?? string.Empty,
+                           right.ProductName ?? string.Empty,
+                           StringComparison.Ordinal) &&
+                       string.Equals(
+                           left.CompanyName ?? string.Empty,
+                           right.CompanyName ?? string.Empty,
+                           StringComparison.Ordinal);
+            }
+            catch
+            {
+                return false;
             }
         }
 

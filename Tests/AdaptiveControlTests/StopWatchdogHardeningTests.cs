@@ -26,6 +26,8 @@ namespace AdaptiveControlTests
                 StopAllOwnsResponsiveControlRepair, ref passed);
             Run("窗口响应但控制修复未确认时五秒后自动接管",
                 ResponsiveControlRepairHasBoundedDeadline, ref passed);
+            Run("新会话只清退同产品且旧主进程已退出的孤儿看门狗",
+                StaleSidecarCleanupIsIdentityBound, ref passed);
             Run("同一运行多通道形式槽失败只建立一个根停止事务",
                 FormalSlotFailuresCoalesceByRun, ref passed);
             Run("恢复过渡窗显示详细倒计时且仅在稳定态隐藏", RecoveryTransitionPresentationIsDeterministic, ref passed);
@@ -146,6 +148,38 @@ namespace AdaptiveControlTests
             Assert(stopOwned.TransferredToStopTransaction &&
                    !recovered.TakeoverConfirmed && next.RequestStopAll,
                 "StopAll接管或逻辑恢复后未正确复位响应修复事务");
+        }
+
+        private static void StaleSidecarCleanupIsIdentityBound()
+        {
+            Assert(StaleSidecarCleanupPolicy.CanRetire(
+                    sameProductScope: true,
+                    candidateStartedEarlier: true,
+                    candidateIdentityExact: true,
+                    supervisedProcessObservation:
+                        DurableRelaunchProcessObservation.Dead),
+                "同产品孤儿看门狗未能自动清退");
+            Assert(!StaleSidecarCleanupPolicy.CanRetire(
+                       true,
+                       true,
+                       true,
+                       DurableRelaunchProcessObservation.Alive) &&
+                   !StaleSidecarCleanupPolicy.CanRetire(
+                       false,
+                       true,
+                       true,
+                       DurableRelaunchProcessObservation.Dead) &&
+                   !StaleSidecarCleanupPolicy.CanRetire(
+                       true,
+                       false,
+                       true,
+                       DurableRelaunchProcessObservation.Dead) &&
+                   !StaleSidecarCleanupPolicy.CanRetire(
+                       true,
+                       true,
+                       false,
+                       DurableRelaunchProcessObservation.Dead),
+                "活动主进程、其他产品、新进程或身份不明的Sidecar被误清退");
         }
 
         private static void FormalSlotFailuresCoalesceByRun()

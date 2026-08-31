@@ -28,6 +28,21 @@ namespace MTTFTest.Watchdog.Protocol
         }
     }
 
+    public static class StaleSidecarCleanupPolicy
+    {
+        public static bool CanRetire(
+            bool sameProductScope,
+            bool candidateStartedEarlier,
+            bool candidateIdentityExact,
+            DurableRelaunchProcessObservation supervisedProcessObservation)
+        {
+            return sameProductScope && candidateStartedEarlier &&
+                   candidateIdentityExact &&
+                   WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(
+                       supervisedProcessObservation);
+        }
+    }
+
     public sealed class ResponsiveControlRepairDecision
     {
         public bool RequestStopAll { get; internal set; }
