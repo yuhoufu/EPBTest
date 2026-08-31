@@ -1639,8 +1639,9 @@ namespace AdaptiveControlTests
             Assert(backwardStep != null && backwardStep.Direction == "Backward" &&
                    Math.Abs(backwardStep.StepMilliseconds + 1500) < 0.001,
                 "-1.5秒墙钟跳变未被检测");
-            Assert(EpbManager.IsDaqClockRecoveryTrigger("DaqWallClockStep"),
-                "墙钟跳变只被记录日志，未升级为DAQ时间代次恢复触发器");
+            Assert(!EpbManager.IsDaqClockRecoveryTrigger("DaqWallClockStep") &&
+                   !EpbManager.RequiresDaqTaskRecreate("DaqWallClockStep"),
+                "墙钟跳变错误升级为DAQ任务或机械恢复触发器");
 
             var defaultThreshold = new WallClockStepDetector();
             defaultThreshold.Observe(utc, 3000, 1000);

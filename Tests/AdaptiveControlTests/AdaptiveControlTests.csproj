@@ -45,6 +45,7 @@
     <Reference Include="System.Xml" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Drawing" />
+    <Reference Include="System.Net.Http" />
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
   <ItemGroup>
@@ -91,6 +92,7 @@
     <Compile Include="WatchdogJournalStorageTests.cs" />
     <Compile Include="WatchdogWinFormsUiProductionTests.cs" />
     <Compile Include="WatchdogSafetyClosureV39Tests.cs" />
+    <Compile Include="V213043RecoveryTests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -148,6 +150,16 @@
     <ProjectReference Include="..\..\MTTFTest.Watchdog\MTTFTest.Watchdog.csproj">
       <Project>{DA67689F-B6CB-4F88-A728-8C405E321AEA}</Project>
       <Name>MTTFTest.Watchdog</Name>
+      <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\MTTFTest.SafetyAgent\MTTFTest.SafetyAgent.csproj">
+      <Project>{2F691519-C5A2-4A90-A05A-9B4E739D7E43}</Project>
+      <Name>MTTFTest.SafetyAgent</Name>
+      <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\MTTFTest.SafetyHardware\MTTFTest.SafetyHardware.csproj">
+      <Project>{E3C70F37-05C0-49FC-902A-66DE352F1F43}</Project>
+      <Name>MTTFTest.SafetyHardware</Name>
       <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
     </ProjectReference>
     <ProjectReference Include="..\..\MTTfTest\MTTfTest.csproj">

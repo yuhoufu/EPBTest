@@ -903,11 +903,12 @@ namespace AdaptiveControlTests
                 "后台消费者/所有权移交故障仍错误重建健康NI任务");
             Assert(!EpbManager.RequiresDaqTaskRecreate("DaqCallbackStale"),
                 "短暂回调停顿仍被强制Stop/Start，未先复核已自行恢复的新鲜回调");
-            Assert(EpbManager.RequiresDaqTaskRecreate("DaqClockModelInvalid"),
-                "时钟模型失效未要求DAQ任务重建");
-            Assert(EpbManager.RequiresDaqTaskRecreate("DaqWallClockStep") &&
-                   EpbManager.IsDaqClockRecoveryTrigger("DaqWallClockStep"),
-                "墙钟跳变未进入时钟代次重建和加严新鲜度验证");
+            Assert(!EpbManager.RequiresDaqTaskRecreate("DaqClockModelInvalid") &&
+                   EpbManager.IsDaqClockRecoveryTrigger("DaqClockModelInvalid"),
+                "孤立时钟模型失效未被限制为重新建模观察");
+            Assert(!EpbManager.RequiresDaqTaskRecreate("DaqWallClockStep") &&
+                   !EpbManager.IsDaqClockRecoveryTrigger("DaqWallClockStep"),
+                "墙钟跳变仍触发DAQ任务或机械恢复");
         }
 
         private static void DaqSelfMaintenancePolicy()

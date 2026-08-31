@@ -125,9 +125,23 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--v213043-recovery", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += V213043RecoveryTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--stop-production-seam", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += StopSafetyProductionSeamTests.RunProductionAcceptance();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--stop-safety-unit", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += StopSafetyProductionSeamTests.RunUnitTests();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -486,16 +500,25 @@ namespace AdaptiveControlTests
                     return 0;
                 }
 
+                // This suite owns process-wide safety admission state. Run it before the
+                // watchdog/field suites that intentionally leave sticky fail-closed evidence.
+                _passed += StopSafetyProductionSeamTests.RunUnitTests();
+                // The realtime suite measures cooperative scheduling and must run before
+                // persistence stress suites intentionally leave background drain work queued.
+                _passed += DaqRealtimeControlTests.RunAll();
+                // Recovery coordination owns process-wide owner/preemption registries. Run it
+                // before broader controller suites that intentionally leave terminal evidence.
+                _passed += RecoveryCoordinationTests.RunAll();
                 _passed += CycleAttemptLifecycleTests.RunAll();
                 _passed += PowerSupplyTelemetryRecorderTests.RunAll();
                 _passed += HistoricalStorageBudgetTests.RunAll();
                 _passed += WatchdogJournalStorageTests.RunAll();
                 _passed += WatchdogSafetyClosureV39Tests.RunAll();
+                _passed += V213043RecoveryTests.RunAll();
                 _passed += RecoveryFailureReceiptProtocolTests.RunAll();
                 _passed += WatchdogHostIntegrationTests.RunAll();
                 _passed += FieldWaveformReplayTests.RunAll();
                 _passed += StopWatchdogHardeningTests.RunAll();
-                _passed += StopSafetyProductionSeamTests.RunUnitTests();
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
                 _passed += FormalBatchSlotCoordinatorTests.RunAll();
                 Run("正常夹紧", NormalClamp);
@@ -700,13 +723,11 @@ namespace AdaptiveControlTests
                 Run("写盘短视图延迟映射与事务切换", DaqPersistenceCoordinatorTests.DiskWriterUsesLazyTransactionalViewsAndCanResetThem);
                 Run("新进程收口历史running圈", DaqPersistenceCoordinatorTests.DiskWriterClosesInterruptedRunningCyclesOnStartup);
                 Run("六通道2kHz双DAQ真实写盘实时负载", DaqPersistenceCoordinatorTests.SixChannelRealtimePersistenceStaysAhead);
-                _passed += DaqRealtimeControlTests.RunAll();
                 _passed += CalibrationMathTests.RunAll();
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += PswTcpClientTimeoutTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
-                _passed += RecoveryCoordinationTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }

@@ -311,13 +311,29 @@ namespace AdaptiveControlTests
                 File.WriteAllText(Path.Combine(projectConfig, "TestConfig.xml"),
                     "<Config Source=\"Project\" />");
                 var handoffId = Guid.NewGuid().ToString("N");
+                var sessionId = Guid.NewGuid().ToString("N");
+                var permitId = Guid.NewGuid().ToString("N");
+                var runtime = new SafetyRuntimeSnapshot
+                {
+                    SampleRateHz = 2000,
+                    SamplesPerChannel = 20,
+                    PressureChannels = new[] { "Pressure_1" },
+                    ReleaseSafePressureBar = new[] { 5.0 },
+                    PressureSampleMaxAgeMs = 250,
+                    ReleaseStableMs = 100,
+                    ReleaseTimeoutMs = 2000
+                };
                 var created = WatchdogSafetyConfigSnapshotStore.Create(
-                    journal, handoffId, appConfig, projectConfig, "2.13.0.42-test");
-                Assert(created.Succeeded && created.Manifest.SchemaVersion == 1 &&
-                       created.Manifest.Files.Length == required.Length &&
+                    journal, handoffId, appConfig, projectConfig, "2.13.0.43-test",
+                    runtime, sessionId, 1, 1, 1, permitId,
+                    new string('a', 64), new string('b', 64));
+                Assert(created.Succeeded && created.Manifest.SchemaVersion == 2 &&
+                       created.Manifest.Files.Length == required.Length + 1 &&
                        created.Manifest.Files.Any(file =>
                            file.RelativePath == "TestConfig.xml" &&
                            file.Role == "ProjectTestConfig") &&
+                       created.Runtime.SampleRateHz == 2000 &&
+                       created.Runtime.SamplesPerChannel == 20 &&
                        File.ReadAllText(Path.Combine(
                            created.ConfigDirectory, "TestConfig.xml")).Contains("Project"),
                     "不可变配置快照没有包含完整硬件配置或项目TestConfig覆盖。");
@@ -325,7 +341,7 @@ namespace AdaptiveControlTests
                     journal, handoffId, created.ConfigDirectory,
                     created.ManifestPath, created.ManifestSha256);
                 Assert(verified.Succeeded,
-                    "未修改的配置快照未能通过schema 1清单验证。");
+                    "未修改的配置快照未能通过schema 2清单验证。");
                 var wrongHandoff = WatchdogSafetyConfigSnapshotStore.Validate(
                     journal, Guid.NewGuid().ToString("N"),
                     created.ConfigDirectory, created.ManifestPath,
@@ -346,7 +362,9 @@ namespace AdaptiveControlTests
                 File.Delete(Path.Combine(appConfig, "AOConfig.xml"));
                 var incomplete = WatchdogSafetyConfigSnapshotStore.Create(
                     journal, Guid.NewGuid().ToString("N"), appConfig,
-                    projectConfig, "2.13.0.42-test");
+                    projectConfig, "2.13.0.43-test", runtime,
+                    sessionId, 1, 1, 2, Guid.NewGuid().ToString("N"),
+                    new string('a', 64), new string('b', 64));
                 Assert(!incomplete.Succeeded &&
                        incomplete.Error.Contains("SnapshotIncomplete"),
                     "配置源缺失AOConfig.xml时仍创建了不完整安全快照。");

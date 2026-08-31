@@ -128,6 +128,7 @@ namespace AdaptiveControlTests
             var handoff = new WatchdogSafetyHandoffReceipt
             {
                 State = WatchdogSafetyHandoffState.Completed,
+                Stage = WatchdogSafetyStage.Completed,
                 MotorsOff = true,
                 PowerOff = true,
                 PressureSafe = true,
