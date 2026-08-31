@@ -27,6 +27,7 @@ $expectedPublishedConfigs = @(
     'Config/DOConfig.xml',
     'Config/PowerSupplyConfig.xml',
     'Config/TestConfig.xml',
+    'Config/UnattendedAlarmConfig.xml',
     'Config/UIConfig.xml'
 )
 
@@ -235,22 +236,75 @@ Assert-LegacyCompileItems -ProjectRelativePath 'Controller\Controller.csproj' -R
     'UiCurveContinuityPolicy.cs',
     'UiLogDisplayPolicy.cs',
     'TaskSupervisor.cs',
-    'RecoveryTaskRegistry.cs'
+    'RecoveryTaskRegistry.cs',
+    'DaqRecoveryRejoinGate.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'IO.NI\IO.NI.csproj' -RequiredItems @(
     'CoalescingTaskSupervisor.cs',
-    'HostRuntimeProbe.cs'
+    'HostRuntimeProbe.cs',
+    'DaqRuntimeConfigException.cs'
+)
+Assert-LegacyCompileItems -ProjectRelativePath 'Config\Config.csproj' -RequiredItems @(
+    'DaqRuntimeSettings.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTfTest\MTTfTest.csproj' -RequiredItems @(
     'Editors\ToggleButton.cs',
     'FrmEpbMainMonitor.CloseOverlay.cs',
-    'WatchdogRuntime.cs',
-    'WatchdogSafetyShutdownWorker.cs'
+    'WatchdogRuntime.cs'
+)
+Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.SafetyAgent\MTTFTest.SafetyAgent.csproj' -RequiredItems @(
+    'Program.cs',
+    'SafetyAgentRunner.cs',
+    'ProductionSafetyHardware.cs'
+)
+Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.SafetyHardware\MTTFTest.SafetyHardware.csproj' -RequiredItems @(
+    'SafetyHardware.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'Watchdog.Protocol\Watchdog.Protocol.csproj' -RequiredItems @(
     'WatchdogClosingTombstone.cs',
-    'WatchdogSafetyReceipts.cs'
+    'WatchdogSafetyReceipts.cs',
+    'WatchdogSafetyConfigSnapshot.cs',
+    'RecoveryReplacementTransaction.cs'
 )
+Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.Watchdog\MTTFTest.Watchdog.csproj' -RequiredItems @(
+    'UnattendedAlarmSink.cs'
+)
+
+$snapshotSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyConfigSnapshot.cs') -Raw
+$receiptSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyReceipts.cs') -Raw
+$programSource = Get-Content -LiteralPath (Join-Path $repo 'MTTfTest\Program.cs') -Raw
+if ($snapshotSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*2' -or
+    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*3') {
+    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt v3 支持。'
+}
+if ($programSource -match 'watchdog-safety-shutdown' -or
+    (Test-Path -LiteralPath (Join-Path $repo 'MTTfTest\WatchdogSafetyShutdownWorker.cs'))) {
+    throw '拒绝发布：主程序仍包含旧版 SafetyWorker 启动入口。'
+}
+
+[xml]$safetyAgentProject = Get-Content -LiteralPath `
+    (Join-Path $repo 'MTTFTest.SafetyAgent\MTTFTest.SafetyAgent.csproj') -Raw
+$safetyAgentReferences = @($safetyAgentProject.Project.ItemGroup.ProjectReference |
+    ForEach-Object { [string]$_.Include } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$expectedSafetyAgentReferences = @(
+    '..\MTTFTest.SafetyHardware\MTTFTest.SafetyHardware.csproj',
+    '..\Watchdog.Protocol\Watchdog.Protocol.csproj'
+)
+if ($safetyAgentReferences.Count -ne $expectedSafetyAgentReferences.Count -or
+    @($safetyAgentReferences | Where-Object {
+        $_ -notin $expectedSafetyAgentReferences }).Count -ne 0) {
+    throw "拒绝发布：SafetyAgent项目依赖越界：$($safetyAgentReferences -join ',')"
+}
+[xml]$safetyHardwareProject = Get-Content -LiteralPath `
+    (Join-Path $repo 'MTTFTest.SafetyHardware\MTTFTest.SafetyHardware.csproj') -Raw
+$safetyHardwareReferences = @($safetyHardwareProject.Project.ItemGroup.ProjectReference |
+    ForEach-Object { [string]$_.Include } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+if ($safetyHardwareReferences.Count -ne 1 -or
+    $safetyHardwareReferences[0] -ne '..\PowerSupply.Core\PowerSupply.Core.csproj') {
+    throw "拒绝发布：SafetyHardware项目依赖越界：$($safetyHardwareReferences -join ',')"
+}
 
 $mainProjectPath = Join-Path $repo 'MTTfTest\MTTfTest.csproj'
 [xml]$mainProjectXml = Get-Content -LiteralPath $mainProjectPath -Raw
@@ -326,9 +380,38 @@ $exePath = Join-Path $output 'MTTFTest.exe'
 $watchdogExePath = Join-Path $output 'MTTFTest.Watchdog.exe'
 $watchdogProtocolPath = Join-Path $output 'MTTFTest.Watchdog.Protocol.dll'
 $watchdogClientPath = Join-Path $output 'MTTFTest.Watchdog.Client.dll'
-foreach ($requiredSidecar in @($watchdogExePath, $watchdogProtocolPath, $watchdogClientPath)) {
+$safetyAgentExePath = Join-Path $output 'MTTFTest.SafetyAgent.exe'
+$safetyHardwarePath = Join-Path $output 'MTTFTest.SafetyHardware.dll'
+foreach ($requiredSidecar in @(
+        $watchdogExePath,
+        $watchdogProtocolPath,
+        $watchdogClientPath,
+        $safetyAgentExePath,
+        $safetyHardwarePath)) {
     if (-not (Test-Path -LiteralPath $requiredSidecar -PathType Leaf)) {
         throw "Release 构建缺少独立看门狗文件：$requiredSidecar"
+    }
+}
+$safetyAgentFileVersion = (Get-Item -LiteralPath $safetyAgentExePath).VersionInfo.FileVersion
+if ($safetyAgentFileVersion -ne $expectedProductVersion) {
+    throw "SafetyAgent 文件版本身份不一致：期望 $expectedProductVersion，实际 $safetyAgentFileVersion"
+}
+$safetyAgentAssemblyName = [Reflection.AssemblyName]::GetAssemblyName($safetyAgentExePath).Name
+if ($safetyAgentAssemblyName -ne 'MTTFTest.SafetyAgent') {
+    throw "SafetyAgent 程序集名称不一致：$safetyAgentAssemblyName"
+}
+$versionedComponents = @(
+    $watchdogExePath,
+    $watchdogProtocolPath,
+    $watchdogClientPath,
+    $safetyAgentExePath,
+    $safetyHardwarePath,
+    (Join-Path $output 'Controller.dll')
+)
+foreach ($component in $versionedComponents) {
+    $componentVersion = (Get-Item -LiteralPath $component).VersionInfo.FileVersion
+    if ($componentVersion -ne $expectedProductVersion) {
+        throw "组件版本不一致：$component 期望 $expectedProductVersion，实际 $componentVersion"
     }
 }
 $actualProductVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
@@ -506,6 +589,11 @@ $publishedConfigHash = Get-AggregateFileHash $publishedConfigs
 if ($publishedConfigHash -ne $configHash) {
     throw "发布配置与编译身份不一致：Source=$configHash Output=$publishedConfigHash"
 }
+
+$deploymentDirectory = Join-Path $output 'Deployment'
+[void](New-Item -ItemType Directory -Path $deploymentDirectory -Force)
+Copy-Item -LiteralPath (Join-Path $repo 'Tools\Install-EPB-UnattendedAlarm.ps1') `
+    -Destination (Join-Path $deploymentDirectory 'Install-EPB-UnattendedAlarm.ps1') -Force
 
 $files = Get-RecursivePackageFiles -Root $output `
     -ExcludedRelativePaths @('build-identity.json', 'SHA256SUMS.txt')

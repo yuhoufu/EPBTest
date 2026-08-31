@@ -13,6 +13,7 @@ $expectedPublishedConfigs = @(
     'Config/DOConfig.xml',
     'Config/PowerSupplyConfig.xml',
     'Config/TestConfig.xml',
+    'Config/UnattendedAlarmConfig.xml',
     'Config/UIConfig.xml'
 )
 
