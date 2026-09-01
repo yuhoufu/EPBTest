@@ -9,7 +9,7 @@ if errorlevel 1 (
 )
 echo 即将卸载监督服务、登录任务和桌面快捷方式。
 echo 程序槽、项目数据和事故证据将保留。
-set "MTTFTEST_DEPLOY_SCRIPT=%~dp0Package\Deployment\Install-MTTFTest-Unattended.ps1"
+set "MTTFTEST_DEPLOY_SCRIPT=%~dp0快捷部署安装器.ps1"
 set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Uninstall -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
 if errorlevel 1 goto :failed

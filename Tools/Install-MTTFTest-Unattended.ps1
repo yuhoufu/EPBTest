@@ -188,13 +188,22 @@ function Install-ServiceAndAgent([string]$Root) {
     $sessionAgent = Join-Path $current 'MTTFTest.SessionAgent.exe'
     & sc.exe query $serviceName *> $null
     if ($LASTEXITCODE -eq 0) {
-        & sc.exe config $serviceName "binPath= `"$watchdog`"" 'start= delayed-auto' 'obj= LocalSystem' | Out-Host
+        & sc.exe config $serviceName `
+            'binPath=' "`"$watchdog`"" `
+            'start=' 'delayed-auto' `
+            'obj=' 'LocalSystem' | Out-Host
     }
     else {
-        & sc.exe create $serviceName "binPath= `"$watchdog`"" 'start= delayed-auto' 'obj= LocalSystem' 'DisplayName= MTTFTest Unattended Supervisor' | Out-Host
+        & sc.exe create $serviceName `
+            'binPath=' "`"$watchdog`"" `
+            'start=' 'delayed-auto' `
+            'obj=' 'LocalSystem' `
+            'DisplayName=' 'MTTFTest Unattended Supervisor' | Out-Host
     }
     if ($LASTEXITCODE -ne 0) { throw "监督服务安装失败：$LASTEXITCODE" }
-    & sc.exe failure $serviceName 'reset= 0' 'actions= restart/5000/restart/15000/restart/60000' | Out-Host
+    & sc.exe failure $serviceName `
+        'reset=' '0' `
+        'actions=' 'restart/5000/restart/15000/restart/60000' | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "SCM 恢复策略设置失败：$LASTEXITCODE" }
     & sc.exe failureflag $serviceName 1 | Out-Host
 

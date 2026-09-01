@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 2
+$bundleRevision = 3
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
@@ -58,6 +58,14 @@ try {
     foreach ($file in Get-ChildItem -LiteralPath $quickSource -File) {
         Copy-Item -LiteralPath $file.FullName -Destination $staging -Force
     }
+    # 外层安装器可以独立修复部署逻辑，同时保持已验证的内层程序包完全不可变。
+    # 使用 UTF-8 BOM 兼容 Windows PowerShell 5.1；批处理仍显式按 UTF-8 读取。
+    $quickInstallerSource = Join-Path $PSScriptRoot 'Install-MTTFTest-Unattended.ps1'
+    $quickInstallerDestination = Join-Path $staging '快捷部署安装器.ps1'
+    [IO.File]::WriteAllText(
+        $quickInstallerDestination,
+        [IO.File]::ReadAllText($quickInstallerSource, [Text.Encoding]::UTF8),
+        (New-Object Text.UTF8Encoding($true)))
     # cmd.exe on older field PCs can split UTF-8 batch commands when the file
     # only contains LF.  Always materialize the outer launchers as UTF-8/CRLF.
     foreach ($commandFile in Get-ChildItem -LiteralPath $staging -Filter '*.cmd' -File) {
