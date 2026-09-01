@@ -582,6 +582,24 @@ finally {
     }
 }
 
+$deploymentContractOutput = @(& (Join-Path `
+    $PSScriptRoot 'Test-MTTFTest-UnattendedDeployment.ps1') 2>&1)
+foreach ($line in $deploymentContractOutput) { Write-Host ([string]$line) }
+$deploymentContractSummary = @($deploymentContractOutput |
+    ForEach-Object { [string]$_ } |
+    Where-Object { $_ -match '^PASS\s+UnattendedDeploymentSlotContract\s+2/2$' } |
+    Select-Object -Last 1)
+if ($deploymentContractSummary.Count -ne 1) {
+    throw '无人值守部署槽契约测试未通过。'
+}
+$quickDeployParseSummary = @($deploymentContractOutput |
+    ForEach-Object { [string]$_ } |
+    Where-Object { $_ -match '^PASS\s+QuickDeployCommandParse\s+3/3$' } |
+    Select-Object -Last 1)
+if ($quickDeployParseSummary.Count -ne 1) {
+    throw '快捷部署批处理解析测试未通过。'
+}
+
 # 回归期间也可能发生源码切换或编辑；identity 只能在第二次快照仍与开头一致且
 # 工作树完全干净时写入。该门禁有意不受 -AllowDirtyCandidate 绕过。
 Assert-SourceSnapshot -ExpectedCommit $commit `
@@ -596,6 +614,8 @@ $verification = [ordered]@{
     persistenceSoakSeconds = $PersistenceSoakSeconds
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
+    unattendedDeploymentSlotContract = $deploymentContractSummary[0].Trim()
+    quickDeployCommandParse = $quickDeployParseSummary[0].Trim()
 }
 
 $publishedConfigs = New-OrdinalPathMap

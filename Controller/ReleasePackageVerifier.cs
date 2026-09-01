@@ -100,15 +100,20 @@ namespace Controller
                     releaseStatus,
                     "FORMAL_RELEASE_CANDIDATE",
                     StringComparison.Ordinal);
+                var isFieldCandidate = string.Equals(
+                    releaseStatus,
+                    "FIELD_CANDIDATE_PENDING_168H",
+                    StringComparison.Ordinal);
+                var isApprovedCandidate = isFormalCandidate || isFieldCandidate;
                 var isVs2022Candidate = string.Equals(
                     releaseStatus,
                     "VS2022_RELEASE_CANDIDATE",
                     StringComparison.Ordinal);
-                if (!isFormalCandidate && !isVs2022Candidate)
+                if (!isApprovedCandidate && !isVs2022Candidate)
                     return Failed(
                         "PackageNotApproved",
                         $"Status={releaseStatus} Approved={approved} GitDirty={gitDirty}");
-                if (isFormalCandidate && (!approved || gitDirty))
+                if (isApprovedCandidate && (!approved || gitDirty))
                     return Failed(
                         "PackageNotApproved",
                         $"Status={releaseStatus} Approved={approved} GitDirty={gitDirty}");
@@ -118,7 +123,7 @@ namespace Controller
                         "VS2022 直接候选不得声明 deploymentApproved=true。");
 
                 var identityMatches = EqualsOrdinal(productVersion, expectedProductVersion);
-                if (isFormalCandidate)
+                if (isApprovedCandidate)
                 {
                     identityMatches = identityMatches &&
                         EqualsOrdinalIgnoreCase(gitCommit, expectedGitCommit) &&
@@ -207,10 +212,14 @@ namespace Controller
                 return new ReleasePackageVerification
                 {
                     Verified = true,
-                    Code = isFormalCandidate ? "Verified" : "VerifiedVs2022",
+                    Code = isFormalCandidate
+                        ? "Verified"
+                        : isFieldCandidate ? "VerifiedFieldCandidate" : "VerifiedVs2022",
                     Detail = isFormalCandidate
                         ? "正式发布身份、不可变程序文件哈希与可编辑配置集合一致。"
-                        : "VS2022 独立候选的程序文件哈希与配置集合一致；未执行正式发布全回归，不得作为生产放行证据。",
+                        : isFieldCandidate
+                            ? "现场候选身份、不可变程序文件哈希与可编辑配置集合一致；通过 168 小时长稳前保持现场候选状态。"
+                            : "VS2022 独立候选的程序文件哈希与配置集合一致；未执行正式发布全回归，不得作为生产放行证据。",
                     VerifiedFileCount = verified
                 };
             }
@@ -241,7 +250,11 @@ namespace Controller
         {
             if (string.IsNullOrWhiteSpace(relativePath)) return false;
             var normalized = relativePath.Replace('\\', '/').TrimStart('/');
-            return StartsWithDirectory(normalized, "DataStore") ||
+            return string.Equals(
+                       normalized,
+                       "package-slot.v5.json",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   StartsWithDirectory(normalized, "DataStore") ||
                    StartsWithDirectory(normalized, "Data") ||
                    StartsWithDirectory(normalized, "log") ||
                    StartsWithDirectory(normalized, "IncidentSnapshots-Fallback");

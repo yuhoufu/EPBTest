@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 5
+$bundleRevision = 6
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
@@ -17,6 +17,9 @@ if (-not (Test-Path -LiteralPath $release -PathType Container)) {
     -ReleaseDirectory $release -RequireDeploymentApproved | Out-Null
 $identity = Get-Content -LiteralPath (Join-Path $release 'build-identity.json') `
     -Raw | ConvertFrom-Json
+if ([string]$identity.productVersion -ne 'V2.14.1.0') {
+    throw "快捷部署产品版本不一致：$($identity.productVersion)"
+}
 if ([string]$identity.releaseStatus -ne 'FIELD_CANDIDATE_PENDING_168H') {
     throw "快捷部署只接受现场候选包：$($identity.releaseStatus)"
 }
@@ -35,7 +38,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 $outputRootFull = [IO.Path]::GetFullPath($OutputRoot)
 [void](New-Item -ItemType Directory -Path $outputRootFull -Force)
 $shortCommit = ([string]$identity.gitCommit).Substring(0, 12)
-$name = "V2.14.0.0_快捷部署包_${shortCommit}_FIELD_CANDIDATE_QUICKDEPLOY_R$bundleRevision"
+$name = "$($identity.productVersion)_快捷部署包_${shortCommit}_FIELD_CANDIDATE_QUICKDEPLOY_R$bundleRevision"
 $output = [IO.Path]::GetFullPath((Join-Path $outputRootFull $name))
 $prefix = $outputRootFull.TrimEnd('\', '/') + '\'
 if (-not $output.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {

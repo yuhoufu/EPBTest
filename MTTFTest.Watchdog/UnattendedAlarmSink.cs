@@ -42,7 +42,7 @@ namespace MTTFTest.Watchdog
             public string Code { get; set; }
             public string Message { get; set; }
             public string MachineName { get; set; }
-            public string ProductVersion { get; set; } = "V2.14.0.0";
+            public string ProductVersion { get; set; } = "V2.14.1.0";
             public string SessionId { get; set; }
             public long PermitGeneration { get; set; }
             public string FailureDomain { get; set; }

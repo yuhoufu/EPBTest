@@ -2043,7 +2043,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.12.0.32";
+                const string version = "V2.14.1.0";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2063,6 +2063,10 @@ namespace AdaptiveControlTests
                     $"  \"configSha256\": \"{configSha}\"\n" +
                     "}\n");
                 WriteReleaseChecksums(root);
+
+                // 安装器在完整包校验后写入 DPAPI 槽描述；它由 Supervisor 独立验证，
+                // 不属于发布包不可变文件集，也不能让主程序把已安装包误判为混包。
+                File.WriteAllText(Path.Combine(root, "package-slot.v5.json"), "sealed-by-supervisor");
 
                 var valid = ReleasePackageVerifier.VerifyDirectory(
                     root, version, commit, "false", buildUtc, configSha);
@@ -2104,6 +2108,50 @@ namespace AdaptiveControlTests
                     "发布目录出现清单外配置后仍被放行：" + unexpectedConfig);
 
                 File.Delete(Path.Combine(root, "Config", "Backup.xml"));
+                File.WriteAllText(
+                    Path.Combine(root, "build-identity.json"),
+                    "{\n" +
+                    $"  \"productVersion\": \"{version}\",\n" +
+                    "  \"releaseStatus\": \"FIELD_CANDIDATE_PENDING_168H\",\n" +
+                    "  \"deploymentApproved\": true,\n" +
+                    $"  \"gitCommit\": \"{commit}\",\n" +
+                    "  \"gitDirty\": false,\n" +
+                    $"  \"buildUtc\": \"{buildUtc}\",\n" +
+                    $"  \"configSha256\": \"{configSha}\"\n" +
+                    "}\n");
+                WriteReleaseChecksums(root);
+                var fieldCandidate = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(fieldCandidate.Verified &&
+                       fieldCandidate.Code == "VerifiedFieldCandidate",
+                    "完整现场候选包未被主程序认可：" + fieldCandidate);
+
+                var fieldIdentityJson = File.ReadAllText(
+                    Path.Combine(root, "build-identity.json"));
+                File.WriteAllText(
+                    Path.Combine(root, "build-identity.json"),
+                    fieldIdentityJson.Replace(
+                        "\"deploymentApproved\": true",
+                        "\"deploymentApproved\": false"));
+                WriteReleaseChecksums(root);
+                var unapprovedFieldCandidate = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(!unapprovedFieldCandidate.Verified &&
+                       unapprovedFieldCandidate.Code == "PackageNotApproved",
+                    "未批准现场候选被错误放行：" + unapprovedFieldCandidate);
+
+                File.WriteAllText(
+                    Path.Combine(root, "build-identity.json"),
+                    fieldIdentityJson.Replace(
+                        "\"gitDirty\": false",
+                        "\"gitDirty\": true"));
+                WriteReleaseChecksums(root);
+                var dirtyFieldCandidate = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "true", buildUtc, configSha);
+                Assert(!dirtyFieldCandidate.Verified &&
+                       dirtyFieldCandidate.Code == "PackageNotApproved",
+                    "脏源码现场候选被错误放行：" + dirtyFieldCandidate);
+
                 File.WriteAllText(
                     Path.Combine(root, "build-identity.json"),
                     "{\n" +

@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
-$expectedVersion = '2.14.0.0'
+$expectedVersion = '2.14.1.0'
 $expectedReleaseStatus = 'FIELD_CANDIDATE_PENDING_168H'
 $shortcutName = 'MT EPB 试验系统 V2.14.lnk'
 
@@ -85,7 +85,28 @@ function Protect-MachineJson([object]$Value) {
     return [Convert]::ToBase64String($protected)
 }
 
-function Write-SlotDescriptor([string]$SlotPath, [string]$SlotName, [object]$Identity) {
+function Unprotect-MachineJson([string]$ProtectedPayloadBase64) {
+    Add-Type -AssemblyName System.Security
+    if ([string]::IsNullOrWhiteSpace($ProtectedPayloadBase64)) {
+        throw 'schema 5 封印载荷为空。'
+    }
+    $clear = [Security.Cryptography.ProtectedData]::Unprotect(
+        [Convert]::FromBase64String($ProtectedPayloadBase64),
+        [Text.Encoding]::UTF8.GetBytes('MTTFTest.PackageSlot.Schema5'),
+        [Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return ([Text.Encoding]::UTF8.GetString($clear) | ConvertFrom-Json)
+}
+
+function Write-SlotDescriptor(
+    [string]$SlotPath,
+    [string]$SlotName,
+    [object]$Identity,
+    [string]$CanonicalRootPath = '') {
+    $sealedRootPath = if ([string]::IsNullOrWhiteSpace($CanonicalRootPath)) {
+        [IO.Path]::GetFullPath($SlotPath)
+    } else {
+        [IO.Path]::GetFullPath($CanonicalRootPath)
+    }
     $payload = [ordered]@{
         SchemaVersion = 5
         SlotName = $SlotName
@@ -95,7 +116,8 @@ function Write-SlotDescriptor([string]$SlotPath, [string]$SlotName, [object]$Ide
         } else {
             [string]$Identity.releaseStatus
         }
-        RootPath = [IO.Path]::GetFullPath($SlotPath)
+        # 文件仍在 staging 中生成，但安全证明必须绑定原子切换后的正式槽路径。
+        RootPath = $sealedRootPath
         ManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $SlotPath 'build-identity.json') -Algorithm SHA256).Hash
         ConfigSha256 = [string]$Identity.configSha256
         CreatedUtc = [DateTime]::UtcNow.ToString('O')
@@ -111,6 +133,37 @@ function Write-SlotDescriptor([string]$SlotPath, [string]$SlotName, [object]$Ide
         $path,
         ($envelope | ConvertTo-Json -Depth 4),
         (New-Object Text.UTF8Encoding($false)))
+}
+
+function Assert-SlotDescriptor([string]$SlotPath, [string]$SlotName) {
+    $root = [IO.Path]::GetFullPath($SlotPath).TrimEnd('\', '/')
+    $descriptorPath = Join-Path $root 'package-slot.v5.json'
+    if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) {
+        throw "$SlotName 缺少 schema 5 封印描述：$descriptorPath"
+    }
+    $envelope = Get-Content -LiteralPath $descriptorPath -Raw -Encoding UTF8 |
+        ConvertFrom-Json
+    if ([int]$envelope.SchemaVersion -ne 5 -or
+        [string]$envelope.Protection -ne 'DPAPI-LocalMachine') {
+        throw "$SlotName 封印信封非法。"
+    }
+    $payload = Unprotect-MachineJson ([string]$envelope.ProtectedPayloadBase64)
+    $sealedRoot = [IO.Path]::GetFullPath([string]$payload.RootPath).TrimEnd('\', '/')
+    if ([int]$payload.SchemaVersion -ne 5 -or
+        [string]$payload.SlotName -ne $SlotName -or
+        [string]$payload.ProductVersion -ne $expectedVersion -or
+        -not [string]::Equals($sealedRoot, $root, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$SlotName 封印身份不一致：Root=$sealedRoot Expected=$root Version=$($payload.ProductVersion)"
+    }
+    $manifestHash = (Get-FileHash -LiteralPath `
+        (Join-Path $root 'build-identity.json') -Algorithm SHA256).Hash
+    if (-not [string]::Equals(
+            $manifestHash,
+            [string]$payload.ManifestSha256,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        @($payload.Files).Count -lt 1) {
+        throw "$SlotName 封印文件身份不完整或 manifest 已变化。"
+    }
 }
 
 function Write-SlotPointer([string]$Root, [string]$ActiveSlot) {
@@ -148,14 +201,15 @@ function Install-CurrentSlot([string]$Source, [string]$Root) {
     $staging = Join-Path $Root ('.current-staging-' + [Guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $staging)
     try {
+        $current = Join-Path $Root 'Current'
         Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $staging -Recurse -Force
         [void](New-Item -ItemType File -Path (Join-Path $staging 'MTTFTest.UnattendedMode.required') -Force)
         $stagingIdentity = Read-And-VerifyPackage $staging
-        Write-SlotDescriptor $staging 'Current' $stagingIdentity
-        $current = Join-Path $Root 'Current'
+        Write-SlotDescriptor $staging 'Current' $stagingIdentity $current
         $retired = Join-Path $Root ('.retired-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
         if (Test-Path -LiteralPath $current) { Move-Item -LiteralPath $current -Destination $retired }
         Move-Item -LiteralPath $staging -Destination $current
+        Assert-SlotDescriptor $current 'Current'
         if (Test-Path -LiteralPath $retired) {
             Write-Warning "旧 Current 已保留用于人工审计：$retired"
         }
@@ -224,9 +278,7 @@ function Install-ServiceAndAgent([string]$Root) {
 function Assert-Health([string]$Root) {
     $current = Join-Path $Root 'Current'
     [void](Read-And-VerifyPackage $current)
-    if (-not (Test-Path -LiteralPath (Join-Path $current 'package-slot.v5.json'))) {
-        throw 'Current 缺少 schema 5 封印描述。'
-    }
+    Assert-SlotDescriptor $current 'Current'
     if (-not (Test-Path -LiteralPath (Join-Path $Root 'package-pointer.v5.json'))) {
         throw '缺少 schema 5 双槽指针。'
     }
@@ -267,7 +319,7 @@ function Install-Shortcuts([string]$Root) {
         $shortcut.TargetPath = $target
         $shortcut.WorkingDirectory = $current
         $shortcut.IconLocation = "$target,0"
-        $shortcut.Description = 'MT EPB 试验系统 V2.14.0.0（无人值守现场候选）'
+        $shortcut.Description = 'MT EPB 试验系统 V2.14.1.0（无人值守现场候选）'
         $shortcut.Save()
     }
 }
@@ -309,12 +361,13 @@ if ($Mode -eq 'PromoteLastKnownGood') {
     $staging = Join-Path $root ('.lkg-staging-' + [Guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $staging)
     try {
-        Get-ChildItem -LiteralPath $current -Force | Copy-Item -Destination $staging -Recurse -Force
-        Write-SlotDescriptor $staging 'LastKnownGood' $identity
         $lkg = Join-Path $root 'LastKnownGood'
+        Get-ChildItem -LiteralPath $current -Force | Copy-Item -Destination $staging -Recurse -Force
+        Write-SlotDescriptor $staging 'LastKnownGood' $identity $lkg
         $retired = Join-Path $root ('.lkg-retired-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
         if (Test-Path -LiteralPath $lkg) { Move-Item -LiteralPath $lkg -Destination $retired }
         Move-Item -LiteralPath $staging -Destination $lkg
+        Assert-SlotDescriptor $lkg 'LastKnownGood'
         Write-SlotPointer $root 'Current'
     }
     finally {
@@ -325,12 +378,12 @@ if ($Mode -eq 'PromoteLastKnownGood') {
     return
 }
 
-if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.0.0 无人值守运行环境")) {
+if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.1.0 无人值守运行环境")) {
     Stop-Supervisor
     [void](Install-CurrentSlot $source $root)
     Set-UnattendedAcl $root
     Install-ServiceAndAgent $root
     Assert-Health $root
     Install-Shortcuts $root
-    Write-Host "V2.14.0.0 无人值守环境已完成 $Mode；状态为 FIELD_CANDIDATE_PENDING_168H。"
+    Write-Host "V2.14.1.0 无人值守环境已完成 $Mode；状态为 FIELD_CANDIDATE_PENDING_168H。"
 }
