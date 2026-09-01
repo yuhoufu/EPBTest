@@ -328,6 +328,7 @@ public sealed class EpbDiskWriter : IDisposable
         _conn = new SQLiteConnection(
             $"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous=Normal");
         _conn.Open();
+        RecoverAndValidateSqliteWal();
         InitSchema();
         RecoverInterruptedCyclesOnStartup();
 
@@ -356,6 +357,44 @@ public sealed class EpbDiskWriter : IDisposable
             _states[ch].TotalWritten = RestoreNextWritePosition(
                 ch,
                 _states[ch].CapacityRecords);
+        }
+    }
+
+    /// <summary>
+    /// SQLite opens and replays a valid WAL automatically.  We then force a
+    /// durable checkpoint and quick integrity check before any official cycle
+    /// can be admitted.  A busy/corrupt/unwritable store fails construction;
+    /// callers must keep the rig de-energized instead of continuing without
+    /// an auditable index.
+    /// </summary>
+    private void RecoverAndValidateSqliteWal()
+    {
+        using (var checkpoint = _conn.CreateCommand())
+        {
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            using (var reader = checkpoint.ExecuteReader())
+            {
+                if (!reader.Read())
+                    throw new IOException("SQLiteWalCheckpointMissingResult");
+                var busy = Convert.ToInt32(
+                    reader.GetValue(0),
+                    CultureInfo.InvariantCulture);
+                if (busy != 0)
+                    throw new IOException(
+                        "SQLiteWalCheckpointBusy:" + busy.ToString(
+                            CultureInfo.InvariantCulture));
+            }
+        }
+
+        using (var integrity = _conn.CreateCommand())
+        {
+            integrity.CommandText = "PRAGMA quick_check;";
+            var result = Convert.ToString(
+                integrity.ExecuteScalar(),
+                CultureInfo.InvariantCulture);
+            if (!string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "SQLiteQuickCheckFailed:" + (result ?? "<null>"));
         }
     }
 
@@ -3384,6 +3423,12 @@ CREATE TABLE IF NOT EXISTS {TABLE_CYCLES}(
   start_position INTEGER NOT NULL,   -- 记录级起始索引（相对 .dat 的“记录号”）
   sample_count INTEGER DEFAULT 0,
   status TEXT DEFAULT 'running',
+  termination_reason TEXT,
+  last_complete_sequence INTEGER NOT NULL DEFAULT 0,
+  gap_start_sequence INTEGER,
+  gap_end_sequence INTEGER,
+  device_generation INTEGER NOT NULL DEFAULT 0,
+  recovery_transaction_id TEXT,
   mechanical_completed INTEGER NOT NULL DEFAULT 0,
   mechanical_completed_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
@@ -3393,8 +3438,35 @@ CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number
         cmd.ExecuteNonQuery();
         EnsureCycleColumn("mechanical_completed", "INTEGER NOT NULL DEFAULT 0");
         EnsureCycleColumn("mechanical_completed_at", "TEXT");
+        EnsureCycleColumn("termination_reason", "TEXT");
+        EnsureCycleColumn("last_complete_sequence", "INTEGER NOT NULL DEFAULT 0");
+        EnsureCycleColumn("gap_start_sequence", "INTEGER");
+        EnsureCycleColumn("gap_end_sequence", "INTEGER");
+        EnsureCycleColumn("device_generation", "INTEGER NOT NULL DEFAULT 0");
+        EnsureCycleColumn("recovery_transaction_id", "TEXT");
+        BackfillCycleTerminationReasons();
         BackfillCertainMechanicalCompletionFacts();
         }
+    }
+
+    private void BackfillCycleTerminationReasons()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET termination_reason=CASE
+       WHEN status='completed' OR status IN ('learning_completed','qualification_completed')
+           THEN 'Completed'
+       WHEN status='AbortedByDaqClockRecovery' THEN 'AbortedByDaqLoss'
+       WHEN status='AbortedBySoftwareRecovery' THEN 'AbortedBySoftwareRecovery'
+       WHEN status='AbortedByHydraulicGroupFault' THEN 'AbortedByHydraulicFault'
+       WHEN status='aborted_on_startup' THEN 'DataIncomplete'
+       WHEN status='running' THEN NULL
+       WHEN status='canceled' OR status LIKE '%_canceled' THEN 'AbortedBySafetyStop'
+       ELSE 'Failed'
+   END
+ WHERE termination_reason IS NULL";
+        cmd.ExecuteNonQuery();
     }
 
     private void EnsureCycleColumn(string columnName, string definition)
@@ -3502,6 +3574,7 @@ SELECT mechanical_completed_at FROM {TABLE_CYCLES}
             cmd.CommandText = $@"
 UPDATE {TABLE_CYCLES}
    SET status='aborted_on_startup',
+       termination_reason='DataIncomplete',
        end_time=CASE
            WHEN end_time IS NOT NULL AND
                 julianday(end_time) >= julianday(start_time) THEN end_time
@@ -3528,6 +3601,8 @@ UPDATE {TABLE_CYCLES}
             cmd.CommandText = $@"
 UPDATE {TABLE_CYCLES}
    SET status='AbortedBySoftwareRecovery',
+       termination_reason='AbortedBySoftwareRecovery',
+       recovery_transaction_id=@recovery_transaction_id,
        end_time=CASE
            WHEN end_time IS NOT NULL AND
                 julianday(end_time) >= julianday(start_time) THEN end_time
@@ -3537,6 +3612,9 @@ UPDATE {TABLE_CYCLES}
        END
  WHERE status='running';";
             cmd.Parameters.AddWithValue("@now", recoveryUtc.ToLocalTime().ToString("o"));
+            cmd.Parameters.AddWithValue(
+                "@recovery_transaction_id",
+                Guid.NewGuid().ToString("N"));
             return cmd.ExecuteNonQuery();
         }
     }
@@ -3583,6 +3661,18 @@ VALUES(@e,@c,@st,@pos,'running',0);";
         DateTime endUtc,
         string status)
     {
+        var terminationReason = MapTerminationReason(status);
+        var state = GetState(epbId);
+        var lastCompleteSequence = Math.Max(0, state.CurrentCycleLastSequence);
+        var expectedEndSequence = Math.Max(
+            lastCompleteSequence,
+            state.CurrentCycleEndSequence ?? lastCompleteSequence);
+        var gapStartSequence = expectedEndSequence > lastCompleteSequence
+            ? lastCompleteSequence + 1
+            : 0;
+        var gapEndSequence = expectedEndSequence > lastCompleteSequence
+            ? expectedEndSequence
+            : 0;
         lock (_dbGate)
         {
             using var cmd = _conn.CreateCommand();
@@ -3598,11 +3688,35 @@ UPDATE {TABLE_CYCLES}
            WHEN end_time IS NULL OR julianday(@et) > julianday(end_time) THEN @et
            ELSE end_time
        END,
-       status=@status
+       status=@status,
+       termination_reason=CASE
+           WHEN @termination IS NULL THEN termination_reason
+           ELSE @termination
+       END,
+       last_complete_sequence=CASE
+           WHEN @last_sequence > COALESCE(last_complete_sequence, 0)
+               THEN @last_sequence
+           ELSE COALESCE(last_complete_sequence, 0)
+       END,
+       gap_start_sequence=CASE WHEN @gap_start > 0 THEN @gap_start ELSE NULL END,
+       gap_end_sequence=CASE WHEN @gap_end > 0 THEN @gap_end ELSE NULL END,
+       device_generation=CASE
+           WHEN @device_generation > 0 THEN @device_generation
+           ELSE device_generation
+       END
  WHERE epb_id=@e AND cycle_number=@c AND status='running'";
             cmd.Parameters.AddWithValue("@n", sampleCount);
             cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
             cmd.Parameters.AddWithValue("@status", status);
+            cmd.Parameters.AddWithValue(
+                "@termination",
+                (object)terminationReason ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@last_sequence", lastCompleteSequence);
+            cmd.Parameters.AddWithValue("@gap_start", gapStartSequence);
+            cmd.Parameters.AddWithValue("@gap_end", gapEndSequence);
+            cmd.Parameters.AddWithValue(
+                "@device_generation",
+                Math.Max(0, state.CurrentCycleGeneration));
             cmd.Parameters.AddWithValue("@e", epbId);
             cmd.Parameters.AddWithValue("@c", cycleNumber);
             var affected = cmd.ExecuteNonQuery();
@@ -3628,6 +3742,29 @@ SELECT status FROM {TABLE_CYCLES}
                 $"圈状态迁移未命中running唯一记录。EPB={epbId} Cycle={cycleNumber} " +
                 $"Requested={status} Existing={existing ?? "Missing"} Affected={affected}。");
         }
+    }
+
+    private static string MapTerminationReason(string status)
+    {
+        if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "learning_completed", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "qualification_completed", StringComparison.OrdinalIgnoreCase))
+            return CycleTerminationReason.Completed.ToString();
+        if (string.Equals(status, "AbortedByDaqClockRecovery", StringComparison.OrdinalIgnoreCase))
+            return CycleTerminationReason.AbortedByDaqLoss.ToString();
+        if (string.Equals(status, "AbortedBySoftwareRecovery", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "SoftwareRecoveryAborted", StringComparison.OrdinalIgnoreCase))
+            return CycleTerminationReason.AbortedBySoftwareRecovery.ToString();
+        if (string.Equals(status, "AbortedByHydraulicGroupFault", StringComparison.OrdinalIgnoreCase))
+            return CycleTerminationReason.AbortedByHydraulicFault.ToString();
+        if (string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase) ||
+            status?.IndexOf("_canceled", StringComparison.OrdinalIgnoreCase) >= 0)
+            return CycleTerminationReason.AbortedBySafetyStop.ToString();
+        if (string.Equals(status, "aborted_on_startup", StringComparison.OrdinalIgnoreCase))
+            return CycleTerminationReason.DataIncomplete.ToString();
+        return CycleTerminationReason.Failed.ToString();
     }
 
     private void MarkCycleAborted(
@@ -3831,7 +3968,18 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
     #endregion
 }
 
-/// <summary>圈级元数据（SQLite 映射）。</summary>
+public enum CycleTerminationReason
+{
+    Completed = 1,
+    Failed = 2,
+    AbortedByDaqLoss = 3,
+    AbortedBySafetyStop = 4,
+    AbortedBySoftwareRecovery = 5,
+    AbortedByHydraulicFault = 6,
+    DataIncomplete = 7
+}
+
+/// <summary>圈级元数据（SQLite 映射）。status 保持向后兼容，TerminationReason 提供强类型终态。</summary>
 public sealed class CycleInfo
 {
     public int EpbId { get; set; }
@@ -3841,6 +3989,12 @@ public sealed class CycleInfo
     public long StartRecordIndex { get; set; } // 记录级起始索引
     public int SampleCount { get; set; }
     public string Status { get; set; }
+    public CycleTerminationReason? TerminationReason { get; set; }
+    public long LastCompleteSequence { get; set; }
+    public long? GapStartSequence { get; set; }
+    public long? GapEndSequence { get; set; }
+    public long DeviceGeneration { get; set; }
+    public string RecoveryTransactionId { get; set; }
 }
 
 /// <summary>报警圈原子封存和文件校验结果。</summary>

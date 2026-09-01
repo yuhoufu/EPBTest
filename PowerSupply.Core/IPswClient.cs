@@ -19,6 +19,10 @@ namespace PowerSupply.Core
         Task<double> SetCurrentAsync(double value, CancellationToken token);
         Task<double> SetOvpAsync(double value, CancellationToken token);
         Task<double> SetOcpAsync(double value, CancellationToken token);
+        Task<PswOutputCommandResult> SetOutputAndReadBackAsync(
+            bool enabled,
+            CancellationToken token);
+        [Obsolete("Use SetOutputAndReadBackAsync. The bool return is the observed output state, not an operation-success flag.")]
         Task<bool> SetOutputAsync(bool enabled, CancellationToken token);
         Task<IReadOnlyList<string>> ReadErrorQueueAsync(CancellationToken token);
         Task<string> SendRawAsync(string command, bool expectResponse, CancellationToken token);

@@ -54,8 +54,21 @@ public sealed class PswTcpClient : IPswClient
     public Task<double> SetOcpAsync(double value, CancellationToken cancellationToken = default) =>
         _core.SetOcpAsync(value, cancellationToken);
 
-    public Task<bool> SetOutputAsync(bool enabled, CancellationToken cancellationToken = default) =>
-        _core.SetOutputAsync(enabled, cancellationToken);
+    public Task<Core.PswOutputCommandResult> SetOutputAndReadBackAsync(
+        bool enabled,
+        CancellationToken cancellationToken = default) =>
+        _core.SetOutputAndReadBackAsync(enabled, cancellationToken);
+
+    public async Task<bool> SetOutputAsync(
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _core.SetOutputAndReadBackAsync(enabled, cancellationToken)
+            .ConfigureAwait(false);
+        if (!result.Succeeded)
+            throw new InvalidOperationException(result.FailureCode + ":" + result.Detail);
+        return result.ObservedState == Core.PswOutputState.On;
+    }
 
     public Task<IReadOnlyList<string>> ReadErrorQueueAsync(CancellationToken cancellationToken = default) =>
         _core.ReadErrorQueueAsync(cancellationToken);

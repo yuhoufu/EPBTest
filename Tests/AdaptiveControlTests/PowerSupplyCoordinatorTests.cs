@@ -928,6 +928,26 @@ namespace AdaptiveControlTests
                 return enabled;
             }
 
+            public async Task<PswOutputCommandResult> SetOutputAndReadBackAsync(
+                bool enabled,
+                CancellationToken token)
+            {
+                var observed = await SetOutputAsync(enabled, token).ConfigureAwait(false);
+                return new PswOutputCommandResult
+                {
+                    SupplyId = Endpoint.Id,
+                    Endpoint = Endpoint.Host + ":" + Endpoint.Port,
+                    Identity = Identity,
+                    IdentityVerified = IsVerifiedPsw,
+                    RequestedState = enabled ? PswOutputState.On : PswOutputState.Off,
+                    ObservedState = observed ? PswOutputState.On : PswOutputState.Off,
+                    CommandWritten = true,
+                    ReadBackVerified = observed == enabled,
+                    StartedUtc = DateTime.UtcNow,
+                    CompletedUtc = DateTime.UtcNow
+                };
+            }
+
             public Task<IReadOnlyList<string>> ReadErrorQueueAsync(CancellationToken token) =>
                 Task.FromResult<IReadOnlyList<string>>(new[] { "0,\"No error\"" });
 

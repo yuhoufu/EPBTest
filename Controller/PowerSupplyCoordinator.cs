@@ -347,7 +347,9 @@ namespace Controller
                     _log.Warn(
                         $"{supply.DisplayName} 启动前已经 OUTP ON；将先关闭输出并回读确认，再执行安全设定。",
                         "程控电源");
-                    await client.SetOutputAsync(false, operationToken).ConfigureAwait(false);
+                    var offResult = await client.SetOutputAndReadBackAsync(false, operationToken)
+                        .ConfigureAwait(false);
+                    RequireOutputCommand(offResult, supply.DisplayName, PswOutputState.Off);
                     snapshot = await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false);
                     _latest[group.Id] = snapshot;
                     AppendTelemetry(
@@ -377,7 +379,9 @@ namespace Controller
 
                 enabledThisAttempt.Add(group.Id);
                 var outputOnStarted = Stopwatch.GetTimestamp();
-                await client.SetOutputAsync(true, operationToken).ConfigureAwait(false);
+                var onResult = await client.SetOutputAndReadBackAsync(true, operationToken)
+                    .ConfigureAwait(false);
+                RequireOutputCommand(onResult, supply.DisplayName, PswOutputState.On);
                 var enabled = await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false);
                 if (!enabled.OutputEnabled)
                     throw new InvalidOperationException($"{supply.DisplayName} OUTP ON 回读失败。");
@@ -543,7 +547,12 @@ namespace Controller
             {
                 try
                 {
-                    await client.SetOutputAsync(false, linked.Token).ConfigureAwait(false);
+                    var offResult = await client.SetOutputAndReadBackAsync(false, linked.Token)
+                        .ConfigureAwait(false);
+                    RequireOutputCommand(
+                        offResult,
+                        "电源组 " + electricalGroupId,
+                        PswOutputState.Off);
                     var snapshot = await client.ReadSnapshotAsync(linked.Token).ConfigureAwait(false);
                     if (Volatile.Read(ref operation.Retired) != 0)
                         throw new OperationCanceledException("电源 OFF owner 已退休。", linked.Token);
@@ -586,6 +595,20 @@ namespace Controller
                 linked?.Dispose();
                 if (gateHeld) operation.Gate.Release();
             }
+        }
+
+        private static void RequireOutputCommand(
+            PswOutputCommandResult result,
+            string displayName,
+            PswOutputState expected)
+        {
+            if (result?.Succeeded == true && result.ObservedState == expected) return;
+            var code = result?.FailureCode ?? "OutputCommandResultMissing";
+            var detail = result?.Detail ?? string.Empty;
+            throw new InvalidOperationException(
+                $"{displayName} 输出命令未形成匹配回读：Expected={expected};" +
+                $"Observed={result?.ObservedState ?? PswOutputState.Unknown};" +
+                $"Stage={result?.FailureStage ?? string.Empty};Code={code};Detail={detail}");
         }
 
         private static async Task AwaitSharedOperationAsync(Task shared, CancellationToken token)

@@ -1,3 +1,4 @@
+using PswOutputState = PowerSupply.Core.PswOutputState;
 using PowerSupplyDebugger.Models;
 using PowerSupplyDebugger.Services;
 
@@ -67,6 +68,45 @@ public sealed class TcpClientIntegrationTests
 
         Assert.True(await client.SetOutputAsync(true));
         Assert.Equal(["OUTP ON", "OUTP?"], server.Commands.ToArray());
+    }
+
+    [Fact]
+    public async Task TypedOutputResultTreatsObservedOffAsSuccess()
+    {
+        await using var server = new FakePswServer(outputEnabled: true);
+        server.Start();
+        await using var client = CreateClient(server);
+        await client.ConnectAsync();
+        server.ClearCommands();
+
+        var result = await client.SetOutputAndReadBackAsync(false, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.CommandWritten);
+        Assert.True(result.ReadBackVerified);
+        Assert.Equal(PswOutputState.Off, result.RequestedState);
+        Assert.Equal(PswOutputState.Off, result.ObservedState);
+        Assert.Equal(["OUTP OFF", "OUTP?"], server.Commands.ToArray());
+    }
+
+    [Fact]
+    public async Task TypedOutputResultReportsObservedOnWithoutBooleanInversion()
+    {
+        await using var server = new FakePswServer(outputEnabled: true)
+        {
+            IgnoreOutputWrites = true
+        };
+        server.Start();
+        await using var client = CreateClient(server);
+        await client.ConnectAsync();
+
+        var result = await client.SetOutputAndReadBackAsync(false, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.CommandWritten);
+        Assert.False(result.ReadBackVerified);
+        Assert.Equal(PswOutputState.On, result.ObservedState);
+        Assert.Equal("OutputReadBackMismatch", result.FailureCode);
     }
 
     [Fact]

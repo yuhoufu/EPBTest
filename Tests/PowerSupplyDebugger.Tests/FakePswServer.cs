@@ -30,6 +30,7 @@ internal sealed class FakePswServer : IAsyncDisposable
     public string? DelayResponseFor { get; set; }
     public int ResponseDelayMs { get; set; }
     public string? CloseConnectionFor { get; set; }
+    public bool IgnoreOutputWrites { get; set; }
     public ConcurrentQueue<string> Commands { get; } = new();
     public ConcurrentQueue<string> RawFrames { get; } = new();
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -145,11 +146,11 @@ internal sealed class FakePswServer : IAsyncDisposable
             }
             else if (command.Equals("OUTP ON", StringComparison.OrdinalIgnoreCase))
             {
-                _outputEnabled = true;
+                if (!IgnoreOutputWrites) _outputEnabled = true;
             }
             else if (command.Equals("OUTP OFF", StringComparison.OrdinalIgnoreCase))
             {
-                _outputEnabled = false;
+                if (!IgnoreOutputWrites) _outputEnabled = false;
             }
         }
     }

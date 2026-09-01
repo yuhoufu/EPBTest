@@ -208,16 +208,98 @@ namespace PowerSupply.Core
                 });
         }
 
-        public Task<bool> SetOutputAsync(bool enabled, CancellationToken token)
+        public async Task<PswOutputCommandResult> SetOutputAndReadBackAsync(
+            bool enabled,
+            CancellationToken token)
         {
-            EnsureWritable();
-            return ExecuteLockedAsync(async ct =>
+            var started = Stopwatch.GetTimestamp();
+            var result = new PswOutputCommandResult
             {
-                await WriteCoreAsync(enabled ? "OUTP ON" : "OUTP OFF", ct).ConfigureAwait(false);
-                var actual = PswProtocol.ParseBoolean(await QueryCoreAsync("OUTP?", ct).ConfigureAwait(false), "OUTP?");
-                if (actual != enabled) throw new InvalidOperationException("输出状态回读不一致。");
-                return actual;
-            }, token);
+                SupplyId = Endpoint.Id,
+                Endpoint = Endpoint.Host + ":" + Endpoint.Port,
+                RequestedState = enabled ? PswOutputState.On : PswOutputState.Off,
+                ObservedState = PswOutputState.Unknown,
+                StartedUtc = DateTime.UtcNow
+            };
+            try
+            {
+                EnsureWritable();
+                result.Identity = Identity ?? string.Empty;
+                result.IdentityVerified = IsVerifiedPsw;
+                return await ExecuteLockedAsync(async ct =>
+                {
+                    try
+                    {
+                        result.FailureStage = "WriteOutput";
+                        await WriteCoreAsync(enabled ? "OUTP ON" : "OUTP OFF", ct)
+                            .ConfigureAwait(false);
+                        result.CommandWritten = true;
+
+                        result.FailureStage = "ReadBackOutput";
+                        var actual = PswProtocol.ParseBoolean(
+                            await QueryCoreAsync("OUTP?", ct).ConfigureAwait(false),
+                            "OUTP?");
+                        result.ObservedState = actual
+                            ? PswOutputState.On
+                            : PswOutputState.Off;
+                        result.ReadBackVerified = actual == enabled;
+                        if (!result.ReadBackVerified)
+                        {
+                            result.FailureCode = "OutputReadBackMismatch";
+                            result.Detail = "Requested=" + result.RequestedState +
+                                            ";Observed=" + result.ObservedState;
+                        }
+                        else
+                        {
+                            result.FailureStage = string.Empty;
+                        }
+                        return CompleteOutputResult(result, started);
+                    }
+                    catch (Exception ex)
+                    {
+                        result.FailureCode = ex is OperationCanceledException
+                            ? "OutputCommandCanceled"
+                            : ex is TimeoutException
+                                ? "OutputCommandTimeout"
+                                : "OutputCommandFailed";
+                        result.Detail = ex.GetBaseException().Message;
+                        return CompleteOutputResult(result, started);
+                    }
+                }, token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (string.IsNullOrWhiteSpace(result.FailureStage))
+                    result.FailureStage = "Preflight";
+                result.FailureCode = ex is OperationCanceledException
+                    ? "OutputCommandCanceled"
+                    : ex is TimeoutException
+                        ? "OutputCommandTimeout"
+                        : "OutputCommandFailed";
+                result.Detail = ex.GetBaseException().Message;
+                return CompleteOutputResult(result, started);
+            }
+        }
+
+        [Obsolete("Use SetOutputAndReadBackAsync. The bool return is the observed output state, not an operation-success flag.")]
+        public async Task<bool> SetOutputAsync(bool enabled, CancellationToken token)
+        {
+            var result = await SetOutputAndReadBackAsync(enabled, token).ConfigureAwait(false);
+            if (!result.Succeeded)
+                throw new InvalidOperationException(
+                    string.IsNullOrWhiteSpace(result.Detail)
+                        ? result.FailureCode
+                        : result.FailureCode + ":" + result.Detail);
+            return result.ObservedState == PswOutputState.On;
+        }
+
+        private static PswOutputCommandResult CompleteOutputResult(
+            PswOutputCommandResult result,
+            long started)
+        {
+            result.CompletedUtc = DateTime.UtcNow;
+            result.DurationMs = ElapsedMs(started);
+            return result;
         }
 
         public Task<IReadOnlyList<string>> ReadErrorQueueAsync(CancellationToken token)
