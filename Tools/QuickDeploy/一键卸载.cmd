@@ -1,24 +1,32 @@
 @echo off
 setlocal
-chcp 65001 >nul
+set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
+set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+set "MTTFTEST_ELEVATE_TARGET=%~f0"
+if defined MTTFTEST_QUICKDEPLOY_PARSE_ONLY goto :parse_only
 cd /d "%~dp0"
 fltmc >nul 2>&1
 if errorlevel 1 (
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
   exit /b
 )
-echo 即将卸载监督服务、登录任务和桌面快捷方式。
-echo 程序槽、项目数据和事故证据将保留。
-set "MTTFTEST_DEPLOY_SCRIPT=%~dp0快捷部署安装器.ps1"
-set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+echo Removing supervisor service, session task and shortcuts.
+echo Program slots, project data and incident evidence will be retained.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Uninstall -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
 if errorlevel 1 goto :failed
 echo.
-echo 卸载成功，程序和证据未删除。
+echo Uninstall completed. Program files and evidence were retained.
 goto :done
 :failed
 echo.
-echo 卸载失败，请保存本窗口内容排查。
+echo Uninstall failed. Save this window for diagnosis.
 :done
 if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
 endlocal
+exit /b
+:parse_only
+if not exist "%MTTFTEST_DEPLOY_SCRIPT%" exit /b 91
+if not exist "%MTTFTEST_PACKAGE_SOURCE%" exit /b 92
+echo QUICKDEPLOY_UNINSTALL_PARSE_PASS
+endlocal
+exit /b 0

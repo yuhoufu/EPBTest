@@ -1,26 +1,34 @@
 @echo off
 setlocal
-chcp 65001 >nul
+set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
+set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+set "MTTFTEST_ELEVATE_TARGET=%~f0"
+if defined MTTFTEST_QUICKDEPLOY_PARSE_ONLY goto :parse_only
 cd /d "%~dp0"
 fltmc >nul 2>&1
 if errorlevel 1 (
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
   exit /b
 )
-echo [1/2] 正在复核安装源身份和哈希...
+echo [1/2] Verifying package identity and SHA256...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Package\Deployment\Verify-Release.ps1" -ReleaseDirectory "%~dp0Package" -RequireDeploymentApproved
 if errorlevel 1 goto :failed
-echo [2/2] 正在修复服务、登录代理、ACL、双槽和快捷方式...
-set "MTTFTEST_DEPLOY_SCRIPT=%~dp0快捷部署安装器.ps1"
-set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+echo [2/2] Repairing supervisor, session agent, slots, ACL and shortcuts...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Repair -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
 if errorlevel 1 goto :failed
 echo.
-echo 修复成功。
+echo Repair completed.
 goto :done
 :failed
 echo.
-echo 修复失败。未绕过安全门禁，请保存本窗口内容排查。
+echo Repair failed. Save this window for diagnosis.
 :done
 if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
 endlocal
+exit /b
+:parse_only
+if not exist "%MTTFTEST_DEPLOY_SCRIPT%" exit /b 91
+if not exist "%MTTFTEST_PACKAGE_SOURCE%\build-identity.json" exit /b 92
+echo QUICKDEPLOY_REPAIR_PARSE_PASS
+endlocal
+exit /b 0

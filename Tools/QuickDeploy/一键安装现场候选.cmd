@@ -1,26 +1,34 @@
 @echo off
 setlocal
-chcp 65001 >nul
+set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
+set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+set "MTTFTEST_ELEVATE_TARGET=%~f0"
+if defined MTTFTEST_QUICKDEPLOY_PARSE_ONLY goto :parse_only
 cd /d "%~dp0"
 fltmc >nul 2>&1
 if errorlevel 1 (
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
   exit /b
 )
-echo [1/2] 正在验证完整包身份和哈希...
+echo [1/2] Verifying package identity and SHA256...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Package\Deployment\Verify-Release.ps1" -ReleaseDirectory "%~dp0Package" -RequireDeploymentApproved
 if errorlevel 1 goto :failed
-echo [2/2] 正在安装监督服务、登录代理、双槽和桌面快捷方式...
-set "MTTFTEST_DEPLOY_SCRIPT=%~dp0快捷部署安装器.ps1"
-set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+echo [2/2] Installing supervisor, session agent, slots, ACL and shortcuts...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Install -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
 if errorlevel 1 goto :failed
 echo.
-echo 安装成功。请双击桌面的“MT EPB 试验系统 V2.14”。
+echo Installation completed. Use the desktop shortcut to start V2.14.
 goto :done
 :failed
 echo.
-echo 安装失败。系统未绕过包身份或安全门禁，请保存本窗口内容排查。
+echo Installation failed. Save this window for diagnosis.
 :done
 if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
 endlocal
+exit /b
+:parse_only
+if not exist "%MTTFTEST_DEPLOY_SCRIPT%" exit /b 91
+if not exist "%MTTFTEST_PACKAGE_SOURCE%\build-identity.json" exit /b 92
+echo QUICKDEPLOY_INSTALL_PARSE_PASS
+endlocal
+exit /b 0
