@@ -72,6 +72,13 @@ function Get-SourceSnapshotFingerprint {
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Sort-Object -Unique)) {
         $normalized = ([string]$relativePath).Replace('\', '/')
+        # Documentation and local assistant memory are not compiler/package
+        # inputs.  They still keep the tree dirty through STATUS above, but
+        # must not make a deterministic binary build depend on Word file locks.
+        if ($normalized.StartsWith('docs/', [StringComparison]::OrdinalIgnoreCase) -or
+            $normalized.StartsWith('.workbuddy/', [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
         $fullPath = [IO.Path]::GetFullPath((Join-Path $repo $relativePath))
         $repoPrefix = $repo.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
         if (-not $fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -264,18 +271,27 @@ Assert-LegacyCompileItems -ProjectRelativePath 'Watchdog.Protocol\Watchdog.Proto
     'WatchdogClosingTombstone.cs',
     'WatchdogSafetyReceipts.cs',
     'WatchdogSafetyConfigSnapshot.cs',
-    'RecoveryReplacementTransaction.cs'
+    'RecoveryReplacementTransaction.cs',
+    'SupervisorProtocol.cs',
+    'SessionAgentProtocol.cs',
+    'PackageSlotDescriptor.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.Watchdog\MTTFTest.Watchdog.csproj' -RequiredItems @(
-    'UnattendedAlarmSink.cs'
+    'UnattendedAlarmSink.cs',
+    'SupervisorServiceHost.cs',
+    'SessionAgentLaunchClient.cs'
+)
+Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj' -RequiredItems @(
+    'Program.cs',
+    'SessionAgentHost.cs'
 )
 
 $snapshotSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyConfigSnapshot.cs') -Raw
 $receiptSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyReceipts.cs') -Raw
 $programSource = Get-Content -LiteralPath (Join-Path $repo 'MTTfTest\Program.cs') -Raw
 if ($snapshotSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*2' -or
-    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*3') {
-    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt v3 支持。'
+    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*5') {
+    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 5 支持。'
 }
 if ($programSource -match 'watchdog-safety-shutdown' -or
     (Test-Path -LiteralPath (Join-Path $repo 'MTTfTest\WatchdogSafetyShutdownWorker.cs'))) {
@@ -345,6 +361,16 @@ if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
 }
 
 $solutionPath = Join-Path $repo 'TfTest.sln'
+$powerSupplyProject = Join-Path $repo 'Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj'
+# SDK 项目按配置使用不同 RID；首次在干净机器构建时仅执行 solution restore
+# 不会同时生成两套 assets。显式还原两套资产，避免 Release Rebuild 被
+# project.assets.json 中缺少 win-x64/win-x86 target 阻断。
+foreach ($runtimeIdentifier in @('win-x64', 'win-x86')) {
+    & dotnet restore $powerSupplyProject --runtime $runtimeIdentifier
+    if ($LASTEXITCODE -ne 0) {
+        throw "PowerSupplyDebugger $runtimeIdentifier 资产还原失败：$LASTEXITCODE"
+    }
+}
 & $MsBuild $solutionPath /t:Restore /m:1 `
     /p:Configuration=Release '/p:Platform=Any CPU' `
     /p:RestorePackagesConfig=true
@@ -382,12 +408,14 @@ $watchdogProtocolPath = Join-Path $output 'MTTFTest.Watchdog.Protocol.dll'
 $watchdogClientPath = Join-Path $output 'MTTFTest.Watchdog.Client.dll'
 $safetyAgentExePath = Join-Path $output 'MTTFTest.SafetyAgent.exe'
 $safetyHardwarePath = Join-Path $output 'MTTFTest.SafetyHardware.dll'
+$sessionAgentExePath = Join-Path $output 'MTTFTest.SessionAgent.exe'
 foreach ($requiredSidecar in @(
         $watchdogExePath,
         $watchdogProtocolPath,
         $watchdogClientPath,
         $safetyAgentExePath,
-        $safetyHardwarePath)) {
+        $safetyHardwarePath,
+        $sessionAgentExePath)) {
     if (-not (Test-Path -LiteralPath $requiredSidecar -PathType Leaf)) {
         throw "Release 构建缺少独立看门狗文件：$requiredSidecar"
     }
@@ -406,6 +434,7 @@ $versionedComponents = @(
     $watchdogClientPath,
     $safetyAgentExePath,
     $safetyHardwarePath,
+    $sessionAgentExePath,
     (Join-Path $output 'Controller.dll')
 )
 foreach ($component in $versionedComponents) {
@@ -458,7 +487,6 @@ $soakSummary = Invoke-CandidateTest `
     -ArgumentList @('--persistence-soak', [string]$PersistenceSoakSeconds) `
     -SuccessPattern '^PASS\s+1/1$'
 
-$powerSupplyProject = Join-Path $repo 'Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj'
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
 $powerSupplyResultsDirectory = [IO.Path]::GetFullPath((Join-Path `
     $tempRoot ('epb-release-power-' + [Guid]::NewGuid().ToString('N'))))
@@ -594,6 +622,9 @@ $deploymentDirectory = Join-Path $output 'Deployment'
 [void](New-Item -ItemType Directory -Path $deploymentDirectory -Force)
 Copy-Item -LiteralPath (Join-Path $repo 'Tools\Install-EPB-UnattendedAlarm.ps1') `
     -Destination (Join-Path $deploymentDirectory 'Install-EPB-UnattendedAlarm.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'Tools\Install-MTTFTest-Unattended.ps1') `
+    -Destination (Join-Path $deploymentDirectory 'Install-MTTFTest-Unattended.ps1') -Force
+New-Item -ItemType File -Path (Join-Path $output 'MTTFTest.UnattendedMode.required') -Force | Out-Null
 
 $files = Get-RecursivePackageFiles -Root $output `
     -ExcludedRelativePaths @('build-identity.json', 'SHA256SUMS.txt')
@@ -619,6 +650,9 @@ $identity = [ordered]@{
     buildUtc = $buildUtc
     configSha256 = $configHash
     platform = 'x86'
+    watchdogSchema = 5
+    packageSlotSchema = 5
+    longSoakGate = 'FIELD_CANDIDATE_PENDING_168H'
     verification = $verification
     files = @($manifestFiles)
 }
@@ -675,7 +709,7 @@ try {
         'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION'
     }
     else {
-        'FORMAL_RELEASE_CANDIDATE'
+        'FIELD_CANDIDATE_PENDING_168H'
     }
     $identity.deploymentApproved = -not $isDirty
     $identity | ConvertTo-Json -Depth 5 |

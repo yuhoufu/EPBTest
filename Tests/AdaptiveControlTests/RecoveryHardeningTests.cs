@@ -218,7 +218,7 @@ namespace AdaptiveControlTests
                          "\"RelaunchGeneration\":9}";
             var migrated = WatchdogJournalMigration.MigrateJournalJson(legacy);
             Assert(!string.IsNullOrWhiteSpace(migrated) &&
-                   migrated.Contains("\"SchemaVersion\":4") &&
+                   migrated.Contains("\"SchemaVersion\":5") &&
                    migrated.Contains("\"RecoveryBlocked\":true") &&
                    migrated.Contains("\"RecoveryFailureFingerprint\":\"RFP2-legacy\"") &&
                    migrated.Contains("\"ConsecutiveStartupFailures\":5") &&

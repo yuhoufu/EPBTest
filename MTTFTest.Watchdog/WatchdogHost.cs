@@ -61,6 +61,15 @@ namespace MTTFTest.Watchdog
         StartupFailed = 2
     }
 
+    internal enum RecoveryFailureStageKind
+    {
+        SafetyPrerequisite = 0,
+        MainLaunch = 1,
+        MainAttach = 2,
+        CheckpointResume = 3,
+        FirstCycleCommit = 4
+    }
+
     internal enum WatchdogCloseFenceAction
     {
         None = 0,
@@ -78,6 +87,19 @@ namespace MTTFTest.Watchdog
         public long CurrentProcessStartUtcTicks { get; set; }
         public int RecoveryAttempt { get; set; }
         public int ConsecutiveStartupFailures { get; set; }
+        public int SafetyPrerequisiteFailureCount { get; set; }
+        public int MainLaunchFailureCount { get; set; }
+        public int MainAttachFailureCount { get; set; }
+        public int CheckpointResumeFailureCount { get; set; }
+        public int FirstCycleCommitFailureCount { get; set; }
+        public string LastSafetyPrerequisiteFailureKey { get; set; }
+        public string LastMainLaunchFailureKey { get; set; }
+        public string LastMainAttachFailureKey { get; set; }
+        public string LastCheckpointResumeFailureKey { get; set; }
+        public string LastFirstCycleCommitFailureKey { get; set; }
+        public int SafetyPrerequisiteRetryAttempt { get; set; }
+        public long SafetyPrerequisiteFirstFailureUtcTicks { get; set; }
+        public long SafetyPrerequisiteNextRetryUtcTicks { get; set; }
         public long RelaunchGeneration { get; set; }
         public int CircuitProbeAttempt { get; set; }
         public bool RecoveryBlocked { get; set; }
@@ -628,6 +650,7 @@ namespace MTTFTest.Watchdog
         private int _takeoverStarted;
         private int _relaunchAfterExitStarted;
         private int _relaunchStarted;
+        private int _safetyPrerequisiteRetryStarted;
         private int _recoveryBlockedStopRequested;
         private int _heartbeatSuspectLogged;
         private int _unstructuredRecoveryLogged;
@@ -720,7 +743,8 @@ namespace MTTFTest.Watchdog
                     process.StartTime.ToUniversalTime().Ticks);
             _transitionWindow = new RecoveryTransitionWindow(
                 OnTransitionPromptDismissRequested,
-                OnTransitionOperatorStopRequested);
+                OnTransitionOperatorStopRequested,
+                OnTransitionMuteP0BuzzerRequested);
             var startedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
             var previous = TryLoadPreviousJournal(args);
             _journal = new WatchdogJournal
@@ -732,6 +756,28 @@ namespace MTTFTest.Watchdog
                 CurrentProcessStartUtcTicks = args.ParentStartTicks,
                 RecoveryAttempt = previous?.RecoveryAttempt ?? 0,
                 ConsecutiveStartupFailures = previous?.ConsecutiveStartupFailures ?? 0,
+                SafetyPrerequisiteFailureCount =
+                    previous?.SafetyPrerequisiteFailureCount ?? 0,
+                MainLaunchFailureCount = previous?.MainLaunchFailureCount ?? 0,
+                MainAttachFailureCount = previous?.MainAttachFailureCount ?? 0,
+                CheckpointResumeFailureCount =
+                    previous?.CheckpointResumeFailureCount ?? 0,
+                FirstCycleCommitFailureCount =
+                    previous?.FirstCycleCommitFailureCount ?? 0,
+                LastSafetyPrerequisiteFailureKey =
+                    previous?.LastSafetyPrerequisiteFailureKey,
+                LastMainLaunchFailureKey = previous?.LastMainLaunchFailureKey,
+                LastMainAttachFailureKey = previous?.LastMainAttachFailureKey,
+                LastCheckpointResumeFailureKey =
+                    previous?.LastCheckpointResumeFailureKey,
+                LastFirstCycleCommitFailureKey =
+                    previous?.LastFirstCycleCommitFailureKey,
+                SafetyPrerequisiteRetryAttempt =
+                    previous?.SafetyPrerequisiteRetryAttempt ?? 0,
+                SafetyPrerequisiteFirstFailureUtcTicks =
+                    previous?.SafetyPrerequisiteFirstFailureUtcTicks ?? 0,
+                SafetyPrerequisiteNextRetryUtcTicks =
+                    previous?.SafetyPrerequisiteNextRetryUtcTicks ?? 0,
                 RelaunchGeneration = previous?.RelaunchGeneration ?? 0,
                 RecoveryBlocked = previous?.RecoveryBlocked == true,
                 RecoveryFailureCode = previous?.RecoveryFailureCode,
@@ -815,12 +861,14 @@ namespace MTTFTest.Watchdog
                 if (previous == null ||
                     !string.Equals(previous.SessionId, args.SessionId, StringComparison.OrdinalIgnoreCase) ||
                     (previous.SchemaVersion != 2 && previous.SchemaVersion != 3 &&
+                     previous.SchemaVersion != 4 &&
                      previous.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion))
                     return null;
                 // V2 did not carry the structured report fields, but its
                 // durable RecoveryBlocked bit and legacy code/fingerprint are
                 // authoritative and must survive the additive migration.
-                if (previous.SchemaVersion == 2)
+                if (previous.SchemaVersion >= 2 &&
+                    previous.SchemaVersion < WatchdogJournalPolicy.CurrentSchemaVersion)
                     previous.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
                 return previous;
             }
@@ -3160,6 +3208,15 @@ namespace MTTFTest.Watchdog
                             "StopCompleted")
                         .ConfigureAwait(false))
                         return;
+                    if (!AugmentPostExitSafetyEvidence(
+                            permitGeneration,
+                            approvedRecord,
+                            oldIdentity))
+                    {
+                        BlockLaunchOutcomeUnknown(
+                            "PostExitSafetyEvidenceAugmentationFailed");
+                        return;
+                    }
                     if (!AdvanceReplacementState(
                             permitGeneration,
                             approvedRecord.PermitId,
@@ -3393,6 +3450,140 @@ namespace MTTFTest.Watchdog
             return true;
         }
 
+        private bool AugmentPostExitSafetyEvidence(
+            long permitGeneration,
+            DurableRelaunchPermitRecord authority,
+            OldProcessIdentitySnapshot oldIdentity)
+        {
+            if (authority == null || oldIdentity?.IsValid != true ||
+                authority.Generation != permitGeneration ||
+                !WatchdogTakeoverPermitBindingPolicy.Matches(
+                    _relaunchCoordinator.Snapshot,
+                    _args.SessionId,
+                    authority.Generation,
+                    authority.PermitId,
+                    WatchdogTakeoverPermitBindingPolicy.HashNonce(
+                        authority.PermitNonce)))
+                return false;
+
+            var observation = ProbeProcessIdentity(
+                oldIdentity.ProcessId,
+                oldIdentity.ProcessStartUtcTicks);
+            if (!WatchdogRecoveryReadinessPolicy.IsOldProcessExitProven(observation))
+                return false;
+
+            var observedUtcTicks = DateTime.UtcNow.Ticks;
+            WatchdogSafetyHandoffReceipt handoff;
+            if (WatchdogSafetyHandoffReceiptStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out handoff) && handoff != null)
+            {
+                if (handoff.State == WatchdogSafetyHandoffState.Failed ||
+                    handoff.RelaunchDisposition !=
+                        WatchdogRelaunchDisposition.PreserveApprovedPermit ||
+                    handoff.RelaunchPermitGeneration != permitGeneration ||
+                    !WatchdogTakeoverPermitBindingPolicy.Matches(
+                        authority,
+                        _args.SessionId,
+                        handoff.RelaunchPermitGeneration,
+                        handoff.RelaunchPermitId,
+                        handoff.RelaunchPermitNonceSha256))
+                    return false;
+
+                if (handoff.SchemaVersion >= 5 && handoff.OldProcessExitProven)
+                {
+                    if (handoff.OldProcessId != oldIdentity.ProcessId ||
+                        handoff.OldProcessStartUtcTicks !=
+                            oldIdentity.ProcessStartUtcTicks ||
+                        handoff.OldProcessObservation != observation)
+                        return false;
+                }
+                else
+                {
+                    handoff.SchemaVersion = 5;
+                    handoff.CrashRecovery = true;
+                    handoff.OldProcessExitProven = true;
+                    handoff.OldProcessId = oldIdentity.ProcessId;
+                    handoff.OldProcessStartUtcTicks =
+                        oldIdentity.ProcessStartUtcTicks;
+                    handoff.OldProcessObservation = observation;
+                    handoff.OldProcessExitObservedUtcTicks = observedUtcTicks;
+                    handoff.OldProcessExitEvidenceOwner =
+                        WatchdogSafetyEvidenceOwner.SupervisorService;
+                    handoff.OldProcessExitEvidenceSource =
+                        oldIdentity.Source ?? "FrozenOldProcessIdentity";
+                    handoff.LogicalQuiescent = true;
+                    handoff.CallbacksIsolated = true;
+                    handoff.HardwareResourcesReleased = true;
+                    handoff.ExecutionAuthorizationRevoked = true;
+                    handoff.DataAuditState = handoff.PersistenceDrained
+                        ? WatchdogDataAuditState.Drained
+                        : WatchdogDataAuditState.CrashRepairRequired;
+                    handoff.Revision++;
+                    handoff.Detail = string.IsNullOrWhiteSpace(handoff.Detail)
+                        ? "Exact old process exit proven by supervisor"
+                        : handoff.Detail +
+                          ";Exact old process exit proven by supervisor";
+                    WatchdogSafetyHandoffReceiptStore.WriteThrough(
+                        _args.JournalDirectory,
+                        handoff);
+                }
+            }
+
+            WatchdogClosingTombstone closing;
+            if (WatchdogClosingTombstoneStore.TryRead(
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    out closing) && closing != null)
+            {
+                if (closing.RelaunchDisposition !=
+                        WatchdogRelaunchDisposition.PreserveApprovedPermit ||
+                    closing.RelaunchPermitGeneration != permitGeneration ||
+                    !WatchdogTakeoverPermitBindingPolicy.Matches(
+                        authority,
+                        _args.SessionId,
+                        closing.RelaunchPermitGeneration,
+                        closing.RelaunchPermitId,
+                        closing.RelaunchPermitNonceSha256))
+                    return false;
+                if (closing.OldProcessExitProven &&
+                    (closing.OldProcessId != oldIdentity.ProcessId ||
+                     closing.OldProcessStartUtcTicks !=
+                         oldIdentity.ProcessStartUtcTicks ||
+                     closing.OldProcessObservation != observation))
+                    return false;
+                if (!closing.OldProcessExitProven || closing.SchemaVersion < 5)
+                {
+                    closing.SchemaVersion = 5;
+                    closing.OldProcessExitProven = true;
+                    closing.OldProcessId = oldIdentity.ProcessId;
+                    closing.OldProcessStartUtcTicks =
+                        oldIdentity.ProcessStartUtcTicks;
+                    closing.OldProcessObservation = observation;
+                    closing.OldProcessExitObservedUtcTicks = observedUtcTicks;
+                    closing.OldProcessExitEvidenceOwner =
+                        WatchdogSafetyEvidenceOwner.SupervisorService;
+                    closing.OldProcessExitEvidenceSource =
+                        oldIdentity.Source ?? "FrozenOldProcessIdentity";
+                    closing.DataAuditState = closing.PersistenceDrained
+                        ? WatchdogDataAuditState.Drained
+                        : WatchdogDataAuditState.CrashRepairRequired;
+                    closing.StateVersion++;
+                    WatchdogClosingTombstoneStore.WriteThrough(
+                        _args.JournalDirectory,
+                        closing);
+                }
+            }
+
+            Record(
+                "PostExitSafetyEvidenceAugmented",
+                $"PID={oldIdentity.ProcessId};StartUtcTicks=" +
+                $"{oldIdentity.ProcessStartUtcTicks};Observation={observation};" +
+                $"PermitGeneration={permitGeneration}");
+            return true;
+        }
+
         private static long ResolveOldProcessExitDeadlineTimestamp(
             OldProcessIdentitySnapshot oldIdentity)
         {
@@ -3424,7 +3615,7 @@ namespace MTTFTest.Watchdog
                     out closing);
                 if (hasClosing && closing != null)
                 {
-                    var exactClosing = closing.SchemaVersion >= 4 &&
+                    var exactClosing = closing.SchemaVersion >= 5 &&
                         closing.PreservesApprovedPermit &&
                         closing.RelaunchPermitGeneration == permitGeneration &&
                         WatchdogTakeoverPermitBindingPolicy.Matches(
@@ -3533,7 +3724,8 @@ namespace MTTFTest.Watchdog
                             authority,
                             priorHandoff.HandoffId,
                             priorHandoff.StopSafetyTransactionId,
-                            closing);
+                            closing,
+                            oldIdentity);
                         WatchdogClosingTombstoneStore.WriteThrough(
                             _args.JournalDirectory,
                             closing);
@@ -3570,7 +3762,7 @@ namespace MTTFTest.Watchdog
                     : Guid.NewGuid().ToString("N");
                 var receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = 4,
+                    SchemaVersion = 5,
                     SessionId = _args.SessionId,
                     SessionGeneration = seed.SessionGeneration,
                     SessionLease = seed.SessionLease,
@@ -3589,6 +3781,15 @@ namespace MTTFTest.Watchdog
                     CallbacksIsolated = true,
                     CrashRecovery = true,
                     OldProcessExitProven = true,
+                    OldProcessId = oldIdentity.ProcessId,
+                    OldProcessStartUtcTicks = oldIdentity.ProcessStartUtcTicks,
+                    OldProcessObservation = oldObservation,
+                    OldProcessExitObservedUtcTicks = DateTime.UtcNow.Ticks,
+                    OldProcessExitEvidenceOwner =
+                        WatchdogSafetyEvidenceOwner.SupervisorService,
+                    OldProcessExitEvidenceSource =
+                        oldIdentity.Source ?? "FrozenOldProcessIdentity",
+                    DataAuditState = WatchdogDataAuditState.CrashRepairRequired,
                     SidecarProcessId = _sidecarProcessId,
                     SidecarProcessStartUtcTicks = _sidecarProcessStartUtcTicks,
                     ProjectDirectory = seed.ProjectDirectory,
@@ -3617,7 +3818,8 @@ namespace MTTFTest.Watchdog
                     authority,
                     handoffId,
                     stopSafetyTransactionId,
-                    closing);
+                    closing,
+                    oldIdentity);
                 WatchdogClosingTombstoneStore.WriteThrough(
                     _args.JournalDirectory,
                     closing);
@@ -3644,7 +3846,8 @@ namespace MTTFTest.Watchdog
             DurableRelaunchPermitRecord authority,
             string handoffId,
             string stopSafetyTransactionId,
-            WatchdogClosingTombstone existing)
+            WatchdogClosingTombstone existing,
+            OldProcessIdentitySnapshot oldIdentity)
         {
             var takeoverTransactionId = existing?.TakeoverTransactionId;
             Guid parsed;
@@ -3660,7 +3863,7 @@ namespace MTTFTest.Watchdog
                     : Guid.NewGuid().ToString("N");
             return new WatchdogClosingTombstone
             {
-                SchemaVersion = 4,
+                SchemaVersion = 5,
                 SessionId = _args.SessionId,
                 SessionGeneration = seed.SessionGeneration,
                 SessionLease = seed.SessionLease,
@@ -3698,6 +3901,20 @@ namespace MTTFTest.Watchdog
                 LogicalQuiescent = existing?.LogicalQuiescent ?? false,
                 DataContinuityVerified =
                     existing?.DataContinuityVerified ?? false,
+                OldProcessExitProven = true,
+                OldProcessId = oldIdentity.ProcessId,
+                OldProcessStartUtcTicks = oldIdentity.ProcessStartUtcTicks,
+                OldProcessObservation = ProbeProcessIdentity(
+                    oldIdentity.ProcessId,
+                    oldIdentity.ProcessStartUtcTicks),
+                OldProcessExitObservedUtcTicks = DateTime.UtcNow.Ticks,
+                OldProcessExitEvidenceOwner =
+                    WatchdogSafetyEvidenceOwner.SupervisorService,
+                OldProcessExitEvidenceSource =
+                    oldIdentity.Source ?? "FrozenOldProcessIdentity",
+                DataAuditState = existing?.PersistenceDrained == true
+                    ? WatchdogDataAuditState.Drained
+                    : WatchdogDataAuditState.CrashRepairRequired,
                 SafetyOwner = "IndependentSafetyAgentCrashRecovery",
                 SafetyHandoffId = handoffId,
                 TerminalReason = string.IsNullOrWhiteSpace(existing?.TerminalReason)
@@ -3723,7 +3940,7 @@ namespace MTTFTest.Watchdog
                         _args.JournalDirectory,
                         _args.SessionId,
                         out closing) ||
-                    closing == null || closing.SchemaVersion < 4 ||
+                    closing == null || closing.SchemaVersion < 5 ||
                     !closing.PreservesApprovedPermit ||
                     closing.RelaunchPermitGeneration != permitGeneration ||
                     !WatchdogTakeoverPermitBindingPolicy.Matches(
@@ -3865,11 +4082,100 @@ namespace MTTFTest.Watchdog
             var outcome = result?.Outcome ??
                           WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt;
             var detail = result?.Detail ?? "SafetyPrerequisiteResultMissing";
+            var fingerprint = RecoveryFailurePolicy.BuildFingerprint(
+                "SafetyPrerequisite:" + outcome + ":" + detail);
+            int failureCount;
+            lock (_journalGate)
+            {
+                RecordStageFailureOnceLocked(
+                    RecoveryFailureStageKind.SafetyPrerequisite,
+                    "SafetyPrerequisite",
+                    permitGeneration,
+                    fingerprint);
+                if (_journal.SafetyPrerequisiteFirstFailureUtcTicks <= 0)
+                    _journal.SafetyPrerequisiteFirstFailureUtcTicks =
+                        DateTime.UtcNow.Ticks;
+                failureCount = _journal.SafetyPrerequisiteFailureCount;
+                _journal.LastReason =
+                    $"SafetyPrerequisite:{outcome}:{detail}";
+                try { TryPersistJournalSnapshotLocked(); } catch { }
+            }
             Record(
                 "RecoverySafetyPrerequisiteBlocked",
-                $"PermitGeneration={permitGeneration};Outcome={outcome};Detail={detail}");
-            BlockLaunchOutcomeUnknown(
-                $"RecoverySafetyPrerequisiteBlocked:{outcome}:{detail}");
+                $"PermitGeneration={permitGeneration};Outcome={outcome};" +
+                $"FailureCount={failureCount};MainLaunchBudgetConsumed=False;" +
+                $"Detail={detail}");
+            ScheduleSafetyPrerequisiteRetry(
+                permitGeneration,
+                outcome,
+                detail);
+        }
+
+        private void ScheduleSafetyPrerequisiteRetry(
+            long permitGeneration,
+            WatchdogSafetyHandoffWaitOutcome outcome,
+            string detail)
+        {
+            if (Interlocked.CompareExchange(
+                    ref _safetyPrerequisiteRetryStarted,
+                    1,
+                    0) != 0)
+                return;
+            int attempt;
+            int delaySeconds;
+            lock (_journalGate)
+            {
+                attempt = Math.Max(0, _journal.SafetyPrerequisiteRetryAttempt);
+                var schedule = new[] { 1, 5, 15, 30, 60, 300 };
+                delaySeconds = schedule[Math.Min(attempt, schedule.Length - 1)];
+                _journal.SafetyPrerequisiteRetryAttempt = attempt + 1;
+                _journal.SafetyPrerequisiteNextRetryUtcTicks =
+                    DateTime.UtcNow.AddSeconds(delaySeconds).Ticks;
+                try { TryPersistJournalSnapshotLocked(); } catch { }
+            }
+            _transitionWindow.Show(
+                "设备保持断能，等待安全前置复核",
+                $"首发故障：{outcome}；停止结果：安全回执未放行；" +
+                $"恢复门禁：schema 5 精确证据；当前动作：退避复核；" +
+                $"安全前置失败计数：{_journal.SafetyPrerequisiteFailureCount}；" +
+                $"下次重试：{DateTime.Now.AddSeconds(delaySeconds):yyyy-MM-dd HH:mm:ss}\r\n" +
+                detail,
+                delaySeconds,
+                attempt + 1);
+            Record(
+                "SafetyPrerequisiteRetryScheduled",
+                $"PermitGeneration={permitGeneration};Attempt={attempt + 1};" +
+                $"DelaySeconds={delaySeconds};Outcome={outcome}");
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(
+                            TimeSpan.FromSeconds(delaySeconds),
+                            _stop.Token)
+                        .ConfigureAwait(false);
+                    if (_journal.ManualStopRequested || IsSessionRevoked() ||
+                        _stop.IsCancellationRequested ||
+                        !IsConsumableRelaunchPermit(permitGeneration))
+                        return;
+                    lock (_journalGate)
+                    {
+                        _journal.SafetyPrerequisiteNextRetryUtcTicks = 0;
+                        try { TryPersistJournalSnapshotLocked(); } catch { }
+                    }
+                    Interlocked.Exchange(
+                        ref _safetyPrerequisiteRetryStarted,
+                        0);
+                    BeginRelaunchAfterExit(permitGeneration);
+                }
+                catch (OperationCanceledException) { }
+                finally
+                {
+                    Interlocked.Exchange(
+                        ref _safetyPrerequisiteRetryStarted,
+                        0);
+                }
+            });
         }
 
         private async Task RelaunchLoopAsync(
@@ -5124,6 +5430,14 @@ namespace MTTFTest.Watchdog
             return recoveryBlocked;
         }
 
+        internal static int CalculateCircuitHalfOpenDelaySeconds(
+            int attempt,
+            bool lastKnownGoodActive)
+        {
+            if (lastKnownGoodActive) return 30 * 60;
+            return attempt <= 0 ? 30 : attempt == 1 ? 60 : 300;
+        }
+
         private bool ScheduleNextCircuitHalfOpen()
         {
             int attempt;
@@ -5141,7 +5455,16 @@ namespace MTTFTest.Watchdog
                 Interlocked.Exchange(ref _circuitHalfOpenStarted, 0);
                 return false;
             }
-            var seconds = attempt <= 0 ? 30 : attempt == 1 ? 60 : 300;
+            var activeDirectory = Path.GetFileName(
+                Path.GetDirectoryName(
+                    _relaunchCoordinator.ActiveExecutablePath ?? string.Empty) ??
+                string.Empty);
+            var seconds = CalculateCircuitHalfOpenDelaySeconds(
+                attempt,
+                string.Equals(
+                    activeDirectory,
+                    "LastKnownGood",
+                    StringComparison.OrdinalIgnoreCase));
             Interlocked.Exchange(
                 ref _nextCircuitHalfOpenTimestamp,
                 Stopwatch.GetTimestamp() + seconds * Stopwatch.Frequency);
@@ -5265,17 +5588,23 @@ namespace MTTFTest.Watchdog
                 if (priorSnapshot?.Succeeded != true)
                     throw new InvalidDataException(
                         "PreviousSafetySnapshotInvalid:" + priorSnapshot?.Error);
-                if (!File.Exists(previous.MainExecutablePath) ||
-                    !File.Exists(previous.SafetyAgentExecutablePath))
+                var mainExecutablePath = _relaunchCoordinator.ActiveExecutablePath;
+                var safetyAgentExecutablePath = Path.Combine(
+                    Path.GetDirectoryName(mainExecutablePath) ?? string.Empty,
+                    "MTTFTest.SafetyAgent.exe");
+                if (!File.Exists(mainExecutablePath) ||
+                    !File.Exists(safetyAgentExecutablePath))
                     throw new FileNotFoundException("HalfOpenExecutableMissing");
                 var mainSha = DurableJsonFileStore.ComputeSha256(
-                    File.ReadAllBytes(previous.MainExecutablePath));
+                    File.ReadAllBytes(mainExecutablePath));
                 var agentSha = DurableJsonFileStore.ComputeSha256(
-                    File.ReadAllBytes(previous.SafetyAgentExecutablePath));
-                if (!string.Equals(mainSha, previous.MainExecutableSha256,
-                        StringComparison.Ordinal) ||
-                    !string.Equals(agentSha, previous.SafetyAgentExecutableSha256,
-                        StringComparison.Ordinal))
+                    File.ReadAllBytes(safetyAgentExecutablePath));
+                if (string.Equals(mainExecutablePath, previous.MainExecutablePath,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    (!string.Equals(mainSha, previous.MainExecutableSha256,
+                         StringComparison.Ordinal) ||
+                     !string.Equals(agentSha, previous.SafetyAgentExecutableSha256,
+                         StringComparison.Ordinal)))
                     throw new InvalidDataException("HalfOpenExecutableHashChanged");
 
                 var handoffId = Guid.NewGuid().ToString("N");
@@ -5299,7 +5628,7 @@ namespace MTTFTest.Watchdog
 
                 receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = 3,
+                    SchemaVersion = 5,
                     SessionId = _args.SessionId,
                     SessionGeneration = previous.SessionGeneration,
                     SessionLease = previous.SessionLease,
@@ -5316,12 +5645,13 @@ namespace MTTFTest.Watchdog
                     HardwareResourcesReleased = true,
                     ExecutionAuthorizationRevoked = true,
                     CallbacksIsolated = true,
+                    DataAuditState = WatchdogDataAuditState.Drained,
                     SidecarProcessId = _sidecarProcessId,
                     SidecarProcessStartUtcTicks = _sidecarProcessStartUtcTicks,
                     ProjectDirectory = previous.ProjectDirectory,
-                    MainExecutablePath = previous.MainExecutablePath,
+                    MainExecutablePath = mainExecutablePath,
                     MainExecutableSha256 = mainSha,
-                    SafetyAgentExecutablePath = previous.SafetyAgentExecutablePath,
+                    SafetyAgentExecutablePath = safetyAgentExecutablePath,
                     SafetyAgentExecutableSha256 = agentSha,
                     ConfigSnapshotPath = created.ConfigDirectory,
                     ConfigSnapshotManifestPath = created.ManifestPath,
@@ -5392,6 +5722,85 @@ namespace MTTFTest.Watchdog
                 };
             }
             return RegisterRecoveryFailure(report, classification);
+        }
+
+        private static RecoveryFailureStageKind ResolveFailureStage(
+            string failureCode,
+            string recoveryStage)
+        {
+            var code = failureCode ?? string.Empty;
+            var stage = recoveryStage ?? string.Empty;
+            if (code.IndexOf("Attach", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                code.IndexOf("Bootstrap", StringComparison.OrdinalIgnoreCase) >= 0)
+                return RecoveryFailureStageKind.MainAttach;
+            if (code.IndexOf("Launch", StringComparison.OrdinalIgnoreCase) >= 0)
+                return RecoveryFailureStageKind.MainLaunch;
+            if (code.IndexOf("FirstCycle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                code.IndexOf("BatchCommit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                stage.IndexOf("FirstCycle", StringComparison.OrdinalIgnoreCase) >= 0)
+                return RecoveryFailureStageKind.FirstCycleCommit;
+            return RecoveryFailureStageKind.CheckpointResume;
+        }
+
+        private void RecordStageFailureOnceLocked(
+            RecoveryFailureStageKind stage,
+            string operationId,
+            long permitGeneration,
+            string fingerprint)
+        {
+            var key = string.Join(
+                "|",
+                operationId ?? string.Empty,
+                permitGeneration.ToString(CultureInfo.InvariantCulture),
+                fingerprint ?? string.Empty);
+            switch (stage)
+            {
+                case RecoveryFailureStageKind.SafetyPrerequisite:
+                    if (string.Equals(
+                            _journal.LastSafetyPrerequisiteFailureKey,
+                            key,
+                            StringComparison.Ordinal))
+                        return;
+                    _journal.LastSafetyPrerequisiteFailureKey = key;
+                    _journal.SafetyPrerequisiteFailureCount++;
+                    break;
+                case RecoveryFailureStageKind.MainLaunch:
+                    if (string.Equals(
+                            _journal.LastMainLaunchFailureKey,
+                            key,
+                            StringComparison.Ordinal))
+                        return;
+                    _journal.LastMainLaunchFailureKey = key;
+                    _journal.MainLaunchFailureCount++;
+                    break;
+                case RecoveryFailureStageKind.MainAttach:
+                    if (string.Equals(
+                            _journal.LastMainAttachFailureKey,
+                            key,
+                            StringComparison.Ordinal))
+                        return;
+                    _journal.LastMainAttachFailureKey = key;
+                    _journal.MainAttachFailureCount++;
+                    break;
+                case RecoveryFailureStageKind.CheckpointResume:
+                    if (string.Equals(
+                            _journal.LastCheckpointResumeFailureKey,
+                            key,
+                            StringComparison.Ordinal))
+                        return;
+                    _journal.LastCheckpointResumeFailureKey = key;
+                    _journal.CheckpointResumeFailureCount++;
+                    break;
+                case RecoveryFailureStageKind.FirstCycleCommit:
+                    if (string.Equals(
+                            _journal.LastFirstCycleCommitFailureKey,
+                            key,
+                            StringComparison.Ordinal))
+                        return;
+                    _journal.LastFirstCycleCommitFailureKey = key;
+                    _journal.FirstCycleCommitFailureCount++;
+                    break;
+            }
         }
 
         private RecoveryFailureDecision RegisterRecoveryFailure(
@@ -5494,6 +5903,11 @@ namespace MTTFTest.Watchdog
                 _journal.RecoveryProgressToken = op.RecoveryProgressToken;
                 _journal.RecoveryProcessSource = op.RecoveryProcessSource;
                 _journal.RecoveryFailureMaxProcessRelaunches = budget;
+                RecordStageFailureOnceLocked(
+                    ResolveFailureStage(op.FailureCode, op.RecoveryStage),
+                    op.OperationId,
+                    strictRecord?.Generation ?? 0,
+                    op.FailureFingerprint);
                 _journal.RecoveryBlocked = strict == null || strict.Blocked || strict.Unproven || !strict.Durable;
                 _journal.LastReason = strict?.Reason;
                 try { TryPersistJournalSnapshotLocked(); }
@@ -5504,6 +5918,32 @@ namespace MTTFTest.Watchdog
                     // full session journal is audited but cannot contradict
                     // an already durable strict decision.
                 }
+                }
+            }
+
+            if (!authorityBusy && strict?.Record?.ConsecutiveFailures == 2 &&
+                IsPackageRollbackEligible(op.FailureCode, op.Permanent))
+            {
+                string rollbackReason;
+                if (_relaunchCoordinator.TryActivateLastKnownGood(out rollbackReason))
+                {
+                    lock (_journalGate)
+                    {
+                        _journal.LastReason =
+                            "PackageRollbackToLastKnownGood:" + rollbackReason;
+                        try { TryPersistJournalSnapshotLocked(); } catch { }
+                    }
+                    RecordEvent(
+                        "PackageRollbackActivated",
+                        "FailureCode=" + op.FailureCode + ";Count=2;" +
+                        "Executable=" + _relaunchCoordinator.ActiveExecutablePath);
+                    // The package identity changed, so this is a new probe rather
+                    // than a blind retry of the failed bytes.  The normal
+                    // half-open path still re-runs the complete safety handoff.
+                    Interlocked.Exchange(
+                        ref _nextCircuitHalfOpenTimestamp,
+                        Stopwatch.GetTimestamp());
+                    Interlocked.Exchange(ref _circuitHalfOpenStarted, 0);
                 }
             }
 
@@ -5538,6 +5978,17 @@ namespace MTTFTest.Watchdog
                 RelaunchBudgetExhausted = blocked,
                 Report = report
             };
+        }
+
+        private static bool IsPackageRollbackEligible(string failureCode, bool permanent)
+        {
+            if (permanent) return false;
+            var code = failureCode ?? string.Empty;
+            return code.IndexOf("Hardware", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   code.IndexOf("Hydraulic", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   code.IndexOf("Caliper", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   code.IndexOf("Circuit", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   code.IndexOf("SafetyPrerequisite", StringComparison.OrdinalIgnoreCase) < 0;
         }
 
         private static string ValidGuidN(string value, string fallback)
@@ -5597,6 +6048,7 @@ namespace MTTFTest.Watchdog
 
         private void CommitRecoveryAttempt(long commitGeneration, string committedRunId)
         {
+            var clearTransientAlarm = false;
             lock (_journalGate)
             {
                 var hasNewRun = !string.IsNullOrWhiteSpace(committedRunId) &&
@@ -5611,7 +6063,21 @@ namespace MTTFTest.Watchdog
                 // the failed run is audit evidence, not a successful reset.
                 if (hasNewRun || string.IsNullOrWhiteSpace(_journal.RecoveryFailureFingerprint))
                 {
+                    clearTransientAlarm = true;
                     _journal.ConsecutiveStartupFailures = 0;
+                    _journal.SafetyPrerequisiteFailureCount = 0;
+                    _journal.MainLaunchFailureCount = 0;
+                    _journal.MainAttachFailureCount = 0;
+                    _journal.CheckpointResumeFailureCount = 0;
+                    _journal.FirstCycleCommitFailureCount = 0;
+                    _journal.LastSafetyPrerequisiteFailureKey = string.Empty;
+                    _journal.LastMainLaunchFailureKey = string.Empty;
+                    _journal.LastMainAttachFailureKey = string.Empty;
+                    _journal.LastCheckpointResumeFailureKey = string.Empty;
+                    _journal.LastFirstCycleCommitFailureKey = string.Empty;
+                    _journal.SafetyPrerequisiteRetryAttempt = 0;
+                    _journal.SafetyPrerequisiteFirstFailureUtcTicks = 0;
+                    _journal.SafetyPrerequisiteNextRetryUtcTicks = 0;
                     _journal.RecoveryBlocked = false;
                     _journal.RecoveryFailureCode = string.Empty;
                     _journal.RecoveryFailurePermanent = false;
@@ -5630,6 +6096,12 @@ namespace MTTFTest.Watchdog
                     _journal.LastRecoveryBatchCommitGeneration,
                     commitGeneration);
             }
+            if (clearTransientAlarm)
+                SupervisorP0AlarmClient.TryClearTransient(
+                    "RecoveryFirstCycleCommitted",
+                    "Generation=" + commitGeneration.ToString(
+                        CultureInfo.InvariantCulture) + ";RunId=" +
+                    (committedRunId ?? string.Empty));
         }
 
         private void ObserveRecoveryBatchCommit(
@@ -5693,7 +6165,14 @@ namespace MTTFTest.Watchdog
             if (reason.StartsWith("FormalProgress", StringComparison.OrdinalIgnoreCase)) return "试验控制进度停滞";
             if (reason.StartsWith("ExternalRecovery", StringComparison.OrdinalIgnoreCase)) return "内部恢复流程停滞";
             if (reason.StartsWith("PowerDisable", StringComparison.OrdinalIgnoreCase)) return "程控电源断能确认超时";
-            if (reason.StartsWith("Stop", StringComparison.OrdinalIgnoreCase)) return "安全停止流程超时";
+            if (reason.Equals("StopCompleted", StringComparison.OrdinalIgnoreCase))
+                return "安全停止已完成，正在等待进程替换";
+            if (reason.Equals("StopRequested", StringComparison.OrdinalIgnoreCase))
+                return "正在执行安全停止";
+            if (reason.IndexOf("StopSafetyTimeout", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                reason.IndexOf("StopSafetyTimedOut", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                reason.IndexOf("StopHardDeadline", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "安全停止流程超时";
             return reason;
         }
 
@@ -5727,6 +6206,16 @@ namespace MTTFTest.Watchdog
                 "RecoveryTransitionPromptDismissed",
                 "ProcessPreserved=True;AutomaticRecoveryUnchanged=True");
             try { _transitionWindow.Hide(); } catch { }
+        }
+
+        private void OnTransitionMuteP0BuzzerRequested()
+        {
+            var muted = SupervisorP0AlarmClient.TryMuteBuzzer(
+                "OperatorMuteFromRecoveryWindow",
+                "RecoveryTransitionWindow");
+            RecordEvent(
+                muted ? "P0AlarmBuzzerMutedByOperator" : "P0AlarmBuzzerMuteRejected",
+                "FaultLightAndLatchPreserved=True;SupervisorAccepted=" + muted);
         }
 
         private void OnTransitionOperatorStopRequested()
@@ -6481,15 +6970,23 @@ namespace MTTFTest.Watchdog
                             Quote(handoffId),
                             Quote(nonce),
                             Quote(_args.JournalDirectory));
-                        worker = Process.Start(new ProcessStartInfo
-                        {
-                            FileName = executable,
-                            Arguments = arguments,
-                            WorkingDirectory = Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory,
-                            UseShellExecute = false,
-                            CreateNoWindow = true,
-                            WindowStyle = ProcessWindowStyle.Hidden
-                        });
+                        var formalMarker = Path.Combine(
+                            Path.GetDirectoryName(executable) ?? string.Empty,
+                            "MTTFTest.UnattendedMode.required");
+                        worker = File.Exists(formalMarker)
+                            ? SupervisorSafetyAgentLaunchClient.Start(
+                                receipt,
+                                executable,
+                                arguments)
+                            : Process.Start(new ProcessStartInfo
+                            {
+                                FileName = executable,
+                                Arguments = arguments,
+                                WorkingDirectory = Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory,
+                                UseShellExecute = false,
+                                CreateNoWindow = true,
+                                WindowStyle = ProcessWindowStyle.Hidden
+                            });
                         if (worker == null) throw new InvalidOperationException("SafetyWorkerStartReturnedNull");
                         if (receipt.RelaunchDisposition ==
                             WatchdogRelaunchDisposition.PreserveApprovedPermit)

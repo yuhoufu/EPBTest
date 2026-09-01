@@ -135,7 +135,7 @@ namespace AdaptiveControlTests
 
             var handoff = new WatchdogSafetyHandoffReceipt
             {
-                SchemaVersion = 4,
+                SchemaVersion = 5,
                 State = WatchdogSafetyHandoffState.Completed,
                 Stage = WatchdogSafetyStage.Completed,
                 MotorsOff = true,
@@ -147,7 +147,14 @@ namespace AdaptiveControlTests
                 ExecutionAuthorizationRevoked = true,
                 CallbacksIsolated = true,
                 CrashRecovery = true,
-                OldProcessExitProven = true
+                OldProcessExitProven = true,
+                OldProcessId = 41,
+                OldProcessStartUtcTicks = 4100,
+                OldProcessObservation = DurableRelaunchProcessObservation.Dead,
+                OldProcessExitObservedUtcTicks = DateTime.UtcNow.Ticks,
+                OldProcessExitEvidenceOwner = WatchdogSafetyEvidenceOwner.SupervisorService,
+                OldProcessExitEvidenceSource = "TestSupervisor",
+                DataAuditState = WatchdogDataAuditState.CrashRepairRequired
             };
             Assert(WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
                 "强杀恢复的物理安全证据未接受启动后数据修复");
@@ -160,9 +167,13 @@ namespace AdaptiveControlTests
         {
             var closing = new WatchdogClosingTombstone
             {
-                SchemaVersion = 4,
+                SchemaVersion = 5,
                 ExitDisposition = WatchdogExitDisposition.TakeoverReplacementExit,
                 RelaunchDisposition = WatchdogRelaunchDisposition.PreserveApprovedPermit,
+                TakeoverTransactionId = Guid.NewGuid().ToString("N"),
+                RelaunchPermitGeneration = 9,
+                RelaunchPermitId = Guid.NewGuid().ToString("N"),
+                RelaunchPermitNonceSha256 = new string('A', 64),
                 State = WatchdogClosingTombstoneState.Terminal,
                 SafetyStage = WatchdogClosingSafetyStage.Terminal,
                 FinalSafetyResultCommitted = true,
@@ -170,7 +181,15 @@ namespace AdaptiveControlTests
                 PowerOff = true,
                 PressureSafe = true,
                 PersistenceDrained = true,
-                LogicalQuiescent = true
+                LogicalQuiescent = true,
+                OldProcessExitProven = true,
+                OldProcessId = 42,
+                OldProcessStartUtcTicks = 4200,
+                OldProcessObservation = DurableRelaunchProcessObservation.Dead,
+                OldProcessExitObservedUtcTicks = DateTime.UtcNow.Ticks,
+                OldProcessExitEvidenceOwner = WatchdogSafetyEvidenceOwner.SupervisorService,
+                OldProcessExitEvidenceSource = "TestSupervisor",
+                DataAuditState = WatchdogDataAuditState.Drained
             };
             Assert(
                 WatchdogRecoveryReadinessPolicy.IsCompleteStopProof(closing),
@@ -223,7 +242,7 @@ namespace AdaptiveControlTests
                 !WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
                 "Failed Handoff错误放行");
 
-            closing.SchemaVersion = 4;
+            closing.SchemaVersion = 5;
             closing.SafetyHandoffId = Guid.NewGuid().ToString("N");
             handoff.State = WatchdogSafetyHandoffState.Accepted;
             Assert(

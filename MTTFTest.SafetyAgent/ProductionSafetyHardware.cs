@@ -6,16 +6,23 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTTFTest.SafetyAgent
 {
+    internal interface ISafetyPowerEvidence
+    {
+        SafetyPowerOffReport LastPowerOffReport { get; }
+    }
+
     internal sealed class ProductionSafetyHardwareFactory : ISafetyHardwareFactory
     {
         public ISafetyHardware Create(string configDirectory, SafetyRuntimeSnapshot runtime) =>
             new ProductionSafetyHardware(configDirectory, runtime);
     }
 
-    internal sealed class ProductionSafetyHardware : ISafetyHardware
+    internal sealed class ProductionSafetyHardware : ISafetyHardware, ISafetyPowerEvidence
     {
         private readonly SafetyRuntimeSnapshot _runtime;
         private readonly SafetyHardwareConfiguration _configuration;
+
+        public SafetyPowerOffReport LastPowerOffReport { get; private set; }
 
         internal ProductionSafetyHardware(string configDirectory, SafetyRuntimeSnapshot runtime)
         {
@@ -40,9 +47,10 @@ namespace MTTFTest.SafetyAgent
 
         public bool ConfirmPowerOff()
         {
-            return new SafetyPowerOutputController().ConfirmAllOff(
+            LastPowerOffReport = new SafetyPowerOutputController().ConfirmAllOffDetailed(
                 _configuration.PowerSupplies,
                 _runtime.ReleaseTimeoutMs);
+            return LastPowerOffReport.AllObservedOff;
         }
 
         public bool ConfirmPressureSafe()

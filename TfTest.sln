@@ -37,6 +37,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MTTFTest.SafetyAgent", "MTT
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MTTFTest.SafetyHardware", "MTTFTest.SafetyHardware\MTTFTest.SafetyHardware.csproj", "{E3C70F37-05C0-49FC-902A-66DE352F1F43}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MTTFTest.SessionAgent", "MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj", "{8F458242-0B7C-42CA-9BAC-5B232024FA14}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PowerSupplyDebugger.Tests", "Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj", "{549DB25A-6585-41A5-8A36-A234D24D8A72}"
@@ -53,6 +55,22 @@ Global
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|Any CPU.ActiveCfg = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|Any CPU.Build.0 = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|Mixed Platforms.ActiveCfg = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|Mixed Platforms.Build.0 = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|x64.ActiveCfg = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|x64.Build.0 = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|x86.ActiveCfg = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Debug|x86.Build.0 = Debug|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|Any CPU.ActiveCfg = Release|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|Any CPU.Build.0 = Release|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|Mixed Platforms.ActiveCfg = Release|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|Mixed Platforms.Build.0 = Release|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|x64.ActiveCfg = Release|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|x64.Build.0 = Release|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|x86.ActiveCfg = Release|AnyCPU
+		{8F458242-0B7C-42CA-9BAC-5B232024FA14}.Release|x86.Build.0 = Release|AnyCPU
 		{2F691519-C5A2-4A90-A05A-9B4E739D7E43}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{2F691519-C5A2-4A90-A05A-9B4E739D7E43}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2F691519-C5A2-4A90-A05A-9B4E739D7E43}.Debug|Mixed Platforms.ActiveCfg = Debug|Any CPU

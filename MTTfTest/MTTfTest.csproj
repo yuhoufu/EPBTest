@@ -25,7 +25,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.13.0.46</ApplicationVersion>
+    <ApplicationVersion>2.14.0.0</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -399,6 +399,12 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <Private>false</Private>
     </ProjectReference>
+    <ProjectReference Include="..\MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj">
+      <Project>{8F458242-0B7C-42CA-9BAC-5B232024FA14}</Project>
+      <Name>MTTFTest.SessionAgent</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
   </ItemGroup>
   <Target Name="CopyWatchdogSidecar" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
@@ -407,6 +413,8 @@
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.pdb')" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.pdb')" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SessionAgent\bin\$(Configuration)\MTTFTest.SessionAgent.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SessionAgent\bin\$(Configuration)\MTTFTest.SessionAgent.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SessionAgent\bin\$(Configuration)\MTTFTest.SessionAgent.pdb')" />
   </Target>
   <ItemGroup>
     <BootstrapperPackage Include=".NETFramework,Version=v4.8">

@@ -625,14 +625,83 @@ namespace MTTFTest.SafetyHardware
         }
     }
 
+    public sealed class SafetyPowerSupplyOffResult
+    {
+        public int SupplyId { get; internal set; }
+        public string DisplayName { get; internal set; }
+        public string Endpoint { get; internal set; }
+        public bool Connected { get; internal set; }
+        public bool IdentityVerified { get; internal set; }
+        public string Identity { get; internal set; }
+        public PswOutputCommandResult Command { get; internal set; }
+        public PswOutputState SecondObservedState { get; internal set; }
+        public bool SecondReadBackVerified { get; internal set; }
+        public string FailureStage { get; internal set; }
+        public string FailureCode { get; internal set; }
+        public string Detail { get; internal set; }
+        public double DurationMs { get; internal set; }
+
+        public bool ObservedOff =>
+            Connected && IdentityVerified && Command?.Succeeded == true &&
+            Command.ObservedState == PswOutputState.Off &&
+            SecondReadBackVerified && SecondObservedState == PswOutputState.Off;
+    }
+
+    public sealed class SafetyPowerOffReport
+    {
+        public SafetyPowerSupplyOffResult[] Supplies { get; internal set; } =
+            Array.Empty<SafetyPowerSupplyOffResult>();
+
+        public bool HasSupplies => Supplies.Length > 0;
+        public bool AllObservedOff => HasSupplies && Supplies.All(value => value.ObservedOff);
+
+        public string ToDiagnosticString()
+        {
+            return string.Join("|", Supplies.Select(value =>
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "SupplyId={0};Endpoint={1};Connected={2};IdentityVerified={3};" +
+                    "CommandObserved={4};CommandVerified={5};SecondObserved={6};" +
+                    "SecondVerified={7};Stage={8};Code={9};DurationMs={10:F1};Detail={11}",
+                    value.SupplyId,
+                    value.Endpoint ?? string.Empty,
+                    value.Connected,
+                    value.IdentityVerified,
+                    value.Command?.ObservedState ?? PswOutputState.Unknown,
+                    value.Command?.ReadBackVerified == true,
+                    value.SecondObservedState,
+                    value.SecondReadBackVerified,
+                    value.FailureStage ?? string.Empty,
+                    value.FailureCode ?? string.Empty,
+                    value.DurationMs,
+                    value.Detail ?? string.Empty)));
+        }
+    }
+
     public sealed class SafetyPowerOutputController
     {
         public bool ConfirmAllOff(IEnumerable<SafetyPowerSupply> supplies, int timeoutMs)
         {
-            var any = false;
+            return ConfirmAllOffDetailed(supplies, timeoutMs).AllObservedOff;
+        }
+
+        public SafetyPowerOffReport ConfirmAllOffDetailed(
+            IEnumerable<SafetyPowerSupply> supplies,
+            int timeoutMs)
+        {
+            var results = new List<SafetyPowerSupplyOffResult>();
             foreach (var supply in supplies ?? Array.Empty<SafetyPowerSupply>())
             {
-                any = true;
+                var started = Stopwatch.GetTimestamp();
+                var result = new SafetyPowerSupplyOffResult
+                {
+                    SupplyId = supply.Id,
+                    DisplayName = supply.DisplayName ?? string.Empty,
+                    Endpoint = supply.Host + ":" + supply.Port,
+                    SecondObservedState = PswOutputState.Unknown,
+                    FailureStage = "Connect"
+                };
+                results.Add(result);
                 try
                 {
                     var endpoint = new PswEndpoint
@@ -648,20 +717,55 @@ namespace MTTFTest.SafetyHardware
                                Math.Min(3000, timeoutMs), Math.Min(2000, timeoutMs)))
                     using (var timeout = new CancellationTokenSource(timeoutMs))
                     {
-                        client.ConnectAsync(timeout.Token).GetAwaiter().GetResult();
-                        if (!client.SetOutputAsync(false, timeout.Token).GetAwaiter().GetResult())
-                            return false;
+                        var connected = client.ConnectAsync(timeout.Token).GetAwaiter().GetResult();
+                        result.Connected = connected != null && connected.IsConnected;
+                        result.Identity = client.Identity ?? string.Empty;
+                        result.IdentityVerified = client.IsVerifiedPsw;
+                        result.FailureStage = "WriteAndReadBackOff";
+                        result.Command = client.SetOutputAndReadBackAsync(false, timeout.Token)
+                            .GetAwaiter().GetResult();
+                        if (result.Command?.Succeeded != true ||
+                            result.Command.ObservedState != PswOutputState.Off)
+                        {
+                            result.FailureCode = result.Command?.FailureCode ??
+                                                 "SafetyPowerOffCommandUnconfirmed";
+                            result.Detail = result.Command?.Detail ?? string.Empty;
+                            continue;
+                        }
+                        result.FailureStage = "SecondReadBack";
                         var snapshot = client.ReadSnapshotAsync(timeout.Token).GetAwaiter().GetResult();
-                        if (snapshot == null || !snapshot.IsConnected || snapshot.OutputEnabled)
-                            return false;
+                        result.SecondObservedState = snapshot == null
+                            ? PswOutputState.Unknown
+                            : snapshot.OutputEnabled
+                                ? PswOutputState.On
+                                : PswOutputState.Off;
+                        result.SecondReadBackVerified = snapshot != null &&
+                                                        snapshot.IsConnected &&
+                                                        !snapshot.OutputEnabled;
+                        if (!result.SecondReadBackVerified)
+                        {
+                            result.FailureCode = "SafetyPowerSecondReadBackNotOff";
+                            result.Detail = "Observed=" + result.SecondObservedState;
+                            continue;
+                        }
+                        result.FailureStage = string.Empty;
                     }
                 }
                 catch (Exception ex)
                 {
-                    throw new SafetyHardwareUnavailableException("SafetyPowerOffUnconfirmed", ex);
+                    result.FailureCode = ex is OperationCanceledException ||
+                                         ex is TimeoutException
+                        ? "SafetyPowerOffTimeout"
+                        : "SafetyPowerOffUnconfirmed";
+                    result.Detail = ex.GetBaseException().Message;
+                }
+                finally
+                {
+                    result.DurationMs = (Stopwatch.GetTimestamp() - started) * 1000.0 /
+                                        Stopwatch.Frequency;
                 }
             }
-            return any;
+            return new SafetyPowerOffReport { Supplies = results.ToArray() };
         }
     }
 }

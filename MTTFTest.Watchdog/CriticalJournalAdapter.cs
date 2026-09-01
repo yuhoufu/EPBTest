@@ -116,7 +116,7 @@ namespace MTTFTest.Watchdog
                 return WatchdogJournalV4Validator.CreateBlocked(_sessionId, "SessionMismatch");
 
             var schema = ReadInt(values, "SchemaVersion", 0);
-            if (schema != 2 && schema != 3 &&
+            if (schema != 2 && schema != 3 && schema != 4 &&
                 schema != WatchdogJournalPolicy.CurrentSchemaVersion)
                 return WatchdogJournalV4Validator.CreateBlocked(
                     _sessionId,

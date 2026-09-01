@@ -18,6 +18,7 @@ namespace MTTFTest.Watchdog
         private readonly ManualResetEventSlim _ready = new ManualResetEventSlim(false);
         private readonly Action _dismissPromptRequested;
         private readonly Action _operatorStopRequested;
+        private readonly Action _muteP0BuzzerRequested;
         private Thread _thread;
         private RecoveryForm _form;
         private bool _disposed;
@@ -25,10 +26,12 @@ namespace MTTFTest.Watchdog
 
         public RecoveryTransitionWindow(
             Action dismissPromptRequested,
-            Action operatorStopRequested)
+            Action operatorStopRequested,
+            Action muteP0BuzzerRequested)
         {
             _dismissPromptRequested = dismissPromptRequested;
             _operatorStopRequested = operatorStopRequested;
+            _muteP0BuzzerRequested = muteP0BuzzerRequested;
             if (!Environment.UserInteractive)
             {
                 _ready.Set();
@@ -102,7 +105,8 @@ namespace MTTFTest.Watchdog
                         DismissByOperator();
                         _dismissPromptRequested?.Invoke();
                     },
-                    _operatorStopRequested);
+                    _operatorStopRequested,
+                    _muteP0BuzzerRequested);
                 // Application.Run(form) implicitly shows the form.  The sidecar
                 // is created for every ordinary test run, so that behavior made
                 // the recovery surface appear even though no takeover had
@@ -166,16 +170,18 @@ namespace MTTFTest.Watchdog
             private readonly ProgressBar _progress;
             private readonly Button _dismissPrompt;
             private readonly Button _operatorStop;
+            private readonly Button _muteP0Buzzer;
             private readonly System.Windows.Forms.Timer _topmostTimer;
             private bool _allowClose;
             private int _operatorStopRaised;
 
             public RecoveryForm(
                 Action dismissPromptRequested,
-                Action operatorStopRequested)
+                Action operatorStopRequested,
+                Action muteP0BuzzerRequested)
             {
                 Text = "MT EPB 试验系统自动恢复";
-                ClientSize = new Size(660, 390);
+                ClientSize = new Size(660, 450);
                 BackColor = Color.FromArgb(245, 249, 252);
                 FormBorderStyle = FormBorderStyle.FixedDialog;
                 StartPosition = FormStartPosition.CenterScreen;
@@ -288,8 +294,31 @@ namespace MTTFTest.Watchdog
                     ThreadPool.QueueUserWorkItem(_ => operatorStopRequested?.Invoke());
                 };
 
+                _muteP0Buzzer = new Button
+                {
+                    Location = new Point(189, 372),
+                    Size = new Size(282, 42),
+                    BackColor = Color.FromArgb(101, 112, 122),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+                    Text = "仅静音蜂鸣器（故障灯与锁存保持）",
+                    UseVisualStyleBackColor = false,
+                    Cursor = Cursors.Hand,
+                    TabStop = true
+                };
+                _muteP0Buzzer.FlatAppearance.BorderSize = 0;
+                _muteP0Buzzer.Click += (_, __) =>
+                {
+                    _muteP0Buzzer.Enabled = false;
+                    _muteP0Buzzer.Cursor = Cursors.WaitCursor;
+                    _muteP0Buzzer.Text = "正在请求静音…";
+                    ThreadPool.QueueUserWorkItem(_ => muteP0BuzzerRequested?.Invoke());
+                };
+
                 AcceptButton = _dismissPrompt;
                 CancelButton = _dismissPrompt;
+                Controls.Add(_muteP0Buzzer);
                 Controls.Add(_operatorStop);
                 Controls.Add(_dismissPrompt);
                 Controls.Add(safety);
@@ -344,6 +373,9 @@ namespace MTTFTest.Watchdog
                 _operatorStop.Enabled = true;
                 _operatorStop.Cursor = Cursors.Hand;
                 _operatorStop.Text = RecoveryTransitionPolicy.OperatorStopButtonText;
+                _muteP0Buzzer.Enabled = true;
+                _muteP0Buzzer.Cursor = Cursors.Hand;
+                _muteP0Buzzer.Text = "仅静音蜂鸣器（故障灯与锁存保持）";
                 SetPreserveMainProcessPreferred(false);
             }
 

@@ -96,7 +96,7 @@ namespace AdaptiveControlTests
             Run("CAS压力1000次无回退", CasStress1000, ref passed);
             Run("不同session serializer隔离", DifferentSessionsIsolation, ref passed);
             Run("大小写目录别名共享authority mutex", CaseInsensitivePathAlias, ref passed);
-            Run("协议exact v4/外层身份/nonce隔离", ReceiptValidator, ref passed);
+            Run("协议exact v5/外层身份/nonce隔离", ReceiptValidator, ref passed);
             Run("原始JSON白名单与字段类型严格校验", RawWireWhitelist, ref passed);
             Run("失败请求exact-v4原始hash与重放身份", RecoveryFailureRequestWire, ref passed);
             Run("协议拒绝v0/v2/v3", ExactProtocolVersions, ref passed);
@@ -737,7 +737,7 @@ namespace AdaptiveControlTests
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongType, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ReceiptType", "numeric field with string type accepted");
-            var wrongVersion = json.Replace("\"ProtocolVersion\":4", "\"ProtocolVersion\":3");
+            var wrongVersion = json.Replace("\"ProtocolVersion\":5", "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongVersion, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ProtocolVersion", "v2 raw receipt accepted");
@@ -747,7 +747,7 @@ namespace AdaptiveControlTests
             // data into a valid authority receipt.
             var missingTop = new[]
             {
-                json.Replace("\"ProtocolVersion\":4,", string.Empty),
+                json.Replace("\"ProtocolVersion\":5,", string.Empty),
                 json.Replace("\"Type\":\"RecoveryAttemptFailedReceipt\",", string.Empty),
                 json.Replace("\"SessionId\":\"" + session + "\",", string.Empty),
                 json.Replace("\"CorrelationId\":\"" + corr + "\",", string.Empty),
@@ -851,7 +851,7 @@ namespace AdaptiveControlTests
                    reason == "RequestShape",
                 "unknown/launch-only request key accepted");
             var v2 = wire.Replace(
-                "\"ProtocolVersion\":4", "\"ProtocolVersion\":3");
+                "\"ProtocolVersion\":5", "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureRequestWire(
                        v2, session, out _, out _, out reason) &&
                    reason == "RequestProtocolOrType",
@@ -1265,7 +1265,7 @@ namespace AdaptiveControlTests
                 File.WriteAllText(relaunchPath, legacy, new UTF8Encoding(false));
                 var first = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
                 Assert(first.Succeeded && first.Authority.Snapshot.State == DurableRelaunchPermitState.Blocked &&
-                    first.Authority.Snapshot.SchemaVersion == 4, "legacy ambiguous record was not durably migrated to Blocked");
+                    first.Authority.Snapshot.SchemaVersion == 5, "legacy ambiguous record was not durably migrated to Blocked");
                 var durableBlockedBytes = File.ReadAllBytes(relaunchPath);
                 var second = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
                 Assert(second.Succeeded && second.Authority.Snapshot.State == DurableRelaunchPermitState.Blocked &&
@@ -1388,6 +1388,7 @@ namespace AdaptiveControlTests
                         record.RecoveryCommitGeneration = state == DurableRelaunchPermitState.Committed ? 1 : 0;
                         record.CircuitOpen = state == DurableRelaunchPermitState.Blocked || state == DurableRelaunchPermitState.Revoked;
                     }
+                    record.SchemaVersion = 4;
                     var json = StripOldV4Identity(DurableRelaunchAuthorityV4Validator.Serialize(record));
                     File.WriteAllText(Path.Combine(dir, "session-" + session + ".relaunch.json"), json, new UTF8Encoding(false));
                     var opened = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
@@ -1420,7 +1421,8 @@ namespace AdaptiveControlTests
         private static string StripOldV4Identity(string json)
         {
             return json.Replace("\"RecordKind\":\"DurableRelaunchAuthority\",", string.Empty)
-                       .Replace("\"RecordFormatRevision\":1,", string.Empty);
+                       .Replace("\"RecordFormatRevision\":1,", string.Empty)
+                       .Replace("\"RecordFormatRevision\":2,", string.Empty);
         }
 
         private static void ProductionReconcileMatrix()
@@ -1831,7 +1833,7 @@ namespace AdaptiveControlTests
                     return new DurableAuthorityStoreCommitResult { Status = DurableAuthorityCommitStatus.Conflict, Reason = "ExpectedRevisionOrShaMismatch" };
                 var next = candidate.Clone();
                 next.AuthorityRevision = expectedRevision + 1;
-                next.SchemaVersion = 4; next.RecordKind = DurableRelaunchAuthorityV4Validator.RequiredRecordKind; next.RecordFormatRevision = DurableRelaunchAuthorityV4Validator.RequiredFormatRevision;
+                next.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion; next.RecordKind = DurableRelaunchAuthorityV4Validator.RequiredRecordKind; next.RecordFormatRevision = DurableRelaunchAuthorityV4Validator.RequiredFormatRevision;
                 _json = DurableRelaunchAuthorityV4Validator.Serialize(next); _replaceCount++;
                 var after = Load(SessionId);
                 if (after == null || after.Record == null || after.Blocked || after.Unproven)

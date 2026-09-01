@@ -16,7 +16,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("Watchdog v4心跳字段与旧载荷兼容", ProtocolV2IsAdditive, ref passed);
+            Run("Watchdog v5心跳字段与旧载荷兼容", ProtocolV2IsAdditive, ref passed);
             Run("Stop阶段期限与材料进展宽限独立判定", StopStageDeadlineAndMaterialGrace, ref passed);
             Run("Stop液压释放10.441/15秒不提前接管", StopHydraulicReleaseDeadlineIsIndependent, ref passed);
             Run("Stop总45秒期限最终兜底", StopTotalHardDeadlineIsIndependent, ref passed);
@@ -317,7 +317,7 @@ namespace AdaptiveControlTests
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
             Assert(roundTrip.ProtocolVersion == WatchdogProtocol.Version &&
-                   roundTrip.ProtocolVersion == 4 && roundTrip.Heartbeat.StopAllActive &&
+                   roundTrip.ProtocolVersion == WatchdogProtocol.Version && roundTrip.Heartbeat.StopAllActive &&
                    roundTrip.Heartbeat.StopProgressVersion == 7 &&
                    roundTrip.Heartbeat.StopHardDeadlineUtc == 456789 &&
                    roundTrip.Heartbeat.StopStageHardDeadlineUtc == 345678 &&

@@ -18,8 +18,8 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("Attached返回冻结Sidecar身份并保持协议v4往返", AttachedIdentityRoundTrips, ref passed);
-            Run("协议版本严格限制为v4", ProtocolVersionMustBeExactV4, ref passed);
+            Run("Attached返回冻结Sidecar身份并保持协议v5往返", AttachedIdentityRoundTrips, ref passed);
+            Run("协议版本严格限制为v5", ProtocolVersionMustBeExactV4, ref passed);
             Run("Watchdog超过20KiB长帧完整性往返", LongIntegrityFrameRoundTrips, ref passed);
             Run("Watchdog半帧与校验篡改明确拒绝", PartialOrCorruptFrameIsRejected, ref passed);
             Run("真实Sidecar进程拒绝v2/0/v3并接受v4", RealSidecarRejectsInvalidProtocolVersions, ref passed);
@@ -394,8 +394,8 @@ namespace AdaptiveControlTests
                 InstanceNonce = "nonce-1"
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
-            Assert(WatchdogProtocol.Version == 4 &&
-                   roundTrip.ProtocolVersion == 4 &&
+            Assert(WatchdogProtocol.Version == 5 &&
+                   roundTrip.ProtocolVersion == WatchdogProtocol.Version &&
                    roundTrip.Type == WatchdogMessageType.Attached &&
                    roundTrip.SessionId == "session-transport" &&
                    roundTrip.SidecarProcessId == 321 &&
@@ -830,6 +830,21 @@ namespace AdaptiveControlTests
                            started.Record?.State == DurableRelaunchPermitState.Started,
                         "恢复重连未提交Started：" + started.Reason);
                     var recoveryPermit = started.Record.Clone();
+                    for (var replacementState = RecoveryReplacementState.Approved;
+                         replacementState <= RecoveryReplacementState.MainStarted;
+                         replacementState++)
+                    {
+                        var replacement = RecoveryReplacementTransactionStore.Advance(
+                            projectDirectory,
+                            session,
+                            recoveryPermit.Generation,
+                            recoveryPermit.PermitId,
+                            replacementState,
+                            "Committed recovery reconnect fixture");
+                        Assert(replacement.Succeeded,
+                            "恢复重连未建立替换事务" + replacementState + "：" +
+                            replacement.Reason);
+                    }
 
                     sidecar = Process.Start(new ProcessStartInfo
                     {
@@ -864,8 +879,15 @@ namespace AdaptiveControlTests
                                 WatchdogProtocol.Version,
                                 recoveryPermit);
                             var attached = ReadMessage(reader, TimeSpan.FromSeconds(5));
+                            var attachEvents = string.Join(
+                                " | ",
+                                Directory.GetFiles(projectDirectory, "*events.jsonl")
+                                    .Select(File.ReadAllText));
                             Assert(attached?.Type == WatchdogMessageType.Attached,
-                                "恢复进程首次Attach未被接受");
+                                "恢复进程首次Attach未被接受：Type=" +
+                                (attached?.Type ?? "<null>") + ";Reason=" +
+                                (attached?.Reason ?? "<null>") + ";Events=" +
+                                attachEvents);
                             writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
                             {
                                 Type = WatchdogMessageType.RecoveryBatchCommitted,

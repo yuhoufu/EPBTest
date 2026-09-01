@@ -64,14 +64,19 @@ namespace MTTFTest.Watchdog
             Process process = null;
             try
             {
-                process = Process.Start(new ProcessStartInfo
-                {
-                    FileName = capability.ExecutablePath,
-                    Arguments = capability.Arguments ?? string.Empty,
-                    WorkingDirectory = capability.WorkingDirectory,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                });
+                var formalMarker = Path.Combine(
+                    Path.GetDirectoryName(capability.ExecutablePath) ?? string.Empty,
+                    "MTTFTest.UnattendedMode.required");
+                process = File.Exists(formalMarker)
+                    ? SessionAgentLaunchClient.Start(capability)
+                    : Process.Start(new ProcessStartInfo
+                    {
+                        FileName = capability.ExecutablePath,
+                        Arguments = capability.Arguments ?? string.Empty,
+                        WorkingDirectory = capability.WorkingDirectory,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
                 if (process == null) throw new InvalidOperationException("GuardedProcessStartReturnedNull");
                 var startTicks = process.StartTime.ToUniversalTime().Ticks;
                 return new GuardedProcessOwnerReceipt(this, process, startTicks);

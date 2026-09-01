@@ -814,7 +814,8 @@ namespace MTEmbTest
         // can always perform the transport receipt outside Gate.
         private static readonly SemaphoreSlim SessionLifecycleGate = new SemaphoreSlim(1, 1);
         private static readonly WatchdogClientTransportEngine TransportEngine =
-            new WatchdogClientTransportEngine();
+            new WatchdogClientTransportEngine(
+                new SupervisorSidecarProcessLauncher());
         private static RuntimeTransportSessionContext _activeContext;
         private static RuntimeTransportSessionContext _lastDetachedContext;
         private static Func<WatchdogHeartbeat> _pendingHeartbeatProvider;
@@ -2673,7 +2674,7 @@ namespace MTEmbTest
                         configSnapshot?.Error ?? "SafetyConfigSnapshotUnavailable");
                 var receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = 3,
+                    SchemaVersion = 5,
                     SessionId = context.SessionId,
                     SessionGeneration = context.SessionGeneration,
                     SessionLease = context.SessionLease,
@@ -2693,6 +2694,9 @@ namespace MTEmbTest
                     HardwareResourcesReleased = hardwareResourcesReleased,
                     ExecutionAuthorizationRevoked = true,
                     CallbacksIsolated = true,
+                    DataAuditState = safety.PersistenceBoundaryConfirmed
+                        ? WatchdogDataAuditState.Drained
+                        : WatchdogDataAuditState.Unknown,
                     ProjectDirectory = projectDirectory,
                     MainExecutablePath = mainExecutablePath,
                     MainExecutableSha256 = mainSha256,
@@ -3353,7 +3357,7 @@ namespace MTEmbTest
 
             if (hasPrevious)
             {
-                if (previous.SchemaVersion < 4)
+                if (previous.SchemaVersion < 5)
                 {
                     if (relaunchDisposition ==
                             WatchdogRelaunchDisposition.PreserveApprovedPermit &&
@@ -3363,7 +3367,7 @@ namespace MTEmbTest
                             context,
                             "TakeoverCloseFenceMissingTypedExit",
                             previous);
-                    previous.SchemaVersion = 4;
+                    previous.SchemaVersion = 5;
                     previous.ExitDisposition = exitDisposition;
                     previous.RelaunchDisposition = relaunchDisposition;
                     previous.TakeoverTransactionId = hasTypedExit
@@ -3409,7 +3413,7 @@ namespace MTEmbTest
             const long version = 1;
             var tombstone = new WatchdogClosingTombstone
             {
-                SchemaVersion = 4,
+                SchemaVersion = 5,
                 SessionId = context.SessionId,
                 SessionGeneration = context.SessionGeneration,
                 SessionLease = context.SessionLease,

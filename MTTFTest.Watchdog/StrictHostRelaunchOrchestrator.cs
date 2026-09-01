@@ -89,8 +89,9 @@ namespace MTTFTest.Watchdog
         private readonly string _sessionNonce;
         private readonly int _sidecarPid;
         private readonly long _sidecarStartTicks;
-        private readonly string _executablePath;
-        private readonly string _workingDirectory;
+        private readonly object _packageSlotGate = new object();
+        private string _executablePath;
+        private string _workingDirectory;
         private readonly ConcurrentDictionary<long, DurableLaunchIntentCapability> _capabilities =
             new ConcurrentDictionary<long, DurableLaunchIntentCapability>();
         private readonly ConcurrentDictionary<long, string> _arguments =
@@ -106,6 +107,13 @@ namespace MTTFTest.Watchdog
             _sidecarPid = sidecarPid;
             _sidecarStartTicks = sidecarStartTicks;
             _executablePath = Path.GetFullPath(args.ExecutablePath);
+            string slotReason;
+            string activeExecutable;
+            if (!PackageSlotDescriptorStore.TryResolveActiveExecutable(
+                    _executablePath, out activeExecutable, out slotReason))
+                throw new InvalidOperationException(
+                    "ActivePackageSlotUnproven:" + slotReason);
+            _executablePath = activeExecutable;
             _workingDirectory = Path.GetDirectoryName(_executablePath) ?? Environment.CurrentDirectory;
 
             // The controller/runtime owns the one-time bootstrap.  A Host
@@ -127,6 +135,28 @@ namespace MTTFTest.Watchdog
         }
 
         internal DurableRelaunchPermitRecord Snapshot => Project(_authority.Snapshot);
+
+        internal string ActiveExecutablePath
+        {
+            get { lock (_packageSlotGate) return _executablePath; }
+        }
+
+        internal bool TryActivateLastKnownGood(out string reason)
+        {
+            lock (_packageSlotGate)
+            {
+                string executable;
+                if (!PackageSlotDescriptorStore.TryActivateLastKnownGood(
+                        _executablePath, out executable, out reason))
+                    return false;
+                _executablePath = executable;
+                _workingDirectory = Path.GetDirectoryName(executable) ??
+                                    Environment.CurrentDirectory;
+                _capabilities.Clear();
+                _arguments.Clear();
+                return true;
+            }
+        }
 
         internal DurableRelaunchResult ApproveOrGetExisting(DurableRelaunchRequest request)
         {
@@ -163,14 +193,21 @@ namespace MTTFTest.Watchdog
         {
             var record = _authority.Snapshot;
             if (!Matches(record, identity)) return Result(false, false, false, "PermitIdentityMismatch", record);
-            var executableSha = Sha256File(_executablePath);
+            string executablePath;
+            string workingDirectory;
+            lock (_packageSlotGate)
+            {
+                executablePath = _executablePath;
+                workingDirectory = _workingDirectory;
+            }
+            var executableSha = Sha256File(executablePath);
             var intent = new DurableLaunchIntent
             {
                 SessionId = _sessionId, SessionNonce = _sessionNonce,
                 Generation = record.Generation, PermitId = record.PermitId,
                 PermitNonce = record.PermitNonce, IntentId = Guid.NewGuid().ToString("N"),
-                ExecutablePath = _executablePath, ExecutableSha256 = executableSha,
-                Arguments = arguments ?? string.Empty, WorkingDirectory = _workingDirectory,
+                ExecutablePath = executablePath, ExecutableSha256 = executableSha,
+                Arguments = arguments ?? string.Empty, WorkingDirectory = workingDirectory,
                 LaunchOptionsCanonical = DurableLaunchCanonical.RequiredOptionsCanonical,
             };
             intent.LaunchSpecSha256 = DurableLaunchCanonical.Sha256(intent);

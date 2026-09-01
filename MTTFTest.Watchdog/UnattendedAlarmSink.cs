@@ -42,7 +42,7 @@ namespace MTTFTest.Watchdog
             public string Code { get; set; }
             public string Message { get; set; }
             public string MachineName { get; set; }
-            public string ProductVersion { get; set; } = "V2.13.0.46";
+            public string ProductVersion { get; set; } = "V2.14.0.0";
             public string SessionId { get; set; }
             public long PermitGeneration { get; set; }
             public string FailureDomain { get; set; }
@@ -66,6 +66,7 @@ namespace MTTFTest.Watchdog
         private readonly string _webhookSpoolDirectory;
         private readonly string _webhookDegradedPath;
         private readonly string _localDegradedPath;
+        private readonly bool _formalSupervisorRequired;
         private readonly Settings _settings;
         private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer();
         private readonly HttpClient _http;
@@ -102,6 +103,9 @@ namespace MTTFTest.Watchdog
             _settings = LoadSettings(Path.Combine(
                 executableDirectory ?? Environment.CurrentDirectory,
                 "Config", "UnattendedAlarmConfig.xml"));
+            _formalSupervisorRequired = File.Exists(Path.Combine(
+                executableDirectory ?? Environment.CurrentDirectory,
+                "MTTFTest.UnattendedMode.required"));
             var root = WatchdogJournalPaths.ValidateProjectDirectory(journalDirectory);
             _localDirectory = Path.Combine(root, "UnattendedAlarmJournal");
             _localDegradedPath = Path.Combine(root, "unattended-alarm-local-degraded.log");
@@ -167,6 +171,14 @@ namespace MTTFTest.Watchdog
             envelope.Fingerprint = ComputeFingerprint(envelope);
             WriteLocalEvent(envelope.Code, envelope.Message);
             PersistLocal(envelope);
+            if (_formalSupervisorRequired &&
+                string.Equals(envelope.Severity, "P0", StringComparison.OrdinalIgnoreCase) &&
+                !SupervisorP0AlarmClient.TryLatch(
+                    envelope.EventId,
+                    envelope.Code,
+                    envelope.Message))
+                MarkLocalPersistenceDegraded(
+                    "SupervisorP0AlarmHardwareOwnerUnavailable");
 
             if (!_settings.Enabled) return;
             PersistWebhook(envelope);

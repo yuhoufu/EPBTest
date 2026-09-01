@@ -70,7 +70,8 @@ namespace MTTFTest.SafetyAgent
                 {
                     WatchdogSafetyHandoffReceipt receipt;
                     if (!TryReadExact(args, out receipt) ||
-                        (receipt.SchemaVersion != 3 && receipt.SchemaVersion != 4) ||
+                        (receipt.SchemaVersion != 3 && receipt.SchemaVersion != 4 &&
+                         receipt.SchemaVersion != 5) ||
                         receipt.State < WatchdogSafetyHandoffState.Accepted)
                         return 3;
                     if (receipt.IsSafetyCompleted) return 0;
@@ -107,9 +108,19 @@ namespace MTTFTest.SafetyAgent
                         if (receipt.Stage < WatchdogSafetyStage.PowerOffConfirmed)
                         {
                             if (!hardware.ConfirmPowerOff())
-                                throw new SafetyHardwareUnavailableException("SafetyPowerOffUnconfirmed");
+                            {
+                                var powerEvidence = hardware as ISafetyPowerEvidence;
+                                var detail = powerEvidence?.LastPowerOffReport?.ToDiagnosticString();
+                                throw new SafetyHardwareUnavailableException(
+                                    string.IsNullOrWhiteSpace(detail)
+                                        ? "SafetyPowerOffUnconfirmed"
+                                        : "SafetyPowerOffUnconfirmed:" + detail);
+                            }
+                            var confirmedPower = hardware as ISafetyPowerEvidence;
                             Advance(args, receipt, WatchdogSafetyStage.PowerOffConfirmed,
-                                "Power=OFF confirmed", value => value.PowerOff = true);
+                                "Power=OFF confirmed;" +
+                                (confirmedPower?.LastPowerOffReport?.ToDiagnosticString() ?? string.Empty),
+                                value => value.PowerOff = true);
                         }
                         receipt = ReadExact(args);
                         if (receipt.Stage < WatchdogSafetyStage.PressureSafeConfirmed)

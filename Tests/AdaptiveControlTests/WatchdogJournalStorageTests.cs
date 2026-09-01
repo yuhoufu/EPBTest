@@ -178,7 +178,7 @@ namespace AdaptiveControlTests
                        error == WatchdogJournalOpenExistingError.SessionMismatch && receipt == null,
                     "错误SessionId未返回SessionMismatch：" + error);
 
-                foreach (var schema in new[] { 0, 2, 3, 5 })
+                foreach (var schema in new[] { 0, 1, 6, 999 })
                 {
                     File.WriteAllText(path,
                         "{\"SchemaVersion\":" + schema.ToString(CultureInfo.InvariantCulture) +
@@ -507,7 +507,7 @@ namespace AdaptiveControlTests
                 "\"RecoveryFailureCode\":\"ConfigDuplicateEpbId\",\"ConsecutiveStartupFailures\":3}";
             var migratedJournal = WatchdogJournalMigration.MigrateJournalJson(legacyJournal);
             Assert(!string.IsNullOrWhiteSpace(migratedJournal) &&
-                   migratedJournal.Contains("\"SchemaVersion\":4") &&
+                   migratedJournal.Contains("\"SchemaVersion\":5") &&
                    migratedJournal.Contains("\"RecoveryBlocked\":true") &&
                    migratedJournal.Contains("ConfigDuplicateEpbId"),
                 "V2 Journal迁移丢失RecoveryBlocked或失败证据");

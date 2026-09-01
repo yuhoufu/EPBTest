@@ -25,7 +25,7 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("SafetyAgent使用快照参数并从最后阶段幂等续跑",
                 SafetyAgentUsesSnapshotAndResumesStages, ref passed);
-            Run("强杀恢复使用schema4安全回执并由独立代理完成物理确认",
+            Run("强杀恢复使用schema5安全回执并由独立代理完成物理确认",
                 CrashRecoverySafetyAgentCompletesPhysicalProof, ref passed);
             Run("快照篡改在创建硬件前被证据门禁拒绝",
                 SnapshotTamperFailsBeforeHardwareOpen, ref passed);
@@ -33,6 +33,10 @@ namespace AdaptiveControlTests
                 ProductionAgentRejectsTamperInFreshProcess, ref passed);
             Run("唯一恢复事务并发观察只推进一次",
                 ReplacementTransactionIsSingleConsumption, ref passed);
+            Run("Supervisor SafetyAgent请求绑定schema5会话permit与挑战nonce",
+                SupervisorSafetyAgentProtocolBindsAuthority, ref passed);
+            Run("Supervisor P0告警请求绑定schema5身份且静音不等于清除锁存",
+                SupervisorP0AlarmProtocolPreservesLatchSemantics, ref passed);
             Run("DAQ恢复重入门禁在失联后重新累计稳定窗口",
                 DaqRejoinGateRollsBackAndRecovers, ref passed);
             Run("DAQ恢复重入门禁对持续接管许可保持关闭",
@@ -118,9 +122,19 @@ namespace AdaptiveControlTests
             using (var fixture = SafetyFixture.Create())
             {
                 var receipt = fixture.ReadReceipt();
-                receipt.SchemaVersion = 4;
+                receipt.SchemaVersion = 5;
                 receipt.CrashRecovery = true;
                 receipt.OldProcessExitProven = true;
+                receipt.OldProcessId = 43210;
+                receipt.OldProcessStartUtcTicks = DateTime.UtcNow.AddMinutes(-1).Ticks;
+                receipt.OldProcessObservation =
+                    DurableRelaunchProcessObservation.Dead;
+                receipt.OldProcessExitObservedUtcTicks = DateTime.UtcNow.Ticks;
+                receipt.OldProcessExitEvidenceOwner =
+                    WatchdogSafetyEvidenceOwner.SupervisorService;
+                receipt.OldProcessExitEvidenceSource = "TestExactProcessProbe";
+                receipt.DataAuditState =
+                    WatchdogDataAuditState.CrashRepairRequired;
                 receipt.PersistenceDrained = false;
                 receipt.Revision++;
                 WatchdogSafetyHandoffReceiptStore.WriteThrough(
@@ -130,9 +144,9 @@ namespace AdaptiveControlTests
                 var factory = new RecordingHardwareFactory(
                     failFirstPowerConfirmation: false);
                 Assert(SafetyAgentRunner.Run(fixture.Arguments, factory) == 0,
-                    "独立SafetyAgent拒绝了强杀恢复schema4回执");
+                    "独立SafetyAgent拒绝了强杀恢复schema5回执");
                 var completed = fixture.ReadReceipt();
-                Assert(completed.SchemaVersion == 4 &&
+                Assert(completed.SchemaVersion == 5 &&
                        completed.CrashRecovery &&
                        completed.OldProcessExitProven &&
                        !completed.PersistenceDrained &&
@@ -219,6 +233,8 @@ namespace AdaptiveControlTests
                            journal, session, 7, permit, out read) &&
                        read.State == RecoveryReplacementState.CheckpointCommitted,
                     "唯一恢复事务终态未耐久提交。");
+                Assert(read.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion,
+                    "恢复事务必须统一写入当前schema 5。实际=" + read.SchemaVersion);
                 var skipped = RecoveryReplacementTransactionStore.Advance(
                     journal, session, 8, Guid.NewGuid().ToString("N"),
                     RecoveryReplacementState.SafetyAgentRunning, "skip");
@@ -229,6 +245,115 @@ namespace AdaptiveControlTests
             {
                 TryDeleteDirectory(journal);
             }
+        }
+
+        private static void SupervisorSafetyAgentProtocolBindsAuthority()
+        {
+            var arguments = "--session-id " + Guid.NewGuid().ToString("N") +
+                            " --handoff-id " + Guid.NewGuid().ToString("N") +
+                            " --handoff-nonce " + Guid.NewGuid().ToString("N") +
+                            " --journal-directory C:\\EPB-Test";
+            SupervisorSafetyAgentLaunchRequest source;
+            using (var current = Process.GetCurrentProcess())
+            {
+                source = new SupervisorSafetyAgentLaunchRequest
+                {
+                    RequestId = Guid.NewGuid().ToString("N"),
+                    ChallengeNonce = Guid.NewGuid().ToString("N"),
+                    RequesterProcessId = current.Id,
+                    RequesterProcessStartUtcTicks =
+                        current.StartTime.ToUniversalTime().Ticks,
+                    SessionId = Guid.NewGuid().ToString("N"),
+                    PermitGeneration = 9,
+                    PermitId = Guid.NewGuid().ToString("N"),
+                    HandoffId = Guid.NewGuid().ToString("N"),
+                    HandoffNonceSha256 = new string('A', 64),
+                    ExecutablePath = Path.Combine(
+                        AppDomain.CurrentDomain.BaseDirectory,
+                        "MTTFTest.SafetyAgent.exe"),
+                    ExecutableSha256 = new string('B', 64),
+                    Arguments = arguments,
+                    ArgumentsSha256 =
+                        SupervisorProtocol.ComputeTextSha256(arguments),
+                    WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
+                };
+            }
+            Assert(source.IsStructurallyValid(),
+                "合法schema5 SafetyAgent监督请求被拒绝。");
+
+            using (var stream = new MemoryStream())
+            {
+                using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
+                    source.WriteTo(writer);
+                stream.Position = 0;
+                using (var reader = new BinaryReader(stream, Encoding.UTF8, true))
+                {
+                    var magic = SupervisorProtocol.ReadRequestMagic(reader);
+                    var roundTrip =
+                        SupervisorSafetyAgentLaunchRequest.ReadBodyFrom(reader, magic);
+                    Assert(roundTrip.IsStructurallyValid() &&
+                           roundTrip.SchemaVersion ==
+                               WatchdogJournalPolicy.CurrentSchemaVersion &&
+                           roundTrip.PermitGeneration == source.PermitGeneration &&
+                           string.Equals(roundTrip.PermitId, source.PermitId,
+                               StringComparison.Ordinal) &&
+                           string.Equals(roundTrip.ChallengeNonce,
+                               source.ChallengeNonce, StringComparison.Ordinal),
+                        "SafetyAgent监督协议往返丢失schema/permit/challenge身份。");
+                }
+            }
+
+            source.Arguments += " --tampered true";
+            Assert(!source.IsStructurallyValid(),
+                "参数被篡改但未更新哈希的SafetyAgent请求仍被接受。");
+        }
+
+        private static void SupervisorP0AlarmProtocolPreservesLatchSemantics()
+        {
+            SupervisorP0AlarmRequest source;
+            using (var current = Process.GetCurrentProcess())
+            {
+                source = new SupervisorP0AlarmRequest
+                {
+                    RequestId = Guid.NewGuid().ToString("N"),
+                    ChallengeNonce = Guid.NewGuid().ToString("N"),
+                    RequesterProcessId = current.Id,
+                    RequesterProcessStartUtcTicks =
+                        current.StartTime.ToUniversalTime().Ticks,
+                    Action = SupervisorP0AlarmAction.MuteBuzzer,
+                    EventId = Guid.NewGuid().ToString("N"),
+                    Code = "ConfirmedHardwareFault",
+                    Detail = "FaultLightAndLatchPreserved=True"
+                };
+            }
+            Assert(source.IsStructurallyValid(),
+                "合法schema5 P0静音请求被结构门禁拒绝。");
+
+            using (var stream = new MemoryStream())
+            {
+                using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
+                    source.WriteTo(writer);
+                stream.Position = 0;
+                using (var reader = new BinaryReader(stream, Encoding.UTF8, true))
+                {
+                    var magic = SupervisorProtocol.ReadRequestMagic(reader);
+                    var roundTrip = SupervisorP0AlarmRequest.ReadBodyFrom(reader, magic);
+                    Assert(roundTrip.IsStructurallyValid() &&
+                           roundTrip.SchemaVersion ==
+                               WatchdogJournalPolicy.CurrentSchemaVersion &&
+                           roundTrip.Action == SupervisorP0AlarmAction.MuteBuzzer &&
+                           roundTrip.Action != SupervisorP0AlarmAction.ClearTransient &&
+                           string.Equals(roundTrip.EventId, source.EventId,
+                               StringComparison.Ordinal) &&
+                           string.Equals(roundTrip.ChallengeNonce,
+                               source.ChallengeNonce, StringComparison.Ordinal),
+                        "P0告警协议往返丢失schema/动作/事件/challenge身份，或把静音降级为清锁存。");
+                }
+            }
+
+            source.Action = (SupervisorP0AlarmAction)999;
+            Assert(!source.IsStructurallyValid(),
+                "未定义的P0告警动作仍被结构门禁接受。");
         }
 
         private static void DaqRejoinGateRollsBackAndRecovers()
@@ -286,6 +411,11 @@ namespace AdaptiveControlTests
                    WatchdogHost.ShouldProbeCircuitHalfOpen(true, true) &&
                    !WatchdogHost.ShouldProbeCircuitHalfOpen(false, false),
                 "CircuitOpen半开仍错误依赖旧主程序_attached状态。");
+            Assert(WatchdogHost.CalculateCircuitHalfOpenDelaySeconds(0, false) == 30 &&
+                   WatchdogHost.CalculateCircuitHalfOpenDelaySeconds(2, false) == 300 &&
+                   WatchdogHost.CalculateCircuitHalfOpenDelaySeconds(0, true) == 1800 &&
+                   WatchdogHost.CalculateCircuitHalfOpenDelaySeconds(99, true) == 1800,
+                "LastKnownGood失败后未固定30分钟半开探测，或普通退避被破坏。");
 
             var summarizer = new RepeatedEventSummarizer(30000);
             var first = 0;

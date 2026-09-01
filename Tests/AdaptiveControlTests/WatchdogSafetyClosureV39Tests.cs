@@ -14,7 +14,7 @@ namespace AdaptiveControlTests
             Run("schema v1终态只代表停止意图且不得终止Sidecar", LegacyClosingTerminalIsNotSafetyProof, ref passed);
             Run("schema v2完整安全证明才允许Sidecar终止", VersionTwoTerminalRequiresAllSafetyProof, ref passed);
             Run("handoff耐久状态拒绝revision和状态倒退并从损坏副本回退", HandoffStoreIsMonotonicAndRecoversCorruption, ref passed);
-            Run("Watchdog v4安全交接结构化消息精确往返", SafetyHandoffWireRoundTrips, ref passed);
+            Run("Watchdog v5安全交接结构化消息精确往返", SafetyHandoffWireRoundTrips, ref passed);
             Run("应用退出意图绑定精确进程且状态单调", ApplicationExitReceiptIsExactAndMonotonic, ref passed);
             Run("强类型接管退出精确绑定Permit并拒绝ABA",
                 TypedTakeoverExitRejectsPermitAba, ref passed);
@@ -157,7 +157,7 @@ namespace AdaptiveControlTests
                 }
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
-            Assert(roundTrip.ProtocolVersion == 4 &&
+            Assert(roundTrip.ProtocolVersion == WatchdogProtocol.Version &&
                    roundTrip.Type == WatchdogMessageType.SafetyHandoffAccepted &&
                    roundTrip.SafetyHandoff != null &&
                    roundTrip.SafetyHandoff.SessionId == session &&
