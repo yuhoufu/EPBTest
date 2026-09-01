@@ -24,7 +24,24 @@ namespace AdaptiveControlTests
             Run("启动供电与恢复预释放均受execution门保护", HardwareActionsWaitForExecutionQuiescence, ref passed);
             Run("已开始圈的异常fallback必须等待耐久封圈",
                 FormalFallbackRequiresDurableTerminal, ref passed);
+            Run("圈尝试冻结开始时DAQ代次与序号", AttemptFreezesDaqIdentity, ref passed);
             return passed;
+        }
+
+        private static void AttemptFreezesDaqIdentity()
+        {
+            using var context = new CycleAttemptContext(
+                Guid.NewGuid(),
+                9,
+                "Dev2",
+                17,
+                24680,
+                11,
+                7001,
+                CycleAttemptKind.FormalBatch,
+                321);
+            Assert(context.DaqGeneration == 17 && context.DaqBeginSequence == 24680,
+                "圈尝试没有保留开始时DAQ身份，恢复换代后可能用新代次封旧圈");
         }
 
         private static void FormalFallbackRequiresDurableTerminal()

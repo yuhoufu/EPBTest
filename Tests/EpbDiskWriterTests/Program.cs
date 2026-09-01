@@ -61,6 +61,7 @@ namespace EpbDiskWriterTests
                 Run("报警圈原子封存与数据库边界一致", AlarmSealMatchesDatabaseBoundary);
                 Run("DAQ时钟恢复圈状态独立封存", DaqClockRecoveryAbortStatusIsDurable);
                 Run("软件自愈作废圈状态独立封存", SoftwareRecoveryAbortStatusIsDurable);
+                Run("液压组故障作废圈状态独立封存", HydraulicGroupFaultAbortStatusIsDurable);
                 Run("圈终态操作拒绝修改非当前圈", TerminalMutationRejectsWrongCycle);
                 Run("软件自愈作废圈可导出警告证据", SoftwareRecoveryAbortCanExportEvidence);
                 Run("学习负圈索引样本数竞态可从封存BIN恢复", LearningSnapshotRecoversWhenIndexCountIsZero);
@@ -1023,6 +1024,42 @@ namespace EpbDiskWriterTests
                     Assert(reader.GetInt32(0) == 7, "软件自愈作废圈样本边界错误");
                     Assert(reader.GetString(1) == "AbortedBySoftwareRecovery",
                         "软件自愈作废圈状态被降级为普通failed");
+                }
+            });
+        }
+
+        private static void HydraulicGroupFaultAbortStatusIsDurable()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(11, 152, start);
+                    WriteSamples(writer, 11, 6, start);
+                    writer.AbortCycle(
+                        11,
+                        152,
+                        6,
+                        start.AddSeconds(1),
+                        "AbortedByHydraulicGroupFault");
+                    Assert(writer.GetClosedCycleCount(11) == 0,
+                        "液压组故障作废圈被错误计入合格寿命圈");
+                }
+
+                using (var connection = new SQLiteConnection(
+                           $"Data Source={Path.Combine(policy.IndexAndExportPath, policy.IndexDbFile)}"))
+                {
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT sample_count,status FROM epb_cycles WHERE epb_id=11 AND cycle_number=152";
+                    using var reader = command.ExecuteReader();
+                    Assert(reader.Read(), "液压组故障作废圈数据库记录不存在");
+                    Assert(reader.GetInt32(0) == 6, "液压组故障作废圈样本边界错误");
+                    Assert(reader.GetString(1) == "AbortedByHydraulicGroupFault",
+                        "液压组故障作废圈状态未被独立保留");
                 }
             });
         }

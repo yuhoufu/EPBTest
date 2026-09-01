@@ -1348,7 +1348,8 @@ namespace Controller
             DateTime cutoffUtc,
             string reason,
             int? expectedCycleNumber = null,
-            bool durableBoundaryAlreadyConfirmed = false)
+            bool durableBoundaryAlreadyConfirmed = false,
+            string terminalStatus = "AbortedBySoftwareRecovery")
         {
             if (_cycleAttempts.TryGetCurrent(channel, out var context))
             {
@@ -1379,14 +1380,14 @@ namespace Controller
                                     channel,
                                     context.Cycle,
                                     cutoffUtc,
-                                    "AbortedBySoftwareRecovery");
+                                    terminalStatus);
                             else
                                 AbortCycleAfterPersistence(
                                     Recorder,
                                     channel,
                                     context.Cycle,
                                     cutoffUtc,
-                                    "AbortedBySoftwareRecovery");
+                                    terminalStatus);
                             return true;
                         },
                         RemoveCycleAttemptAfterDurableTerminal);
@@ -1446,14 +1447,14 @@ namespace Controller
                         channel,
                         cycleNumber,
                         cutoffUtc,
-                        "AbortedBySoftwareRecovery");
+                        terminalStatus);
                 else
                     AbortCycleAfterPersistence(
                         Recorder,
                         channel,
                         cycleNumber,
                         cutoffUtc,
-                        "AbortedBySoftwareRecovery");
+                        terminalStatus);
                 _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
                 // 正式圈回调稍后收尾时只消费此标记，不得把已作废圈再次封账。
                 MarkDaqClockCycleAborted(
@@ -1545,6 +1546,38 @@ namespace Controller
                 {
                     frozenBoundary = recovery.CutoffSnapshot.FrozenBoundary;
                     generation = recovery.PreviousGeneration;
+                }
+
+                // A cycle belongs to the DAQ generation captured before BeginCycle.  If
+                // the device has already been replaced, seal the aborted cycle at its
+                // begin boundary.  This deliberately records a truncated/aborted attempt
+                // instead of trying to attach samples from the new generation.
+                var attempts = cycles
+                    .Select(pair => TryGetCycleAttempt(pair.Key, pair.Value, out var attempt)
+                        ? attempt
+                        : null)
+                    .Where(attempt => attempt != null &&
+                                      string.Equals(
+                                          attempt.Device,
+                                          device,
+                                          StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (attempts.Length > 0)
+                {
+                    var attemptGeneration = attempts[0].DaqGeneration;
+                    if (attempts.All(item => item.DaqGeneration == attemptGeneration) &&
+                        attemptGeneration > 0 &&
+                        attemptGeneration != generation)
+                    {
+                        generation = attemptGeneration;
+                        frozenBoundary = attempts.Min(item => item.DaqBeginSequence);
+                        _log.Warn(
+                            $"HydraulicGroupAbortCrossGeneration Device={device} " +
+                            $"CycleGeneration={attemptGeneration} CurrentGeneration=" +
+                            $"{_acq.GetCurrentGeneration(device)} EndSequence={frozenBoundary} " +
+                            $"Channels=[{string.Join(",", attempts.Select(item => item.Channel))}]",
+                            "落盘");
+                    }
                 }
 
                 result[device] = new CycleDaqBoundary(
@@ -1653,7 +1686,8 @@ namespace Controller
             string reason,
             int timeoutMs,
             CancellationToken token,
-            Func<bool> canMutate = null)
+            Func<bool> canMutate = null,
+            string terminalStatus = "AbortedBySoftwareRecovery")
         {
             if (cycles == null || cycles.Count == 0) return true;
             if (!await TryWaitForCycleDurableCutoffAsync(
@@ -1684,7 +1718,8 @@ namespace Controller
                         pair.Key,
                         cutoffUtc,
                         reason,
-                        pair.Value))
+                        pair.Value,
+                        terminalStatus: terminalStatus))
                     return false;
             }
             return true;
@@ -9580,9 +9615,21 @@ namespace Controller
             }
 
             var alarmUtc = fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc;
+            var configuredGroupChannels = fault.Scope == FaultScope.HydraulicGroup &&
+                                          fault.GroupId.HasValue
+                ? (_cfg.Test.Hydraulics
+                       .FirstOrDefault(item => item.Id == fault.GroupId.Value)?.Members ??
+                   new List<int>())
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray()
+                : eventChannels;
             var reason =
                 $"{domain}硬件故障已由连续新鲜证据确认；当前故障组在本次运行中隔离，" +
-                $"健康独立组继续运行。Group={fault.GroupId}; Code={fault.Code}; {fault.Reason}";
+                $"健康独立组继续运行。Group={fault.GroupId}; Code={fault.Code}; " +
+                $"ConfiguredMembers=[{string.Join(",", configuredGroupChannels)}]; " +
+                $"EnabledAffected=[{string.Join(",", channels)}]; {fault.Reason} " +
+                "共享管路无法自动判断具体漏液卡钳，请现场检查组内成员。";
             Dictionary<int, string> rejectedOff = null;
             ExecuteConfirmedInfrastructureIsolationOrder(
                 () =>
@@ -9656,6 +9703,14 @@ namespace Controller
                         $"{reasonCode}Isolation Channels=[{string.Join(",", channels)}] " +
                         $"CorrelationId={fault.CorrelationId:N} Reason={reason}",
                         domain);
+                    if (fault.Scope == FaultScope.HydraulicGroup)
+                        _log.Warn(
+                            $"HydraulicGroupIsolatedHealthyGroupsContinuing " +
+                            $"Hydraulic={fault.GroupId} " +
+                            $"Configured=[{string.Join(",", configuredGroupChannels)}] " +
+                            $"Isolated=[{string.Join(",", channels)}] " +
+                            $"RunId={_activeBatchId:N} RunEpoch={Interlocked.Read(ref _runEpoch)}",
+                            "液压协调");
                     FlushPersistentLog(true);
                     NonCriticalObserver.Invoke(
                         ControlFaultRaised,
@@ -10135,7 +10190,8 @@ namespace Controller
                                     cutoffUtc,
                                     $"Hydraulic:{fault.Code}",
                                     _daqPersistenceRecoveryTimeoutMs,
-                                    recoveryToken)
+                                    recoveryToken,
+                                    terminalStatus: "AbortedByHydraulicGroupFault")
                                 .ConfigureAwait(false))
                                 throw new SoftwareSelfHealingRetryException(
                                     "液压恢复圈截止 Raw/耐久边界尚未闭合。");
@@ -10370,6 +10426,24 @@ namespace Controller
                 });
                 _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
             }
+        }
+
+        private bool IsHydraulicGroupRecoveryActiveForChannel(int channel)
+        {
+            var hydraulicId = GetHydraulicGroupForChannel(channel);
+            return hydraulicId > 0 &&
+                   _hydraulicSoftwareRecoveryGroups.ContainsKey(hydraulicId);
+        }
+
+        internal static bool ShouldDelegateFormalPersistenceToHydraulicRecovery(
+            bool hydraulicRecoveryActive,
+            bool motorOffConfirmed,
+            bool hydraulicReleased)
+        {
+            // Delegation is data ownership, never a physical-safety waiver.  The
+            // formal slot may release healthy groups only after the affected member
+            // is physically OFF and its shared pressure lease has been released.
+            return hydraulicRecoveryActive && motorOffConfirmed && hydraulicReleased;
         }
 
         private void BeginPowerSupplyTelemetryRecording(Guid runId)

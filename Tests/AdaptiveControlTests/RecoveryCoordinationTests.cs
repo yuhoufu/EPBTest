@@ -35,6 +35,7 @@ namespace AdaptiveControlTests
             Run("恢复任务清退取消令牌可到达内部等待", RecoveryDrainCancellationIsBounded, ref passed);
             Run("x86恢复内存熔断按600与800MiB分级", RecoveryMemoryCircuitBreakerIsDeterministic, ref passed);
             Run("液压硬件确认仅隔离本次运行故障组所选卡钳", ConfirmedHydraulicDisableIsScoped, ref passed);
+            Run("液压组已安全断能时正式圈封口由组内恢复接管", HydraulicPersistenceDelegationRequiresSafeIsolation, ref passed);
             Run("PSU4硬件确认仅隔离本次运行EPB10/11且EPB9继续", ConfirmedPowerDisableIsScoped, ref passed);
             Run("硬件锁存到达后旧软件恢复不得再次使能", HardwareLatchTerminatesSoftwareRecovery, ref passed);
             Run("硬件确认先OFF和提交本次运行隔离再发布诊断", ConfirmedHardwareIsolationOrderIsSafetyFirst, ref passed);
@@ -930,6 +931,29 @@ namespace AdaptiveControlTests
                 "液压硬件确认没有仅选择故障事件内仍启用的通道");
             Assert(!disabled.Contains(4) && !disabled.Contains(5),
                 "液压2硬件故障牵连了健康液压1的卡钳");
+        }
+
+        private static void HydraulicPersistenceDelegationRequiresSafeIsolation()
+        {
+            Assert(EpbManager.ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                    hydraulicRecoveryActive: true,
+                    motorOffConfirmed: true,
+                    hydraulicReleased: true),
+                "液压组已安全断能后仍会把局部作废圈升级为全局StopAll");
+            Assert(!EpbManager.ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                    hydraulicRecoveryActive: false,
+                    motorOffConfirmed: true,
+                    hydraulicReleased: true),
+                "没有液压恢复所有者时错误跳过正式圈安全封口");
+            Assert(!EpbManager.ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                    hydraulicRecoveryActive: true,
+                    motorOffConfirmed: false,
+                    hydraulicReleased: true) &&
+                   !EpbManager.ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                    hydraulicRecoveryActive: true,
+                    motorOffConfirmed: true,
+                    hydraulicReleased: false),
+                "物理断能不可证明时错误抑制全局安全接管");
         }
 
         private static void ConfirmedPowerDisableIsScoped()

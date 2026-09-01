@@ -22,13 +22,26 @@ namespace Controller
         {
             var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(parentToken);
             var device = string.Empty;
+            var daqGeneration = 0L;
+            var daqBeginSequence = 0L;
             try { device = _acq?.GetDeviceForEpbChannel(channel) ?? string.Empty; }
+            catch { }
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(device))
+                {
+                    daqGeneration = _acq.GetCurrentGeneration(device);
+                    daqBeginSequence = _acq.GetLastAcceptedSequence(device);
+                }
+            }
             catch { }
 
             var created = new CycleAttemptContext(
                 runId,
                 Interlocked.Read(ref _runEpoch),
                 device,
+                daqGeneration,
+                daqBeginSequence,
                 channel,
                 Interlocked.Increment(ref _cycleAttemptSequence),
                 kind,
@@ -52,8 +65,8 @@ namespace Controller
                             cycleNumber,
                             beginUtc,
                             device,
-                            _acq.GetCurrentGeneration(device),
-                            _acq.GetLastAcceptedSequence(device));
+                            created.DaqGeneration,
+                            created.DaqBeginSequence);
                     }
                     else
                     {

@@ -1314,7 +1314,7 @@ public sealed class EpbDiskWriter : IDisposable
 
     /// <summary>
     /// 将未完整完成的圈封为 canceled/failed/AbortedByDaqClockRecovery/
-    /// AbortedBySoftwareRecovery。
+    /// AbortedBySoftwareRecovery/AbortedByHydraulicGroupFault。
     /// 此类圈不参与成功计数和正常圈导出。
     /// </summary>
     public void AbortCycle(
@@ -1328,6 +1328,8 @@ public sealed class EpbDiskWriter : IDisposable
             ? "canceled"
             : string.Equals(status, "AbortedByDaqClockRecovery", StringComparison.OrdinalIgnoreCase)
                 ? "AbortedByDaqClockRecovery"
+                : string.Equals(status, "AbortedByHydraulicGroupFault", StringComparison.OrdinalIgnoreCase)
+                    ? "AbortedByHydraulicGroupFault"
                 : string.Equals(status, "AbortedBySoftwareRecovery", StringComparison.OrdinalIgnoreCase) ||
                   string.Equals(status, "SoftwareRecoveryAborted", StringComparison.OrdinalIgnoreCase)
                     ? "AbortedBySoftwareRecovery"

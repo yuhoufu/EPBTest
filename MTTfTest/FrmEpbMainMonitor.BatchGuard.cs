@@ -110,8 +110,22 @@ namespace MTEmbTest
                     PostSafetyStatus("继续命令已接收，正在执行恢复预检…", false);
                     RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
+                    var failedHydraulicGroups = await _epb
+                        .ResumeInfrastructureAlarmGroupsAsync()
+                        .ConfigureAwait(true);
                     ClearGracefulPauseCheckpoint("SameProcessResumed");
-                    LogInfo($"批次已通过恢复预检并继续试验。CommandId={commandId}");
+                    if (failedHydraulicGroups.Length == 0)
+                        LogInfo($"批次已通过恢复预检并继续试验。CommandId={commandId}");
+                    else
+                    {
+                        var groups = string.Join(",", failedHydraulicGroups);
+                        LogInfo(
+                            $"健康液压组已继续运行；液压组[{groups}]维修复核仍失败，" +
+                            "保持整组OFF并持续报警。");
+                        PostSafetyStatus(
+                            $"液压组[{groups}]仍不能建压，故障组保持OFF；健康组继续运行。",
+                            true);
+                    }
                     return null;
                 }
 

@@ -65,6 +65,31 @@ namespace Controller
             CycleAttemptKind kind,
             int cycle,
             CancellationTokenSource attemptCts = null)
+            : this(
+                runId,
+                runEpoch,
+                device,
+                0,
+                0,
+                channel,
+                attemptId,
+                kind,
+                cycle,
+                attemptCts)
+        {
+        }
+
+        public CycleAttemptContext(
+            Guid runId,
+            long runEpoch,
+            string device,
+            long daqGeneration,
+            long daqBeginSequence,
+            int channel,
+            long attemptId,
+            CycleAttemptKind kind,
+            int cycle,
+            CancellationTokenSource attemptCts = null)
         {
             if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
             if (attemptId <= 0) throw new ArgumentOutOfRangeException(nameof(attemptId));
@@ -72,6 +97,8 @@ namespace Controller
             RunId = runId;
             RunEpoch = runEpoch;
             Device = device ?? string.Empty;
+            DaqGeneration = Math.Max(0, daqGeneration);
+            DaqBeginSequence = Math.Max(0, daqBeginSequence);
             Channel = channel;
             AttemptId = attemptId;
             Kind = kind;
@@ -82,6 +109,14 @@ namespace Controller
         public Guid RunId { get; }
         public long RunEpoch { get; }
         public string Device { get; }
+        /// <summary>
+        /// DAQ identity frozen before Recorder.BeginCycle.  Recovery finalizers must use
+        /// this identity instead of a later replacement generation; otherwise a local
+        /// equipment fault can manufacture a cross-generation seal failure and escalate
+        /// an otherwise safe group isolation into a global stop.
+        /// </summary>
+        public long DaqGeneration { get; }
+        public long DaqBeginSequence { get; }
         public int Channel { get; }
         public long AttemptId { get; }
         public CycleAttemptKind Kind { get; }
