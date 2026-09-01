@@ -1465,7 +1465,7 @@ namespace MTTFTest.Watchdog.Protocol
             var expectedSha = _sha256 ?? string.Empty;
             candidate = candidate.Clone();
             candidate.AuthorityRevision = expected + 1;
-            candidate.SchemaVersion = 4;
+            candidate.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
             candidate.RecordKind = "DurableRelaunchAuthority";
             candidate.RecordFormatRevision = DurableRelaunchAuthorityV4Validator.RequiredFormatRevision;
             candidate.LastTransitionUtcTicks = DateTime.UtcNow.Ticks;

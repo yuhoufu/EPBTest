@@ -190,6 +190,27 @@ namespace MTTFTest.Watchdog.Protocol
         HardwareUnavailable = 4
     }
 
+    /// <summary>
+    /// 数据修复状态与物理安全证明分开记录。数据不完整不得阻断断能证明，
+    /// 但在重新进入正式试验前必须完成修复或将活动圈封为非完成圈。
+    /// </summary>
+    public enum WatchdogDataAuditState
+    {
+        Unknown = 0,
+        Drained = 1,
+        CrashRepairRequired = 2,
+        Repaired = 3,
+        DataIncomplete = 4
+    }
+
+    public enum WatchdogSafetyEvidenceOwner
+    {
+        Unknown = 0,
+        MainProcess = 1,
+        SupervisorService = 2,
+        SafetyAgent = 3
+    }
+
     public enum RecoveryReplacementState
     {
         None = 0,
@@ -299,7 +320,7 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class WatchdogSafetyHandoffReceipt
     {
-        public int SchemaVersion { get; set; } = 3;
+        public int SchemaVersion { get; set; } = 5;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -324,6 +345,13 @@ namespace MTTFTest.Watchdog.Protocol
         public bool CallbacksIsolated { get; set; }
         public bool CrashRecovery { get; set; }
         public bool OldProcessExitProven { get; set; }
+        public int OldProcessId { get; set; }
+        public long OldProcessStartUtcTicks { get; set; }
+        public DurableRelaunchProcessObservation OldProcessObservation { get; set; }
+        public long OldProcessExitObservedUtcTicks { get; set; }
+        public WatchdogSafetyEvidenceOwner OldProcessExitEvidenceOwner { get; set; }
+        public string OldProcessExitEvidenceSource { get; set; } = string.Empty;
+        public WatchdogDataAuditState DataAuditState { get; set; }
         public int SidecarProcessId { get; set; }
         public long SidecarProcessStartUtcTicks { get; set; }
         public int WorkerProcessId { get; set; }
@@ -352,7 +380,8 @@ namespace MTTFTest.Watchdog.Protocol
         {
             Guid parsed;
             var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
-                          SchemaVersion == 3 || SchemaVersion == 4) &&
+                          SchemaVersion == 3 || SchemaVersion == 4 ||
+                          SchemaVersion == 5) &&
                    Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
@@ -377,6 +406,24 @@ namespace MTTFTest.Watchdog.Protocol
                 return false;
             if (SchemaVersion >= 4 && CrashRecovery && !OldProcessExitProven)
                 return false;
+            if (SchemaVersion >= 5)
+            {
+                if (!Enum.IsDefined(typeof(WatchdogDataAuditState), DataAuditState) ||
+                    !Enum.IsDefined(typeof(WatchdogSafetyEvidenceOwner),
+                        OldProcessExitEvidenceOwner) ||
+                    !Enum.IsDefined(typeof(DurableRelaunchProcessObservation),
+                        OldProcessObservation))
+                    return false;
+                if (CrashRecovery &&
+                    (!OldProcessExitProven || OldProcessId <= 0 ||
+                     OldProcessStartUtcTicks <= 0 || OldProcessExitObservedUtcTicks <= 0 ||
+                     OldProcessExitEvidenceOwner !=
+                         WatchdogSafetyEvidenceOwner.SupervisorService ||
+                     (OldProcessObservation != DurableRelaunchProcessObservation.Dead &&
+                      OldProcessObservation !=
+                          DurableRelaunchProcessObservation.IdentityMismatch)))
+                    return false;
+            }
             if (RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden)
                 return RelaunchPermitGeneration == 0 &&
                        string.IsNullOrWhiteSpace(RelaunchPermitId) &&
@@ -548,6 +595,7 @@ namespace MTTFTest.Watchdog.Protocol
                 value => value.IsValidFor(value.SessionId),
                 (previous, current) =>
                     IsSameHandoffTransition(previous, current) ||
+                    IsPostExitEvidenceAugmentation(previous, current) ||
                     IsNextPermitHandoff(previous, current));
         }
 
@@ -575,19 +623,114 @@ namespace MTTFTest.Watchdog.Protocol
                     string.Equals(previous.ConfigSnapshotManifestSha256,
                         current.ConfigSnapshotManifestSha256, StringComparison.Ordinal) &&
                     previous.ConfigSnapshotSchemaVersion == current.ConfigSnapshotSchemaVersion &&
+                    IsSchema5EvidenceMonotonic(previous, current) &&
                     previous.State != WatchdogSafetyHandoffState.Completed &&
                     previous.State != WatchdogSafetyHandoffState.Failed &&
                     current.State >= previous.State &&
                     (current.SchemaVersion < 3 || current.Stage >= previous.Stage);
         }
 
+        /// <summary>
+        /// schema 5 唯一允许对终态回执进行的修改：监督服务在精确验证旧 PID、
+        /// 启动时间及 permit 后，单调补齐退出与资源释放证据。任何安全位、身份、
+        /// 配置或 permit 回退都会被拒绝。
+        /// </summary>
+        private static bool IsPostExitEvidenceAugmentation(
+            WatchdogSafetyHandoffReceipt previous,
+            WatchdogSafetyHandoffReceipt current)
+        {
+            return previous.State == WatchdogSafetyHandoffState.Completed &&
+                   current.State == WatchdogSafetyHandoffState.Completed &&
+                   current.Stage == previous.Stage &&
+                   current.SchemaVersion == 5 &&
+                   current.SchemaVersion >= previous.SchemaVersion &&
+                   HasSameImmutableHandoffIdentity(previous, current) &&
+                   previous.MotorsOff == current.MotorsOff &&
+                   previous.PowerOff == current.PowerOff &&
+                   previous.PressureSafe == current.PressureSafe &&
+                   (!previous.PersistenceDrained || current.PersistenceDrained) &&
+                   (!previous.LogicalQuiescent || current.LogicalQuiescent) &&
+                   (!previous.HardwareResourcesReleased ||
+                    current.HardwareResourcesReleased) &&
+                   (!previous.ExecutionAuthorizationRevoked ||
+                    current.ExecutionAuthorizationRevoked) &&
+                   (!previous.CallbacksIsolated || current.CallbacksIsolated) &&
+                   current.CrashRecovery && current.OldProcessExitProven &&
+                   current.LogicalQuiescent && current.HardwareResourcesReleased &&
+                   current.ExecutionAuthorizationRevoked && current.CallbacksIsolated &&
+                   current.OldProcessId > 0 && current.OldProcessStartUtcTicks > 0 &&
+                   current.OldProcessExitObservedUtcTicks > 0 &&
+                   current.OldProcessExitEvidenceOwner ==
+                       WatchdogSafetyEvidenceOwner.SupervisorService &&
+                   (current.OldProcessObservation ==
+                        DurableRelaunchProcessObservation.Dead ||
+                    current.OldProcessObservation ==
+                        DurableRelaunchProcessObservation.IdentityMismatch) &&
+                   IsSchema5EvidenceMonotonic(previous, current);
+        }
+
+        private static bool HasSameImmutableHandoffIdentity(
+            WatchdogSafetyHandoffReceipt previous,
+            WatchdogSafetyHandoffReceipt current)
+        {
+            return string.Equals(previous.HandoffId, current.HandoffId,
+                       StringComparison.Ordinal) &&
+                   string.Equals(previous.Nonce, current.Nonce,
+                       StringComparison.Ordinal) &&
+                   string.Equals(previous.StopSafetyTransactionId,
+                       current.StopSafetyTransactionId,
+                       StringComparison.OrdinalIgnoreCase) &&
+                   previous.RelaunchDisposition == current.RelaunchDisposition &&
+                   previous.RelaunchPermitGeneration ==
+                       current.RelaunchPermitGeneration &&
+                   string.Equals(previous.RelaunchPermitId,
+                       current.RelaunchPermitId, StringComparison.Ordinal) &&
+                   string.Equals(previous.RelaunchPermitNonceSha256,
+                       current.RelaunchPermitNonceSha256, StringComparison.Ordinal) &&
+                   string.Equals(previous.ConfigSnapshotPath,
+                       current.ConfigSnapshotPath, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(previous.ConfigSnapshotManifestPath,
+                       current.ConfigSnapshotManifestPath,
+                       StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(previous.ConfigSnapshotManifestSha256,
+                       current.ConfigSnapshotManifestSha256,
+                       StringComparison.Ordinal) &&
+                   previous.ConfigSnapshotSchemaVersion ==
+                       current.ConfigSnapshotSchemaVersion;
+        }
+
+        private static bool IsSchema5EvidenceMonotonic(
+            WatchdogSafetyHandoffReceipt previous,
+            WatchdogSafetyHandoffReceipt current)
+        {
+            if (previous.SchemaVersion < 5) return true;
+            if (previous.OldProcessExitProven &&
+                (previous.OldProcessId != current.OldProcessId ||
+                 previous.OldProcessStartUtcTicks != current.OldProcessStartUtcTicks ||
+                 previous.OldProcessObservation != current.OldProcessObservation ||
+                 previous.OldProcessExitObservedUtcTicks !=
+                     current.OldProcessExitObservedUtcTicks ||
+                 previous.OldProcessExitEvidenceOwner !=
+                     current.OldProcessExitEvidenceOwner ||
+                 !string.Equals(previous.OldProcessExitEvidenceSource,
+                     current.OldProcessExitEvidenceSource, StringComparison.Ordinal)))
+                return false;
+            return previous.DataAuditState == WatchdogDataAuditState.Unknown ||
+                   previous.DataAuditState == current.DataAuditState ||
+                   (previous.DataAuditState == WatchdogDataAuditState.CrashRepairRequired &&
+                    (current.DataAuditState == WatchdogDataAuditState.Repaired ||
+                     current.DataAuditState == WatchdogDataAuditState.DataIncomplete));
+        }
+
         private static bool IsNextPermitHandoff(
             WatchdogSafetyHandoffReceipt previous,
             WatchdogSafetyHandoffReceipt current)
         {
-            return (previous.SchemaVersion == 3 || previous.SchemaVersion == 4) &&
+            return (previous.SchemaVersion == 3 || previous.SchemaVersion == 4 ||
+                    previous.SchemaVersion == 5) &&
                    previous.IsSafetyCompleted &&
-                   (current.SchemaVersion == 3 || current.SchemaVersion == 4) &&
+                   (current.SchemaVersion == 3 || current.SchemaVersion == 4 ||
+                    current.SchemaVersion == 5) &&
                    current.RelaunchDisposition ==
                        WatchdogRelaunchDisposition.PreserveApprovedPermit &&
                    current.RelaunchPermitGeneration >

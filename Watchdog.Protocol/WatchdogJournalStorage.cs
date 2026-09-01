@@ -15,7 +15,7 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public sealed class WatchdogJournalPolicy
     {
-        public const int CurrentSchemaVersion = 4;
+        public const int CurrentSchemaVersion = 5;
         public const int DefaultRetentionDays = 90;
         public const int DefaultRetainSessionCount = 32;
         public const long DefaultMaxTotalBytes = 128L * 1024L * 1024L;
@@ -180,7 +180,8 @@ namespace MTTFTest.Watchdog.Protocol
             if (value == null) return null;
             if (value.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion)
                 return value;
-            if (value.SchemaVersion == 2 || value.SchemaVersion == 3)
+            if (value.SchemaVersion == 2 || value.SchemaVersion == 3 ||
+                value.SchemaVersion == 4)
             {
                 value.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
                 return value;
@@ -210,7 +211,7 @@ namespace MTTFTest.Watchdog.Protocol
                 var schema = 0;
                 if (values.TryGetValue("SchemaVersion", out var rawSchema))
                     schema = Convert.ToInt32(rawSchema, CultureInfo.InvariantCulture);
-                if (schema == 2 || schema == 3)
+                if (schema == 2 || schema == 3 || schema == 4)
                 {
                     // Preserve every legacy field, especially RecoveryBlocked
                     // and its failure evidence; only the schema marker changes.
@@ -1471,7 +1472,8 @@ namespace MTTFTest.Watchdog.Protocol
                 var lease = Json.Deserialize<WatchdogJournalLease>(File.ReadAllText(leaseFile.FullName, Encoding.UTF8));
                 if (lease == null ||
                     (lease.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion &&
-                     lease.SchemaVersion != 3 && lease.SchemaVersion != 2) ||
+                     lease.SchemaVersion != 4 && lease.SchemaVersion != 3 &&
+                     lease.SchemaVersion != 2) ||
                     lease.ProcessId <= 0 || lease.ProcessStartUtcTicks <= 0) return false;
                 using (var process = Process.GetProcessById(lease.ProcessId))
                     return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == lease.ProcessStartUtcTicks;

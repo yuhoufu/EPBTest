@@ -675,7 +675,7 @@ namespace MTTFTest.Watchdog.Protocol
                     }
 
                     if (!root.TryGetValue("SchemaVersion", out var rawSchema) ||
-                        !IsExactSchema4(rawSchema))
+                        !TryGetReadableJournalSchema(rawSchema, out var readableSchema))
                     {
                         error = WatchdogJournalOpenExistingError.SchemaMismatch;
                         return false;
@@ -694,7 +694,7 @@ namespace MTTFTest.Watchdog.Protocol
                         canonicalDirectory,
                         path,
                         canonicalSessionId,
-                        WatchdogJournalPolicy.CurrentSchemaVersion,
+                        readableSchema,
                         bytes.LongLength,
                         hash);
                     error = WatchdogJournalOpenExistingError.None;
@@ -727,12 +727,16 @@ namespace MTTFTest.Watchdog.Protocol
             return false;
         }
 
-        private static bool IsExactSchema4(object rawSchema)
+        private static bool TryGetReadableJournalSchema(object rawSchema, out int schema)
         {
-            if (rawSchema is int intValue) return intValue == WatchdogJournalPolicy.CurrentSchemaVersion;
-            if (rawSchema is long longValue) return longValue == WatchdogJournalPolicy.CurrentSchemaVersion;
-            if (rawSchema is short shortValue) return shortValue == WatchdogJournalPolicy.CurrentSchemaVersion;
-            return false;
+            schema = 0;
+            if (rawSchema is int intValue) schema = intValue;
+            else if (rawSchema is long longValue && longValue >= int.MinValue &&
+                     longValue <= int.MaxValue) schema = (int)longValue;
+            else if (rawSchema is short shortValue) schema = shortValue;
+            // schema 2-4 are inspection/migration inputs only.  They never
+            // authorize a V2.14 launch; all new writes use schema 5.
+            return schema >= 2 && schema <= WatchdogJournalPolicy.CurrentSchemaVersion;
         }
 
         private static string ComputeSha256(byte[] bytes)

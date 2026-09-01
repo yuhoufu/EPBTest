@@ -9,7 +9,7 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public sealed class RecoveryReplacementTransaction
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = WatchdogJournalPolicy.CurrentSchemaVersion;
         public string SessionId { get; set; } = string.Empty;
         public long PermitGeneration { get; set; }
         public string PermitId { get; set; } = string.Empty;
@@ -22,7 +22,7 @@ namespace MTTFTest.Watchdog.Protocol
         public bool IsValid()
         {
             Guid parsed;
-            return SchemaVersion == 1 &&
+            return SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion &&
                    Guid.TryParseExact(SessionId ?? string.Empty, "N", out parsed) &&
                    PermitGeneration > 0 &&
                    Guid.TryParseExact(PermitId ?? string.Empty, "N", out parsed) &&

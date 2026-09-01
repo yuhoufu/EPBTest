@@ -95,6 +95,29 @@ namespace MTTFTest.Watchdog.Protocol
                 };
             }
 
+            if (schema == 4)
+            {
+                try
+                {
+                    var migrated = Json.Deserialize<DurableRelaunchPermitRecord>(json);
+                    migrated.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
+                    var v4Validation = ValidateRecord(migrated, expectedSessionId);
+                    if (!v4Validation.IsValid)
+                        return BlockedResult(
+                            expectedSessionId,
+                            "V4Migration:" + v4Validation.Reason,
+                            migrated);
+                    v4Validation.Record = migrated.Clone();
+                    v4Validation.Migrated = true;
+                    v4Validation.Reason = "V4ReadOnlyMigratedToV5";
+                    return v4Validation;
+                }
+                catch
+                {
+                    return BlockedResult(expectedSessionId, "InvalidSchema4Record");
+                }
+            }
+
             if (schema != WatchdogJournalPolicy.CurrentSchemaVersion)
                 return BlockedResult(expectedSessionId, schema <= 0 ? "MissingSchema" : "UnknownSchema");
 

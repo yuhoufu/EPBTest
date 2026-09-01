@@ -1705,8 +1705,9 @@ namespace MTTFTest.Watchdog.Protocol
         public static bool IsCompleteStopProof(
             WatchdogClosingTombstone closing)
         {
-            return closing?.SchemaVersion >= 4 &&
+            return closing?.SchemaVersion >= 5 &&
                    closing.PreservesApprovedPermit &&
+                   closing.HasExactOldProcessExitProof &&
                    closing.FinalSafetyResultCommitted &&
                    closing.IsSafetyTerminal;
         }
@@ -1715,9 +1716,13 @@ namespace MTTFTest.Watchdog.Protocol
             WatchdogSafetyHandoffReceipt receipt)
         {
             var persistenceReady = receipt?.PersistenceDrained == true ||
-                receipt?.SchemaVersion >= 4 &&
-                receipt.CrashRecovery && receipt.OldProcessExitProven;
-            return receipt?.State == WatchdogSafetyHandoffState.Completed &&
+                receipt?.SchemaVersion >= 5 &&
+                receipt.CrashRecovery && receipt.OldProcessExitProven &&
+                (receipt.DataAuditState == WatchdogDataAuditState.CrashRepairRequired ||
+                 receipt.DataAuditState == WatchdogDataAuditState.Repaired ||
+                 receipt.DataAuditState == WatchdogDataAuditState.DataIncomplete);
+            return receipt?.SchemaVersion >= 5 &&
+                   receipt.State == WatchdogSafetyHandoffState.Completed &&
                    receipt.IsSafetyCompleted &&
                    persistenceReady &&
                    receipt.LogicalQuiescent &&
@@ -1754,7 +1759,7 @@ namespace MTTFTest.Watchdog.Protocol
         {
             outcome = WatchdogSafetyHandoffWaitOutcome.MissingOrCorrupt;
             if (closing == null || !exactClosingPermitBinding ||
-                closing.SchemaVersion < 4 || !closing.PreservesApprovedPermit)
+                closing.SchemaVersion < 5 || !closing.PreservesApprovedPermit)
                 return true;
 
             if (string.IsNullOrWhiteSpace(closing.SafetyHandoffId))

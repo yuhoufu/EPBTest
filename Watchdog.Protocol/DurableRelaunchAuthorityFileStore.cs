@@ -140,7 +140,7 @@ namespace MTTFTest.Watchdog.Protocol
                 if (!held) return Result(DurableAuthorityCommitStatus.Busy, "AuthorityMutexBusy");
                 if (_io.Exists(_path)) return Result(DurableAuthorityCommitStatus.Conflict, "AuthorityAlreadyExists");
                 pristine = pristine.Clone();
-                pristine.SchemaVersion = 4;
+                pristine.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
                 pristine.RecordKind = DurableRelaunchAuthorityV4Validator.RequiredRecordKind;
                 pristine.RecordFormatRevision = DurableRelaunchAuthorityV4Validator.RequiredFormatRevision;
                 pristine.AuthorityRevision = 0;
@@ -211,7 +211,7 @@ namespace MTTFTest.Watchdog.Protocol
                     return Result(DurableAuthorityCommitStatus.Conflict, "ExpectedRevisionOrShaMismatch");
                 candidate = candidate.Clone();
                 candidate.AuthorityRevision = expectedRevision + 1;
-                candidate.SchemaVersion = 4; candidate.RecordKind = DurableRelaunchAuthorityV4Validator.RequiredRecordKind;
+                candidate.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion; candidate.RecordKind = DurableRelaunchAuthorityV4Validator.RequiredRecordKind;
                 candidate.RecordFormatRevision = DurableRelaunchAuthorityV4Validator.RequiredFormatRevision;
                 var bytes = Serialize(candidate);
                 var temp = Path.Combine(_directory, ".authority-" + Guid.NewGuid().ToString("N") + ".tmp");
@@ -409,7 +409,7 @@ namespace MTTFTest.Watchdog.Protocol
                         if (!validation.Migrated)
                             return new DurableAuthorityStoreReadResult { Exists = true, Blocked = true, Unproven = true, FailureKind = validation.FailureKind, Reason = validation.Reason ?? "AuthorityInvalid" };
                         validation.Record = BindBootstrapProof(validation.Record, proof);
-                        validation.Record.SchemaVersion = 4;
+                        validation.Record.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
                         validation.Record.RecordKind = DurableRelaunchAuthorityV4Validator.RequiredRecordKind;
                         validation.Record.RecordFormatRevision = DurableRelaunchAuthorityV4Validator.RequiredFormatRevision;
                         validation.Record.State = DurableRelaunchPermitState.Blocked;

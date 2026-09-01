@@ -30,7 +30,7 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public sealed class WatchdogClosingTombstone
     {
-        public int SchemaVersion { get; set; } = 4;
+        public int SchemaVersion { get; set; } = 5;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -65,6 +65,14 @@ namespace MTTFTest.Watchdog.Protocol
         public bool PersistenceDrained { get; set; }
         public bool LogicalQuiescent { get; set; }
         public bool DataContinuityVerified { get; set; }
+        public bool OldProcessExitProven { get; set; }
+        public int OldProcessId { get; set; }
+        public long OldProcessStartUtcTicks { get; set; }
+        public DurableRelaunchProcessObservation OldProcessObservation { get; set; }
+        public long OldProcessExitObservedUtcTicks { get; set; }
+        public WatchdogSafetyEvidenceOwner OldProcessExitEvidenceOwner { get; set; }
+        public string OldProcessExitEvidenceSource { get; set; } = string.Empty;
+        public WatchdogDataAuditState DataAuditState { get; set; }
         public string SafetyOwner { get; set; } = string.Empty;
         public string SafetyHandoffId { get; set; } = string.Empty;
         public string TerminalReason { get; set; } = string.Empty;
@@ -73,7 +81,8 @@ namespace MTTFTest.Watchdog.Protocol
         public bool IsValidFor(string sessionId)
         {
             var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
-                          SchemaVersion == 3 || SchemaVersion == 4) &&
+                          SchemaVersion == 3 || SchemaVersion == 4 ||
+                          SchemaVersion == 5) &&
                    !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    SessionGeneration > 0 && SessionLease > 0 && StateVersion > 0 &&
@@ -81,7 +90,13 @@ namespace MTTFTest.Watchdog.Protocol
                     State == WatchdogClosingTombstoneState.Terminal);
             if (!common || SchemaVersion < 4) return common;
             if (!Enum.IsDefined(typeof(WatchdogExitDisposition), ExitDisposition) ||
-                !Enum.IsDefined(typeof(WatchdogRelaunchDisposition), RelaunchDisposition))
+                !Enum.IsDefined(typeof(WatchdogRelaunchDisposition), RelaunchDisposition) ||
+                SchemaVersion >= 5 &&
+                (!Enum.IsDefined(typeof(DurableRelaunchProcessObservation),
+                     OldProcessObservation) ||
+                 !Enum.IsDefined(typeof(WatchdogSafetyEvidenceOwner),
+                     OldProcessExitEvidenceOwner) ||
+                 !Enum.IsDefined(typeof(WatchdogDataAuditState), DataAuditState)))
                 return false;
             if (RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden)
                 return RelaunchPermitGeneration == 0 &&
@@ -106,6 +121,13 @@ namespace MTTFTest.Watchdog.Protocol
             SafetyStage == WatchdogClosingSafetyStage.Terminal &&
             MotorsOff && PowerOff && PressureSafe && PersistenceDrained && LogicalQuiescent;
 
+        public bool HasExactOldProcessExitProof =>
+            SchemaVersion >= 5 && OldProcessExitProven && OldProcessId > 0 &&
+            OldProcessStartUtcTicks > 0 && OldProcessExitObservedUtcTicks > 0 &&
+            OldProcessExitEvidenceOwner == WatchdogSafetyEvidenceOwner.SupervisorService &&
+            (OldProcessObservation == DurableRelaunchProcessObservation.Dead ||
+             OldProcessObservation == DurableRelaunchProcessObservation.IdentityMismatch);
+
         public WatchdogClosingSafetyStage EffectiveSafetyStage =>
             SchemaVersion == 1 || SafetyStage == 0
                 ? WatchdogClosingSafetyStage.ClosingIntent
@@ -128,11 +150,22 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 if (previous.SessionGeneration != tombstone.SessionGeneration ||
                     previous.SessionLease != tombstone.SessionLease ||
+                    tombstone.SchemaVersion < previous.SchemaVersion ||
                     tombstone.StateVersion < previous.StateVersion ||
                     tombstone.State < previous.State ||
                     tombstone.EffectiveSafetyStage < previous.EffectiveSafetyStage ||
                     tombstone.ControllerProgressVersion < previous.ControllerProgressVersion ||
                     previous.FinalSafetyResultCommitted && !tombstone.FinalSafetyResultCommitted ||
+                    previous.OldProcessExitProven && !tombstone.OldProcessExitProven ||
+                    previous.OldProcessExitProven &&
+                    (previous.OldProcessId != tombstone.OldProcessId ||
+                     previous.OldProcessStartUtcTicks !=
+                         tombstone.OldProcessStartUtcTicks ||
+                     previous.OldProcessObservation != tombstone.OldProcessObservation ||
+                     previous.OldProcessExitObservedUtcTicks !=
+                         tombstone.OldProcessExitObservedUtcTicks ||
+                     previous.OldProcessExitEvidenceOwner !=
+                         tombstone.OldProcessExitEvidenceOwner) ||
                     !SameOptionalIdentity(previous.StopSafetyTransactionId,
                         tombstone.StopSafetyTransactionId) ||
                     previous.SchemaVersion >= 4 &&

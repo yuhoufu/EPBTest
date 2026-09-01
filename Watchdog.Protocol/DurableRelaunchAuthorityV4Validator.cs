@@ -22,7 +22,7 @@ namespace MTTFTest.Watchdog.Protocol
         {
             return new DurableRelaunchAuthorityRecord
             {
-                SchemaVersion = 4, RecordKind = RequiredRecordKind, RecordFormatRevision = RequiredFormatRevision,
+                SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion, RecordKind = RequiredRecordKind, RecordFormatRevision = RequiredFormatRevision,
                 AuthorityRevision = 0, SessionId = sessionId, State = DurableRelaunchPermitState.None,
                 MaximumProcessRelaunches = Math.Max(1, budget), BootstrapMarker = marker
             };
@@ -31,7 +31,7 @@ namespace MTTFTest.Watchdog.Protocol
         public static DurableRelaunchAuthorityRecord CreateBlocked(string sessionId, string reason, DurableRelaunchAuthorityRecord source = null)
         {
             var record = source?.Clone() ?? new DurableRelaunchAuthorityRecord();
-            record.SchemaVersion = 4; record.RecordKind = RequiredRecordKind; record.RecordFormatRevision = RequiredFormatRevision;
+            record.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion; record.RecordKind = RequiredRecordKind; record.RecordFormatRevision = RequiredFormatRevision;
             record.SessionId = sessionId; record.State = DurableRelaunchPermitState.Blocked; record.CircuitOpen = true;
             record.DetailCode = (reason ?? "AuthorityBlocked").Trim();
             if (!string.IsNullOrEmpty(record.LastFailureCanonicalSha256))
@@ -44,7 +44,7 @@ namespace MTTFTest.Watchdog.Protocol
             reason = null;
             if (record == null) { reason = "RecordMissing"; return false; }
             if (!DurableRelaunchAuthorityV4.IsCanonicalSession(expectedSessionId)) { reason = "ExpectedSessionNotN"; return false; }
-            if (record.SchemaVersion != 4) { reason = "SchemaMismatch"; return false; }
+            if (record.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion) { reason = "SchemaMismatch"; return false; }
             if (!string.Equals(record.RecordKind, RequiredRecordKind, StringComparison.Ordinal)) { reason = "RecordKindMismatch"; return false; }
             if (record.RecordFormatRevision != RequiredFormatRevision) { reason = "RecordFormatRevisionMismatch"; return false; }
             if (!string.Equals(record.SessionId, expectedSessionId, StringComparison.Ordinal)) { reason = "SessionMismatch"; return false; }
@@ -271,19 +271,27 @@ namespace MTTFTest.Watchdog.Protocol
                 if (legacy == null) return Blocked("LegacyInvalid", DurableAuthorityFailureKind.Invalid);
                 if (IsLegacyPristine(legacy))
                 {
-                    legacy.SchemaVersion = 4; legacy.RecordKind = RequiredRecordKind; legacy.RecordFormatRevision = RequiredFormatRevision;
+                    legacy.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion; legacy.RecordKind = RequiredRecordKind; legacy.RecordFormatRevision = RequiredFormatRevision;
                     legacy.AuthorityRevision = 0; legacy.MaximumProcessRelaunches = Math.Max(1, legacy.MaximumProcessRelaunches);
                     return new DurableAuthorityValidationResult { Record = legacy, Migrated = true, Proven = true, Reason = "LegacyPristine" };
                 }
                 return new DurableAuthorityValidationResult { Record = CreateBlocked(expectedSessionId, "LegacyAmbiguous"), Migrated = true, Blocked = true, Proven = false, Reason = "LegacyAmbiguous" };
             }
-            if (schema != 4) return Blocked("SchemaMismatch", DurableAuthorityFailureKind.Invalid);
+            if (schema != 4 && schema != WatchdogJournalPolicy.CurrentSchemaVersion)
+                return Blocked("SchemaMismatch", DurableAuthorityFailureKind.Invalid);
 
-            var record = FromMap(map, expectedSessionId, 4, true);
+            var migratedFromV4 = schema == 4;
+            var record = FromMap(map, expectedSessionId, schema, true);
             if (record == null) return Blocked("RecordInvalid", DurableAuthorityFailureKind.Invalid);
+            record.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
             var kind = String(map, "RecordKind");
             var format = Int(map, "RecordFormatRevision", 0);
-            var oldV4 = string.IsNullOrEmpty(kind) || format == 0;
+            // Only an actual v4 record may enter the conservative legacy
+            // migration.  A schema 5 record missing its identity/format is a
+            // damaged current authority and must fail closed; treating it as
+            // old-v4 would manufacture a pristine launch authority.
+            var oldV4 = migratedFromV4 &&
+                        (string.IsNullOrEmpty(kind) || format == 0);
             if (oldV4)
             {
                 if (record.State == DurableRelaunchPermitState.None && IsLegacyPristine(record))
@@ -336,7 +344,13 @@ namespace MTTFTest.Watchdog.Protocol
 
             string validation;
             if (TryValidateRecord(record, expectedSessionId, out validation))
-                return new DurableAuthorityValidationResult { Record = record, Proven = true, Reason = "Valid" };
+                return new DurableAuthorityValidationResult
+                {
+                    Record = record,
+                    Migrated = migratedFromV4,
+                    Proven = true,
+                    Reason = migratedFromV4 ? "V4ReadOnlyMigratedToV5" : "Valid"
+                };
 
             // Current schema records with an ambiguous in-flight state must
             // remain fail-closed rather than being silently normalized.
