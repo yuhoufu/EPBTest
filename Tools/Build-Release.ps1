@@ -624,6 +624,8 @@ Copy-Item -LiteralPath (Join-Path $repo 'Tools\Install-EPB-UnattendedAlarm.ps1')
     -Destination (Join-Path $deploymentDirectory 'Install-EPB-UnattendedAlarm.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $repo 'Tools\Install-MTTFTest-Unattended.ps1') `
     -Destination (Join-Path $deploymentDirectory 'Install-MTTFTest-Unattended.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'Tools\Verify-Release.ps1') `
+    -Destination (Join-Path $deploymentDirectory 'Verify-Release.ps1') -Force
 New-Item -ItemType File -Path (Join-Path $output 'MTTFTest.UnattendedMode.required') -Force | Out-Null
 
 $files = Get-RecursivePackageFiles -Root $output `

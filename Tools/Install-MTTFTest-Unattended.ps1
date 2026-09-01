@@ -12,6 +12,7 @@ $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $expectedVersion = '2.14.0.0'
 $expectedReleaseStatus = 'FIELD_CANDIDATE_PENDING_168H'
+$shortcutName = 'MT EPB 试验系统 V2.14.lnk'
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -228,6 +229,48 @@ function Assert-Health([string]$Root) {
     }
 }
 
+function Get-ShortcutPaths {
+    $paths = @()
+    $desktop = [Environment]::GetFolderPath('DesktopDirectory')
+    $programs = [Environment]::GetFolderPath('Programs')
+    if (-not [string]::IsNullOrWhiteSpace($desktop)) {
+        $paths += (Join-Path $desktop $shortcutName)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($programs)) {
+        $paths += (Join-Path $programs $shortcutName)
+    }
+    return @($paths)
+}
+
+function Install-Shortcuts([string]$Root) {
+    $current = Join-Path $Root 'Current'
+    $target = Join-Path $current 'MTTFTest.exe'
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+        throw "快捷方式目标不存在：$target"
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($path in @(Get-ShortcutPaths)) {
+        $parent = Split-Path -Parent $path
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+            [void](New-Item -ItemType Directory -Path $parent -Force)
+        }
+        $shortcut = $shell.CreateShortcut($path)
+        $shortcut.TargetPath = $target
+        $shortcut.WorkingDirectory = $current
+        $shortcut.IconLocation = "$target,0"
+        $shortcut.Description = 'MT EPB 试验系统 V2.14.0.0（无人值守现场候选）'
+        $shortcut.Save()
+    }
+}
+
+function Remove-Shortcuts {
+    foreach ($path in @(Get-ShortcutPaths)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+}
+
 Assert-Administrator
 $root = Resolve-SafeDirectory $InstallRoot 'InstallRoot'
 $source = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
@@ -237,6 +280,7 @@ if ($Mode -eq 'Uninstall') {
         Stop-Supervisor
         & sc.exe delete $serviceName | Out-Host
         & schtasks.exe /Delete /TN $taskName /F | Out-Host
+        Remove-Shortcuts
         Write-Host '已卸载监督服务和 SessionAgent 任务；程序槽、ProgramData 日志及事故证据已保留。'
     }
     return
@@ -278,5 +322,6 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.0.0 无人值守运行环境")) 
     Set-UnattendedAcl $root
     Install-ServiceAndAgent $root
     Assert-Health $root
+    Install-Shortcuts $root
     Write-Host "V2.14.0.0 无人值守环境已完成 $Mode；状态为 FIELD_CANDIDATE_PENDING_168H。"
 }
