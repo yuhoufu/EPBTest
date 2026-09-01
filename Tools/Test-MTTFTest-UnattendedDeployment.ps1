@@ -45,7 +45,7 @@ if ($installerText -notmatch "Write-SlotDescriptor\s+\`$staging\s+'LastKnownGood
 }
 
 Add-Type -AssemblyName System.Security
-$expectedVersion = '2.14.1.0'
+$expectedVersion = '2.14.2.0'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ('EPBTest-SlotContract-' + [Guid]::NewGuid().ToString('N'))
 
@@ -56,10 +56,10 @@ function Assert-SealedRoot(
     [void](New-Item -ItemType Directory -Path $StagingPath)
     [IO.File]::WriteAllText(
         (Join-Path $StagingPath 'build-identity.json'),
-        '{"productVersion":"V2.14.1.0"}',
+        '{"productVersion":"V2.14.2.0"}',
         (New-Object Text.UTF8Encoding($false)))
     $identity = [pscustomobject]@{
-        releaseStatus = 'FIELD_CANDIDATE_PENDING_168H'
+        releaseStatus = 'FORMAL_RELEASE'
         configSha256 = ('a' * 64)
         files = @([pscustomobject]@{
             name = 'build-identity.json'
@@ -111,14 +111,14 @@ try {
     [void](New-Item -ItemType Directory -Path $packageRoot)
     [IO.File]::WriteAllText(
         (Join-Path $packageRoot 'build-identity.json'),
-        '{"productVersion":"V2.14.1.0"}',
+        '{"productVersion":"V2.14.2.0"}',
         (New-Object Text.UTF8Encoding($false)))
 
     $previousParseOnly = $env:MTTFTEST_QUICKDEPLOY_PARSE_ONLY
     try {
         $env:MTTFTEST_QUICKDEPLOY_PARSE_ONLY = '1'
         $commandCases = @(
-            @('一键安装现场候选.cmd', 'QUICKDEPLOY_INSTALL_PARSE_PASS'),
+            @('一键安装正式版.cmd', 'QUICKDEPLOY_INSTALL_PARSE_PASS'),
             @('一键修复.cmd', 'QUICKDEPLOY_REPAIR_PARSE_PASS'),
             @('一键卸载.cmd', 'QUICKDEPLOY_UNINSTALL_PARSE_PASS'))
         foreach ($case in $commandCases) {

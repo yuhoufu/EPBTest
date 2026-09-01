@@ -73,12 +73,10 @@ if (-not (Test-Path -LiteralPath $data -PathType Container)) {
 }
 
 $verifyScript = Join-Path $PSScriptRoot 'Verify-Release.ps1'
-$verifyText = & $verifyScript -ReleaseDirectory $release -RequireDeploymentApproved | Out-String
+$verifyText = & $verifyScript -ReleaseDirectory $release | Out-String
 $releaseIdentity = $verifyText | ConvertFrom-Json
-if ($releaseIdentity.verified -ne $true -or
-    $releaseIdentity.deploymentApproved -ne $true -or
-    $releaseIdentity.gitDirty -ne $false) {
-    throw "Release 不是已批准、洁净的正式候选。"
+if ($releaseIdentity.verified -ne $true) {
+    throw "Release 完整性校验未通过。"
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {

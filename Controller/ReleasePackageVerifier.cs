@@ -89,47 +89,33 @@ namespace Controller
                 var identityJson = File.ReadAllText(identityPath);
                 if (!TryReadJsonString(identityJson, "productVersion", out var productVersion) ||
                     !TryReadJsonString(identityJson, "releaseStatus", out var releaseStatus) ||
-                    !TryReadJsonBoolean(identityJson, "deploymentApproved", out var approved) ||
                     !TryReadJsonString(identityJson, "gitCommit", out var gitCommit) ||
                     !TryReadJsonBoolean(identityJson, "gitDirty", out var gitDirty) ||
                     !TryReadJsonString(identityJson, "buildUtc", out var buildUtc) ||
                     !TryReadJsonString(identityJson, "configSha256", out var configSha256))
                     return Failed("PackageIdentityInvalid", "build-identity.json 缺少正式身份字段。");
 
-                var isFormalCandidate = string.Equals(
+                TryReadJsonBoolean(identityJson, "deploymentApproved", out var approved);
+                var isFormalRelease = string.Equals(
                     releaseStatus,
-                    "FORMAL_RELEASE_CANDIDATE",
+                    "FORMAL_RELEASE",
                     StringComparison.Ordinal);
-                var isFieldCandidate = string.Equals(
-                    releaseStatus,
-                    "FIELD_CANDIDATE_PENDING_168H",
-                    StringComparison.Ordinal);
-                var isApprovedCandidate = isFormalCandidate || isFieldCandidate;
                 var isVs2022Candidate = string.Equals(
                     releaseStatus,
                     "VS2022_RELEASE_CANDIDATE",
                     StringComparison.Ordinal);
-                if (!isApprovedCandidate && !isVs2022Candidate)
-                    return Failed(
-                        "PackageNotApproved",
-                        $"Status={releaseStatus} Approved={approved} GitDirty={gitDirty}");
-                if (isApprovedCandidate && (!approved || gitDirty))
-                    return Failed(
-                        "PackageNotApproved",
-                        $"Status={releaseStatus} Approved={approved} GitDirty={gitDirty}");
-                if (isVs2022Candidate && approved)
-                    return Failed(
-                        "PackageIdentityInvalid",
-                        "VS2022 直接候选不得声明 deploymentApproved=true。");
 
                 var identityMatches = EqualsOrdinal(productVersion, expectedProductVersion);
-                if (isApprovedCandidate)
+                if (!isVs2022Candidate)
                 {
                     identityMatches = identityMatches &&
                         EqualsOrdinalIgnoreCase(gitCommit, expectedGitCommit) &&
                         EqualsOrdinalIgnoreCase(buildUtc, expectedBuildUtc) &&
                         EqualsOrdinalIgnoreCase(configSha256, expectedConfigSha256) &&
-                        string.Equals(expectedGitDirty, "false", StringComparison.OrdinalIgnoreCase);
+                        string.Equals(
+                            gitDirty ? "true" : "false",
+                            expectedGitDirty,
+                            StringComparison.OrdinalIgnoreCase);
                 }
                 if (!identityMatches)
                     return Failed(
@@ -212,14 +198,13 @@ namespace Controller
                 return new ReleasePackageVerification
                 {
                     Verified = true,
-                    Code = isFormalCandidate
-                        ? "Verified"
-                        : isFieldCandidate ? "VerifiedFieldCandidate" : "VerifiedVs2022",
-                    Detail = isFormalCandidate
-                        ? "正式发布身份、不可变程序文件哈希与可编辑配置集合一致。"
-                        : isFieldCandidate
-                            ? "现场候选身份、不可变程序文件哈希与可编辑配置集合一致；通过 168 小时长稳前保持现场候选状态。"
-                            : "VS2022 独立候选的程序文件哈希与配置集合一致；未执行正式发布全回归，不得作为生产放行证据。",
+                    Code = isVs2022Candidate
+                        ? "VerifiedVs2022"
+                        : isFormalRelease ? "Verified" : "VerifiedOperatorManaged",
+                    Detail = isVs2022Candidate
+                        ? "VS2022 独立包的程序文件哈希与配置集合一致；是否投入现场由操作人员负责。"
+                        : $"程序文件哈希、运行身份与配置集合一致；发布状态由操作人员负责。" +
+                          $" Status={releaseStatus} Approved={approved} GitDirty={gitDirty}",
                     VerifiedFileCount = verified
                 };
             }

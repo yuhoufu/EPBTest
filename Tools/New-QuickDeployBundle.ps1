@@ -7,21 +7,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 6
+$bundleRevision = 7
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
     throw "候选包目录不存在：$release"
 }
 & (Join-Path $PSScriptRoot 'Verify-Release.ps1') `
-    -ReleaseDirectory $release -RequireDeploymentApproved | Out-Null
+    -ReleaseDirectory $release | Out-Null
 $identity = Get-Content -LiteralPath (Join-Path $release 'build-identity.json') `
     -Raw | ConvertFrom-Json
-if ([string]$identity.productVersion -ne 'V2.14.1.0') {
+if ([string]$identity.productVersion -ne 'V2.14.2.0') {
     throw "快捷部署产品版本不一致：$($identity.productVersion)"
-}
-if ([string]$identity.releaseStatus -ne 'FIELD_CANDIDATE_PENDING_168H') {
-    throw "快捷部署只接受现场候选包：$($identity.releaseStatus)"
 }
 $bundleSourceCommit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($bundleSourceCommit)) {
@@ -38,7 +35,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 $outputRootFull = [IO.Path]::GetFullPath($OutputRoot)
 [void](New-Item -ItemType Directory -Path $outputRootFull -Force)
 $shortCommit = ([string]$identity.gitCommit).Substring(0, 12)
-$name = "$($identity.productVersion)_快捷部署包_${shortCommit}_FIELD_CANDIDATE_QUICKDEPLOY_R$bundleRevision"
+$name = "$($identity.productVersion)_正式包_${shortCommit}_QUICKDEPLOY_R$bundleRevision"
 $output = [IO.Path]::GetFullPath((Join-Path $outputRootFull $name))
 $prefix = $outputRootFull.TrimEnd('\', '/') + '\'
 if (-not $output.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {

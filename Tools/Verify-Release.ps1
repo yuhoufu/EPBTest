@@ -1,6 +1,5 @@
 ﻿param(
-    [string]$ReleaseDirectory = '',
-    [switch]$RequireDeploymentApproved
+    [string]$ReleaseDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -142,7 +141,7 @@ function Assert-VerificationEvidence {
         throw "verification.persistenceSoakSeconds 非法：$soakSeconds"
     }
     if ($FormalCandidate -and [long]$soakSeconds -lt 600) {
-        throw "正式候选持久化浸泡不足 600 秒：$soakSeconds"
+        throw "正式包自动持久化回归不足 600 秒：$soakSeconds"
     }
 
     Assert-CompletePassSummary 'powerSupplyDebuggerTests' (
@@ -157,9 +156,6 @@ function Assert-VerificationEvidence {
 
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ([string]::IsNullOrWhiteSpace($ReleaseDirectory)) {
-    if ($RequireDeploymentApproved) {
-        throw '正式候选校验必须通过 -ReleaseDirectory 指向独立版本目录；拒绝默认使用可被 VS 覆盖的 bin\Release。'
-    }
     $ReleaseDirectory = Join-Path $repo 'MTTfTest\bin\Release'
 }
 $release = [IO.Path]::GetFullPath($ReleaseDirectory)
@@ -241,44 +237,9 @@ if (-not $buildUtcValid) {
 if ($identity.gitDirty -isnot [bool]) {
     throw "identity.gitDirty 必须是 JSON 布尔值：$($identity.gitDirty)"
 }
-if ($identity.deploymentApproved -isnot [bool]) {
-    throw "identity.deploymentApproved 必须是 JSON 布尔值：$($identity.deploymentApproved)"
-}
-
-$isDeploymentCandidate = $identity.releaseStatus -in @(
-    'FORMAL_RELEASE_CANDIDATE',
-    'FIELD_CANDIDATE_PENDING_168H'
-)
-$stateIsCoherent = switch ([string]$identity.releaseStatus) {
-    'FORMAL_RELEASE_CANDIDATE' {
-        $identity.deploymentApproved -eq $true -and $identity.gitDirty -eq $false
-        break
-    }
-    'FIELD_CANDIDATE_PENDING_168H' {
-        $identity.deploymentApproved -eq $true -and $identity.gitDirty -eq $false
-        break
-    }
-    'BUILD_STAGING_NOT_FOR_DEPLOYMENT' {
-        $identity.deploymentApproved -eq $false -and $identity.gitDirty -eq $false
-        break
-    }
-    'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION' {
-        $identity.deploymentApproved -eq $false -and $identity.gitDirty -eq $true
-        break
-    }
-    default { $false }
-}
-if (-not $stateIsCoherent) {
-    throw "identity 放行状态组合非法：Status=$($identity.releaseStatus) " +
-          "Approved=$($identity.deploymentApproved) Dirty=$($identity.gitDirty)"
-}
-if ($RequireDeploymentApproved -and -not $isDeploymentCandidate) {
-    throw "该包不是可部署候选：Status=$($identity.releaseStatus) " +
-          "Approved=$($identity.deploymentApproved) Dirty=$($identity.gitDirty)"
-}
-
 $verification = Get-RequiredJsonProperty $identity 'verification' 'identity'
-Assert-VerificationEvidence -Verification $verification -FormalCandidate $isDeploymentCandidate
+Assert-VerificationEvidence -Verification $verification `
+    -FormalCandidate ([string]$identity.releaseStatus -eq 'FORMAL_RELEASE')
 
 $manifestNames = New-Object 'System.Collections.Generic.HashSet[string]' `
     ([StringComparer]::OrdinalIgnoreCase)

@@ -67,7 +67,7 @@ namespace MTTFTest.Watchdog.Protocol
                 if (!string.IsNullOrWhiteSpace(expectedSlot) &&
                     !string.Equals(descriptor.SlotName, expectedSlot, StringComparison.Ordinal))
                     return Fail("PackageSlotNameMismatch", out reason);
-                if (!string.Equals(descriptor.ProductVersion, "2.14.1.0", StringComparison.Ordinal))
+                if (!string.Equals(descriptor.ProductVersion, "2.14.2.0", StringComparison.Ordinal))
                     return Fail("PackageSlotVersionMismatch", out reason);
                 if (descriptor.Files == null || descriptor.Files.Length == 0)
                     return Fail("PackageSlotFileListMissing", out reason);

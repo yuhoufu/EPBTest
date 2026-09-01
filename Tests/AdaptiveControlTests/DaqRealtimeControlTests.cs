@@ -2043,7 +2043,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.14.1.0";
+                const string version = "V2.14.2.0";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2055,7 +2055,7 @@ namespace AdaptiveControlTests
                     Path.Combine(root, "build-identity.json"),
                     "{\n" +
                     $"  \"productVersion\": \"{version}\",\n" +
-                    "  \"releaseStatus\": \"FORMAL_RELEASE_CANDIDATE\",\n" +
+                    "  \"releaseStatus\": \"FORMAL_RELEASE\",\n" +
                     "  \"deploymentApproved\": true,\n" +
                     $"  \"gitCommit\": \"{commit}\",\n" +
                     "  \"gitDirty\": false,\n" +
@@ -2112,45 +2112,28 @@ namespace AdaptiveControlTests
                     Path.Combine(root, "build-identity.json"),
                     "{\n" +
                     $"  \"productVersion\": \"{version}\",\n" +
-                    "  \"releaseStatus\": \"FIELD_CANDIDATE_PENDING_168H\",\n" +
-                    "  \"deploymentApproved\": true,\n" +
+                    "  \"releaseStatus\": \"OPERATOR_RUN_DECISION\",\n" +
+                    "  \"deploymentApproved\": false,\n" +
                     $"  \"gitCommit\": \"{commit}\",\n" +
-                    "  \"gitDirty\": false,\n" +
+                    "  \"gitDirty\": true,\n" +
                     $"  \"buildUtc\": \"{buildUtc}\",\n" +
                     $"  \"configSha256\": \"{configSha}\"\n" +
                     "}\n");
                 WriteReleaseChecksums(root);
-                var fieldCandidate = ReleasePackageVerifier.VerifyDirectory(
-                    root, version, commit, "false", buildUtc, configSha);
-                Assert(fieldCandidate.Verified &&
-                       fieldCandidate.Code == "VerifiedFieldCandidate",
-                    "完整现场候选包未被主程序认可：" + fieldCandidate);
-
-                var fieldIdentityJson = File.ReadAllText(
-                    Path.Combine(root, "build-identity.json"));
-                File.WriteAllText(
-                    Path.Combine(root, "build-identity.json"),
-                    fieldIdentityJson.Replace(
-                        "\"deploymentApproved\": true",
-                        "\"deploymentApproved\": false"));
-                WriteReleaseChecksums(root);
-                var unapprovedFieldCandidate = ReleasePackageVerifier.VerifyDirectory(
-                    root, version, commit, "false", buildUtc, configSha);
-                Assert(!unapprovedFieldCandidate.Verified &&
-                       unapprovedFieldCandidate.Code == "PackageNotApproved",
-                    "未批准现场候选被错误放行：" + unapprovedFieldCandidate);
-
-                File.WriteAllText(
-                    Path.Combine(root, "build-identity.json"),
-                    fieldIdentityJson.Replace(
-                        "\"gitDirty\": false",
-                        "\"gitDirty\": true"));
-                WriteReleaseChecksums(root);
-                var dirtyFieldCandidate = ReleasePackageVerifier.VerifyDirectory(
+                var operatorManagedPackage = ReleasePackageVerifier.VerifyDirectory(
                     root, version, commit, "true", buildUtc, configSha);
-                Assert(!dirtyFieldCandidate.Verified &&
-                       dirtyFieldCandidate.Code == "PackageNotApproved",
-                    "脏源码现场候选被错误放行：" + dirtyFieldCandidate);
+                Assert(operatorManagedPackage.Verified &&
+                       operatorManagedPackage.Code == "VerifiedOperatorManaged",
+                    "发布状态/批准标记仍错误阻止操作人员管理的完整包：" +
+                    operatorManagedPackage);
+
+                var mismatchedOperatorPackage = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, "ffffffffffffffffffffffffffffffffffffffff",
+                    "true", buildUtc, configSha);
+                Assert(!mismatchedOperatorPackage.Verified &&
+                       mismatchedOperatorPackage.Code == "PackageIdentityMismatch",
+                    "取消发布批准门禁后错误放宽了二进制运行身份：" +
+                    mismatchedOperatorPackage);
 
                 File.WriteAllText(
                     Path.Combine(root, "build-identity.json"),

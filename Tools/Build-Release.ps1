@@ -463,7 +463,7 @@ Assert-SourceSnapshot -ExpectedCommit $commit `
     -Stage '回归测试前源码快照校验'
 
 # 可部署候选不能只证明主程序“能编译”。以下回归全部成功后才允许写入
-# FIELD_CANDIDATE_PENDING_168H；任何一项失败都在复制发布目录之前终止。
+# FORMAL_RELEASE；任何一项失败都在复制发布目录之前终止。
 $adaptiveTestExe = Join-Path $repo 'Tests\AdaptiveControlTests\bin\Release\AdaptiveControlTests.exe'
 $diskWriterTestExe = Join-Path $repo 'Tests\EpbDiskWriterTests\bin\Release\EpbDiskWriterTests.exe'
 if (-not (Test-Path -LiteralPath $adaptiveTestExe -PathType Leaf)) {
@@ -685,7 +685,7 @@ $identity = [ordered]@{
     platform = 'x86'
     watchdogSchema = 5
     packageSlotSchema = 5
-    longSoakGate = 'FIELD_CANDIDATE_PENDING_168H'
+    longSoakGate = 'AUTOMATED_RELEASE_REGRESSION_600S'
     verification = $verification
     files = @($manifestFiles)
 }
@@ -742,7 +742,7 @@ try {
         'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION'
     }
     else {
-        'FIELD_CANDIDATE_PENDING_168H'
+        'FORMAL_RELEASE'
     }
     $identity.deploymentApproved = -not $isDirty
     $identity | ConvertTo-Json -Depth 5 |
@@ -764,7 +764,7 @@ try {
         & $verifyScript -ReleaseDirectory $stagingOutput | Out-Null
     }
     else {
-        & $verifyScript -ReleaseDirectory $stagingOutput -RequireDeploymentApproved | Out-Null
+        & $verifyScript -ReleaseDirectory $stagingOutput | Out-Null
     }
     Move-Item -LiteralPath $stagingOutput -Destination $packageOutput
 }
@@ -779,6 +779,6 @@ if ($isDirty) {
     Write-Warning "已生成独立 DIRTY CANDIDATE：仅用于当前代码验证，不得作为正式生产放行包。"
 }
 else {
-    Write-Host "Release 正式候选包已生成并独立校验：$packageOutput"
+    Write-Host "Release 正式包已生成并独立校验：$packageOutput"
 }
 Write-Host "ScratchOutput=$output PackageOutput=$packageOutput Commit=$commit Branch=$branch Dirty=$isDirty ConfigSha256=$configHash BuildUtc=$buildUtc"

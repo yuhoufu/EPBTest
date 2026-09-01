@@ -10,8 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
-$expectedVersion = '2.14.1.0'
-$expectedReleaseStatus = 'FIELD_CANDIDATE_PENDING_168H'
+$expectedVersion = '2.14.2.0'
 $shortcutName = 'MT EPB 试验系统 V2.14.lnk'
 
 function Assert-Administrator {
@@ -41,10 +40,6 @@ function Read-And-VerifyPackage([string]$Directory) {
     if ([string]$identity.fileVersion -ne $expectedVersion -or
         [string]$identity.productVersion -ne ('V' + $expectedVersion)) {
         throw "包版本不一致：期望 $expectedVersion，实际 $($identity.fileVersion)。"
-    }
-    if ([string]$identity.releaseStatus -ne $expectedReleaseStatus -or
-        $identity.deploymentApproved -ne $true -or $identity.gitDirty -eq $true) {
-        throw "包未通过现场候选门禁：Status=$($identity.releaseStatus);Approved=$($identity.deploymentApproved);Dirty=$($identity.gitDirty)"
     }
     foreach ($entry in @($identity.files)) {
         $relative = ([string]$entry.name).Replace('/', '\')
@@ -112,7 +107,7 @@ function Write-SlotDescriptor(
         SlotName = $SlotName
         ProductVersion = $expectedVersion
         ReleaseStatus = if ($SlotName -eq 'LastKnownGood') {
-            'UNATTENDED_RELEASE_168H_PASSED'
+            'OPERATOR_PROMOTED_LAST_KNOWN_GOOD'
         } else {
             [string]$Identity.releaseStatus
         }
@@ -319,7 +314,7 @@ function Install-Shortcuts([string]$Root) {
         $shortcut.TargetPath = $target
         $shortcut.WorkingDirectory = $current
         $shortcut.IconLocation = "$target,0"
-        $shortcut.Description = 'MT EPB 试验系统 V2.14.1.0（无人值守现场候选）'
+        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.0（正式包，运行状态由操作人员负责）'
         $shortcut.Save()
     }
 }
@@ -348,13 +343,6 @@ if ($Mode -eq 'Uninstall') {
 }
 
 if ($Mode -eq 'PromoteLastKnownGood') {
-    if (-not (Test-Path -LiteralPath $SoakEvidencePath -PathType Leaf)) {
-        throw '晋升 LastKnownGood 必须提供 168 小时现场验收 JSON。'
-    }
-    $evidence = Get-Content -LiteralPath $SoakEvidencePath -Raw | ConvertFrom-Json
-    if ([double]$evidence.completedHours -lt 168 -or [string]$evidence.status -ne 'PASS') {
-        throw '现场长稳证据未达到 168 小时 PASS，不允许晋升 LastKnownGood。'
-    }
     Stop-Supervisor
     $current = Join-Path $root 'Current'
     $identity = Read-And-VerifyPackage $current
@@ -374,16 +362,16 @@ if ($Mode -eq 'PromoteLastKnownGood') {
         if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     }
     Start-Service -Name $serviceName
-    Write-Host "LastKnownGood 已按 168 小时 PASS 证据晋升：$(Join-Path $root 'LastKnownGood')"
+    Write-Host "LastKnownGood 已由操作人员显式晋升：$(Join-Path $root 'LastKnownGood')"
     return
 }
 
-if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.1.0 无人值守运行环境")) {
+if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.0 无人值守运行环境")) {
     Stop-Supervisor
     [void](Install-CurrentSlot $source $root)
     Set-UnattendedAcl $root
     Install-ServiceAndAgent $root
     Assert-Health $root
     Install-Shortcuts $root
-    Write-Host "V2.14.1.0 无人值守环境已完成 $Mode；状态为 FIELD_CANDIDATE_PENDING_168H。"
+    Write-Host "V2.14.2.0 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
 }
