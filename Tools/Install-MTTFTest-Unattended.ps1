@@ -213,7 +213,7 @@ function Install-ServiceAndAgent([string]$Root) {
     $principal = New-ScheduledTaskPrincipal -UserId $account `
         -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
-        -RestartCount 999 -RestartInterval ([TimeSpan]::FromSeconds(5)) `
+        -RestartCount 255 -RestartInterval ([TimeSpan]::FromMinutes(1)) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings -Force | Out-Null
