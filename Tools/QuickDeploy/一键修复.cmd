@@ -11,7 +11,9 @@ echo [1/2] 正在复核安装源身份和哈希...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Package\Deployment\Verify-Release.ps1" -ReleaseDirectory "%~dp0Package" -RequireDeploymentApproved
 if errorlevel 1 goto :failed
 echo [2/2] 正在修复服务、登录代理、ACL、双槽和快捷方式...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Package\Deployment\Install-MTTFTest-Unattended.ps1" -Mode Repair -SourceDirectory "%~dp0Package" -InstallRoot "%ProgramFiles%\MTTFTest"
+set "MTTFTEST_DEPLOY_SCRIPT=%~dp0Package\Deployment\Install-MTTFTest-Unattended.ps1"
+set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Repair -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
 if errorlevel 1 goto :failed
 echo.
 echo 修复成功。

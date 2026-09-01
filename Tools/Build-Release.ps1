@@ -620,12 +620,23 @@ if ($publishedConfigHash -ne $configHash) {
 
 $deploymentDirectory = Join-Path $output 'Deployment'
 [void](New-Item -ItemType Directory -Path $deploymentDirectory -Force)
-Copy-Item -LiteralPath (Join-Path $repo 'Tools\Install-EPB-UnattendedAlarm.ps1') `
-    -Destination (Join-Path $deploymentDirectory 'Install-EPB-UnattendedAlarm.ps1') -Force
-Copy-Item -LiteralPath (Join-Path $repo 'Tools\Install-MTTFTest-Unattended.ps1') `
-    -Destination (Join-Path $deploymentDirectory 'Install-MTTFTest-Unattended.ps1') -Force
-Copy-Item -LiteralPath (Join-Path $repo 'Tools\Verify-Release.ps1') `
-    -Destination (Join-Path $deploymentDirectory 'Verify-Release.ps1') -Force
+# Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按本地 ANSI 读取。部署脚本包含中文，
+# 因此随包副本必须统一为 UTF-8 BOM，避免错误解码后破坏引号和反斜杠。
+$utf8Bom = New-Object Text.UTF8Encoding($true)
+foreach ($deploymentScriptName in @(
+        'Install-EPB-UnattendedAlarm.ps1',
+        'Install-MTTFTest-Unattended.ps1',
+        'Verify-Release.ps1')) {
+    $deploymentScriptSource = Join-Path $repo (Join-Path 'Tools' $deploymentScriptName)
+    $deploymentScriptDestination = Join-Path $deploymentDirectory $deploymentScriptName
+    $deploymentScriptText = [IO.File]::ReadAllText(
+        $deploymentScriptSource,
+        [Text.Encoding]::UTF8)
+    [IO.File]::WriteAllText(
+        $deploymentScriptDestination,
+        $deploymentScriptText,
+        $utf8Bom)
+}
 New-Item -ItemType File -Path (Join-Path $output 'MTTFTest.UnattendedMode.required') -Force | Out-Null
 
 $files = Get-RecursivePackageFiles -Root $output `

@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$bundleRevision = 2
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
@@ -19,13 +20,22 @@ $identity = Get-Content -LiteralPath (Join-Path $release 'build-identity.json') 
 if ([string]$identity.releaseStatus -ne 'FIELD_CANDIDATE_PENDING_168H') {
     throw "快捷部署只接受现场候选包：$($identity.releaseStatus)"
 }
+$bundleSourceCommit = (& git -C $repo rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($bundleSourceCommit)) {
+    throw '无法读取快捷部署器源码提交身份。'
+}
+$bundleSourceDirty = -not [string]::IsNullOrWhiteSpace(
+    ((& git -C $repo status --porcelain) -join "`n"))
+if ($bundleSourceDirty) {
+    throw '拒绝从脏工作区生成快捷部署包。'
+}
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $repo 'artifacts\deploy'
 }
 $outputRootFull = [IO.Path]::GetFullPath($OutputRoot)
 [void](New-Item -ItemType Directory -Path $outputRootFull -Force)
 $shortCommit = ([string]$identity.gitCommit).Substring(0, 12)
-$name = "V2.14.0.0_快捷部署包_${shortCommit}_FIELD_CANDIDATE"
+$name = "V2.14.0.0_快捷部署包_${shortCommit}_FIELD_CANDIDATE_QUICKDEPLOY_R$bundleRevision"
 $output = [IO.Path]::GetFullPath((Join-Path $outputRootFull $name))
 $prefix = $outputRootFull.TrimEnd('\', '/') + '\'
 if (-not $output.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -56,13 +66,21 @@ try {
             [IO.File]::ReadAllLines($commandFile.FullName),
             (New-Object Text.UTF8Encoding($false)))
     }
+    $buildUtcText = if ($identity.buildUtc -is [DateTime]) {
+        ([DateTime]$identity.buildUtc).ToUniversalTime().ToString('O')
+    }
+    else {
+        [string]$identity.buildUtc
+    }
     $identitySummary = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
+        bundleRevision = $bundleRevision
+        bundleSourceCommit = $bundleSourceCommit
         productVersion = [string]$identity.productVersion
         releaseStatus = [string]$identity.releaseStatus
         deploymentApproved = [bool]$identity.deploymentApproved
-        gitCommit = [string]$identity.gitCommit
-        buildUtc = [string]$identity.buildUtc
+        packageGitCommit = [string]$identity.gitCommit
+        packageBuildUtc = $buildUtcText
         configSha256 = [string]$identity.configSha256
         innerBuildIdentitySha256 = (Get-FileHash -LiteralPath `
             (Join-Path $staging 'Package\build-identity.json') -Algorithm SHA256).Hash.ToLowerInvariant()
