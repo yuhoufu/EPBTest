@@ -446,6 +446,196 @@ namespace Controller
             }
         }
 
+        /// <summary>
+        /// The batch Continue command is the operator's recovery intent for any
+        /// hydraulic group that was isolated by confirmed pressure evidence.  Healthy
+        /// groups are already running when this method is called; every failed group is
+        /// therefore handled independently and a failed preflight must not roll the
+        /// healthy groups back.
+        /// </summary>
+        public async Task<int[]> ResumeInfrastructureAlarmGroupsAsync(
+            CancellationToken token = default)
+        {
+            var failedGroups = new List<int>();
+            var groups = CaptureHydraulicAlarmGroupsForOperatorRecovery();
+            foreach (var group in groups)
+            {
+                try
+                {
+                    await ResumeHydraulicAlarmGroupAsync(group.Key, group.Value, token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    failedGroups.Add(group.Key);
+                    _log.Warn(
+                        $"HydraulicGroupOperatorResumeRejected Hydraulic={group.Key} " +
+                        $"Channels=[{string.Join(",", group.Value)}] Error={ex.Message}; " +
+                        "故障组保持OFF，健康组继续运行。",
+                        "液压协调");
+                }
+            }
+            return failedGroups.ToArray();
+        }
+
+        private SortedDictionary<int, int[]> CaptureHydraulicAlarmGroupsForOperatorRecovery()
+        {
+            var result = new SortedDictionary<int, int[]>();
+            var candidates = _nonRecoverableChannelFaultReasons
+                .Where(pair => pair.Key >= 1 && pair.Key <= 12 &&
+                               _nonRecoverableChannelFaultLatch.ContainsKey(pair.Key) &&
+                               pair.Value?.IndexOf("液压硬件故障", StringComparison.Ordinal) >= 0)
+                .Select(pair => pair.Key)
+                .GroupBy(GetHydraulicGroupForChannel);
+            foreach (var group in candidates)
+            {
+                if (group.Key <= 0) continue;
+                var configured = _cfg.Test.Hydraulics
+                    .FirstOrDefault(item => item.Id == group.Key)?.Members ?? new List<int>();
+                var channels = configured
+                    .Where(IsChannelEnabled)
+                    .Where(channel => _nonRecoverableChannelFaultLatch.ContainsKey(channel))
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray();
+                if (channels.Length > 0) result[group.Key] = channels;
+            }
+            return result;
+        }
+
+        private async Task ResumeHydraulicAlarmGroupAsync(
+            int hydraulicId,
+            int[] channels,
+            CancellationToken token)
+        {
+            await _pauseResumeGate.WaitAsync(token).ConfigureAwait(false);
+            HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
+            CancellationTokenSource linked = null;
+            try
+            {
+                if (!IsBatchSessionActive || !IsFormalPhaseCommitted)
+                    throw new InvalidOperationException("当前没有可执行液压组恢复的正式批次。");
+                var runId = _activeBatchId;
+                var runEpoch = Interlocked.Read(ref _runEpoch);
+                ownership = await _recoveryOwnership.AcquireAsync(
+                        hydraulicId,
+                        $"OPERATOR-HYDRAULIC:{hydraulicId}:{runId:N}",
+                        RecoveryOwnerPriority.AlarmChannel,
+                        RecoveryOwnershipTakeoverTimeoutMs,
+                        token)
+                    .ConfigureAwait(false);
+                linked = CancellationTokenSource.CreateLinkedTokenSource(token, ownership.Token);
+                var recoveryToken = linked.Token;
+
+                foreach (var channel in channels)
+                {
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.ResumeChecking,
+                        "HydraulicGroupOperatorResumeChecking",
+                        $"操作员继续试验：正在复核液压{hydraulicId}整组",
+                        affectedChannels: channels,
+                        correlationId: runId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true);
+                    RenewStopCts(channel);
+                    _alarmStopLatch.BeginRun(channel);
+                    _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
+                }
+
+                await EnsureDaqReadyBeforeStartAsync(channels, recoveryToken)
+                    .ConfigureAwait(false);
+                EnsureStrictCurveControl(channels);
+                EnsureAdaptiveProfilesReady(channels);
+                await EnsurePowerSupplyReadyBeforeStartAsync(channels, recoveryToken)
+                    .ConfigureAwait(false);
+
+                var plan = GetCompatibleStaggerPlan(channels);
+                var positioning = await PreReleaseBatchWithPlanAsync(
+                        channels,
+                        null,
+                        plan,
+                        recoveryToken)
+                    .ConfigureAwait(false);
+                if (positioning.Any())
+                    throw new InvalidOperationException(
+                        $"液压{hydraulicId}恢复定位失败：" +
+                        string.Join(";", positioning.Select(item =>
+                            $"EPB{item.Channel}:{item.Code}")));
+
+                var qualificationFailed = await RunPausedQualificationAsync(
+                        channels,
+                        2,
+                        recoveryToken)
+                    .ConfigureAwait(false);
+                if (qualificationFailed.Any())
+                    throw new InvalidOperationException(
+                        $"液压{hydraulicId}资格复核失败：" +
+                        $"EPB[{string.Join(",", qualificationFailed)}]");
+
+                ResetTransientFaultStateForRestart(
+                    channels,
+                    "HydraulicGroupOperatorResume");
+                RejoinFormalChannelsAtSharedFutureSlot(
+                    channels,
+                    plan,
+                    "HydraulicGroupOperatorResumed",
+                    $"液压{hydraulicId}整组预检通过，已从未来公共槽重新加入",
+                    allowTerminalReset: true,
+                    allowSystemFaultReset: true);
+                foreach (var channel in channels)
+                {
+                    _nonRecoverableChannelFaultReasons.TryRemove(channel, out _);
+                    ClearAlarmIndicatorAfterRecoveryBestEffort(channel);
+                }
+                _log.Info(
+                    $"HydraulicGroupOperatorResumed Hydraulic={hydraulicId} " +
+                    $"Channels=[{string.Join(",", channels)}] Run={runId:N}/{runEpoch}",
+                    "液压协调");
+            }
+            catch
+            {
+                var reason =
+                    $"液压硬件故障恢复预检未通过；液压{hydraulicId}整组保持OFF，健康组继续运行。";
+                try
+                {
+                    await _hydCoordinator.ForceReleaseAsync(
+                            hydraulicId,
+                            "HydraulicGroupOperatorResumeRejected")
+                        .ConfigureAwait(false);
+                }
+                catch { }
+                foreach (var channel in channels)
+                {
+                    try { CommandEpbOffHighPriority(channel, "HydraulicGroupOperatorResumeRejected"); }
+                    catch { }
+                    _nonRecoverableChannelFaultLatch[channel] = 0;
+                    _nonRecoverableChannelFaultReasons[channel] = reason;
+                    _alarmStopLatch.TryRequestStop(channel);
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.AlarmStopped,
+                        "HydraulicGroupOperatorResumeRejected",
+                        reason,
+                        affectedChannels: channels,
+                        correlationId: _activeBatchId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true);
+                }
+                throw;
+            }
+            finally
+            {
+                linked?.Dispose();
+                ownership?.Dispose();
+                _pauseResumeGate.Release();
+            }
+        }
+
         private void EnsureBatchResumeGenerationUnchanged(long expectedGeneration)
         {
             var snapshot = CaptureBatchPauseSnapshot();
@@ -2273,18 +2463,45 @@ namespace Controller
                             throw new InvalidOperationException(
                                 $"FormalRejoinRejected ExecutionPermitRevoked " +
                                 $"Hydraulic={group.Key}");
-                        foreach (var channel in restartMembers)
-                            StartRejoinedFormalChannel(
-                                channel,
-                                remainingByChannel[channel],
-                                staggerPlan,
-                                t0,
-                                sharedFirstSlot,
-                                runtimeCode,
-                                runtimeReason,
-                                allowTerminalReset,
-                                allowSystemFaultReset,
-                                publishRuntimeStateAndObserver: !ownedByActiveDaqRecovery);
+                        StartFormalPhaseTimers(
+                            new Dictionary<int, List<int>>
+                            {
+                                [group.Key] = restartMembers.ToList()
+                            },
+                            new Dictionary<int, DateTime>
+                            {
+                                [group.Key] = t0
+                            },
+                            staggerPlan,
+                            GetBatchSessionTokenOr(CancellationToken.None),
+                            CycleAttemptKind.FormalRecovery,
+                            new Dictionary<int, long>
+                            {
+                                [group.Key] = sharedFirstSlot
+                            },
+                            registerParticipants: false,
+                            timerTaskName: "RejoinedChannelTimer");
+
+                        if (!ownedByActiveDaqRecovery)
+                        {
+                            foreach (var channel in restartMembers)
+                            {
+                                PublishChannelRuntimeState(
+                                    channel,
+                                    ChannelRuntimeState.Running,
+                                    runtimeCode,
+                                    $"{runtimeReason}；FutureSlot={sharedFirstSlot}",
+                                    correlationId: _activeBatchId,
+                                    allowTerminalReset: allowTerminalReset,
+                                    allowSystemFaultReset: allowSystemFaultReset);
+                                NonCriticalObserver.Invoke(
+                                    ChannelResumed,
+                                    channel,
+                                    ex => _log?.Warn(
+                                        $"单通道继续观察者异常，已隔离：{ex.Message}",
+                                        "EPB"));
+                            }
+                        }
 
                         var candidates = group.Key == 1
                             ? Enumerable.Range(1, 6).ToArray()
@@ -2331,302 +2548,5 @@ namespace Controller
             return CalculateFirstFutureFormalSlot(formalT0Utc, nowUtc, periodMs);
         }
 
-        private void StartRejoinedFormalChannel(
-            int channel,
-            int remainingRuns,
-            ElectricalStaggerPlan staggerPlan,
-            DateTime t0,
-            long firstSlot,
-            string runtimeCode,
-            string runtimeReason,
-            bool allowTerminalReset,
-            bool allowSystemFaultReset,
-            bool publishRuntimeStateAndObserver)
-        {
-            remainingRuns = GetRemainingMechanicalTargetCycles(channel);
-            if (remainingRuns <= 0)
-            {
-                FinalizeChannelAfterNaturalCompletion(
-                    channel,
-                    Recorder?.GetLastCycleNumber(channel) ?? 0);
-                return;
-            }
-            var pressureGroup = channel <= 6 ? 1 : 2;
-            _activeFormalT0ByPressureGroup[pressureGroup] = t0;
-            var firstCallbackUtc = t0.AddMilliseconds(firstSlot * (double)PeriodMs);
-            var initialDelay = Math.Max(
-                1,
-                (int)Math.Ceiling((firstCallbackUtc - DateTime.UtcNow).TotalMilliseconds));
-            var phase = staggerPlan.Get(channel).PhaseMs;
-            var stopCts = RenewStopCts(channel, out var stopToken);
-            var timer = GetTimer(channel, PeriodMs, OverrunPolicy.AlignToWallClock);
-            var baseCycle = Recorder?.GetLastCycleNumber(channel) ?? 0;
-            var successfulCycles = 0;
-            EpbTestCycle[channel] = remainingRuns;
-            ObserveBackgroundTask(timer.StartAsync(null, initialDelay, async (cycleIndex, timerToken) =>
-            {
-                var cyclePauseCts = RenewCyclePauseCts(
-                    channel,
-                    out var cyclePauseToken);
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                    timerToken,
-                    stopToken,
-                    cyclePauseToken);
-                var ct = linked.Token;
-                var phaseSlot = firstSlot + cycleIndex - 1L;
-                if (!await WaitForPreviousCycleExecutionAsync(channel, ct)
-                        .ConfigureAwait(false))
-                {
-                    ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    return false;
-                }
-
-                // 只有旧 execution 已完全退出后，才允许取得并重新配置共享 Runner。
-                var runner = (EpbCycleRunner)GetRunner(channel);
-                PrepareRunnerForNoHeadAndTailCompensation(channel);
-                GlobalHydraulicSlotAdmissionResult admission;
-                try
-                {
-                    await WaitForDaqRecoveryAsync(channel, ct).ConfigureAwait(false);
-                    await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, ct)
-                        .ConfigureAwait(false);
-                    admission = await EnterGlobalFormalHydraulicSlotAsync(
-                            _activeBatchId,
-                            phaseSlot,
-                            channel,
-                            t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
-                            t0,
-                            staggerPlan,
-                            GetBatchSessionTokenOr(timerToken),
-                            ct)
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    SkipGlobalFormalSlot(
-                        _activeBatchId,
-                        phaseSlot,
-                        channel,
-                        "FormalRejoinGateOrAdmissionFailed");
-                    ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    throw;
-                }
-                if (!admission.Admitted || admission.Slot == null)
-                {
-                    _log?.Info(
-                        $"SkippedForSlot Run={_activeBatchId:N} GlobalSlot={phaseSlot} " +
-                        $"EPB={channel} Reason={admission.SkipReason}",
-                        "液压全局槽");
-                    ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    return false;
-                }
-
-                var globalSlot = admission.Slot;
-                if (!globalSlot.Groups.TryGetValue(pressureGroup, out var outcome))
-                {
-                    ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    return false;
-                }
-                if (!outcome.IsSuccess)
-                {
-                    ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    globalSlot.GetLeaseOrThrow(pressureGroup);
-                    return false;
-                }
-                if (globalSlot.HasFailures)
-                    _log?.Warn(
-                        $"重入正式阶段健康液压组继续当前槽 Run={_activeBatchId:N} " +
-                        $"GlobalSlot={phaseSlot} Hydraulic={pressureGroup} EPB={channel}",
-                        "液压全局槽");
-                var plannedUtc = globalSlot.MotorAnchorUtc.Value.AddMilliseconds(phase);
-                var delay = plannedUtc - DateTime.UtcNow;
-                if (delay.TotalMilliseconds > 1)
-                    await Task.Delay(delay, ct).ConfigureAwait(false);
-                ct.ThrowIfCancellationRequested();
-
-                var cycleNumber = baseCycle + cycleIndex;
-                MarkElectricalPhaseDue(channel, plannedUtc);
-                var recorder = Recorder;
-                if (!TryBeginFormalCycleAttempt(
-                        recorder,
-                        channel,
-                        cycleNumber,
-                        DateTime.UtcNow,
-                        _activeBatchId,
-                        CycleAttemptKind.FormalRecovery,
-                        ct,
-                        out var cycleAttempt))
-                {
-                    await AbortHydraulicLeaseForChannelAsync(
-                            channel,
-                            "RejoinedFormalPersistenceBoundaryRejected")
-                        .ConfigureAwait(false);
-                    ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    return false;
-                }
-                if (!cycleAttempt.MarkExecutionStarted())
-                {
-                    if (!cycleAttempt.IsExecutionStarted)
-                        CompleteCycleAttemptExecution(cycleAttempt);
-                    await AbortHydraulicLeaseForChannelAsync(
-                            channel,
-                            "RejoinedFormalExecutionOwnershipRejected")
-                        .ConfigureAwait(false);
-                    ReleaseCyclePauseCts(channel, cyclePauseCts);
-                    return false;
-                }
-                using var executionScope =
-                    CompleteCycleAttemptExecutionOnCallbackExit(cycleAttempt);
-
-                var ok = false;
-                Adaptive.EpbCycleOutcome cycleOutcome;
-                try
-                {
-                    ok = await runner.RunOneAlignedAsync(
-                            PeriodMs,
-                            T8BaseMs,
-                            phase,
-                            T8MinMs,
-                            globalSlot.MotorDeadlineUtc.Value,
-                            cycleAttempt.AttemptCts.Token)
-                        .ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) { ok = false; }
-                catch { ok = false; }
-                finally
-                {
-                    cycleOutcome = runner.LastCycleOutcome;
-                    if (_hydraulicLeaseByChannel.TryGetValue(channel, out var activeScope) &&
-                        !activeScope.IsClosed)
-                        await AbortHydraulicLeaseForChannelAsync(
-                                channel,
-                                "RejoinedFormalAttemptFinalizer")
-                            .ConfigureAwait(false);
-                }
-                var controlSucceeded = IsFormalControlSucceeded(
-                    ok,
-                    cycleOutcome.IsSuccess);
-                if (controlSucceeded)
-                    _watchdogConsecutiveSoftwareAborts[channel] = 0;
-                if (cycleOutcome.MechanicalCycleCompleted)
-                    OnMechanicalCycleCompleted(
-                        channel,
-                        CycleAttemptKind.FormalRecovery,
-                        cycleNumber);
-                var controlNeedsSoftwareRecovery =
-                    cycleOutcome.Kind ==
-                    Adaptive.EpbCycleOutcomeKind.SoftwareRecovery;
-                if (controlNeedsSoftwareRecovery)
-                {
-                    RecordWatchdogSoftwareAbort(channel);
-                    ReportFormalControlSoftwareRecovery(
-                        channel,
-                        cycleNumber,
-                        cycleOutcome.Reason);
-                }
-
-                var persistenceCommitted = false;
-                try
-                {
-                    if (TryConsumeDaqClockCycleAbort(
-                            cycleAttempt.RunId,
-                            cycleAttempt.RunEpoch,
-                            channel,
-                            cycleNumber))
-                    {
-                        AbortFormalCycleAttempt(
-                            cycleAttempt,
-                            recorder,
-                            DateTime.UtcNow,
-                            "AbortedBySoftwareRecovery");
-                        _log?.Warn(
-                            $"EPB[{channel}] 恢复正式周期 {cycleNumber} 已由DAQ流程封存，" +
-                            "跳过重复终态提交。",
-                            "落盘");
-                    }
-                    else
-                    {
-                        var finalN = recorder?.GetCurrentCycleSampleCount(channel) ?? 0;
-                        if (IsAlarmStopRequested(channel))
-                        {
-                            // 报警后台取得封存权；活动 context 保留到报警耐久终态。
-                        }
-                        else if (controlNeedsSoftwareRecovery)
-                            AbortFormalCycleAttempt(
-                                cycleAttempt,
-                                recorder,
-                                DateTime.UtcNow,
-                                "AbortedBySoftwareRecovery");
-                        else if (controlSucceeded)
-                            persistenceCommitted = CompleteFormalCycleAttempt(
-                                cycleAttempt,
-                                recorder,
-                                finalN,
-                                DateTime.UtcNow);
-                        else
-                            AbortFormalCycleAttempt(
-                                cycleAttempt,
-                                recorder,
-                                DateTime.UtcNow,
-                                cycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
-                                    ? "canceled"
-                                    : "failed");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    PreserveFormalCycleForPersistenceRecovery(
-                        channel,
-                        cycleNumber,
-                        "CycleFinalizer",
-                        ex);
-                }
-                var mechanicalTargetReached = cycleOutcome.MechanicalCycleCompleted &&
-                                              IsMechanicalTargetReached(channel);
-                if (IsFormalCycleCountable(
-                        controlSucceeded,
-                        persistenceCommitted))
-                {
-                    var committedCycles = Interlocked.Increment(ref successfulCycles);
-                    var nonRecoverableAlarm =
-                        OnFormalCycleCommittedAndEvaluateClampFault(
-                            runner,
-                             channel,
-                             cycleNumber,
-                             committedCycles,
-                             phaseSlot,
-                             cycleAttempt,
-                             cycleOutcome);
-                    if (!nonRecoverableAlarm && mechanicalTargetReached)
-                    {
-                        FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
-                        timer.Stop();
-                    }
-                }
-                else if (mechanicalTargetReached && !IsAlarmStopRequested(channel))
-                {
-                    FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
-                    timer.Stop();
-                }
-                ReleaseCyclePauseCts(channel, cyclePauseCts);
-                return controlSucceeded && persistenceCommitted;
-            }), "RejoinedChannelTimer", channel);
-
-            if (publishRuntimeStateAndObserver)
-            {
-                PublishChannelRuntimeState(
-                    channel,
-                    ChannelRuntimeState.Running,
-                    runtimeCode,
-                    $"{runtimeReason}；FutureSlot={firstSlot}",
-                    correlationId: _activeBatchId,
-                    allowTerminalReset: allowTerminalReset,
-                    allowSystemFaultReset: allowSystemFaultReset);
-                NonCriticalObserver.Invoke(
-                    ChannelResumed,
-                    channel,
-                    ex => _log?.Warn($"单通道继续观察者异常，已隔离：{ex.Message}", "EPB"));
-            }
-        }
     }
 }

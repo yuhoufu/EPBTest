@@ -67,6 +67,38 @@ namespace Controller
         public DateTime CompletedUtc { get; set; }
     }
 
+    internal sealed class FormalBatchSlotWaitSnapshot
+    {
+        public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public long PreviousSlot { get; set; }
+        public long WaitingSlot { get; set; }
+        public int WaitingChannel { get; set; }
+        public int TimeoutMs { get; set; }
+        public long ElapsedMs { get; set; }
+        public DateTime SlotCreatedUtc { get; set; }
+        public int[] Participants { get; set; } = Array.Empty<int>();
+        public int[] Entered { get; set; } = Array.Empty<int>();
+        public int[] Completed { get; set; } = Array.Empty<int>();
+        public int[] Pending { get; set; } = Array.Empty<int>();
+    }
+
+    internal sealed class FormalBatchSlotClosureTimeoutException : TimeoutException
+    {
+        internal FormalBatchSlotClosureTimeoutException(FormalBatchSlotWaitSnapshot snapshot)
+            : base(
+                $"FormalBatchSlotClosureTimeout Run={snapshot?.RunId:N} " +
+                $"Epoch={snapshot?.RunEpoch} PreviousSlot={snapshot?.PreviousSlot} " +
+                $"WaitingSlot={snapshot?.WaitingSlot} EPB={snapshot?.WaitingChannel} " +
+                $"TimeoutMs={snapshot?.TimeoutMs} " +
+                $"Pending=[{string.Join(",", snapshot?.Pending ?? Array.Empty<int>())}]")
+        {
+            Snapshot = snapshot;
+        }
+
+        public FormalBatchSlotWaitSnapshot Snapshot { get; }
+    }
+
     internal sealed class FormalBatchSlotScope : IDisposable
     {
         private FormalBatchSlotCoordinator _owner;
@@ -139,6 +171,7 @@ namespace Controller
             internal long SlotOrdinal;
             internal DateTime WallClockAnchorUtc;
             internal int PeriodMs;
+            internal DateTime CreatedUtc;
             internal HashSet<int> Participants;
             internal Dictionary<int, FormalBatchParticipantLease> ParticipantLeases;
             internal HashSet<int> Pending;
@@ -186,7 +219,9 @@ namespace Controller
             int periodMs,
             Action waitingCallback,
             CancellationToken token,
-            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null)
+            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null,
+            int previousSlotClosureTimeoutMs = 0,
+            Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null)
         {
             var frozenChannels = (participants ?? Array.Empty<int>())
                 .Where(item => item > 0)
@@ -206,7 +241,9 @@ namespace Controller
                     periodMs,
                     waitingCallback,
                     token,
-                    fallbackTerminalFactory)
+                    fallbackTerminalFactory,
+                    previousSlotClosureTimeoutMs,
+                    waitingDetailsCallback)
                 .ConfigureAwait(false);
         }
 
@@ -218,7 +255,9 @@ namespace Controller
             int periodMs,
             Action waitingCallback,
             CancellationToken token,
-            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null)
+            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null,
+            int previousSlotClosureTimeoutMs = 0,
+            Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null)
         {
             if (participantLease == null) throw new ArgumentNullException(nameof(participantLease));
             var runId = participantLease.RunId;
@@ -256,6 +295,7 @@ namespace Controller
                 SlotOrdinal = slotOrdinal,
                 WallClockAnchorUtc = normalizedAnchor,
                 PeriodMs = periodMs,
+                CreatedUtc = DateTime.UtcNow,
                 Participants = new HashSet<int>(frozen),
                 ParticipantLeases = frozenLeases.ToDictionary(item => item.Channel),
                 Pending = new HashSet<int>(frozen),
@@ -286,8 +326,27 @@ namespace Controller
                 if (_slots.TryGetValue(CreateKey(runId, runEpoch, slotOrdinal - 1L), out var previous))
                 {
                     if (!previous.Completion.Task.IsCompleted)
+                    {
                         waitingCallback?.Invoke();
-                    await AwaitWithCancellation(previous.Completion.Task, token).ConfigureAwait(false);
+                        waitingDetailsCallback?.Invoke(CaptureWaitSnapshot(
+                            previous,
+                            slotOrdinal,
+                            channel,
+                            previousSlotClosureTimeoutMs,
+                            waitStartedUtc));
+                    }
+                    var previousClosed = await AwaitWithCancellationAndTimeout(
+                            previous.Completion.Task,
+                            previousSlotClosureTimeoutMs,
+                            token)
+                        .ConfigureAwait(false);
+                    if (!previousClosed)
+                        throw new FormalBatchSlotClosureTimeoutException(CaptureWaitSnapshot(
+                            previous,
+                            slotOrdinal,
+                            channel,
+                            previousSlotClosureTimeoutMs,
+                            waitStartedUtc));
 
                     DateTime releaseUtc;
                     lock (previous.Gate)
@@ -560,13 +619,55 @@ namespace Controller
             return boundary;
         }
 
-        private static async Task AwaitWithCancellation(Task task, CancellationToken token)
+        private static FormalBatchSlotWaitSnapshot CaptureWaitSnapshot(
+            SlotEntry previous,
+            long waitingSlot,
+            int waitingChannel,
+            int timeoutMs,
+            DateTime waitStartedUtc)
+        {
+            lock (previous.Gate)
+            {
+                return new FormalBatchSlotWaitSnapshot
+                {
+                    RunId = previous.RunId,
+                    RunEpoch = previous.RunEpoch,
+                    PreviousSlot = previous.SlotOrdinal,
+                    WaitingSlot = waitingSlot,
+                    WaitingChannel = waitingChannel,
+                    TimeoutMs = Math.Max(0, timeoutMs),
+                    ElapsedMs = (long)Math.Max(
+                        0,
+                        (DateTime.UtcNow - waitStartedUtc).TotalMilliseconds),
+                    SlotCreatedUtc = previous.CreatedUtc,
+                    Participants = previous.Participants.OrderBy(item => item).ToArray(),
+                    Entered = previous.Entered.OrderBy(item => item).ToArray(),
+                    Completed = previous.Terminals.Keys.OrderBy(item => item).ToArray(),
+                    Pending = previous.Pending.OrderBy(item => item).ToArray()
+                };
+            }
+        }
+
+        private static async Task<bool> AwaitWithCancellationAndTimeout(
+            Task task,
+            int timeoutMs,
+            CancellationToken token)
         {
             var canceled = Task.Delay(Timeout.Infinite, token);
-            var completed = await Task.WhenAny(task, canceled).ConfigureAwait(false);
-            if (completed != task)
+            var timeout = timeoutMs > 0
+                ? Task.Delay(timeoutMs)
+                : Task.Delay(Timeout.Infinite);
+            var completed = await Task.WhenAny(task, canceled, timeout).ConfigureAwait(false);
+            if (completed == task || task.IsCompleted)
+            {
+                await task.ConfigureAwait(false);
+                return true;
+            }
+            if (completed == canceled)
                 token.ThrowIfCancellationRequested();
-            await task.ConfigureAwait(false);
+            if (token.IsCancellationRequested)
+                token.ThrowIfCancellationRequested();
+            return false;
         }
 
         private static string CreateKey(Guid runId, long runEpoch, long slotOrdinal) =>

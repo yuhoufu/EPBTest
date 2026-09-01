@@ -16,6 +16,8 @@
   </Basic>
   <Timer>
     <OverrunPolicy>AlignToWallClock</OverrunPolicy>
+    <!-- 0=自动：max(2×试验周期, 30000ms)，显式值最长600000ms -->
+    <FormalSlotClosureTimeoutMs>0</FormalSlotClosureTimeoutMs>
     <!-- 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw -->
   </Timer>
   <!-- 液压是否参与：开关按液压编号整体控制（1 控 1~6；2 控 7~12） -->

@@ -1,10 +1,13 @@
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Controller;
+using Config;
 using MTTFTest.Watchdog.Protocol;
 using Timing;
 
@@ -43,6 +46,14 @@ namespace AdaptiveControlTests
                 ConfirmedRetirementClosesLateStaleSlot, ref passed);
             Run("旧代退休确认不能污染正式重入的新参与者",
                 LateRetirementCannotPoisonNewParticipantGeneration, ref passed);
+            Run("恢复重入与正常通道共同闭合槽55并释放槽56",
+                RejoinedAndNormalParticipantsCloseSharedSlot, ref passed);
+            Run("正式槽终态缺失按超时快照失败关闭",
+                MissingTerminalTimesOutWithExactSnapshot, ref passed);
+            Run("所有恢复重入只使用统一正式执行器",
+                RejoinUsesUnifiedFormalExecutor, ref passed);
+            Run("正式槽关闭超时配置兼容旧项目并可往返保存",
+                FormalSlotClosureTimeoutConfigRoundTrips, ref passed);
             Run("周期超限策略区分普通连续与硬截止",
                 PeriodOverrunPolicyClassifiesBoundaries, ref passed);
             Run("周期硬截止只隔离本次运行且不调用项目永久禁用",
@@ -112,10 +123,12 @@ namespace AdaptiveControlTests
             var stopwatch = Stopwatch.StartNew();
             var nextA = coordinator.EnterAsync(
                 runId, 1, 1, new[] { 1, 2 }, anchor, periodMs,
-                () => Interlocked.Increment(ref waitingSignals), CancellationToken.None);
+                () => Interlocked.Increment(ref waitingSignals), CancellationToken.None,
+                previousSlotClosureTimeoutMs: 500);
             var nextB = coordinator.EnterAsync(
                 runId, 1, 2, new[] { 1, 2 }, anchor, periodMs,
-                () => Interlocked.Increment(ref waitingSignals), CancellationToken.None);
+                () => Interlocked.Increment(ref waitingSignals), CancellationToken.None,
+                previousSlotClosureTimeoutMs: 500);
 
             slot0A.Complete(SafeTerminal(1));
             Thread.Sleep(20);
@@ -402,7 +415,8 @@ namespace AdaptiveControlTests
             using var canceled = new CancellationTokenSource();
             var canceledEntry = coordinator.EnterAsync(
                 runId, 1, 1, new[] { 1, 2 }, anchor, periodMs, null,
-                canceled.Token);
+                canceled.Token,
+                previousSlotClosureTimeoutMs: 1000);
             canceled.Cancel();
             var cancellationObserved = false;
             try { canceledEntry.GetAwaiter().GetResult(); }
@@ -521,6 +535,168 @@ namespace AdaptiveControlTests
             first.Complete(SafeTerminal(1));
             rejoined.Complete(SafeTerminal(2));
             coordinator.ClearRun(runId);
+        }
+
+        private static void RejoinedAndNormalParticipantsCloseSharedSlot()
+        {
+            var coordinator = new FormalBatchSlotCoordinator();
+            var runId = Guid.NewGuid();
+            const long runEpoch = 5;
+            var channels = new[] { 4, 5, 7, 8, 9, 12 };
+            var initial = channels.ToDictionary(
+                channel => channel,
+                channel => coordinator.RegisterParticipant(runId, runEpoch, channel));
+            var anchor = DateTime.UtcNow.AddMilliseconds(-10);
+            var slot54 = channels.Select(channel => coordinator.EnterAsync(
+                    initial[channel],
+                    54,
+                    initial.Values,
+                    anchor,
+                    10,
+                    null,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult()).ToArray();
+            foreach (var scope in slot54)
+                scope.Complete(SafeTerminal(scope.Channel));
+
+            // EPB4/5 模拟液压自愈后取得新参与者代次；其余通道继续原代次。
+            initial[4] = coordinator.RegisterParticipant(runId, runEpoch, 4);
+            initial[5] = coordinator.RegisterParticipant(runId, runEpoch, 5);
+            var slot55 = channels.Select(channel => coordinator.EnterAsync(
+                    initial[channel],
+                    55,
+                    initial.Values,
+                    anchor,
+                    10,
+                    null,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult()).ToArray();
+            foreach (var scope in slot55)
+                scope.Complete(SafeTerminal(scope.Channel));
+
+            var slot56 = channels.Select(channel => coordinator.EnterAsync(
+                    initial[channel],
+                    56,
+                    initial.Values,
+                    anchor,
+                    10,
+                    null,
+                    CancellationToken.None,
+                    previousSlotClosureTimeoutMs: 200)
+                .GetAwaiter().GetResult()).ToArray();
+            foreach (var scope in slot56)
+                scope.Complete(SafeTerminal(scope.Channel));
+            coordinator.ClearRun(runId);
+        }
+
+        private static void MissingTerminalTimesOutWithExactSnapshot()
+        {
+            var coordinator = new FormalBatchSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var anchor = DateTime.UtcNow.AddMilliseconds(-5);
+            var slot55Epb4 = coordinator.EnterAsync(
+                    runId, 55, 4, new[] { 4, 5, 7 }, anchor, 10, null,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            coordinator.EnterAsync(
+                    runId, 55, 5, new[] { 4, 5, 7 }, anchor, 10, null,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var slot55Epb7 = coordinator.EnterAsync(
+                    runId, 55, 7, new[] { 4, 5, 7 }, anchor, 10, null,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            slot55Epb4.Complete(SafeTerminal(4));
+            slot55Epb7.Complete(SafeTerminal(7));
+
+            FormalBatchSlotWaitSnapshot observed = null;
+            FormalBatchSlotClosureTimeoutException timeout = null;
+            try
+            {
+                coordinator.EnterAsync(
+                        runId, 56, 7, new[] { 4, 5, 7 }, anchor, 10, null,
+                        CancellationToken.None,
+                        previousSlotClosureTimeoutMs: 40,
+                        waitingDetailsCallback: snapshot => observed = snapshot)
+                    .GetAwaiter().GetResult();
+            }
+            catch (FormalBatchSlotClosureTimeoutException ex)
+            {
+                timeout = ex;
+            }
+
+            var snapshot = timeout?.Snapshot;
+            Assert(snapshot != null && observed != null,
+                "正式槽终态缺失没有产生等待快照和专用超时异常");
+            Assert(snapshot.RunId == runId && snapshot.PreviousSlot == 55 &&
+                   snapshot.WaitingSlot == 56 && snapshot.WaitingChannel == 7 &&
+                   snapshot.Participants.SequenceEqual(new[] { 4, 5, 7 }) &&
+                   snapshot.Completed.SequenceEqual(new[] { 4, 7 }) &&
+                   snapshot.Pending.SequenceEqual(new[] { 5 }) &&
+                   snapshot.TimeoutMs == 40,
+                "正式槽超时快照没有准确锁定槽55缺失的EPB5终态");
+            coordinator.ClearRun(runId);
+        }
+
+        private static void RejoinUsesUnifiedFormalExecutor()
+        {
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var unified = typeof(EpbManager).GetMethod("StartFormalPhaseTimers", flags);
+            var rejoin = typeof(EpbManager).GetMethod(
+                "RejoinFormalChannelsAtSharedFutureSlot",
+                flags);
+            var legacy = typeof(EpbManager).GetMethod("StartRejoinedFormalChannel", flags);
+            Assert(unified != null && rejoin != null && legacy == null,
+                "恢复旁路仍存在，或无法定位统一正式执行器");
+            var body = rejoin.GetMethodBody()?.GetILAsByteArray();
+            Assert(body != null && CallsMethod(body, unified.MetadataToken),
+                "恢复重入没有调用统一正式执行器");
+        }
+
+        private static void FormalSlotClosureTimeoutConfigRoundTrips()
+        {
+            var path = Path.Combine(
+                Path.GetTempPath(),
+                "epb-formal-slot-timeout-" + Guid.NewGuid().ToString("N") + ".xml");
+            try
+            {
+                File.WriteAllText(
+                    path,
+                    "<TestConfig><Basic><TestCycle>15</TestCycle></Basic>" +
+                    "<Timer><OverrunPolicy>AlignToWallClock</OverrunPolicy></Timer>" +
+                    "<Hydraulics/><ElectricalGroups/><EpbRecords/></TestConfig>");
+                var legacy = ConfigLoader.LoadTest(path, null);
+                Assert(legacy.FormalSlotClosureTimeoutMs == 0 &&
+                       legacy.EffectiveFormalSlotClosureTimeoutMs == 30000,
+                    "旧项目缺少正式槽超时节点时没有使用30秒自动值");
+                legacy.FormalSlotClosureTimeoutMs = 45000;
+                ConfigLoader.SaveTest(path, legacy);
+                var reloaded = ConfigLoader.LoadTest(path, null);
+                Assert(reloaded.FormalSlotClosureTimeoutMs == 45000 &&
+                       reloaded.EffectiveFormalSlotClosureTimeoutMs == 45000,
+                    "正式槽超时配置没有正确往返保存");
+                reloaded.FormalSlotClosureTimeoutMs = 700000;
+                Assert(reloaded.EffectiveFormalSlotClosureTimeoutMs == 600000,
+                    "正式槽超时没有应用10分钟上限");
+                reloaded.FormalSlotClosureTimeoutMs = 1000;
+                Assert(reloaded.EffectiveFormalSlotClosureTimeoutMs == 30000,
+                    "显式配置错误缩短了自动安全窗口");
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
+
+        private static bool CallsMethod(byte[] body, int metadataToken)
+        {
+            for (var index = 0; index + 4 < body.Length; index++)
+            {
+                if (body[index] != 0x28 && body[index] != 0x6F) continue;
+                if (BitConverter.ToInt32(body, index + 1) == metadataToken)
+                    return true;
+            }
+            return false;
         }
 
         private static void WaitingStateHasLegalHealthContracts()

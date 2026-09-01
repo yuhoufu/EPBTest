@@ -3203,7 +3203,11 @@ namespace Controller
             Dictionary<int, List<int>> groups,
             Dictionary<int, DateTime> t0OfGroup,
             ElectricalStaggerPlan staggerPlan,
-            CancellationToken token)
+            CancellationToken token,
+            CycleAttemptKind attemptKind = CycleAttemptKind.FormalBatch,
+            IReadOnlyDictionary<int, long> firstSlotOverrides = null,
+            bool registerParticipants = true,
+            string timerTaskName = "BatchChannelTimer")
         {
             // 全局液压槽不得绑定任一通道的暂停令牌；只有整批会话取消才可取消
             // 同槽的双液压建压/资格任务，避免单通道暂停拖垮另一健康压力组。
@@ -3219,8 +3223,15 @@ namespace Controller
                 .ToArray();
             foreach (var channel in formalChannels)
             {
-                MarkHydraulicParticipant(channel);
-                RegisterFormalParticipantLease(channel);
+                if (registerParticipants)
+                {
+                    MarkHydraulicParticipant(channel);
+                    RegisterFormalParticipantLease(channel);
+                }
+                else
+                {
+                    CaptureFormalParticipantLease(channel);
+                }
             }
             foreach (var kv in groups)
             {
@@ -3239,10 +3250,13 @@ namespace Controller
                 // 后误报硬故障。整组必须从同一个未来零相位开始，电气错峰只在液压
                 // 资格完成后的共享 phaseWindow 内执行。
                 var scheduleCreatedUtc = DateTime.UtcNow;
-                var firstFormalSlot = CalculateFirstFutureFormalSlot(
-                    t0,
-                    scheduleCreatedUtc,
-                    PeriodMs);
+                var firstFormalSlot = firstSlotOverrides != null &&
+                                      firstSlotOverrides.TryGetValue(pg, out var overriddenSlot)
+                    ? overriddenSlot
+                    : CalculateFirstFutureFormalSlot(
+                        t0,
+                        scheduleCreatedUtc,
+                        PeriodMs);
                 var firstGroupCallbackUtc = t0.AddMilliseconds(firstFormalSlot * (double)PeriodMs);
                 _log?.Info(
                     $"正式阶段液压槽已统一：Run={_activeBatchId:N} Hydraulic={pg} " +
@@ -3356,6 +3370,14 @@ namespace Controller
                                                 ResolveFormalFallbackPersistence(
                                                     formalCycleAttempt,
                                                     out var fallbackPersistenceRequired);
+                                            if (ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                                                    IsHydraulicGroupRecoveryActiveForChannel(ch),
+                                                    fallbackMotorOff,
+                                                    fallbackHydraulicReleased))
+                                            {
+                                                fallbackPersistenceRequired = false;
+                                                fallbackPersistenceCommitted = true;
+                                            }
                                             var fallbackReceipt = formalCycleAttempt == null
                                                 ? null
                                                 : EnrichFormalClosureReceipt(
@@ -3391,8 +3413,22 @@ namespace Controller
                                                 ClosureReceipt = fallbackReceipt,
                                                 CompletedUtc = DateTime.UtcNow
                                             };
-                                        })
+                                        },
+                                        previousSlotClosureTimeoutMs:
+                                            _cfg.Test.EffectiveFormalSlotClosureTimeoutMs,
+                                        waitingDetailsCallback: snapshot =>
+                                            PublishChannelRuntimeState(
+                                                ch,
+                                                ChannelRuntimeState.WaitingForSlotBarrier,
+                                                "WaitingForSlotBarrier",
+                                                FormatFormalSlotWaitingReason(snapshot)))
                                     .ConfigureAwait(false);
+                            }
+                            catch (FormalBatchSlotClosureTimeoutException ex)
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                ReportFormalSlotClosureTimeout(ex.Snapshot);
+                                return false;
                             }
                             catch
                             {
@@ -3503,7 +3539,7 @@ namespace Controller
                                     cycleNumber,
                                     DateTime.UtcNow,
                                     _activeBatchId,
-                                    CycleAttemptKind.FormalBatch,
+                                    attemptKind,
                                     token,
                                     out var cycleAttempt))
                             {
@@ -3620,7 +3656,7 @@ namespace Controller
                             {
                                 OnMechanicalCycleCompleted(
                                     ch,
-                                    CycleAttemptKind.FormalBatch,
+                                    attemptKind,
                                     cycleNumber);
                                 mechanicalTargetReached = IsMechanicalTargetReached(ch);
                             }
@@ -3770,6 +3806,21 @@ namespace Controller
                                 safetyClosure.ClosureReceipt,
                                 phaseSlot);
                             var persistenceBoundaryClosed = safetyClosure.PersistenceClosed;
+                            var hydraulicRecoveryOwnsPersistence =
+                                ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                                    IsHydraulicGroupRecoveryActiveForChannel(ch),
+                                    motorOffConfirmed,
+                                    hydraulicReleased);
+                            if (hydraulicRecoveryOwnsPersistence)
+                            {
+                                persistenceRequired = false;
+                                persistenceBoundaryClosed = true;
+                                _log.Info(
+                                    $"HydraulicGroupPersistenceDelegated Slot={phaseSlot} " +
+                                    $"EPB={ch} RunId={_activeBatchId:N}; " +
+                                    "组级恢复负责提交AbortedByHydraulicGroupFault，健康组继续运行。",
+                                    "周期屏障");
+                            }
                             var formalDisposition = ResolveFormalSlotDisposition(
                                 motorOffConfirmed,
                                 hydraulicReleased,
@@ -3805,7 +3856,7 @@ namespace Controller
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return controlSucceeded && persistenceCommitted;
 
-                        }), "BatchChannelTimer", ch);
+                        }), timerTaskName, ch);
                 }
             }
         }
@@ -3826,6 +3877,18 @@ namespace Controller
             bool hydraulicReleased,
             bool persistenceBoundaryClosed)
         {
+            if (ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                    IsHydraulicGroupRecoveryActiveForChannel(channel),
+                    motorOffConfirmed,
+                    hydraulicReleased))
+            {
+                _log?.Warn(
+                    $"HydraulicGroupFormalBoundaryOwned Slot={slot} EPB={channel} " +
+                    $"Persistence={persistenceBoundaryClosed}; " +
+                    "物理边界已闭合，圈终态由液压组恢复事务接管，禁止升级全局StopAll。",
+                    "周期屏障");
+                return;
+            }
             var runId = _activeBatchId;
             if (!_formalSlotSafetyFailureGate.TryLatch(runId, out var correlationId))
                 return;
@@ -3857,6 +3920,82 @@ namespace Controller
                     CancellationToken.None),
                 "FormalSlotSafetyBoundaryStopAll",
                 channel);
+        }
+
+        private static string FormatFormalSlotWaitingReason(
+            FormalBatchSlotWaitSnapshot snapshot)
+        {
+            if (snapshot == null)
+                return "本卡钳已关闭输出，等待同一正式周期槽安全收尾";
+            var pending = snapshot.Pending ?? Array.Empty<int>();
+            if (pending.Length == 0)
+                return $"等待同槽：槽{snapshot.PreviousSlot}已收尾，等待下一完整墙钟边界";
+            return $"等待同槽：槽{snapshot.PreviousSlot}缺 " +
+                   string.Join("、", pending.Select(channel => $"EPB{channel}"));
+        }
+
+        private void ReportFormalSlotClosureTimeout(FormalBatchSlotWaitSnapshot snapshot)
+        {
+            if (snapshot == null) return;
+            var runId = snapshot.RunId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            if (_activeBatchId != runId || runEpoch != snapshot.RunEpoch)
+            {
+                _log?.Warn(
+                    $"IgnoredStaleFormalBatchSlotClosureTimeout " +
+                    $"Snapshot={runId:N}/{snapshot.RunEpoch} " +
+                    $"Current={_activeBatchId:N}/{runEpoch} " +
+                    $"PreviousSlot={snapshot.PreviousSlot} " +
+                    $"Pending=[{string.Join(",", snapshot.Pending ?? Array.Empty<int>())}]",
+                    "周期屏障");
+                return;
+            }
+            if (!_formalSlotSafetyFailureGate.TryLatch(runId, out var correlationId))
+                return;
+            var affected = (snapshot.Participants ?? Array.Empty<int>())
+                .Append(snapshot.WaitingChannel)
+                .Where(channel => channel > 0)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var reason =
+                $"FormalBatchSlotClosureTimeout Run={runId:N} Epoch={snapshot.RunEpoch} " +
+                $"PreviousSlot={snapshot.PreviousSlot} WaitingSlot={snapshot.WaitingSlot} " +
+                $"Waiter=EPB{snapshot.WaitingChannel} TimeoutMs={snapshot.TimeoutMs} " +
+                $"ElapsedMs={snapshot.ElapsedMs} " +
+                $"Participants=[{string.Join(",", snapshot.Participants ?? Array.Empty<int>())}] " +
+                $"Entered=[{string.Join(",", snapshot.Entered ?? Array.Empty<int>())}] " +
+                $"Completed=[{string.Join(",", snapshot.Completed ?? Array.Empty<int>())}] " +
+                $"Pending=[{string.Join(",", snapshot.Pending ?? Array.Empty<int>())}]";
+            _log?.Error(reason, "周期屏障");
+            RevokeExecutionForExternalRecovery(reason);
+            foreach (var channel in affected)
+            {
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.SystemFault,
+                    "FormalBatchSlotClosureTimeout",
+                    $"正式槽{snapshot.PreviousSlot}在{snapshot.TimeoutMs}ms内未安全闭合；" +
+                    $"缺失EPB[{string.Join(",", snapshot.Pending ?? Array.Empty<int>())}]，" +
+                    "已撤销整批执行授权并启动安全停止",
+                    snapshot.WaitingChannel,
+                    affected,
+                    correlationId,
+                    allowSystemFaultReset: false);
+            }
+            ObserveBackgroundTask(
+                StopAllAsync(
+                    new StopContext
+                    {
+                        Source = StopSource.SystemFault,
+                        Reason = reason,
+                        Initiator = nameof(ReportFormalSlotClosureTimeout),
+                        CorrelationId = correlationId.ToString("N"),
+                        RequestedUtc = DateTime.UtcNow
+                    },
+                    CancellationToken.None),
+                "FormalBatchSlotClosureTimeoutStopAll",
+                snapshot.WaitingChannel);
         }
 
         internal static long CalculateFirstFutureFormalSlot(

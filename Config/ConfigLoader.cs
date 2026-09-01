@@ -137,6 +137,24 @@ public sealed class TestConfig
 
     public OverrunPolicy OverrunPolicy { get; set; } = OverrunPolicy.RunToCompletionSkipMissed;
 
+    /// <summary>
+    /// 上一正式槽等待安全终态的超时。0 表示自动使用 max(2×PeriodMs, 30000ms)；
+    /// 显式值不得缩短自动安全窗口，且最长限制为 10 分钟。
+    /// </summary>
+    public int FormalSlotClosureTimeoutMs { get; set; }
+
+    public int EffectiveFormalSlotClosureTimeoutMs
+    {
+        get
+        {
+            var automatic = Math.Max(30000L, Math.Max(1L, PeriodMs) * 2L);
+            var requested = FormalSlotClosureTimeoutMs > 0
+                ? FormalSlotClosureTimeoutMs
+                : automatic;
+            return (int)Math.Min(600000L, Math.Max(automatic, requested));
+        }
+    }
+
     public List<HydraulicItem> Hydraulics { get; } = new();
     public List<ElectricalGroup> Groups { get; } = new();
 
@@ -634,6 +652,9 @@ public static class ConfigLoader
         var policyText = GetString(doc, "//TestConfig/Timer/OverrunPolicy", "RunToCompletionSkipMissed");
         if (!Enum.TryParse(policyText, out OverrunPolicy pol)) pol = OverrunPolicy.RunToCompletionSkipMissed;
         cfg.OverrunPolicy = pol;
+        cfg.FormalSlotClosureTimeoutMs = Math.Max(
+            0,
+            GetInt(doc, "//TestConfig/Timer/FormalSlotClosureTimeoutMs", 0));
 
         foreach (XmlNode n in doc.SelectNodes("//TestConfig/Hydraulics/Hydraulic")!)
         {
@@ -1087,6 +1108,10 @@ public static class ConfigLoader
         if (timerNode is XmlElement timer)
         {
             SetChild(timer, "OverrunPolicy", cfg.OverrunPolicy.ToString());
+            SetChild(
+                timer,
+                "FormalSlotClosureTimeoutMs",
+                Math.Max(0, cfg.FormalSlotClosureTimeoutMs).ToString());
         }
 
         // ===============================
