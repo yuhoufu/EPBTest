@@ -462,8 +462,8 @@ Assert-SourceSnapshot -ExpectedCommit $commit `
     -ExpectedFingerprint $sourceSnapshotFingerprint `
     -Stage '回归测试前源码快照校验'
 
-# 正式候选不能只证明主程序“能编译”。以下回归全部成功后才允许写入
-# FORMAL_RELEASE_CANDIDATE；任何一项失败都在复制发布目录之前终止。
+# 可部署候选不能只证明主程序“能编译”。以下回归全部成功后才允许写入
+# FIELD_CANDIDATE_PENDING_168H；任何一项失败都在复制发布目录之前终止。
 $adaptiveTestExe = Join-Path $repo 'Tests\AdaptiveControlTests\bin\Release\AdaptiveControlTests.exe'
 $diskWriterTestExe = Join-Path $repo 'Tests\EpbDiskWriterTests\bin\Release\EpbDiskWriterTests.exe'
 if (-not (Test-Path -LiteralPath $adaptiveTestExe -PathType Leaf)) {

@@ -245,9 +245,16 @@ if ($identity.deploymentApproved -isnot [bool]) {
     throw "identity.deploymentApproved 必须是 JSON 布尔值：$($identity.deploymentApproved)"
 }
 
-$isFormalCandidate = $identity.releaseStatus -eq 'FORMAL_RELEASE_CANDIDATE'
+$isDeploymentCandidate = $identity.releaseStatus -in @(
+    'FORMAL_RELEASE_CANDIDATE',
+    'FIELD_CANDIDATE_PENDING_168H'
+)
 $stateIsCoherent = switch ([string]$identity.releaseStatus) {
     'FORMAL_RELEASE_CANDIDATE' {
+        $identity.deploymentApproved -eq $true -and $identity.gitDirty -eq $false
+        break
+    }
+    'FIELD_CANDIDATE_PENDING_168H' {
         $identity.deploymentApproved -eq $true -and $identity.gitDirty -eq $false
         break
     }
@@ -265,13 +272,13 @@ if (-not $stateIsCoherent) {
     throw "identity 放行状态组合非法：Status=$($identity.releaseStatus) " +
           "Approved=$($identity.deploymentApproved) Dirty=$($identity.gitDirty)"
 }
-if ($RequireDeploymentApproved -and -not $isFormalCandidate) {
-    throw "该包不是可部署正式候选：Status=$($identity.releaseStatus) " +
+if ($RequireDeploymentApproved -and -not $isDeploymentCandidate) {
+    throw "该包不是可部署候选：Status=$($identity.releaseStatus) " +
           "Approved=$($identity.deploymentApproved) Dirty=$($identity.gitDirty)"
 }
 
 $verification = Get-RequiredJsonProperty $identity 'verification' 'identity'
-Assert-VerificationEvidence -Verification $verification -FormalCandidate $isFormalCandidate
+Assert-VerificationEvidence -Verification $verification -FormalCandidate $isDeploymentCandidate
 
 $manifestNames = New-Object 'System.Collections.Generic.HashSet[string]' `
     ([StringComparer]::OrdinalIgnoreCase)
