@@ -48,6 +48,14 @@ try {
     foreach ($file in Get-ChildItem -LiteralPath $quickSource -File) {
         Copy-Item -LiteralPath $file.FullName -Destination $staging -Force
     }
+    # cmd.exe on older field PCs can split UTF-8 batch commands when the file
+    # only contains LF.  Always materialize the outer launchers as UTF-8/CRLF.
+    foreach ($commandFile in Get-ChildItem -LiteralPath $staging -Filter '*.cmd' -File) {
+        [IO.File]::WriteAllLines(
+            $commandFile.FullName,
+            [IO.File]::ReadAllLines($commandFile.FullName),
+            (New-Object Text.UTF8Encoding($false)))
+    }
     $identitySummary = [ordered]@{
         schemaVersion = 1
         productVersion = [string]$identity.productVersion
