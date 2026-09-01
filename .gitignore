@@ -408,3 +408,6 @@ DataStore/
 ErrorLog_*.txt
 RunLog_*.txt
 WarnLog_*.txt
+# Local assistant memory and copyright-registration source materials.
+.workbuddy/
+docs/软著/
