@@ -157,6 +157,31 @@ function Install-ServiceAndAgent([string]$Root) {
     Start-ScheduledTask -TaskName $taskName
 }
 
+function Stop-InstalledProcess([string]$Root, [string]$FileName) {
+    $expected = [IO.Path]::GetFullPath(
+        (Join-Path (Join-Path $Root 'Current') $FileName))
+    $processes = Get-CimInstance Win32_Process `
+        -Filter "Name='$FileName'" `
+        -ErrorAction SilentlyContinue
+    foreach ($process in @($processes)) {
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
+        $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+        if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Remove-InstalledProgramFiles([string]$Root) {
+    $resolved = Resolve-SafeDirectory $Root 'InstallRoot'
+    if ([IO.Path]::GetFileName($resolved) -ne 'MTTFTest') {
+        throw "拒绝删除非 MTTFTest 安装目录：$resolved"
+    }
+    if (Test-Path -LiteralPath $resolved -PathType Container) {
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+}
+
 function Test-CurrentSlotReplacementRequired([string]$Source, [string]$Root) {
     $current = Join-Path $Root 'Current'
     try {
@@ -271,6 +296,8 @@ function Install-Shortcuts([string]$Root) {
     if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
         throw "快捷方式目标不存在：$target"
     }
+    $targetVersion = (Get-Item -LiteralPath $target).VersionInfo.FileVersion
+    if ([string]::IsNullOrWhiteSpace($targetVersion)) { $targetVersion = '未知版本' }
     $shell = New-Object -ComObject WScript.Shell
     foreach ($path in @(Get-ShortcutPaths)) {
         $parent = Split-Path -Parent $path
@@ -281,7 +308,7 @@ function Install-Shortcuts([string]$Root) {
         $shortcut.TargetPath = $target
         $shortcut.WorkingDirectory = $current
         $shortcut.IconLocation = "$target,0"
-        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.3（正式包，运行状态由操作人员负责）'
+        $shortcut.Description = "MT EPB 试验系统 V$targetVersion（正式包，运行状态由操作人员负责）"
         $shortcut.Save()
     }
 }
@@ -299,7 +326,7 @@ $root = Resolve-SafeDirectory $InstallRoot 'InstallRoot'
 $source = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
 
 if ($Mode -eq 'Uninstall') {
-    if ($PSCmdlet.ShouldProcess($root, '卸载服务和登录任务（保留程序槽及事故证据）')) {
+    if ($PSCmdlet.ShouldProcess($root, '卸载程序、服务、登录任务和快捷方式（保留 ProgramData）')) {
         Stop-Supervisor
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if ($null -ne $task) {
@@ -312,12 +339,13 @@ if ($Mode -eq 'Uninstall') {
             Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
         }
         Stop-InstalledSessionAgent $root
+        Stop-InstalledProcess $root 'MTTFTest.exe'
+        Stop-InstalledProcess $root 'MTTFTest.SafetyAgent.exe'
+        Stop-InstalledProcess $root 'MTTFTest.Watchdog.exe'
         & sc.exe delete $serviceName | Out-Host
-        Remove-Item -LiteralPath `
-            (Join-Path (Join-Path $root 'Current') $configuredMarkerName) `
-            -Force -ErrorAction SilentlyContinue
         Remove-Shortcuts
-        Write-Host '已卸载监督服务和 SessionAgent 任务，并终止安装目录内的 SessionAgent；程序槽、ProgramData 日志及事故证据已保留。'
+        Remove-InstalledProgramFiles $root
+        Write-Host '卸载完成：程序、服务、计划任务和快捷方式已删除；ProgramData 配置、日志和事故证据已保留。'
     }
     return
 }
@@ -357,7 +385,11 @@ if ($Mode -eq 'PromoteLastKnownGood') {
     return
 }
 
-if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.3 无人值守运行环境")) {
+$sourceVersion = (Get-Item -LiteralPath (Join-Path $source 'MTTFTest.exe')).VersionInfo.FileVersion
+if ([string]::IsNullOrWhiteSpace($sourceVersion)) {
+    throw '无法从来源目录的 MTTFTest.exe 读取版本号。'
+}
+if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环境")) {
     Assert-InstalledMainStopped $root
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
@@ -373,5 +405,5 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.3 无人值守运行环境")) 
     Assert-Health $root
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
-    Write-Host "V2.14.2.3 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
+    Write-Host "V$sourceVersion 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
 }

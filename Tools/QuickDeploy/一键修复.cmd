@@ -1,5 +1,6 @@
 @echo off
 setlocal
+chcp 65001 >nul
 set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
 set "MTTFTEST_PACKAGE_SOURCE=%~dp0"
 set "MTTFTEST_ELEVATE_TARGET=%~f0"
@@ -10,19 +11,20 @@ if errorlevel 1 (
   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
   exit /b
 )
-echo Repairing program, supervisor, session agent and shortcuts...
+echo 正在修复程序、监督服务、登录任务、权限和快捷方式...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Repair -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
 if errorlevel 1 goto :failed
 echo.
-echo Repair completed.
+echo 修复完成。
+set "MTTFTEST_RESULT=0"
 goto :done
 :failed
 echo.
-echo Repair failed. Save this window for diagnosis.
+echo 修复失败，请保留本窗口信息用于排查。
+set "MTTFTEST_RESULT=1"
 :done
 if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
-endlocal
-exit /b
+endlocal & exit /b %MTTFTEST_RESULT%
 :parse_only
 if not exist "%MTTFTEST_DEPLOY_SCRIPT%" exit /b 91
 if not exist "%MTTFTEST_PACKAGE_SOURCE%\MTTFTest.exe" exit /b 92
