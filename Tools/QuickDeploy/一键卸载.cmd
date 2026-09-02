@@ -12,10 +12,10 @@ if errorlevel 1 (
   exit /b
 )
 if defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE goto :uninstall_without_confirm
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Uninstall -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%ProgramFiles%\MTTFTest" -Confirm
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Uninstall -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%ProgramFiles%\MTTFTest"
 goto :uninstall_finished
 :uninstall_without_confirm
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Uninstall -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%ProgramFiles%\MTTFTest" -Confirm:$false
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Uninstall -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%ProgramFiles%\MTTFTest" -ForceUninstall -Confirm:$false
 :uninstall_finished
 set "MTTFTEST_RESULT=%ERRORLEVEL%"
 if not "%MTTFTEST_RESULT%"=="0" echo ERROR: uninstall failed or cancelled. ExitCode=%MTTFTEST_RESULT%

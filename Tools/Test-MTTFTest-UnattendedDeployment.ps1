@@ -40,6 +40,8 @@ foreach ($required in @(
         'Initialize-RuntimeConfig',
         'Remove-InstalledProgramFiles',
         'ProgramData 配置、日志和事故证据已保留',
+        'PromptForChoice',
+        'ForceUninstall',
         'Test-CurrentSlotReplacementRequired',
         'MTTFTestAutoStart',
         'MTTFTest.FirstRun.configured',
@@ -180,6 +182,28 @@ try {
         $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = $previousArgumentProbe
     }
     Write-Output 'PASS QuickDeployArgumentBinding 3/3'
+
+    $uninstallCommandText = [IO.File]::ReadAllText(
+        (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') '一键卸载.cmd'),
+        [Text.Encoding]::ASCII)
+    $interactiveUninstallLines = @($uninstallCommandText -split "`r?`n" |
+        Where-Object {
+            $_.Contains('-Mode Uninstall') -and
+            -not $_.Contains('-ForceUninstall')
+        })
+    if ($interactiveUninstallLines.Count -ne 2 -or
+        @($interactiveUninstallLines | Where-Object {
+            $_.Contains('-Confirm')
+        }).Count -ne 0) {
+        throw '交互卸载入口不得传递全局 -Confirm，否则内部命令会重复询问。'
+    }
+    if (-not $uninstallCommandText.Contains('-ForceUninstall -Confirm:$false')) {
+        throw '非交互卸载入口缺少明确的免确认参数。'
+    }
+    if ([regex]::Matches($installerText, 'PromptForChoice').Count -ne 1) {
+        throw '安装器必须且只能包含一次交互式卸载确认。'
+    }
+    Write-Output 'PASS QuickDeploySingleUninstallPrompt 1/1'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot -PathType Container) {

@@ -4,7 +4,8 @@ param(
     [string]$Mode = 'Install',
     [string]$SourceDirectory = (Split-Path -Parent $PSScriptRoot),
     [string]$InstallRoot = (Join-Path $env:ProgramFiles 'MTTFTest'),
-    [string]$SoakEvidencePath
+    [string]$SoakEvidencePath,
+    [switch]$ForceUninstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,7 +49,7 @@ function Assert-RequiredProgramFiles([string]$Directory) {
 function Stop-Supervisor {
     $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
     if ($null -ne $service -and $service.Status -ne 'Stopped') {
-        Stop-Service -Name $serviceName -Force
+        Stop-Service -Name $serviceName -Force -Confirm:$false
         $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
 }
@@ -167,7 +168,8 @@ function Stop-InstalledProcess([string]$Root, [string]$FileName) {
         if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
         $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
         if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
-            Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id ([int]$process.ProcessId) -Force `
+                -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
 }
@@ -178,7 +180,7 @@ function Remove-InstalledProgramFiles([string]$Root) {
         throw "拒绝删除非 MTTFTest 安装目录：$resolved"
     }
     if (Test-Path -LiteralPath $resolved -PathType Container) {
-        Remove-Item -LiteralPath $resolved -Recurse -Force
+        Remove-Item -LiteralPath $resolved -Recurse -Force -Confirm:$false
     }
 }
 
@@ -245,7 +247,8 @@ function Stop-InstalledRuntimeTasks([string]$Root) {
     foreach ($name in @($autoStartTaskName, $taskName)) {
         $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         if ($null -ne $task) {
-            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+            Stop-ScheduledTask -TaskName $name -Confirm:$false `
+                -ErrorAction SilentlyContinue
         }
     }
     Stop-InstalledSessionAgent $Root
@@ -316,7 +319,7 @@ function Install-Shortcuts([string]$Root) {
 function Remove-Shortcuts {
     foreach ($path in @(Get-ShortcutPaths)) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
-            Remove-Item -LiteralPath $path -Force
+            Remove-Item -LiteralPath $path -Force -Confirm:$false
         }
     }
 }
@@ -335,16 +338,34 @@ if ($Mode -eq 'Uninstall') {
     Write-Warning "即将删除 $root 下的程序、服务、计划任务和快捷方式。"
     Write-Host '卸载前必须先安全停止试验并完全退出主程序。'
     Write-Host 'ProgramData 中的现场配置、日志和事故证据不会删除。'
+    if (-not $ForceUninstall) {
+        $choices = @(
+            (New-Object Management.Automation.Host.ChoiceDescription `
+                '&Y 是', '确认卸载程序'),
+            (New-Object Management.Automation.Host.ChoiceDescription `
+                '&N 否', '取消卸载'))
+        $selection = $Host.UI.PromptForChoice(
+            '确认卸载',
+            '是否继续？只会询问这一次。',
+            $choices,
+            1)
+        if ($selection -ne 0) {
+            Write-Host '已取消卸载，未做任何修改。'
+            return
+        }
+    }
     if ($PSCmdlet.ShouldProcess($root, '卸载程序、服务、登录任务和快捷方式（保留 ProgramData）')) {
         Stop-Supervisor
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if ($null -ne $task) {
-            Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            Stop-ScheduledTask -TaskName $taskName -Confirm:$false `
+                -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
         }
         $autoStartTask = Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
         if ($null -ne $autoStartTask) {
-            Stop-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
+            Stop-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false `
+                -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
         }
         Stop-InstalledSessionAgent $root
