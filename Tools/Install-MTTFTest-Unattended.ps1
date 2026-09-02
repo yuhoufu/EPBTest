@@ -281,7 +281,7 @@ function Install-Shortcuts([string]$Root) {
         $shortcut.TargetPath = $target
         $shortcut.WorkingDirectory = $current
         $shortcut.IconLocation = "$target,0"
-        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.2（正式包，运行状态由操作人员负责）'
+        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.3（正式包，运行状态由操作人员负责）'
         $shortcut.Save()
     }
 }
@@ -357,7 +357,7 @@ if ($Mode -eq 'PromoteLastKnownGood') {
     return
 }
 
-if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.2 无人值守运行环境")) {
+if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.3 无人值守运行环境")) {
     Assert-InstalledMainStopped $root
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
@@ -373,5 +373,5 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.2 无人值守运行环境")) 
     Assert-Health $root
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
-    Write-Host "V2.14.2.2 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
+    Write-Host "V2.14.2.3 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
 }
