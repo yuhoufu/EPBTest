@@ -37,6 +37,8 @@ namespace MtEmbTest
         [STAThread]
         static void Main(string[] args)
         {
+            if (FirstRunBootstrap.TryRunElevatedWorker(args)) return;
+            if (!FirstRunBootstrap.PrepareOrExit(args)) return;
             var watchdogRecoveryIntent = WatchdogRecoveryIntent.Parse(args);
             var recoveryIntent = watchdogRecoveryIntent == null
                 ? RecoveryProcessBootstrap.Parse(args)

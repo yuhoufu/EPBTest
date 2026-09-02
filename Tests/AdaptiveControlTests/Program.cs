@@ -521,6 +521,7 @@ namespace AdaptiveControlTests
                 _passed += StopWatchdogHardeningTests.RunAll();
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
                 _passed += FormalBatchSlotCoordinatorTests.RunAll();
+                _passed += FirstRunBootstrapTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
