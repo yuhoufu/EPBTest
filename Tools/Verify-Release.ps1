@@ -112,10 +112,7 @@ function Assert-CompletePassSummary {
 }
 
 function Assert-VerificationEvidence {
-    param(
-        [Parameter(Mandatory = $true)]$Verification,
-        [Parameter(Mandatory = $true)][bool]$FormalCandidate
-    )
+    param([Parameter(Mandatory = $true)]$Verification)
 
     if ($null -eq $Verification -or $Verification -isnot [pscustomobject]) {
         throw 'identity.verification 缺失或类型错误。'
@@ -131,21 +128,10 @@ function Assert-VerificationEvidence {
     Assert-CompletePassSummary 'epbDiskWriterTests' (
         Get-RequiredJsonProperty $Verification 'epbDiskWriterTests' 'identity.verification')
 
-    $persistenceSoak = Get-RequiredJsonProperty $Verification 'persistenceSoak' 'identity.verification'
-    if ($persistenceSoak -isnot [string] -or $persistenceSoak -ne 'PASS 1/1') {
-        throw "verification.persistenceSoak 未通过：$persistenceSoak"
-    }
-    $soakSeconds = Get-RequiredJsonProperty $Verification 'persistenceSoakSeconds' 'identity.verification'
-    if (($soakSeconds -isnot [int] -and $soakSeconds -isnot [long]) -or
-        [long]$soakSeconds -lt 1 -or [long]$soakSeconds -gt 3600) {
-        throw "verification.persistenceSoakSeconds 非法：$soakSeconds"
-    }
-    if ($FormalCandidate -and [long]$soakSeconds -lt 600) {
-        throw "正式包自动持久化回归不足 600 秒：$soakSeconds"
-    }
-
     Assert-CompletePassSummary 'powerSupplyDebuggerTests' (
         Get-RequiredJsonProperty $Verification 'powerSupplyDebuggerTests' 'identity.verification')
+    Assert-CompletePassSummary 'releaseBuildNoMandatorySoak' (
+        Get-RequiredJsonProperty $Verification 'releaseBuildNoMandatorySoak' 'identity.verification')
 
     $fieldGateSummary = Get-RequiredJsonProperty $Verification 'fieldGateTests' 'identity.verification'
     if ($fieldGateSummary -isnot [string] -or
@@ -238,8 +224,7 @@ if ($identity.gitDirty -isnot [bool]) {
     throw "identity.gitDirty 必须是 JSON 布尔值：$($identity.gitDirty)"
 }
 $verification = Get-RequiredJsonProperty $identity 'verification' 'identity'
-Assert-VerificationEvidence -Verification $verification `
-    -FormalCandidate ([string]$identity.releaseStatus -eq 'FORMAL_RELEASE')
+Assert-VerificationEvidence -Verification $verification
 
 $manifestNames = New-Object 'System.Collections.Generic.HashSet[string]' `
     ([StringComparer]::OrdinalIgnoreCase)

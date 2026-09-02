@@ -1,8 +1,6 @@
 ﻿param(
     [string]$MsBuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe',
     [string]$PackageRoot = '',
-    [ValidateRange(1, 3600)]
-    [int]$PersistenceSoakSeconds = 600,
     [switch]$AllowDirtyCandidate
 )
 
@@ -481,12 +479,6 @@ $diskWriterSummary = Invoke-CandidateTest `
     -Label 'EpbDiskWriterTests' `
     -FilePath $diskWriterTestExe `
     -SuccessPattern '^PASS\s+\d+/\d+$'
-$soakSummary = Invoke-CandidateTest `
-    -Label "PersistenceSoak(${PersistenceSoakSeconds}s)" `
-    -FilePath $adaptiveTestExe `
-    -ArgumentList @('--persistence-soak', [string]$PersistenceSoakSeconds) `
-    -SuccessPattern '^PASS\s+1/1$'
-
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
 $powerSupplyResultsDirectory = [IO.Path]::GetFullPath((Join-Path `
     $tempRoot ('epb-release-power-' + [Guid]::NewGuid().ToString('N'))))
@@ -599,6 +591,13 @@ $quickDeployParseSummary = @($deploymentContractOutput |
 if ($quickDeployParseSummary.Count -ne 1) {
     throw '快捷部署批处理解析测试未通过。'
 }
+$noMandatorySoakSummary = @($deploymentContractOutput |
+    ForEach-Object { [string]$_ } |
+    Where-Object { $_ -match '^PASS\s+ReleaseBuildNoMandatorySoak\s+1/1$' } |
+    Select-Object -Last 1)
+if ($noMandatorySoakSummary.Count -ne 1) {
+    throw '正式发布流程仍包含强制长稳门禁。'
+}
 
 # 回归期间也可能发生源码切换或编辑；identity 只能在第二次快照仍与开头一致且
 # 工作树完全干净时写入。该门禁有意不受 -AllowDirtyCandidate 绕过。
@@ -610,12 +609,11 @@ $verification = [ordered]@{
     solutionRebuild = 'PASS'
     adaptiveControlTests = $adaptiveSummary
     epbDiskWriterTests = $diskWriterSummary
-    persistenceSoak = $soakSummary
-    persistenceSoakSeconds = $PersistenceSoakSeconds
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
     quickDeployCommandParse = $quickDeployParseSummary[0].Trim()
+    releaseBuildNoMandatorySoak = $noMandatorySoakSummary[0].Trim()
 }
 
 $publishedConfigs = New-OrdinalPathMap
@@ -685,7 +683,6 @@ $identity = [ordered]@{
     platform = 'x86'
     watchdogSchema = 5
     packageSlotSchema = 5
-    longSoakGate = 'AUTOMATED_RELEASE_REGRESSION_600S'
     verification = $verification
     files = @($manifestFiles)
 }

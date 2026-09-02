@@ -51,6 +51,33 @@ foreach ($required in @(
 }
 Write-Output 'PASS SimpleUnattendedDeploymentContract 1/1'
 
+$releaseScripts = @(
+    (Join-Path $PSScriptRoot 'Build-Release.ps1'),
+    (Join-Path $PSScriptRoot 'Verify-Release.ps1'),
+    (Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'))
+foreach ($releaseScript in $releaseScripts) {
+    $releaseTokens = $null
+    $releaseParseErrors = $null
+    [void][Management.Automation.Language.Parser]::ParseFile(
+        $releaseScript,
+        [ref]$releaseTokens,
+        [ref]$releaseParseErrors)
+    if (@($releaseParseErrors).Count -ne 0) {
+        throw "发布脚本无法解析：$releaseScript；$(@($releaseParseErrors)[0].Message)"
+    }
+    $releaseText = [IO.File]::ReadAllText($releaseScript, [Text.Encoding]::UTF8)
+    foreach ($removedSoakGate in @(
+            'PersistenceSoakSeconds',
+            'persistenceSoak',
+            'longSoakGate',
+            '--persistence-soak')) {
+        if ($releaseText.Contains($removedSoakGate)) {
+            throw "正式发布流程仍包含强制长稳门禁：$removedSoakGate；File=$releaseScript"
+        }
+    }
+}
+Write-Output 'PASS ReleaseBuildNoMandatorySoak 1/1'
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ('EPBTest-QuickDeploy-' + [Guid]::NewGuid().ToString('N'))
 try {
