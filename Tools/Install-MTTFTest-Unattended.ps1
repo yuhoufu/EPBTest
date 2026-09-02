@@ -345,6 +345,12 @@ function Write-OperationStep([int]$Index, [int]$Total, [string]$Message) {
     Write-Host "[$Index/$Total] $Message" -ForegroundColor Cyan
 }
 
+function Request-UninstallConfirmation {
+    $answer = [string](Read-Host `
+        '只询问一次：输入 Y 或 A 确认卸载；输入 N 或直接回车取消')
+    return $answer.Trim().ToUpperInvariant() -in @('Y', 'A')
+}
+
 function Write-DeploymentResult(
     [string]$Operation,
     [string]$Version,
@@ -388,6 +394,12 @@ function Write-DeploymentResult(
 
 $root = Resolve-SafeDirectory $InstallRoot 'InstallRoot'
 
+if ($env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE -eq '1') {
+    $probeConfirmed = Request-UninstallConfirmation
+    Write-Output "QUICKDEPLOY_CONFIRMATION_PROBE_PASS Confirmed=$probeConfirmed"
+    return
+}
+
 if ($env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE -eq '1') {
     $probeSource = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
     Write-Output "QUICKDEPLOY_ARGUMENT_PROBE_PASS Mode=$Mode Source=$probeSource Root=$root"
@@ -406,21 +418,9 @@ if ($Mode -eq 'Uninstall') {
     Write-Warning "即将删除 $root 下的程序、服务、计划任务和快捷方式。"
     Write-Host '卸载前必须先安全停止试验并完全退出主程序。'
     Write-Host 'ProgramData 中的现场配置、日志和事故证据不会删除。'
-    if (-not $ForceUninstall) {
-        $choices = @(
-            (New-Object Management.Automation.Host.ChoiceDescription `
-                '&Y 是', '确认卸载程序'),
-            (New-Object Management.Automation.Host.ChoiceDescription `
-                '&N 否', '取消卸载'))
-        $selection = $Host.UI.PromptForChoice(
-            '确认卸载',
-            '是否继续？只会询问这一次。',
-            $choices,
-            1)
-        if ($selection -ne 0) {
-            Write-Host '已取消卸载，未做任何修改。'
-            return
-        }
+    if (-not $ForceUninstall -and -not (Request-UninstallConfirmation)) {
+        Write-Host '已取消卸载，未做任何修改。'
+        return
     }
     if ($PSCmdlet.ShouldProcess($root, '卸载程序、服务、登录任务和快捷方式（保留 ProgramData）')) {
         Write-OperationStep 1 6 '停止监督服务。'

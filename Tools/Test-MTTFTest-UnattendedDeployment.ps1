@@ -40,7 +40,7 @@ foreach ($required in @(
         'Initialize-RuntimeConfig',
         'Remove-InstalledProgramFiles',
         'ProgramData 配置、日志和事故证据已保留',
-        'PromptForChoice',
+        'Read-Host',
         'ForceUninstall',
         'Write-OperationContext',
         'Write-OperationStep',
@@ -204,10 +204,36 @@ try {
     if (-not $uninstallCommandText.Contains('-ForceUninstall -Confirm:$false')) {
         throw '非交互卸载入口缺少明确的免确认参数。'
     }
-    if ([regex]::Matches($installerText, 'PromptForChoice').Count -ne 1) {
+    if ([regex]::Matches($installerText, 'Read-Host').Count -ne 1 -or
+        $installerText.Contains('PromptForChoice')) {
         throw '安装器必须且只能包含一次交互式卸载确认。'
     }
     Write-Output 'PASS QuickDeploySingleUninstallPrompt 1/1'
+
+    $previousConfirmationProbe = $env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE
+    try {
+        $env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE = '1'
+        foreach ($case in @(
+                @('Y', 'True'),
+                @('A', 'True'),
+                @('N', 'False'),
+                @('', 'False'))) {
+            $output = @($case[0] | & powershell.exe -NoProfile `
+                -ExecutionPolicy Bypass -File `
+                (Join-Path $testRoot 'QuickDeploy-Installer.ps1') `
+                -Mode Uninstall -SourceDirectory $testRoot `
+                -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') 2>&1)
+            $expected = "QUICKDEPLOY_CONFIRMATION_PROBE_PASS Confirmed=$($case[1])"
+            if ($LASTEXITCODE -ne 0 -or
+                (@($output | Where-Object { [string]$_ -eq $expected }).Count -ne 1)) {
+                throw "卸载确认输入校验失败：Input='$($case[0])'; Expected=$expected; Exit=$LASTEXITCODE; Output=$($output -join ' | ')"
+            }
+        }
+    }
+    finally {
+        $env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE = $previousConfirmationProbe
+    }
+    Write-Output 'PASS QuickDeployConfirmationInput 4/4'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
