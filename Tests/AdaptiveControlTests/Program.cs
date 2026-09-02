@@ -5122,6 +5122,21 @@ namespace AdaptiveControlTests
             };
             Assert(!powerMissing.CanReleaseAcquisition,
                 "程控电源关闭未确认时不应允许释放DAQ");
+            var communicationUnavailable = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = false,
+                PowerDisposition = PowerShutdownDisposition.CommunicationUnavailableSkipped,
+                PressureSafeConfirmed = true,
+                PersistenceBoundaryConfirmed = true,
+                LogicalQuiescenceConfirmed = true
+            };
+            Assert(communicationUnavailable.PowerShutdownSatisfied &&
+                   communicationUnavailable.CanCloseApplication &&
+                   !communicationUnavailable.PowerOffConfirmed &&
+                   !communicationUnavailable.PhysicalSafetyConfirmed &&
+                   !communicationUnavailable.CanRestartInProcess,
+                "通讯断联跳过没有严格限定为只允许退出且保留断电未确认事实");
             Assert(EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
                        pressureOnly,
                        explicitlyStopped: true) &&

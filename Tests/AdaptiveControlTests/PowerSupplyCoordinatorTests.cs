@@ -38,6 +38,7 @@ namespace AdaptiveControlTests
             Run("停机等待在途遥测完成后再关闭输出", ShutdownWaitsForInFlightTelemetry, ref passed);
             Run("三个并发OFF请求共用一个安全任务", ConcurrentShutdownRequestsShareOneOwner, ref passed);
             Run("单组断线不误报关闭且不阻塞其他组", SafetyDisableIsStructuredAndIsolated, ref passed);
+            Run("电源关闭仅把真实通讯不可用归类为可跳过", SafetyDisableFailureClassificationIsExact, ref passed);
             Run("电源故障只联动对应组且新预检自动清旧锁存", FaultIsScopedAndFreshPreflightClearsLatch, ref passed);
             return passed;
         }
@@ -55,12 +56,37 @@ namespace AdaptiveControlTests
                     .GetAwaiter().GetResult();
                 var failed = results.Single(item => item.ElectricalGroupId == 1);
                 Assert(!failed.ConfirmedOff &&
-                       failed.Outcome != PowerSafetyDisableOutcome.ConfirmedOff,
-                    "客户端未连接被误报为输出已关闭");
+                       failed.Outcome == PowerSafetyDisableOutcome.CommunicationUnavailableSkipped &&
+                       failed.ShutdownSatisfied,
+                    "客户端未连接没有形成可审计的断联跳过结果");
                 Assert(results.Where(item => item.ElectricalGroupId != 1)
                            .All(item => item.ConfirmedOff),
                     "一个组连接失败阻塞了其他电源组独立关闭");
             }
+        }
+
+        private static void SafetyDisableFailureClassificationIsExact()
+        {
+            Assert(
+                PowerSupplyCoordinator.ClassifySafetyDisableFailure(
+                    "连接 192.168.1.101:2268 超时") ==
+                PowerSafetyDisableOutcome.CommunicationUnavailableSkipped,
+                "TCP连接超时没有归类为通讯不可用跳过");
+            Assert(
+                PowerSupplyCoordinator.ClassifySafetyDisableFailure(
+                    "PowerGateTimeout: owner busy") ==
+                PowerSafetyDisableOutcome.GateTimeout,
+                "内部Gate超时被误归类为通讯不可用");
+            Assert(
+                PowerSupplyCoordinator.ClassifySafetyDisableFailure(
+                    "TelemetryStopTimeout: poll owner busy") ==
+                PowerSafetyDisableOutcome.TelemetryStopTimeout,
+                "遥测owner超时被误归类为通讯不可用");
+            Assert(
+                PowerSupplyCoordinator.ClassifySafetyDisableFailure(
+                    "OUTP OFF 回读仍为 ON") ==
+                PowerSafetyDisableOutcome.PowerOffUnconfirmed,
+                "明确OUTP ON回读被错误允许跳过");
         }
 
         private static void InvalidSafetyConfigIsRejected()

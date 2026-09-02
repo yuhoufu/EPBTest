@@ -84,7 +84,8 @@ namespace Controller
         CommandFailed = 4,
         ReadbackFailed = 5,
         PowerOffUnconfirmed = 6,
-        TimedOut = 7
+        TimedOut = 7,
+        CommunicationUnavailableSkipped = 8
     }
 
     public sealed class PowerSafetyDisableResult
@@ -97,6 +98,8 @@ namespace Controller
         public DateTime StartedUtc { get; set; }
         public DateTime CompletedUtc { get; set; }
         public string Error { get; set; } = string.Empty;
+        public bool ShutdownSatisfied => ConfirmedOff ||
+                                         Outcome == PowerSafetyDisableOutcome.CommunicationUnavailableSkipped;
     }
 
     /// <summary>
@@ -731,14 +734,7 @@ namespace Controller
             catch (Exception ex)
             {
                 var message = ex.GetBaseException().Message;
-                var outcome = message.IndexOf("PowerGateTimeout", StringComparison.OrdinalIgnoreCase) >= 0
-                    ? PowerSafetyDisableOutcome.GateTimeout
-                    : message.IndexOf("TelemetryStopTimeout", StringComparison.OrdinalIgnoreCase) >= 0
-                        ? PowerSafetyDisableOutcome.TelemetryStopTimeout
-                        : message.IndexOf("connect", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                          message.IndexOf("连接", StringComparison.OrdinalIgnoreCase) >= 0
-                            ? PowerSafetyDisableOutcome.ConnectionFailed
-                            : PowerSafetyDisableOutcome.PowerOffUnconfirmed;
+                var outcome = ClassifySafetyDisableFailure(message);
                 return new PowerSafetyDisableResult
                 {
                     ElectricalGroupId = groupId,
@@ -750,6 +746,28 @@ namespace Controller
                     Error = message
                 };
             }
+        }
+
+        internal static PowerSafetyDisableOutcome ClassifySafetyDisableFailure(string message)
+        {
+            message = message ?? string.Empty;
+            if (message.IndexOf("PowerGateTimeout", StringComparison.OrdinalIgnoreCase) >= 0)
+                return PowerSafetyDisableOutcome.GateTimeout;
+            if (message.IndexOf("TelemetryStopTimeout", StringComparison.OrdinalIgnoreCase) >= 0)
+                return PowerSafetyDisableOutcome.TelemetryStopTimeout;
+
+            var communicationUnavailable =
+                message.IndexOf("connect", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("连接", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("未连接", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("network", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("socket", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("timed out", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("超时", StringComparison.OrdinalIgnoreCase) >= 0;
+            return communicationUnavailable
+                ? PowerSafetyDisableOutcome.CommunicationUnavailableSkipped
+                : PowerSafetyDisableOutcome.PowerOffUnconfirmed;
         }
 
         private void ObserveLatePowerSafetyTask(Task task, int groupId, string deadline)

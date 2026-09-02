@@ -1081,6 +1081,8 @@ namespace Controller
         private Task<StopSafetyResult> _stopSafetyFinalExitTask;
         private StopSource _stopSafetyTaskSource = StopSource.UnknownLegacy;
         private StopSafetyResult _lastStopSafetyResult;
+        private readonly ConcurrentDictionary<long, PowerShutdownDisposition>
+            _stopPowerDispositionByGeneration = new();
         private readonly object _hardwareReleaseGate = new object();
         private int _hardwareReleaseState;
         private int _hardwareReleaseExecutionCount;
@@ -2584,10 +2586,7 @@ namespace Controller
             _requirePowerSupply = requirePowerSupply || ReadBooleanAppSetting("PowerSupplyIntegrationRequired", false);
             if (powerSupply == null && _requirePowerSupply)
             {
-                var powerConfigPath = System.IO.Path.Combine(
-                    AppDomain.CurrentDomain.BaseDirectory,
-                    "Config",
-                    "PowerSupplyConfig.xml");
+                var powerConfigPath = RuntimeConfigPaths.GetPath("PowerSupplyConfig.xml");
                 var powerConfig = PowerSupplyConfigLoader.Load(powerConfigPath);
                 powerSupply = new PowerSupplyCoordinator(powerConfig, cfg.Test.Groups, _log);
             }
@@ -12572,6 +12571,9 @@ namespace Controller
                 StopSafetyStage.VerifyLogicalQuiescence,
                 "正在验证 Timer、Runner、CTS、恢复 owner 与液压代次清场");
             var logicalState = CaptureLogicalQuiescenceSnapshotForStop(context);
+            var powerDisposition = GetStopPowerDisposition(
+                stopGeneration,
+                power.ok);
             var result = new StopSafetyResult
             {
                 Source = context.Source,
@@ -12581,7 +12583,8 @@ namespace Controller
                 RunEpoch = runEpoch,
                 SafetyBoundaryGeneration = stopGeneration,
                 MotorOffCommandSucceeded = motorOk,
-                PowerOffConfirmed = power.ok,
+                PowerOffConfirmed = powerDisposition == PowerShutdownDisposition.ConfirmedOff,
+                PowerDisposition = powerDisposition,
                 PressureSafeConfirmed = pressure.ok,
                 PersistenceBoundaryConfirmed = persistenceBoundaryConfirmed,
                 RawStorageFlushed = rawStorageFlushed,
@@ -12846,16 +12849,49 @@ namespace Controller
             CancellationToken callerWaitToken,
             long stopGeneration)
         {
-            if (_powerSupply == null) return (true, string.Empty);
+            if (_powerSupply == null)
+            {
+                _stopPowerDispositionByGeneration[stopGeneration] =
+                    PowerShutdownDisposition.CommunicationUnavailableSkipped;
+                const string unavailable =
+                    "程控电源协调器不可用，退出流程按策略跳过等待；断电未得到真实回读确认。";
+                _log.Warn(unavailable, "程控电源");
+                return (true, unavailable);
+            }
             var results = await _powerSupply.DisableAllForSafetyAsync(
                     $"StopAll Source={context.Source} CorrelationId={context.CorrelationId}",
                     CancellationToken.None)
                 .ConfigureAwait(false);
-            var failed = results.Where(item => !item.ConfirmedOff).ToArray();
-            return failed.Length == 0
-                ? (true, string.Empty)
-                : (false, string.Join("; ", failed.Select(item =>
-                    $"Group{item.ElectricalGroupId}:{item.Outcome}:{item.Error}")));
+            var failed = results.Where(item => !item.ShutdownSatisfied).ToArray();
+            var skipped = results.Where(item =>
+                item.Outcome == PowerSafetyDisableOutcome.CommunicationUnavailableSkipped).ToArray();
+            _stopPowerDispositionByGeneration[stopGeneration] = failed.Length > 0
+                ? PowerShutdownDisposition.Failed
+                : skipped.Length > 0
+                    ? PowerShutdownDisposition.CommunicationUnavailableSkipped
+                    : PowerShutdownDisposition.ConfirmedOff;
+            var detail = string.Join("; ", results
+                .Where(item => !item.ConfirmedOff)
+                .Select(item =>
+                    $"Group{item.ElectricalGroupId}:{item.Outcome}:{item.Error}"));
+            if (skipped.Length > 0)
+                _log.Warn(
+                    "程控电源通讯不可用，退出流程按策略不再等待；断电未得到真实回读确认。" + detail,
+                    "程控电源");
+            return failed.Length == 0 ? (true, detail) : (false, detail);
+        }
+
+        private PowerShutdownDisposition GetStopPowerDisposition(
+            long stopGeneration,
+            bool satisfied)
+        {
+            return _stopPowerDispositionByGeneration.TryRemove(
+                stopGeneration,
+                out var disposition)
+                ? disposition
+                : satisfied
+                    ? PowerShutdownDisposition.ConfirmedOff
+                    : PowerShutdownDisposition.Failed;
         }
 
         /// <summary>

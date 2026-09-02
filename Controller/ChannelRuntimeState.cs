@@ -1310,6 +1310,15 @@ namespace Controller
         }
     }
 
+    public enum PowerShutdownDisposition
+    {
+        Unknown = 0,
+        ConfirmedOff = 1,
+        NotRequiredNoActiveTrial = 2,
+        CommunicationUnavailableSkipped = 3,
+        Failed = 4
+    }
+
     public sealed class StopSafetyResult
     {
         public StopSafetyOutcome Outcome { get; set; } = StopSafetyOutcome.Unknown;
@@ -1327,6 +1336,7 @@ namespace Controller
         public long SafetyBoundaryGeneration { get; set; }
         public bool MotorOffCommandSucceeded { get; set; }
         public bool PowerOffConfirmed { get; set; }
+        public PowerShutdownDisposition PowerDisposition { get; set; }
         public bool PressureSafeConfirmed { get; set; }
         public bool PersistenceBoundaryConfirmed { get; set; }
         public bool RawStorageFlushed { get; set; }
@@ -1343,7 +1353,10 @@ namespace Controller
         public string LogicalError { get; set; } = string.Empty;
         public LogicalQuiescenceSnapshot LogicalState { get; set; }
 
-        public bool CanReleaseAcquisition => MotorOffCommandSucceeded && PowerOffConfirmed;
+        public bool PowerShutdownSatisfied => PowerOffConfirmed ||
+                                              PowerDisposition == PowerShutdownDisposition.NotRequiredNoActiveTrial ||
+                                              PowerDisposition == PowerShutdownDisposition.CommunicationUnavailableSkipped;
+        public bool CanReleaseAcquisition => MotorOffCommandSucceeded && PowerShutdownSatisfied;
         /// <summary>
         ///     Application exit is stricter than releasing acquisition hardware during a
         ///     controlled stop. The process must remain alive while the accepted Raw/SQLite
@@ -1351,9 +1364,10 @@ namespace Controller
         ///     discard the final batch or alarm evidence.
         /// </summary>
         public bool CanCloseApplication => CanReleaseAcquisition && PersistenceBoundaryConfirmed;
-        public bool PhysicalSafetyConfirmed => CanReleaseAcquisition && PressureSafeConfirmed;
+        public bool PhysicalSafetyConfirmed => MotorOffCommandSucceeded && PowerOffConfirmed && PressureSafeConfirmed;
         public bool FullyConfirmed => PhysicalSafetyConfirmed && PersistenceBoundaryConfirmed;
-        public bool CanRestartInProcess => !RequiresProcessRestart && !TimedOut &&
+        public bool CanRestartInProcess => PhysicalSafetyConfirmed &&
+                                           !RequiresProcessRestart && !TimedOut &&
                                            Outcome != StopSafetyOutcome.PhysicalSafetyUnconfirmed &&
                                            FullyConfirmed && LogicalQuiescenceConfirmed &&
                                            !DataContinuityCompromised;
@@ -1377,6 +1391,7 @@ namespace Controller
                 SafetyBoundaryGeneration = SafetyBoundaryGeneration,
                 MotorOffCommandSucceeded = MotorOffCommandSucceeded,
                 PowerOffConfirmed = PowerOffConfirmed,
+                PowerDisposition = PowerDisposition,
                 PressureSafeConfirmed = PressureSafeConfirmed,
                 PersistenceBoundaryConfirmed = PersistenceBoundaryConfirmed,
                 RawStorageFlushed = RawStorageFlushed,

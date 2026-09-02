@@ -929,6 +929,9 @@ namespace Controller
             StopSafetyProductionState state)
         {
             state.Logical = CaptureLogicalQuiescenceSnapshotForStop(state.Context);
+            var powerDisposition = GetStopPowerDisposition(
+                state.Generation,
+                state.Power.ok);
             var result = new StopSafetyResult
             {
                 Source = state.Context.Source,
@@ -938,7 +941,8 @@ namespace Controller
                 RunEpoch = state.RunEpoch,
                 SafetyBoundaryGeneration = state.Generation,
                 MotorOffCommandSucceeded = state.MotorOk,
-                PowerOffConfirmed = state.Power.ok,
+                PowerOffConfirmed = powerDisposition == PowerShutdownDisposition.ConfirmedOff,
+                PowerDisposition = powerDisposition,
                 PressureSafeConfirmed = state.Pressure.ok,
                 PersistenceBoundaryConfirmed = state.PersistenceBoundaryConfirmed,
                 RawStorageFlushed = state.RawStorageFlushed,
