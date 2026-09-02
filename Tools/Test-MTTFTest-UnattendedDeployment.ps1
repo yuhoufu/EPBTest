@@ -127,8 +127,10 @@ try {
     }
     Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'QuickDeploy') -File |
         Copy-Item -Destination $testRoot -Force
-    Copy-Item -LiteralPath $installer `
-        -Destination (Join-Path $testRoot 'QuickDeploy-Installer.ps1') -Force
+    [IO.File]::WriteAllText(
+        (Join-Path $testRoot 'QuickDeploy-Installer.ps1'),
+        [IO.File]::ReadAllText($installer, [Text.Encoding]::UTF8),
+        (New-Object Text.UTF8Encoding($true)))
     [IO.File]::WriteAllText(
         (Join-Path $testRoot 'MTTFTest.exe'),
         'parse-only',
@@ -156,6 +158,28 @@ try {
         $env:MTTFTEST_QUICKDEPLOY_PARSE_ONLY = $previousParseOnly
     }
     Write-Output 'PASS QuickDeployCommandParse 5/5'
+
+    $previousArgumentProbe = $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE
+    try {
+        $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = '1'
+        $expectedInstallRoot = Join-Path $env:ProgramFiles 'MTTFTest'
+        foreach ($case in @(
+                @('一键安装正式版.cmd', 'Install'),
+                @('一键修复.cmd', 'Repair'),
+                @('一键卸载.cmd', 'Uninstall'))) {
+            $commandPath = Join-Path $testRoot $case[0]
+            $output = @(& $env:ComSpec /d /c "`"$commandPath`"" 2>&1)
+            $expected = "QUICKDEPLOY_ARGUMENT_PROBE_PASS Mode=$($case[1]) Source=$testRoot Root=$expectedInstallRoot"
+            if ($LASTEXITCODE -ne 0 -or
+                (@($output | Where-Object { [string]$_ -eq $expected }).Count -ne 1)) {
+                throw "快捷部署参数绑定失败：$($case[0]); Expected=$expected; Exit=$LASTEXITCODE; Output=$($output -join ' | ')"
+            }
+        }
+    }
+    finally {
+        $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = $previousArgumentProbe
+    }
+    Write-Output 'PASS QuickDeployArgumentBinding 3/3'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot -PathType Container) {

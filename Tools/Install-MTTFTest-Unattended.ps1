@@ -321,9 +321,15 @@ function Remove-Shortcuts {
     }
 }
 
-Assert-Administrator
 $root = Resolve-SafeDirectory $InstallRoot 'InstallRoot'
-$source = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
+
+if ($env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE -eq '1') {
+    $probeSource = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
+    Write-Output "QUICKDEPLOY_ARGUMENT_PROBE_PASS Mode=$Mode Source=$probeSource Root=$root"
+    return
+}
+
+Assert-Administrator
 
 if ($Mode -eq 'Uninstall') {
     Write-Warning "即将删除 $root 下的程序、服务、计划任务和快捷方式。"
@@ -352,6 +358,8 @@ if ($Mode -eq 'Uninstall') {
     }
     return
 }
+
+$source = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
 
 if ($Mode -eq 'Configure') {
     $current = Join-Path $root 'Current'
