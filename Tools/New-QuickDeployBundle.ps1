@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 7
+$bundleRevision = 8
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
@@ -116,3 +116,58 @@ catch {
     throw
 }
 Write-Host "快捷部署包已生成：$output"
+
+function Resolve-SevenZipExecutable {
+    $candidates = @(
+        (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source,
+        (Join-Path $env:ProgramFiles '7-Zip\7z.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
+    )
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
+            (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    throw '找不到本机 7-Zip 7z.exe，无法生成 Ultra 交付压缩包。'
+}
+
+$sevenZip = Resolve-SevenZipExecutable
+$archive = $output + '.7z'
+$archiveHashFile = $archive + '.sha256'
+foreach ($target in @($archive, $archiveHashFile)) {
+    if (Test-Path -LiteralPath $target) {
+        if (-not $Force) { throw "快捷部署压缩包已存在：$target" }
+        $resolved = [IO.Path]::GetFullPath($target)
+        if (-not $resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "拒绝删除越界压缩文件：$resolved"
+        }
+        Remove-Item -LiteralPath $resolved -Force
+    }
+}
+
+$bundleDirectoryName = [IO.Path]::GetFileName($output)
+Push-Location $outputRootFull
+try {
+    & $sevenZip a -t7z $archive $bundleDirectoryName `
+        -mx=9 -m0=LZMA2:d=128m:fb=273:mf=bt4 `
+        -ms=on -mqs=on -mmt=on -myx=9 -sccUTF-8
+    if ($LASTEXITCODE -ne 0) {
+        throw "7-Zip Ultra 压缩失败：Exit=$LASTEXITCODE"
+    }
+}
+finally {
+    Pop-Location
+}
+
+& $sevenZip t $archive -sccUTF-8
+if ($LASTEXITCODE -ne 0) {
+    throw "7-Zip 完整性测试失败：Exit=$LASTEXITCODE"
+}
+$archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText(
+    $archiveHashFile,
+    "$archiveHash  $([IO.Path]::GetFileName($archive))`r`n",
+    (New-Object Text.UTF8Encoding($false)))
+Write-Host "7-Zip Ultra 压缩包已生成并通过测试：$archive"
+Write-Host "ArchiveBytes=$((Get-Item -LiteralPath $archive).Length) SHA256=$archiveHash"
