@@ -23,6 +23,19 @@ param(
 $ErrorActionPreference = 'Stop'
 $startedUtc = [DateTime]::UtcNow
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$previousOutputEncoding = $OutputEncoding
+$previousConsoleOutputEncoding = [Console]::OutputEncoding
+$previousConsoleInputEncoding = [Console]::InputEncoding
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+$OutputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+[Console]::InputEncoding = $utf8NoBom
+
+function Restore-ConsoleEncoding {
+    Set-Variable -Name OutputEncoding -Scope Script -Value $previousOutputEncoding
+    [Console]::OutputEncoding = $previousConsoleOutputEncoding
+    [Console]::InputEncoding = $previousConsoleInputEncoding
+}
 
 function Write-Stage {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -194,9 +207,11 @@ try {
     Write-Host "交付摘要：$resultPath"
     Write-Host "大小：$([Math]::Round($result.archiveBytes / 1MB, 2)) MiB；耗时：$($result.elapsedSeconds) 秒"
     Write-Host '请将 .7z 与同名 .sha256 文件成对复制到目标电脑，并在目标电脑本地完整解压后运行。' -ForegroundColor Yellow
+    Restore-ConsoleEncoding
     exit 0
 }
 catch {
     Write-Failure $_
+    Restore-ConsoleEncoding
     exit 1
 }
