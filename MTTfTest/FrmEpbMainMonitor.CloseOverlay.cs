@@ -53,8 +53,10 @@ namespace MTEmbTest
                 {
                     Dock = DockStyle.Top,
                     Height = 20,
-                    Style = ProgressBarStyle.Marquee,
-                    MarqueeAnimationSpeed = 24
+                    Minimum = 0,
+                    Maximum = 100,
+                    Value = 10,
+                    Style = ProgressBarStyle.Continuous
                 };
                 _closeOverlayStage = new Label
                 {
@@ -72,6 +74,8 @@ namespace MTEmbTest
                 Controls.Add(_closeOverlay);
             }
             _closeOverlayStage.Text = stage ?? "正在安全关闭…";
+            if (_closeOverlayProgress != null && _closeOverlayProgress.Value < 10)
+                _closeOverlayProgress.Value = 10;
             _closeOverlay.Visible = true;
             _closeOverlay.BringToFront();
             UseWaitCursor = true;
@@ -92,6 +96,20 @@ namespace MTEmbTest
                                 ? "正在确认逻辑静默与释放 Watchdog…"
                                 : "安全终态已完成，正在关闭窗口…";
             ShowCloseOverlay(text);
+            if (_closeOverlayProgress != null)
+            {
+                var value = progress.Stage < StopSafetyStage.StartPowerDisable
+                    ? 20
+                    : progress.Stage < StopSafetyStage.ReleaseHydraulics
+                        ? 40
+                        : progress.Stage < StopSafetyStage.ClosePersistenceBoundary
+                            ? 60
+                            : progress.Stage < StopSafetyStage.VerifyLogicalQuiescence
+                                ? 75
+                                : progress.Stage < StopSafetyStage.Completed ? 90 : 100;
+                if (value > _closeOverlayProgress.Value)
+                    _closeOverlayProgress.Value = value;
+            }
         }
 
         private void HideCloseOverlay()

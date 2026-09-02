@@ -2005,6 +2005,10 @@ namespace AdaptiveControlTests
                    !string.IsNullOrWhiteSpace(identity.ConfigSha256), "版本或哈希字段缺失");
             Assert(identity.ProductVersion.Split('.').Length == 4,
                 "产品版本未保留补丁Revision，无法区分2.12.0.x候选");
+            Assert(identity.ReleasePackageVerified &&
+                   identity.ReleasePackageCode == "OperatorManaged" &&
+                   identity.ReleasePackageFileCount == 0,
+                "运行时仍在执行版本或发布包身份门禁");
             Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 12, 0, 22)) ==
                    "V2.12.0.22",
                 "四段现场补丁版本被截断，事故身份无法区分候选");

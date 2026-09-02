@@ -3184,8 +3184,18 @@ namespace MTEmbTest
             // of ShutdownRuntimeWithReceipt.  Do not publish a second
             // protocol path here; it used to race the retention owner.
 
-            // 只执行一次
-            if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0) return true;
+            // 只执行一次。若上一轮已经完成资源释放、只是在旧 Watchdog 授权门上
+            // 返回过 false，本轮必须真正再次发起 Close，不能只返回 true 后让窗口复活。
+            if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0)
+            {
+                if (closeAfterPreparation)
+                {
+                    Interlocked.Exchange(ref _closingReentry, 3);
+                    if (!IsDisposed && !Disposing && IsHandleCreated)
+                        BeginInvoke((Action)Close);
+                }
+                return true;
+            }
             _isClosing = true;
 
             // StopAll 已经完成物理安全和持久化边界；在窗体直接释放 DAQ/DO/液压
@@ -3480,10 +3490,30 @@ namespace MTEmbTest
                 _hardwareReleaseOwner.ReleaseCount <= 0)
                 return null;
 
+            var main = MdiParent as Main_Frm;
+            var snapshot = WatchdogRuntime.CaptureTransportSnapshot();
+            if (CanCloseMonitorWithoutWatchdogBinding(
+                    main?.WatchdogUiHasResources == true,
+                    WatchdogRuntime.IsExactAttachedSnapshot(snapshot)))
+            {
+                // Watchdog 启动/握手在 UI 绑定前失败时，不存在需要监控窗继续承载的
+                // callback target。设备、持久化和本窗资源均已闭合后允许直接关闭。
+                return _applicationCloseReceipt = new ApplicationCloseReceipt
+                {
+                    SessionId = context?.SessionId ?? string.Empty,
+                    SessionGeneration = context?.SessionGeneration ?? 0,
+                    SessionLease = context?.SessionLease ?? 0,
+                    HardwareResourcesReleased = true,
+                    WatchdogTerminal = true,
+                    Disposition = ApplicationExitDisposition.Graceful,
+                    CompletedUtc = DateTime.UtcNow,
+                    DiagnosticDetail = "NoWatchdogUiBinding"
+                };
+            }
+
             RuntimeShutdownReceipt shutdown = null;
             if (safety.CanRestartInProcess)
             {
-                var main = MdiParent as Main_Frm;
                 if (main != null)
                     shutdown = await main.ShutdownWatchdogSessionAndReleaseUiAsync(
                             "MonitorCloseCompleted")
@@ -3529,6 +3559,13 @@ namespace MTEmbTest
                 await System.Threading.Tasks.Task.Delay(100).ConfigureAwait(true);
             }
             return null;
+        }
+
+        internal static bool CanCloseMonitorWithoutWatchdogBinding(
+            bool watchdogUiHasResources,
+            bool exactAttached)
+        {
+            return !watchdogUiHasResources && !exactAttached;
         }
 
         internal ApplicationCloseReceipt CaptureApplicationCloseReceipt() =>

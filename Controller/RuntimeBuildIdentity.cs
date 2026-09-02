@@ -59,11 +59,12 @@ namespace Controller
                 BuildUtc = buildUtc,
                 CapturedUtc = DateTime.UtcNow
             };
-            var package = ReleasePackageVerifier.VerifyCurrent(identity);
-            identity.ReleasePackageVerified = package.Verified;
-            identity.ReleasePackageCode = package.Code;
-            identity.ReleasePackageDetail = package.Detail;
-            identity.ReleasePackageFileCount = package.VerifiedFileCount;
+            // 运行版本和交付包由操作人员负责。这里仅记录构建身份，不能再用
+            // manifest、配置哈希或目录文件集合阻止启动、恢复和正常退出。
+            identity.ReleasePackageVerified = true;
+            identity.ReleasePackageCode = "OperatorManaged";
+            identity.ReleasePackageDetail = "版本与交付包由操作人员管理；运行时不执行包身份门禁。";
+            identity.ReleasePackageFileCount = 0;
             return identity;
         }
 

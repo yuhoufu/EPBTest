@@ -30,6 +30,7 @@ namespace AdaptiveControlTests
             {
                 RuntimeDependencyClosureIsComplete,
                 WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
+                FailedAttachWithoutUiBindingAllowsMonitorClose,
                 ApplicationExitUsesDedicatedShutdownExpectedMessage,
                 WatchdogOwnedFinalClosePreservesRecoveryCheckpoint,
                 AutomaticBatchCancellationDoesNotPublishOperatorRunStopped,
@@ -125,6 +126,21 @@ namespace AdaptiveControlTests
                        watchdogCloseAuthorized: false,
                        mdiChildCount: 0),
                 "普通操作员误关保护被放宽，或无子窗仍错误阻止退出");
+        }
+
+        private static void FailedAttachWithoutUiBindingAllowsMonitorClose()
+        {
+            Assert(FrmEpbMainMonitor.CanCloseMonitorWithoutWatchdogBinding(
+                       watchdogUiHasResources: false,
+                       exactAttached: false),
+                "Watchdog启动失败且UI从未绑定时仍阻止监控窗关闭");
+            Assert(!FrmEpbMainMonitor.CanCloseMonitorWithoutWatchdogBinding(
+                       watchdogUiHasResources: true,
+                       exactAttached: false) &&
+                   !FrmEpbMainMonitor.CanCloseMonitorWithoutWatchdogBinding(
+                       watchdogUiHasResources: false,
+                       exactAttached: true),
+                "存在Watchdog UI资源或精确附着时错误绕过正常关闭收口");
         }
 
         private static void ApplicationExitUsesDedicatedShutdownExpectedMessage()

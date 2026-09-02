@@ -248,23 +248,8 @@ namespace MTTFTest.Watchdog
                 throw new InvalidDataException("PersistedSupervisorSessionMismatch");
             if (!Directory.Exists(Path.GetFullPath(record.WorkingDirectory)))
                 throw new InvalidDataException("PersistedSupervisorWorkingDirectoryMissing");
-            var formalMarker = Path.Combine(
-                Path.GetDirectoryName(executable) ?? string.Empty,
-                "MTTFTest.UnattendedMode.required");
-            if (File.Exists(formalMarker))
-            {
-                if (!PackageSlotDescriptorStore.TryValidateSlot(
-                        Path.GetDirectoryName(executable),
-                        "Current",
-                        out var slot,
-                        out var slotReason) ||
-                    !string.Equals(
-                        slot.ConfigSha256,
-                        record.ConfigurationIdentity,
-                        StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException(
-                        "PersistedSupervisorPackageIdentityMismatch:" + slotReason);
-            }
+            // 版本和安装目录内容由操作人员负责。持久会话只校验实际进程、
+            // 参数和项目身份，不再依赖包槽、DPAPI 或配置文件哈希。
         }
 
         private async Task AcceptLoopAsync(CancellationToken cancellationToken)
@@ -588,22 +573,9 @@ namespace MTTFTest.Watchdog
                     Path.GetFullPath(expectedWorkingDirectory),
                     StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("SupervisorWorkingDirectoryMismatch");
-            var formalMarker = Path.Combine(
-                Path.GetDirectoryName(executable) ?? string.Empty,
-                "MTTFTest.UnattendedMode.required");
-            if (File.Exists(formalMarker))
-            {
-                PackageSlotDescriptor slot;
-                string slotReason;
-                if (!PackageSlotDescriptorStore.TryValidateSlot(
-                        Path.GetDirectoryName(executable),
-                        "Current",
-                        out slot,
-                        out slotReason))
-                    throw new InvalidDataException(
-                        "SupervisorPackageSlotUnproven:" + slotReason);
-                configurationIdentity = slot.ConfigSha256;
-            }
+            // TestConfig.xml 是运行时可写的项目模板，不能同时作为不可变包身份。
+            // Supervisor 不再对版本、槽描述或目录文件哈希作启动裁决。
+            configurationIdentity = "OPERATOR_MANAGED";
             var match = SessionPattern.Match(request.Arguments ?? string.Empty);
             if (!match.Success ||
                 !Guid.TryParseExact(match.Groups["id"].Value, "N", out var parsed))
@@ -701,17 +673,8 @@ namespace MTTFTest.Watchdog
                 throw new InvalidDataException(
                     "SupervisorSafetyHandoffIdentityMismatch");
 
-            var formalMarker = Path.Combine(
-                serviceDirectory,
-                "MTTFTest.UnattendedMode.required");
-            if (File.Exists(formalMarker) &&
-                !PackageSlotDescriptorStore.TryValidateSlot(
-                    serviceDirectory,
-                    "Current",
-                    out _,
-                    out var slotReason))
-                throw new InvalidDataException(
-                    "SupervisorSafetyPackageSlotUnproven:" + slotReason);
+            // SafetyAgent 仍绑定当前 Supervisor 会话、进程和一次性交接凭证；
+            // 不再额外绑定版本包槽，避免可写配置导致安全停机本身无法执行。
         }
 
         private static string ReadLaunchArgument(string arguments, string name)

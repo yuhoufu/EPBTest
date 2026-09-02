@@ -111,34 +111,18 @@ namespace MTTFTest.Watchdog.Protocol
             out string resolvedExecutable,
             out string reason)
         {
-            resolvedExecutable = Path.GetFullPath(requestedExecutable ?? string.Empty);
-            reason = "PackagePointerNotApplicable";
             try
             {
-                var currentDirectory = Path.GetDirectoryName(resolvedExecutable);
-                var installRoot = Directory.GetParent(currentDirectory ?? string.Empty)?.FullName;
-                if (string.IsNullOrWhiteSpace(installRoot)) return true;
-                var pointerPath = Path.Combine(installRoot, PointerFileName);
-                if (!File.Exists(pointerPath)) return true;
-                var pointer = Json.Deserialize<PackageSlotPointer>(
-                    Unprotect(ReadEnvelope(pointerPath)));
-                if (pointer == null || pointer.SchemaVersion != SchemaVersion)
-                    return Fail("PackagePointerSchemaMismatch", out reason);
-                var slotName = string.Equals(pointer.ActiveSlot, "LastKnownGood", StringComparison.Ordinal)
-                    ? "LastKnownGood" : "Current";
-                var directory = slotName == "LastKnownGood"
-                    ? pointer.LastKnownGoodPath : pointer.CurrentPath;
-                PackageSlotDescriptor ignored;
-                if (!TryValidateSlot(directory, slotName, out ignored, out reason)) return false;
-                var candidate = Path.Combine(Path.GetFullPath(directory), Path.GetFileName(resolvedExecutable));
-                if (!File.Exists(candidate)) return Fail("ActiveSlotExecutableMissing", out reason);
-                resolvedExecutable = candidate;
-                reason = "ActivePackageSlot:" + slotName;
+                resolvedExecutable = Path.GetFullPath(requestedExecutable ?? string.Empty);
+                if (!File.Exists(resolvedExecutable))
+                    return Fail("ExecutableMissing", out reason);
+                reason = "OperatorManagedExecutable";
                 return true;
             }
             catch (Exception ex)
             {
-                return Fail("PackagePointerReadFailed:" + ex.GetBaseException().Message, out reason);
+                resolvedExecutable = string.Empty;
+                return Fail("ExecutablePathInvalid:" + ex.GetBaseException().Message, out reason);
             }
         }
 
@@ -153,22 +137,15 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 var currentDirectory = Path.GetDirectoryName(Path.GetFullPath(currentExecutable ?? string.Empty));
                 var installRoot = Directory.GetParent(currentDirectory ?? string.Empty)?.FullName;
-                var pointerPath = Path.Combine(installRoot ?? string.Empty, PointerFileName);
-                var pointer = Json.Deserialize<PackageSlotPointer>(Unprotect(ReadEnvelope(pointerPath)));
-                if (pointer == null || pointer.SchemaVersion != SchemaVersion)
-                    return Fail("PackagePointerSchemaMismatch", out reason);
-                PackageSlotDescriptor ignored;
-                if (!TryValidateSlot(pointer.LastKnownGoodPath, "LastKnownGood", out ignored, out reason))
-                    return false;
+                if (string.IsNullOrWhiteSpace(installRoot))
+                    return Fail("InstallRootMissing", out reason);
+                var lastKnownGoodPath = Path.Combine(installRoot, "LastKnownGood");
                 var executable = Path.Combine(
-                    Path.GetFullPath(pointer.LastKnownGoodPath),
+                    lastKnownGoodPath,
                     Path.GetFileName(currentExecutable));
                 if (!File.Exists(executable)) return Fail("LastKnownGoodExecutableMissing", out reason);
-                pointer.ActiveSlot = "LastKnownGood";
-                pointer.RevisionUtcTicks = DateTime.UtcNow.Ticks;
-                WriteEnvelopeAtomic(pointerPath, pointer);
                 lastKnownGoodExecutable = executable;
-                reason = "LastKnownGoodActivated";
+                reason = "OperatorManagedLastKnownGood";
                 return true;
             }
             catch (Exception ex)
