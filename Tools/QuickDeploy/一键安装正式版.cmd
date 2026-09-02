@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
-set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+set "MTTFTEST_PACKAGE_SOURCE=%~dp0"
 set "MTTFTEST_ELEVATE_TARGET=%~f0"
 if defined MTTFTEST_QUICKDEPLOY_PARSE_ONLY goto :parse_only
 cd /d "%~dp0"

@@ -2,7 +2,7 @@
 setlocal
 set "APP=%ProgramFiles%\MTTFTest\Current\MTTFTest.exe"
 if not exist "%APP%" (
-  echo V2.14.2.0 is not installed. Run the one-click installer first.
+  echo V2.14.2.1 is not installed. Run the one-click installer first.
   if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
   exit /b 2
 )

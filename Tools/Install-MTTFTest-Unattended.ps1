@@ -1,6 +1,6 @@
 ﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [ValidateSet('Install', 'Repair', 'Uninstall', 'PromoteLastKnownGood')]
+    [ValidateSet('Install', 'Repair', 'Configure', 'Uninstall', 'PromoteLastKnownGood')]
     [string]$Mode = 'Install',
     [string]$SourceDirectory = (Split-Path -Parent $PSScriptRoot),
     [string]$InstallRoot = (Join-Path $env:ProgramFiles 'MTTFTest'),
@@ -10,7 +10,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
+$autoStartTaskName = 'MTTFTestAutoStart'
 $shortcutName = 'MT EPB 试验系统 V2.14.lnk'
+$configuredMarkerName = 'MTTFTest.FirstRun.configured'
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -103,6 +105,7 @@ function Install-ServiceAndAgent([string]$Root) {
     $current = Join-Path $Root 'Current'
     $watchdog = Join-Path $current 'MTTFTest.Watchdog.exe'
     $sessionAgent = Join-Path $current 'MTTFTest.SessionAgent.exe'
+    $mainApplication = Join-Path $current 'MTTFTest.exe'
     & sc.exe query $serviceName *> $null
     if ($LASTEXITCODE -eq 0) {
         & sc.exe config $serviceName `
@@ -134,8 +137,45 @@ function Install-ServiceAndAgent([string]$Root) {
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings -Force | Out-Null
+
+    $autoStartAction = New-ScheduledTaskAction -Execute $mainApplication `
+        -WorkingDirectory $current
+    $autoStartTrigger = New-ScheduledTaskTrigger -AtLogOn -User $account
+    $autoStartTrigger.Delay = 'PT15S'
+    $autoStartPrincipal = New-ScheduledTaskPrincipal -UserId $account `
+        -LogonType Interactive -RunLevel Limited
+    $autoStartSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $autoStartTaskName -Action $autoStartAction `
+        -Trigger $autoStartTrigger -Principal $autoStartPrincipal `
+        -Settings $autoStartSettings -Force | Out-Null
     Start-Service -Name $serviceName
     Start-ScheduledTask -TaskName $taskName
+}
+
+function Assert-InstalledMainStopped([string]$Root) {
+    $expected = [IO.Path]::GetFullPath(
+        (Join-Path $Root 'Current\MTTFTest.exe'))
+    $processes = Get-CimInstance Win32_Process `
+        -Filter "Name='MTTFTest.exe'" `
+        -ErrorAction SilentlyContinue
+    foreach ($process in @($processes)) {
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
+        $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+        if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            throw '检测到已安装的旧版主程序仍在运行。请先在程序中安全停止试验并完全退出，再双击新版本 MTTFTest.exe。'
+        }
+    }
+}
+
+function Stop-InstalledRuntimeTasks([string]$Root) {
+    foreach ($name in @($autoStartTaskName, $taskName)) {
+        $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        if ($null -ne $task) {
+            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        }
+    }
+    Stop-InstalledSessionAgent $Root
 }
 
 function Assert-Health([string]$Root) {
@@ -147,6 +187,15 @@ function Assert-Health([string]$Root) {
     if ($task.Settings.RestartCount -lt 1) {
         throw 'SessionAgent 登录任务缺少崩溃自动重启策略。'
     }
+    [void](Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction Stop)
+}
+
+function Write-ConfiguredMarker([string]$Root) {
+    $path = Join-Path (Join-Path $Root 'Current') $configuredMarkerName
+    [IO.File]::WriteAllText(
+        $path,
+        "ConfiguredUtc=$([DateTime]::UtcNow.ToString('O'))`r`n",
+        (New-Object Text.UTF8Encoding($false)))
 }
 
 function Get-ShortcutPaths {
@@ -178,7 +227,7 @@ function Install-Shortcuts([string]$Root) {
         $shortcut.TargetPath = $target
         $shortcut.WorkingDirectory = $current
         $shortcut.IconLocation = "$target,0"
-        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.0（正式包，运行状态由操作人员负责）'
+        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.1（正式包，运行状态由操作人员负责）'
         $shortcut.Save()
     }
 }
@@ -203,11 +252,31 @@ if ($Mode -eq 'Uninstall') {
             Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
         }
+        $autoStartTask = Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
+        if ($null -ne $autoStartTask) {
+            Stop-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
+        }
         Stop-InstalledSessionAgent $root
         & sc.exe delete $serviceName | Out-Host
+        Remove-Item -LiteralPath `
+            (Join-Path (Join-Path $root 'Current') $configuredMarkerName) `
+            -Force -ErrorAction SilentlyContinue
         Remove-Shortcuts
         Write-Host '已卸载监督服务和 SessionAgent 任务，并终止安装目录内的 SessionAgent；程序槽、ProgramData 日志及事故证据已保留。'
     }
+    return
+}
+
+if ($Mode -eq 'Configure') {
+    $current = Join-Path $root 'Current'
+    Assert-RequiredProgramFiles $current
+    Set-UnattendedAcl $root
+    Install-ServiceAndAgent $root
+    Assert-Health $root
+    Install-Shortcuts $root
+    Write-ConfiguredMarker $root
+    Write-Host '首次运行环境、登录自启动和快捷方式已配置。'
     return
 }
 
@@ -233,12 +302,15 @@ if ($Mode -eq 'PromoteLastKnownGood') {
     return
 }
 
-if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.0 无人值守运行环境")) {
+if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.1 无人值守运行环境")) {
+    Assert-InstalledMainStopped $root
     Stop-Supervisor
+    Stop-InstalledRuntimeTasks $root
     [void](Install-CurrentSlot $source $root)
     Set-UnattendedAcl $root
     Install-ServiceAndAgent $root
     Assert-Health $root
     Install-Shortcuts $root
-    Write-Host "V2.14.2.0 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
+    Write-ConfiguredMarker $root
+    Write-Host "V2.14.2.1 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
 }

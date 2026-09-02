@@ -36,6 +36,10 @@ foreach ($removedGate in @(
 foreach ($required in @(
         'Assert-RequiredProgramFiles',
         'Stop-InstalledSessionAgent',
+        'Assert-InstalledMainStopped',
+        'MTTFTestAutoStart',
+        'MTTFTest.FirstRun.configured',
+        "'Configure'",
         'MTTFTest.exe',
         'MTTFTest.Watchdog.exe',
         'MTTFTest.SessionAgent.exe')) {
@@ -53,10 +57,8 @@ try {
         Copy-Item -Destination $testRoot -Force
     Copy-Item -LiteralPath $installer `
         -Destination (Join-Path $testRoot 'QuickDeploy-Installer.ps1') -Force
-    $packageRoot = Join-Path $testRoot 'Package'
-    [void](New-Item -ItemType Directory -Path $packageRoot)
     [IO.File]::WriteAllText(
-        (Join-Path $packageRoot 'MTTFTest.exe'),
+        (Join-Path $testRoot 'MTTFTest.exe'),
         'parse-only',
         (New-Object Text.UTF8Encoding($false)))
 

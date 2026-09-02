@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 9
+$bundleRevision = 10
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
@@ -63,8 +63,8 @@ if (Test-Path -LiteralPath $output) {
 $staging = Join-Path $outputRootFull ('.quick-staging-' + [Guid]::NewGuid().ToString('N'))
 try {
     [void](New-Item -ItemType Directory -Path $staging)
-    Copy-Item -LiteralPath $release -Destination (Join-Path $staging 'Package') `
-        -Recurse -Force
+    Get-ChildItem -LiteralPath $release -Force |
+        Copy-Item -Destination $staging -Recurse -Force
     $quickSource = Join-Path $PSScriptRoot 'QuickDeploy'
     foreach ($file in Get-ChildItem -LiteralPath $quickSource -File) {
         Copy-Item -LiteralPath $file.FullName -Destination $staging -Force
@@ -101,7 +101,7 @@ try {
         packageGitCommit = [string]$identity.gitCommit
         packageBuildUtc = $buildUtcText
         configSha256 = [string]$identity.configSha256
-        packageManagement = 'OPERATOR_MANAGED'
+        packageManagement = 'EXE_FIRST_RUN_BOOTSTRAP'
     }
     $identitySummary | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `
         (Join-Path $staging '快捷部署包身份.json') -Encoding UTF8
