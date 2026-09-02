@@ -127,6 +127,8 @@ git status --short
 
 这些 `.cmd` 入口采用纯 ASCII 命令，中文提示由包内 PowerShell 安装器输出，可避免 Windows 命令行代码页不同导致乱码或命令被错误拆分。
 
+安装、修复和卸载会逐阶段显示目标路径和执行状态；成功结果保存在目标电脑的 `C:\ProgramData\MTTFTest\DeploymentLogs\last-deployment-result.json`，可直接回传用于远程确认。
+
 ## 7. 卸载旧程序
 
 安全停止试验并完全退出主程序后，从任一完整解压的正式包中双击 `一键卸载.cmd`，接受管理员权限提示并选择一次“是”确认。确认后卸载自动完成，不会对内部每个步骤重复询问。

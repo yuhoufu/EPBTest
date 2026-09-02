@@ -42,6 +42,10 @@ foreach ($required in @(
         'ProgramData 配置、日志和事故证据已保留',
         'PromptForChoice',
         'ForceUninstall',
+        'Write-OperationContext',
+        'Write-OperationStep',
+        'Write-DeploymentResult',
+        'last-deployment-result.json',
         'Test-CurrentSlotReplacementRequired',
         'MTTFTestAutoStart',
         'MTTFTest.FirstRun.configured',
@@ -109,7 +113,7 @@ foreach ($requiredSimpleStep in @(
 Write-Output 'PASS SimpleVsReleasePackaging 1/1'
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) `
-    ('EPBTest-QuickDeploy-' + [Guid]::NewGuid().ToString('N'))
+    ('EPBTest QuickDeploy 远程机-' + [Guid]::NewGuid().ToString('N'))
 try {
     [void](New-Item -ItemType Directory -Path $testRoot)
     foreach ($quickDeployFile in @(

@@ -324,6 +324,68 @@ function Remove-Shortcuts {
     }
 }
 
+function Write-OperationContext(
+    [string]$Operation,
+    [string]$Root,
+    [string]$Source = '') {
+    Write-Host ''
+    Write-Host "=== MTTFTest $Operation ===" -ForegroundColor Cyan
+    Write-Host "时间：$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))"
+    Write-Host "计算机：$env:COMPUTERNAME"
+    Write-Host "账号：$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+    Write-Host "PowerShell：$($PSVersionTable.PSVersion)"
+    if (-not [string]::IsNullOrWhiteSpace($Source)) {
+        Write-Host "来源目录：$Source"
+    }
+    Write-Host "安装目录：$Root"
+    Write-Host "保留数据：$(Join-Path $env:ProgramData 'MTTFTest')"
+}
+
+function Write-OperationStep([int]$Index, [int]$Total, [string]$Message) {
+    Write-Host "[$Index/$Total] $Message" -ForegroundColor Cyan
+}
+
+function Write-DeploymentResult(
+    [string]$Operation,
+    [string]$Version,
+    [string]$Root,
+    [string]$Source = '') {
+    $stateRoot = Join-Path $env:ProgramData 'MTTFTest'
+    $resultRoot = Join-Path $stateRoot 'DeploymentLogs'
+    [void](New-Item -ItemType Directory -Path $resultRoot -Force)
+    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    $sessionTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    $autoStartTask = Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
+    $result = [ordered]@{
+        result = 'PASS'
+        operation = $Operation
+        version = $Version
+        computerName = $env:COMPUTERNAME
+        userName = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        powershellVersion = [string]$PSVersionTable.PSVersion
+        sourceDirectory = $Source
+        installRoot = $Root
+        installRootExists = Test-Path -LiteralPath $Root -PathType Container
+        serviceState = if ($null -eq $service) { 'NotInstalled' } else { [string]$service.Status }
+        sessionAgentTaskState = if ($null -eq $sessionTask) { 'NotInstalled' } else { [string]$sessionTask.State }
+        autoStartTaskState = if ($null -eq $autoStartTask) { 'NotInstalled' } else { [string]$autoStartTask.State }
+        programDataRetained = Test-Path -LiteralPath $stateRoot -PathType Container
+        completedLocal = [DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')
+        completedUtc = [DateTime]::UtcNow.ToString('O')
+    }
+    $resultPath = Join-Path $resultRoot 'last-deployment-result.json'
+    $result | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+    Write-Host ''
+    Write-Host '=== 操作成功 ===' -ForegroundColor Green
+    Write-Host "操作：$Operation"
+    if (-not [string]::IsNullOrWhiteSpace($Version)) { Write-Host "版本：V$Version" }
+    Write-Host "安装目录存在：$($result.installRootExists)"
+    Write-Host "服务状态：$($result.serviceState)"
+    Write-Host "登录代理任务：$($result.sessionAgentTaskState)"
+    Write-Host "主程序自启动任务：$($result.autoStartTaskState)"
+    Write-Host "结果文件：$resultPath" -ForegroundColor Green
+}
+
 $root = Resolve-SafeDirectory $InstallRoot 'InstallRoot'
 
 if ($env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE -eq '1') {
@@ -335,6 +397,12 @@ if ($env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE -eq '1') {
 Assert-Administrator
 
 if ($Mode -eq 'Uninstall') {
+    $installedExecutable = Join-Path $root 'Current\MTTFTest.exe'
+    $installedVersion = ''
+    if (Test-Path -LiteralPath $installedExecutable -PathType Leaf) {
+        $installedVersion = (Get-Item -LiteralPath $installedExecutable).VersionInfo.FileVersion
+    }
+    Write-OperationContext '卸载' $root
     Write-Warning "即将删除 $root 下的程序、服务、计划任务和快捷方式。"
     Write-Host '卸载前必须先安全停止试验并完全退出主程序。'
     Write-Host 'ProgramData 中的现场配置、日志和事故证据不会删除。'
@@ -355,7 +423,9 @@ if ($Mode -eq 'Uninstall') {
         }
     }
     if ($PSCmdlet.ShouldProcess($root, '卸载程序、服务、登录任务和快捷方式（保留 ProgramData）')) {
+        Write-OperationStep 1 6 '停止监督服务。'
         Stop-Supervisor
+        Write-OperationStep 2 6 '停止并删除登录代理和主程序自启动任务。'
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if ($null -ne $task) {
             Stop-ScheduledTask -TaskName $taskName -Confirm:$false `
@@ -368,14 +438,25 @@ if ($Mode -eq 'Uninstall') {
                 -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
         }
+        Write-OperationStep 3 6 '停止安装目录中的主程序和后台组件。'
         Stop-InstalledSessionAgent $root
         Stop-InstalledProcess $root 'MTTFTest.exe'
         Stop-InstalledProcess $root 'MTTFTest.SafetyAgent.exe'
         Stop-InstalledProcess $root 'MTTFTest.Watchdog.exe'
-        & sc.exe delete $serviceName | Out-Host
+        Write-OperationStep 4 6 '删除监督服务。'
+        if ($null -ne (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
+            & sc.exe delete $serviceName | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "监督服务删除失败：ExitCode=$LASTEXITCODE" }
+        }
+        else {
+            Write-Host '监督服务未安装，跳过。'
+        }
+        Write-OperationStep 5 6 '删除桌面和开始菜单快捷方式。'
         Remove-Shortcuts
+        Write-OperationStep 6 6 '删除程序安装目录。'
         Remove-InstalledProgramFiles $root
         Write-Host '卸载完成：程序、服务、计划任务和快捷方式已删除；ProgramData 配置、日志和事故证据已保留。'
+        Write-DeploymentResult 'Uninstall' $installedVersion $root
     }
     return
 }
@@ -422,20 +503,30 @@ if ([string]::IsNullOrWhiteSpace($sourceVersion)) {
     throw '无法从来源目录的 MTTFTest.exe 读取版本号。'
 }
 if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环境")) {
+    Write-OperationContext "$Mode V$sourceVersion" $root $source
+    Write-OperationStep 1 8 '确认已安装的主程序没有运行。'
     Assert-InstalledMainStopped $root
+    Write-OperationStep 2 8 '停止旧监督服务和运行任务。'
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
+    Write-OperationStep 3 8 '初始化并保留现场运行配置。'
     Initialize-RuntimeConfig $source $root
+    Write-OperationStep 4 8 '安装或更新程序文件。'
     if (Test-CurrentSlotReplacementRequired $source $root) {
         [void](Install-CurrentSlot $source $root)
     }
     else {
         Write-Host '已安装版本不低于来源版本，保留 Current，不创建重复 retired 目录。'
     }
+    Write-OperationStep 5 8 '配置程序目录和 ProgramData 权限。'
     Set-UnattendedAcl $root
+    Write-OperationStep 6 8 '安装监督服务、登录代理和自启动任务。'
     Install-ServiceAndAgent $root
+    Write-OperationStep 7 8 '检查程序文件、服务和任务状态。'
     Assert-Health $root
+    Write-OperationStep 8 8 '创建快捷方式并写入配置标记。'
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
     Write-Host "V$sourceVersion 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
+    Write-DeploymentResult $Mode $sourceVersion $root $source
 }
