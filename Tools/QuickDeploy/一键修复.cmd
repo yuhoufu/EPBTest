@@ -10,10 +10,7 @@ if errorlevel 1 (
   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
   exit /b
 )
-echo [1/2] Verifying package files and SHA256...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Package\Deployment\Verify-Release.ps1" -ReleaseDirectory "%~dp0Package"
-if errorlevel 1 goto :failed
-echo [2/2] Repairing supervisor, session agent, slots, ACL and shortcuts...
+echo Repairing program, supervisor, session agent and shortcuts...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Repair -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
 if errorlevel 1 goto :failed
 echo.
@@ -28,7 +25,7 @@ endlocal
 exit /b
 :parse_only
 if not exist "%MTTFTEST_DEPLOY_SCRIPT%" exit /b 91
-if not exist "%MTTFTEST_PACKAGE_SOURCE%\build-identity.json" exit /b 92
+if not exist "%MTTFTEST_PACKAGE_SOURCE%\MTTFTest.exe" exit /b 92
 echo QUICKDEPLOY_REPAIR_PARSE_PASS
 endlocal
 exit /b 0

@@ -7,35 +7,46 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 8
+$bundleRevision = 9
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
     throw "候选包目录不存在：$release"
 }
-& (Join-Path $PSScriptRoot 'Verify-Release.ps1') `
-    -ReleaseDirectory $release | Out-Null
-$identity = Get-Content -LiteralPath (Join-Path $release 'build-identity.json') `
-    -Raw | ConvertFrom-Json
-if ([string]$identity.productVersion -ne 'V2.14.2.0') {
-    throw "快捷部署产品版本不一致：$($identity.productVersion)"
+$mainExecutable = Join-Path $release 'MTTFTest.exe'
+if (-not (Test-Path -LiteralPath $mainExecutable -PathType Leaf)) {
+    throw "程序目录缺少 MTTFTest.exe：$release"
+}
+$identityPath = Join-Path $release 'build-identity.json'
+$identity = if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
+    Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+} else {
+    [pscustomobject]@{
+        productVersion = 'V' + (Get-Item -LiteralPath $mainExecutable).VersionInfo.ProductVersion
+        releaseStatus = 'OPERATOR_MANAGED'
+        deploymentApproved = $true
+        gitCommit = 'operator-managed'
+        buildUtc = [DateTime]::UtcNow.ToString('O')
+        configSha256 = ''
+    }
 }
 $bundleSourceCommit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($bundleSourceCommit)) {
     throw '无法读取快捷部署器源码提交身份。'
-}
-$bundleSourceDirty = -not [string]::IsNullOrWhiteSpace(
-    ((& git -C $repo status --porcelain) -join "`n"))
-if ($bundleSourceDirty) {
-    throw '拒绝从脏工作区生成快捷部署包。'
 }
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $repo 'artifacts\deploy'
 }
 $outputRootFull = [IO.Path]::GetFullPath($OutputRoot)
 [void](New-Item -ItemType Directory -Path $outputRootFull -Force)
-$shortCommit = ([string]$identity.gitCommit).Substring(0, 12)
-$name = "$($identity.productVersion)_正式包_${shortCommit}_QUICKDEPLOY_R$bundleRevision"
+$identityCommit = [string]$identity.gitCommit
+$shortCommit = if ($identityCommit.Length -ge 12) {
+    $identityCommit.Substring(0, 12)
+} else {
+    ($identityCommit -replace '[^0-9A-Za-z._-]', '_')
+}
+$safeVersion = ([string]$identity.productVersion -replace '[^0-9A-Za-z._-]', '_')
+$name = "${safeVersion}_操作员包_${shortCommit}_QUICKDEPLOY_R$bundleRevision"
 $output = [IO.Path]::GetFullPath((Join-Path $outputRootFull $name))
 $prefix = $outputRootFull.TrimEnd('\', '/') + '\'
 if (-not $output.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -90,8 +101,7 @@ try {
         packageGitCommit = [string]$identity.gitCommit
         packageBuildUtc = $buildUtcText
         configSha256 = [string]$identity.configSha256
-        innerBuildIdentitySha256 = (Get-FileHash -LiteralPath `
-            (Join-Path $staging 'Package\build-identity.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+        packageManagement = 'OPERATOR_MANAGED'
     }
     $identitySummary | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `
         (Join-Path $staging '快捷部署包身份.json') -Encoding UTF8

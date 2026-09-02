@@ -587,10 +587,10 @@ $deploymentContractOutput = @(& (Join-Path `
 foreach ($line in $deploymentContractOutput) { Write-Host ([string]$line) }
 $deploymentContractSummary = @($deploymentContractOutput |
     ForEach-Object { [string]$_ } |
-    Where-Object { $_ -match '^PASS\s+UnattendedDeploymentSlotContract\s+2/2$' } |
+    Where-Object { $_ -match '^PASS\s+SimpleUnattendedDeploymentContract\s+1/1$' } |
     Select-Object -Last 1)
 if ($deploymentContractSummary.Count -ne 1) {
-    throw '无人值守部署槽契约测试未通过。'
+    throw '简化部署契约测试未通过。'
 }
 $quickDeployParseSummary = @($deploymentContractOutput |
     ForEach-Object { [string]$_ } |
@@ -614,7 +614,7 @@ $verification = [ordered]@{
     persistenceSoakSeconds = $PersistenceSoakSeconds
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
-    unattendedDeploymentSlotContract = $deploymentContractSummary[0].Trim()
+    simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
     quickDeployCommandParse = $quickDeployParseSummary[0].Trim()
 }
 

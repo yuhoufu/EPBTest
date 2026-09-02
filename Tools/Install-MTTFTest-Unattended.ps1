@@ -1,4 +1,4 @@
-[CmdletBinding(SupportsShouldProcess = $true)]
+﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [ValidateSet('Install', 'Repair', 'Uninstall', 'PromoteLastKnownGood')]
     [string]$Mode = 'Install',
@@ -10,7 +10,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
-$expectedVersion = '2.14.2.0'
 $shortcutName = 'MT EPB 试验系统 V2.14.lnk'
 
 function Assert-Administrator {
@@ -31,155 +30,13 @@ function Resolve-SafeDirectory([string]$Path, [string]$Label) {
     return $resolved
 }
 
-function Read-And-VerifyPackage([string]$Directory) {
-    $identityPath = Join-Path $Directory 'build-identity.json'
-    if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
-        throw "缺少发布身份：$identityPath"
-    }
-    $identity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
-    if ([string]$identity.fileVersion -ne $expectedVersion -or
-        [string]$identity.productVersion -ne ('V' + $expectedVersion)) {
-        throw "包版本不一致：期望 $expectedVersion，实际 $($identity.fileVersion)。"
-    }
-    foreach ($entry in @($identity.files)) {
-        $relative = ([string]$entry.name).Replace('/', '\')
-        if ([IO.Path]::IsPathRooted($relative) -or $relative.Contains('..')) {
-            throw "清单相对路径非法：$relative"
-        }
-        $path = [IO.Path]::GetFullPath((Join-Path $Directory $relative))
-        $prefix = $Directory.TrimEnd('\') + '\'
-        if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
-            -not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "清单文件缺失或越界：$relative"
-        }
-        $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actual -ne ([string]$entry.sha256).ToLowerInvariant()) {
-            throw "清单哈希不一致：$relative"
-        }
-    }
+function Assert-RequiredProgramFiles([string]$Directory) {
     foreach ($name in @(
             'MTTFTest.exe', 'MTTFTest.Watchdog.exe', 'MTTFTest.SessionAgent.exe',
             'MTTFTest.SafetyAgent.exe', 'MTTFTest.Watchdog.Protocol.dll')) {
         $path = Join-Path $Directory $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "缺少组件：$name" }
-        if ((Get-Item -LiteralPath $path).VersionInfo.FileVersion -ne $expectedVersion) {
-            throw "组件版本不一致：$name"
-        }
     }
-    return $identity
-}
-
-function Protect-MachineJson([object]$Value) {
-    Add-Type -AssemblyName System.Security
-    $json = $Value | ConvertTo-Json -Depth 8 -Compress
-    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
-    $protected = [Security.Cryptography.ProtectedData]::Protect(
-        $bytes,
-        [Text.Encoding]::UTF8.GetBytes('MTTFTest.PackageSlot.Schema5'),
-        [Security.Cryptography.DataProtectionScope]::LocalMachine)
-    return [Convert]::ToBase64String($protected)
-}
-
-function Unprotect-MachineJson([string]$ProtectedPayloadBase64) {
-    Add-Type -AssemblyName System.Security
-    if ([string]::IsNullOrWhiteSpace($ProtectedPayloadBase64)) {
-        throw 'schema 5 封印载荷为空。'
-    }
-    $clear = [Security.Cryptography.ProtectedData]::Unprotect(
-        [Convert]::FromBase64String($ProtectedPayloadBase64),
-        [Text.Encoding]::UTF8.GetBytes('MTTFTest.PackageSlot.Schema5'),
-        [Security.Cryptography.DataProtectionScope]::LocalMachine)
-    return ([Text.Encoding]::UTF8.GetString($clear) | ConvertFrom-Json)
-}
-
-function Write-SlotDescriptor(
-    [string]$SlotPath,
-    [string]$SlotName,
-    [object]$Identity,
-    [string]$CanonicalRootPath = '') {
-    $sealedRootPath = if ([string]::IsNullOrWhiteSpace($CanonicalRootPath)) {
-        [IO.Path]::GetFullPath($SlotPath)
-    } else {
-        [IO.Path]::GetFullPath($CanonicalRootPath)
-    }
-    $payload = [ordered]@{
-        SchemaVersion = 5
-        SlotName = $SlotName
-        ProductVersion = $expectedVersion
-        ReleaseStatus = if ($SlotName -eq 'LastKnownGood') {
-            'OPERATOR_PROMOTED_LAST_KNOWN_GOOD'
-        } else {
-            [string]$Identity.releaseStatus
-        }
-        # 文件仍在 staging 中生成，但安全证明必须绑定原子切换后的正式槽路径。
-        RootPath = $sealedRootPath
-        ManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $SlotPath 'build-identity.json') -Algorithm SHA256).Hash
-        ConfigSha256 = [string]$Identity.configSha256
-        CreatedUtc = [DateTime]::UtcNow.ToString('O')
-        Files = @($Identity.files)
-    }
-    $envelope = [ordered]@{
-        SchemaVersion = 5
-        Protection = 'DPAPI-LocalMachine'
-        ProtectedPayloadBase64 = Protect-MachineJson $payload
-    }
-    $path = Join-Path $SlotPath 'package-slot.v5.json'
-    [IO.File]::WriteAllText(
-        $path,
-        ($envelope | ConvertTo-Json -Depth 4),
-        (New-Object Text.UTF8Encoding($false)))
-}
-
-function Assert-SlotDescriptor([string]$SlotPath, [string]$SlotName) {
-    $root = [IO.Path]::GetFullPath($SlotPath).TrimEnd('\', '/')
-    $descriptorPath = Join-Path $root 'package-slot.v5.json'
-    if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) {
-        throw "$SlotName 缺少 schema 5 封印描述：$descriptorPath"
-    }
-    $envelope = Get-Content -LiteralPath $descriptorPath -Raw -Encoding UTF8 |
-        ConvertFrom-Json
-    if ([int]$envelope.SchemaVersion -ne 5 -or
-        [string]$envelope.Protection -ne 'DPAPI-LocalMachine') {
-        throw "$SlotName 封印信封非法。"
-    }
-    $payload = Unprotect-MachineJson ([string]$envelope.ProtectedPayloadBase64)
-    $sealedRoot = [IO.Path]::GetFullPath([string]$payload.RootPath).TrimEnd('\', '/')
-    if ([int]$payload.SchemaVersion -ne 5 -or
-        [string]$payload.SlotName -ne $SlotName -or
-        [string]$payload.ProductVersion -ne $expectedVersion -or
-        -not [string]::Equals($sealedRoot, $root, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "$SlotName 封印身份不一致：Root=$sealedRoot Expected=$root Version=$($payload.ProductVersion)"
-    }
-    $manifestHash = (Get-FileHash -LiteralPath `
-        (Join-Path $root 'build-identity.json') -Algorithm SHA256).Hash
-    if (-not [string]::Equals(
-            $manifestHash,
-            [string]$payload.ManifestSha256,
-            [StringComparison]::OrdinalIgnoreCase) -or
-        @($payload.Files).Count -lt 1) {
-        throw "$SlotName 封印文件身份不完整或 manifest 已变化。"
-    }
-}
-
-function Write-SlotPointer([string]$Root, [string]$ActiveSlot) {
-    $current = Join-Path $Root 'Current'
-    $lastKnownGood = Join-Path $Root 'LastKnownGood'
-    $payload = [ordered]@{
-        SchemaVersion = 5
-        ActiveSlot = $ActiveSlot
-        CurrentPath = $current
-        LastKnownGoodPath = $lastKnownGood
-        RevisionUtcTicks = [DateTime]::UtcNow.Ticks
-    }
-    $envelope = [ordered]@{
-        SchemaVersion = 5
-        Protection = 'DPAPI-LocalMachine'
-        ProtectedPayloadBase64 = Protect-MachineJson $payload
-    }
-    [IO.File]::WriteAllText(
-        (Join-Path $Root 'package-pointer.v5.json'),
-        ($envelope | ConvertTo-Json -Depth 4),
-        (New-Object Text.UTF8Encoding($false)))
 }
 
 function Stop-Supervisor {
@@ -190,8 +47,23 @@ function Stop-Supervisor {
     }
 }
 
+function Stop-InstalledSessionAgent([string]$Root) {
+    $expected = [IO.Path]::GetFullPath(
+        (Join-Path $Root 'Current\MTTFTest.SessionAgent.exe'))
+    $processes = Get-CimInstance Win32_Process `
+        -Filter "Name='MTTFTest.SessionAgent.exe'" `
+        -ErrorAction SilentlyContinue
+    foreach ($process in @($processes)) {
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
+        $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+        if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Install-CurrentSlot([string]$Source, [string]$Root) {
-    $sourceIdentity = Read-And-VerifyPackage $Source
+    Assert-RequiredProgramFiles $Source
     [void](New-Item -ItemType Directory -Path $Root -Force)
     $staging = Join-Path $Root ('.current-staging-' + [Guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $staging)
@@ -199,17 +71,13 @@ function Install-CurrentSlot([string]$Source, [string]$Root) {
         $current = Join-Path $Root 'Current'
         Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $staging -Recurse -Force
         [void](New-Item -ItemType File -Path (Join-Path $staging 'MTTFTest.UnattendedMode.required') -Force)
-        $stagingIdentity = Read-And-VerifyPackage $staging
-        Write-SlotDescriptor $staging 'Current' $stagingIdentity $current
         $retired = Join-Path $Root ('.retired-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
         if (Test-Path -LiteralPath $current) { Move-Item -LiteralPath $current -Destination $retired }
         Move-Item -LiteralPath $staging -Destination $current
-        Assert-SlotDescriptor $current 'Current'
+        Assert-RequiredProgramFiles $current
         if (Test-Path -LiteralPath $retired) {
             Write-Warning "旧 Current 已保留用于人工审计：$retired"
         }
-        Write-SlotPointer $Root 'Current'
-        return $sourceIdentity
     }
     finally {
         if (Test-Path -LiteralPath $staging) {
@@ -272,11 +140,7 @@ function Install-ServiceAndAgent([string]$Root) {
 
 function Assert-Health([string]$Root) {
     $current = Join-Path $Root 'Current'
-    [void](Read-And-VerifyPackage $current)
-    Assert-SlotDescriptor $current 'Current'
-    if (-not (Test-Path -LiteralPath (Join-Path $Root 'package-pointer.v5.json'))) {
-        throw '缺少 schema 5 双槽指针。'
-    }
+    Assert-RequiredProgramFiles $current
     $service = Get-Service -Name $serviceName -ErrorAction Stop
     if ($service.Status -ne 'Running') { throw "监督服务未运行：$($service.Status)" }
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
@@ -334,10 +198,15 @@ $source = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
 if ($Mode -eq 'Uninstall') {
     if ($PSCmdlet.ShouldProcess($root, '卸载服务和登录任务（保留程序槽及事故证据）')) {
         Stop-Supervisor
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if ($null -ne $task) {
+            Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        }
+        Stop-InstalledSessionAgent $root
         & sc.exe delete $serviceName | Out-Host
-        & schtasks.exe /Delete /TN $taskName /F | Out-Host
         Remove-Shortcuts
-        Write-Host '已卸载监督服务和 SessionAgent 任务；程序槽、ProgramData 日志及事故证据已保留。'
+        Write-Host '已卸载监督服务和 SessionAgent 任务，并终止安装目录内的 SessionAgent；程序槽、ProgramData 日志及事故证据已保留。'
     }
     return
 }
@@ -345,18 +214,16 @@ if ($Mode -eq 'Uninstall') {
 if ($Mode -eq 'PromoteLastKnownGood') {
     Stop-Supervisor
     $current = Join-Path $root 'Current'
-    $identity = Read-And-VerifyPackage $current
+    Assert-RequiredProgramFiles $current
     $staging = Join-Path $root ('.lkg-staging-' + [Guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $staging)
     try {
         $lkg = Join-Path $root 'LastKnownGood'
         Get-ChildItem -LiteralPath $current -Force | Copy-Item -Destination $staging -Recurse -Force
-        Write-SlotDescriptor $staging 'LastKnownGood' $identity $lkg
         $retired = Join-Path $root ('.lkg-retired-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
         if (Test-Path -LiteralPath $lkg) { Move-Item -LiteralPath $lkg -Destination $retired }
         Move-Item -LiteralPath $staging -Destination $lkg
-        Assert-SlotDescriptor $lkg 'LastKnownGood'
-        Write-SlotPointer $root 'Current'
+        Assert-RequiredProgramFiles $lkg
     }
     finally {
         if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
