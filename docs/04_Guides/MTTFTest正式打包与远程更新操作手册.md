@@ -129,13 +129,15 @@ git status --short
 
 安装、修复和卸载会逐阶段显示目标路径和执行状态；成功结果保存在目标电脑的 `C:\ProgramData\MTTFTest\DeploymentLogs\last-deployment-result.json`，可直接回传用于远程确认。
 
+主程序清单、桌面快捷方式和登录自启动任务均要求管理员权限。程序为 x86，64 位 Windows 的安装目录统一使用 `C:\Program Files (x86)\MTTFTest`；安装、修复、卸载和首次运行不会再使用不同目录。
+
 ## 7. 卸载旧程序
 
 安全停止试验并完全退出主程序后，从任一完整解压的正式包中双击 `一键卸载.cmd`，接受管理员权限提示并输入 `Y` 或 `A` 确认。输入 `N`、其他内容或直接回车均取消；脚本只读取一次，不会循环询问。确认后卸载自动完成，不会对内部每个步骤重复询问。
 
 卸载会删除以下内容：
 
-- `C:\Program Files\MTTFTest` 程序目录；
+- `C:\Program Files (x86)\MTTFTest` 程序目录；
 - `MTTFTestSupervisor` 服务；
 - `MTTFTestSessionAgent` 和 `MTTFTestAutoStart` 计划任务；
 - 桌面和开始菜单快捷方式。

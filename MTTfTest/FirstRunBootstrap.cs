@@ -72,9 +72,7 @@ namespace MtEmbTest
                 Process.GetCurrentProcess().MainModule?.FileName ??
                 typeof(FirstRunBootstrap).Assembly.Location);
             var directory = Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory;
-            var installRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "MTTFTest");
+            var installRoot = Path.Combine(ResolveProductProgramFiles(), "MTTFTest");
             var installedExecutable = Path.Combine(installRoot, "Current", "MTTFTest.exe");
             var recoveryProcess = HasRecoveryArguments(args);
             var runningFromInstalledDirectory = PathsEqual(executable, installedExecutable);
@@ -264,6 +262,15 @@ namespace MtEmbTest
                 !string.IsNullOrWhiteSpace(argument) &&
                 (argument.StartsWith("--watchdog-", StringComparison.OrdinalIgnoreCase) ||
                  argument.StartsWith("--recovery-", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private static string ResolveProductProgramFiles()
+        {
+            var directory = Environment.GetFolderPath(
+                Environment.SpecialFolder.ProgramFilesX86);
+            if (string.IsNullOrWhiteSpace(directory))
+                directory = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            return Path.GetFullPath(directory);
         }
 
         private static string BuildInstallerArguments(

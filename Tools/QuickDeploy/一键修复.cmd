@@ -3,6 +3,8 @@ setlocal
 set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
 set "MTTFTEST_PACKAGE_SOURCE=%~dp0."
 set "MTTFTEST_ELEVATE_TARGET=%~f0"
+set "MTTFTEST_PROGRAM_FILES=%ProgramFiles(x86)%"
+if not defined MTTFTEST_PROGRAM_FILES set "MTTFTEST_PROGRAM_FILES=%ProgramFiles%"
 if defined MTTFTEST_QUICKDEPLOY_PARSE_ONLY goto :parse_only
 if defined MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE goto :argument_probe
 cd /d "%~dp0"
@@ -11,13 +13,13 @@ if errorlevel 1 (
   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
   exit /b
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Repair -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%ProgramFiles%\MTTFTest"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Repair -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%MTTFTEST_PROGRAM_FILES%\MTTFTest"
 set "MTTFTEST_RESULT=%ERRORLEVEL%"
 if not "%MTTFTEST_RESULT%"=="0" echo ERROR: repair failed. ExitCode=%MTTFTEST_RESULT%
 if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
 endlocal & exit /b %MTTFTEST_RESULT%
 :argument_probe
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Repair -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%ProgramFiles%\MTTFTest"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Repair -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%MTTFTEST_PROGRAM_FILES%\MTTFTest"
 set "MTTFTEST_RESULT=%ERRORLEVEL%"
 endlocal & exit /b %MTTFTEST_RESULT%
 :parse_only

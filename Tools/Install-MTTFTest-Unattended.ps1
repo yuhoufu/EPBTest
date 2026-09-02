@@ -3,7 +3,7 @@ param(
     [ValidateSet('Install', 'Repair', 'Configure', 'Uninstall', 'PromoteLastKnownGood')]
     [string]$Mode = 'Install',
     [string]$SourceDirectory = (Split-Path -Parent $PSScriptRoot),
-    [string]$InstallRoot = (Join-Path $env:ProgramFiles 'MTTFTest'),
+    [string]$InstallRoot = '',
     [string]$SoakEvidencePath,
     [switch]$ForceUninstall
 )
@@ -18,6 +18,14 @@ $runtimeConfigNames = @(
     'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
     'PowerSupplyConfig.xml', 'TestConfig.xml', 'UnattendedAlarmConfig.xml',
     'UIConfig.xml')
+
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    $productProgramFiles = [Environment]::GetFolderPath('ProgramFilesX86')
+    if ([string]::IsNullOrWhiteSpace($productProgramFiles)) {
+        $productProgramFiles = [Environment]::GetFolderPath('ProgramFiles')
+    }
+    $InstallRoot = Join-Path $productProgramFiles 'MTTFTest'
+}
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -148,7 +156,7 @@ function Install-ServiceAndAgent([string]$Root) {
     $autoStartTrigger = New-ScheduledTaskTrigger -AtLogOn -User $account
     $autoStartTrigger.Delay = 'PT15S'
     $autoStartPrincipal = New-ScheduledTaskPrincipal -UserId $account `
-        -LogonType Interactive -RunLevel Limited
+        -LogonType Interactive -RunLevel Highest
     $autoStartSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $autoStartTaskName -Action $autoStartAction `
@@ -313,6 +321,13 @@ function Install-Shortcuts([string]$Root) {
         $shortcut.IconLocation = "$target,0"
         $shortcut.Description = "MT EPB 试验系统 V$targetVersion（正式包，运行状态由操作人员负责）"
         $shortcut.Save()
+        $shortcutBytes = [IO.File]::ReadAllBytes($path)
+        if ($shortcutBytes.Length -lt 22) {
+            throw "快捷方式格式无效，无法设置管理员运行标记：$path"
+        }
+        # Shell Link Header 的 LinkFlags 第 2 个字节置 0x20，即 SLDF_RUNAS_USER。
+        $shortcutBytes[21] = $shortcutBytes[21] -bor 0x20
+        [IO.File]::WriteAllBytes($path, $shortcutBytes)
     }
 }
 

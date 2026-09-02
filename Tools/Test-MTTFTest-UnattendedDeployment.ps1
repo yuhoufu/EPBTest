@@ -46,6 +46,8 @@ foreach ($required in @(
         'Write-OperationStep',
         'Write-DeploymentResult',
         'last-deployment-result.json',
+        'RunLevel Highest',
+        'shortcutBytes[21]',
         'Test-CurrentSlotReplacementRequired',
         'MTTFTestAutoStart',
         'MTTFTest.FirstRun.configured',
@@ -58,6 +60,34 @@ foreach ($required in @(
     }
 }
 Write-Output 'PASS SimpleUnattendedDeploymentContract 1/1'
+
+$repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$manifestPath = Join-Path $repo 'MTTfTest\app.manifest'
+[xml]$manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8)
+$executionLevel = $manifest.SelectSingleNode(
+    "/*[local-name()='assembly']/*[local-name()='trustInfo']/*[local-name()='security']/*[local-name()='requestedPrivileges']/*[local-name()='requestedExecutionLevel']")
+if ($null -eq $executionLevel -or
+    $executionLevel.GetAttribute('level') -ne 'requireAdministrator') {
+    throw '主程序清单必须声明 requireAdministrator。'
+}
+$firstRunText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTfTest\FirstRunBootstrap.cs'), [Text.Encoding]::UTF8)
+$runtimePathsText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'Config\RuntimeConfigPaths.cs'), [Text.Encoding]::UTF8)
+if (-not $firstRunText.Contains('ProgramFilesX86') -or
+    -not $runtimePathsText.Contains('ProgramFilesX86')) {
+    throw 'x86 主程序和运行配置路径必须统一使用 ProgramFilesX86。'
+}
+foreach ($commandName in @(
+        '一键安装正式版.cmd', '一键修复.cmd', '一键卸载.cmd', '启动试验.cmd')) {
+    $commandText = [IO.File]::ReadAllText(
+        (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') $commandName),
+        [Text.Encoding]::ASCII)
+    if (-not $commandText.Contains('ProgramFiles(x86)')) {
+        throw "快捷入口未统一 32/64 位安装路径：$commandName"
+    }
+}
+Write-Output 'PASS RequireAdministratorLaunchContract 1/1'
 
 $releaseScripts = @(
     (Join-Path $PSScriptRoot 'Build-Release.ps1'),
@@ -168,7 +198,14 @@ try {
     $previousArgumentProbe = $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE
     try {
         $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = '1'
-        $expectedInstallRoot = Join-Path $env:ProgramFiles 'MTTFTest'
+        $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+        $machineProgramFiles = if ([string]::IsNullOrWhiteSpace($programFilesX86)) {
+            $env:ProgramFiles
+        }
+        else {
+            $programFilesX86
+        }
+        $expectedInstallRoot = Join-Path $machineProgramFiles 'MTTFTest'
         foreach ($case in @(
                 @('一键安装正式版.cmd', 'Install'),
                 @('一键修复.cmd', 'Repair'),
