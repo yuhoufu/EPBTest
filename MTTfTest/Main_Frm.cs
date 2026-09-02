@@ -198,7 +198,7 @@ namespace MtEmbTest
                     "启动构建身份");
 
             // 加载配置文件
-            Cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", Logger);
+            Cfg = ConfigLoader.LoadAll(RuntimeConfigPaths.Directory, Logger);
             PublishCurrentProjectBuildIdentity(buildIdentity);
             var projectRestore = ConfigLoader.LastProjectRestoreResult;
             if (projectRestore != null && projectRestore.SelectionFound && !projectRestore.Restored)
@@ -311,7 +311,7 @@ namespace MtEmbTest
 
                 // 无需CAN卡，禁用
                 /*
-                var DbcMsg = DbcParser.ParseDbcFile(Environment.CurrentDirectory + @"\Config\CAN_V4_3_0.dbc",
+                var DbcMsg = DbcParser.ParseDbcFile(Path.Combine(RuntimeConfigPaths.TemplateDirectory, "CAN_V4_3_0.dbc"),
                     out ClsGlobal.Dbc);
 
                 if (DbcMsg.IndexOf("OK") < 0) ShowMainOperatorMessage(DbcMsg);*/

@@ -85,7 +85,7 @@ namespace MtEmbTest
             logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
                 LogInformation, LogWarn, LogError, this);
             // 主窗体已经恢复最后项目时复用同一个配置对象；独立打开时再重新加载。
-            _cfg = cfg ?? ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+            _cfg = cfg ?? ConfigLoader.LoadAll(RuntimeConfigPaths.Directory, logger);
             _daqRuntimeSettings = daqRuntimeSettings ?? DaqRuntimeSettings.Load(
                 System.Configuration.ConfigurationManager.AppSettings);
 
@@ -349,7 +349,7 @@ namespace MtEmbTest
             try
             {
                 // DAQ AI
-                LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
+                LoadDaqAiToGridView(RuntimeConfigPaths.GetPath("AIConfig.xml"));
 
                 // 气缸压力输出校正
                 LoadPressureCalibrationConfiguration();
@@ -677,7 +677,7 @@ namespace MtEmbTest
                 );
 
                 // 保存文件
-                var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\EMBControl.XML");
+                var xmlPath = RuntimeConfigPaths.GetPath("EMBControl.XML");
                 File.WriteAllText(xmlPath, root.ToString());
             }
             catch (Exception ex)
@@ -840,7 +840,7 @@ namespace MtEmbTest
 
         private void BtnSaveDaqAI_Click(object sender, EventArgs e)
         {
-            SaveDaqAIToXML(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
+            SaveDaqAIToXML(RuntimeConfigPaths.GetPath("AIConfig.xml"));
         }
 
         private void BtnSaveTest_ClickOld(object sender, EventArgs e)
@@ -860,7 +860,7 @@ namespace MtEmbTest
                 PushHydraulicSettingsToConfig();
 
                 // 4) 保存 TestConfig.xml（包含 Basic、EpbCycleRunnerConfig、Hydraulics 等全部配置）
-                var cfgDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+                var cfgDir = RuntimeConfigPaths.Directory;
                 var testPath = Path.Combine(cfgDir, "TestConfig.xml");
                 ConfigLoader.SaveTest(testPath, _cfg.Test);
 
@@ -1299,7 +1299,7 @@ namespace MtEmbTest
         /// </summary>
         private static string GetDefaultTestConfigPath()
         {
-            var cfgDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+            var cfgDir = RuntimeConfigPaths.Directory;
             // 确保目录存在
             Directory.CreateDirectory(cfgDir);
             return Path.Combine(cfgDir, "TestConfig.xml");
@@ -1530,7 +1530,7 @@ namespace MtEmbTest
         {
             var serializer = new XmlSerializer(typeof(TestConfig));
 
-            var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
+            var xmlPath = RuntimeConfigPaths.GetPath("TestConfig.xml");
 
             using (var writer = new StreamWriter(xmlPath))
             {
@@ -1866,7 +1866,7 @@ namespace MtEmbTest
             {
                 var serializer = new XmlSerializer(typeof(TestConfig));
 
-                var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
+                var xmlPath = RuntimeConfigPaths.GetPath("TestConfig.xml");
 
                 using (var reader = new StreamReader(xmlPath))
                 {

@@ -1066,9 +1066,8 @@ namespace MTTFTest.Watchdog
                 var formal = File.Exists(Path.Combine(
                     executableDirectory ?? string.Empty,
                     "MTTFTest.UnattendedMode.required"));
-                var configPath = Path.Combine(
-                    executableDirectory ?? string.Empty,
-                    "Config",
+                var configPath = WatchdogRuntimeConfigPaths.GetPath(
+                    executableDirectory,
                     "AlarmConfig.xml");
                 _configuration = File.Exists(configPath)
                     ? P0AlarmHardwareConfiguration.Load(configPath)

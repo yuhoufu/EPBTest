@@ -17,7 +17,6 @@ namespace MtEmbTest
         public PressureCalibrationHardware(
             GlobalConfig config,
             AppLogger logger,
-            string applicationDirectory,
             DaqRuntimeSettings runtimeSettings = null)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
@@ -39,12 +38,7 @@ namespace MtEmbTest
                 if (!doController.AllOff())
                     throw new InvalidOperationException("无法确认全部 DO 已关闭，拒绝开始压力校正。");
                 aoController.ResetAll();
-                var aiPath = System.IO.Path.Combine(
-                    string.IsNullOrWhiteSpace(applicationDirectory)
-                        ? Environment.CurrentDirectory
-                        : applicationDirectory,
-                    "Config",
-                    "AIConfig.xml");
+                var aiPath = RuntimeConfigPaths.GetPath("AIConfig.xml");
                 var aiConfig = AiConfigLoader.Load(aiPath);
                 acquirer = new TwoDeviceAiAcquirer(
                     aiConfig,

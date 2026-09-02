@@ -65,6 +65,7 @@
     <Compile Include="LastProjectSelectionStore.cs" />
     <Compile Include="ProjectLogStore.cs" />
     <Compile Include="ProjectRestartCleanupService.cs" />
+    <Compile Include="RuntimeConfigPaths.cs" />
     <Compile Include="UiInfoLogStore.cs" />
     <Compile Include="Models\EpbCycleRunnerConfig.cs" />
     <Compile Include="PowerSupplyConfig.cs" />

@@ -37,6 +37,8 @@ namespace AdaptiveControlTests
                 SupervisorSafetyAgentProtocolBindsAuthority, ref passed);
             Run("Supervisor P0告警请求绑定schema5身份且静音不等于清除锁存",
                 SupervisorP0AlarmProtocolPreservesLatchSemantics, ref passed);
+            Run("Supervisor正式安装读取ProgramData而开发运行读取相邻Config",
+                WatchdogRuntimeConfigPathMatchesApplicationPolicy, ref passed);
             Run("DAQ恢复重入门禁在失联后重新累计稳定窗口",
                 DaqRejoinGateRollsBackAndRecovers, ref passed);
             Run("DAQ恢复重入门禁对持续接管许可保持关闭",
@@ -58,6 +60,33 @@ namespace AdaptiveControlTests
             Run("生产与校正采集入口显式保持不可变DAQ参数",
                 AcquisitionEntrypointsKeepImmutableSettings, ref passed);
             return passed;
+        }
+
+        private static void WatchdogRuntimeConfigPathMatchesApplicationPolicy()
+        {
+            var root = Path.Combine(
+                Path.GetTempPath(),
+                "epb-watchdog-config-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            var application = Path.Combine(root, "application");
+            var common = Path.Combine(root, "common");
+            Directory.CreateDirectory(application);
+            Directory.CreateDirectory(common);
+            try
+            {
+                Assert(WatchdogRuntimeConfigPaths.ResolveConfigDirectory(application, common) ==
+                       Path.Combine(application, "Config"),
+                    "开发运行没有读取EXE相邻Config");
+                File.WriteAllText(
+                    Path.Combine(application, WatchdogRuntimeConfigPaths.FormalModeMarkerName),
+                    string.Empty);
+                Assert(WatchdogRuntimeConfigPaths.ResolveConfigDirectory(application, common) ==
+                       Path.Combine(common, "MTTFTest", "Config"),
+                    "正式Supervisor没有切换到ProgramData配置");
+            }
+            finally
+            {
+                TryDeleteDirectory(root);
+            }
         }
 
         private static void SafetyAgentUsesSnapshotAndResumesStages()

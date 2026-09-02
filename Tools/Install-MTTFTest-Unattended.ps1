@@ -13,6 +13,10 @@ $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
 $shortcutName = 'MT EPB 试验系统 V2.14.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
+$runtimeConfigNames = @(
+    'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
+    'PowerSupplyConfig.xml', 'TestConfig.xml', 'UnattendedAlarmConfig.xml',
+    'UIConfig.xml')
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -153,6 +157,50 @@ function Install-ServiceAndAgent([string]$Root) {
     Start-ScheduledTask -TaskName $taskName
 }
 
+function Test-CurrentSlotReplacementRequired([string]$Source, [string]$Root) {
+    $current = Join-Path $Root 'Current'
+    try {
+        Assert-RequiredProgramFiles $current
+    }
+    catch {
+        return $true
+    }
+
+    try {
+        $sourceExecutable = Join-Path $Source 'MTTFTest.exe'
+        $currentExecutable = Join-Path $current 'MTTFTest.exe'
+        $sourceVersion = [Reflection.AssemblyName]::GetAssemblyName($sourceExecutable).Version
+        $currentVersion = [Reflection.AssemblyName]::GetAssemblyName($currentExecutable).Version
+        return $sourceVersion.CompareTo($currentVersion) -gt 0
+    }
+    catch {
+        # 无法可靠比较版本时采用保守升级，避免留下不完整程序槽。
+        return $true
+    }
+}
+
+function Initialize-RuntimeConfig([string]$Source, [string]$Root) {
+    $stateRoot = Join-Path $env:ProgramData 'MTTFTest'
+    $runtimeConfig = Join-Path $stateRoot 'Config'
+    [void](New-Item -ItemType Directory -Path $runtimeConfig -Force)
+
+    $sourceConfig = Join-Path $Source 'Config'
+    $previousConfig = Join-Path $Root 'Current\Config'
+    foreach ($name in $runtimeConfigNames) {
+        $target = Join-Path $runtimeConfig $name
+        if (Test-Path -LiteralPath $target -PathType Leaf) { continue }
+
+        $candidate = Join-Path $previousConfig $name
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            $candidate = Join-Path $sourceConfig $name
+        }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "运行配置模板缺失：$name"
+        }
+        Copy-Item -LiteralPath $candidate -Destination $target -Force
+    }
+}
+
 function Assert-InstalledMainStopped([string]$Root) {
     $expected = [IO.Path]::GetFullPath(
         (Join-Path $Root 'Current\MTTFTest.exe'))
@@ -188,6 +236,12 @@ function Assert-Health([string]$Root) {
         throw 'SessionAgent 登录任务缺少崩溃自动重启策略。'
     }
     [void](Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction Stop)
+    $runtimeConfig = Join-Path (Join-Path $env:ProgramData 'MTTFTest') 'Config'
+    foreach ($name in $runtimeConfigNames) {
+        if (-not (Test-Path -LiteralPath (Join-Path $runtimeConfig $name) -PathType Leaf)) {
+            throw "运行配置缺失：$name"
+        }
+    }
 }
 
 function Write-ConfiguredMarker([string]$Root) {
@@ -227,7 +281,7 @@ function Install-Shortcuts([string]$Root) {
         $shortcut.TargetPath = $target
         $shortcut.WorkingDirectory = $current
         $shortcut.IconLocation = "$target,0"
-        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.1（正式包，运行状态由操作人员负责）'
+        $shortcut.Description = 'MT EPB 试验系统 V2.14.2.2（正式包，运行状态由操作人员负责）'
         $shortcut.Save()
     }
 }
@@ -271,6 +325,7 @@ if ($Mode -eq 'Uninstall') {
 if ($Mode -eq 'Configure') {
     $current = Join-Path $root 'Current'
     Assert-RequiredProgramFiles $current
+    Initialize-RuntimeConfig $current $root
     Set-UnattendedAcl $root
     Install-ServiceAndAgent $root
     Assert-Health $root
@@ -302,15 +357,21 @@ if ($Mode -eq 'PromoteLastKnownGood') {
     return
 }
 
-if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.1 无人值守运行环境")) {
+if ($PSCmdlet.ShouldProcess($root, "$Mode V2.14.2.2 无人值守运行环境")) {
     Assert-InstalledMainStopped $root
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
-    [void](Install-CurrentSlot $source $root)
+    Initialize-RuntimeConfig $source $root
+    if (Test-CurrentSlotReplacementRequired $source $root) {
+        [void](Install-CurrentSlot $source $root)
+    }
+    else {
+        Write-Host '已安装版本不低于来源版本，保留 Current，不创建重复 retired 目录。'
+    }
     Set-UnattendedAcl $root
     Install-ServiceAndAgent $root
     Assert-Health $root
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
-    Write-Host "V2.14.2.1 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
+    Write-Host "V2.14.2.2 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
 }

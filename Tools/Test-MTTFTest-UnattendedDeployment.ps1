@@ -37,6 +37,8 @@ foreach ($required in @(
         'Assert-RequiredProgramFiles',
         'Stop-InstalledSessionAgent',
         'Assert-InstalledMainStopped',
+        'Initialize-RuntimeConfig',
+        'Test-CurrentSlotReplacementRequired',
         'MTTFTestAutoStart',
         'MTTFTest.FirstRun.configured',
         "'Configure'",

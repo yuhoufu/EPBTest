@@ -1031,7 +1031,7 @@ namespace MTEmbTest
             try
             {
                 var candidates = new List<string>();
-                var configDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+                var configDirectory = RuntimeConfigPaths.Directory;
                 if (Directory.Exists(configDirectory))
                     candidates.AddRange(Directory.GetFiles(configDirectory, "*.xml", SearchOption.TopDirectoryOnly));
                 if (config?.Test != null)

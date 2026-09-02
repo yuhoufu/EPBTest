@@ -16,10 +16,9 @@ namespace Config
         private static readonly object _fileLock = new object();
 
         /// <summary>
-        /// 默认配置文件路径：{AppBase}\Config\TestConfig.xml
+        /// 默认配置文件路径：正式安装使用 ProgramData；开发运行使用 {AppBase}\Config。
         /// </summary>
-        public static string DefaultConfigPath =>
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? Environment.CurrentDirectory, "Config", "TestConfig.xml");
+        public static string DefaultConfigPath => RuntimeConfigPaths.GetPath("TestConfig.xml");
 
         /// <summary>
         /// 读取指定路径（或默认路径）下的 &lt;EpbRecords&gt; 节点，返回解析出的记录列表。

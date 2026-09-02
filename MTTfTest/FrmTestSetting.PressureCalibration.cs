@@ -234,7 +234,7 @@ namespace MtEmbTest
                 CmbPressureCalibrationCylinder.Items.Clear();
                 var invalidPoints = 0;
                 var auditPoints = LoadPressureCalibrationAuditPoints(
-                    Path.Combine(Application.StartupPath, "Config", "AOConfig.xml"));
+                    RuntimeConfigPaths.GetPath("AOConfig.xml"));
                 foreach (var device in _cfg.AO.Devices.Values.OrderBy(x => x.Name))
                 {
                     var rows = new BindingList<PressureCalibrationRow>();
@@ -342,7 +342,7 @@ namespace MtEmbTest
             try
             {
                 var hardware = new PressureCalibrationHardware(
-                    _cfg, logger, Application.StartupPath, _daqRuntimeSettings);
+                    _cfg, logger, _daqRuntimeSettings);
                 _pressureCalibrationCoordinator = new PressureCalibrationCoordinator(
                     hardware,
                     _cfg.AO,
@@ -526,7 +526,7 @@ namespace MtEmbTest
 
             try
             {
-                var path = Path.Combine(Application.StartupPath, "Config", "AOConfig.xml");
+                var path = RuntimeConfigPaths.GetPath("AOConfig.xml");
                 CalibrationConfigStore.SaveAoLinearCalibration(
                     path,
                     device,

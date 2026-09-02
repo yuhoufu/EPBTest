@@ -3,7 +3,9 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Windows.Forms;
+using Config;
 
 namespace MtEmbTest
 {
@@ -20,6 +22,14 @@ namespace MtEmbTest
         internal const string ConfiguredMarkerName = "MTTFTest.FirstRun.configured";
         private const string InstallerRelativePath = @"Deployment\Install-MTTFTest-Unattended.ps1";
         private const string ElevatedWorkerArgument = "--first-run-configure-worker";
+        private static readonly string[] RequiredInstalledComponents =
+        {
+            "MTTFTest.exe",
+            "MTTFTest.Watchdog.exe",
+            "MTTFTest.SessionAgent.exe",
+            "MTTFTest.SafetyAgent.exe",
+            "MTTFTest.Watchdog.Protocol.dll"
+        };
 
         internal static bool TryRunElevatedWorker(string[] args)
         {
@@ -66,12 +76,34 @@ namespace MtEmbTest
                 Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
                 "MTTFTest");
             var installedExecutable = Path.Combine(installRoot, "Current", "MTTFTest.exe");
+            var recoveryProcess = HasRecoveryArguments(args);
+            var runningFromInstalledDirectory = PathsEqual(executable, installedExecutable);
+            var formalMode = runningFromInstalledDirectory ||
+                             File.Exists(Path.Combine(directory, FormalModeMarkerName));
+            if (formalMode && !recoveryProcess && !runningFromInstalledDirectory &&
+                ShouldLaunchInstalledExecutable(executable, installedExecutable))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = installedExecutable,
+                    WorkingDirectory = Path.GetDirectoryName(installedExecutable),
+                    UseShellExecute = true
+                });
+                return false;
+            }
+
+            var configuredMarkerExists = File.Exists(
+                Path.Combine(directory, ConfiguredMarkerName));
+            if (runningFromInstalledDirectory && configuredMarkerExists &&
+                !RuntimeConfigPaths.Validate(true, out _))
+                configuredMarkerExists = false;
             var action = Decide(
-                File.Exists(Path.Combine(directory, FormalModeMarkerName)),
-                File.Exists(Path.Combine(directory, ConfiguredMarkerName)),
-                HasRecoveryArguments(args),
-                PathsEqual(executable, installedExecutable));
-            if (action == FirstRunBootstrapAction.Continue) return true;
+                formalMode,
+                configuredMarkerExists,
+                recoveryProcess,
+                runningFromInstalledDirectory);
+            if (action == FirstRunBootstrapAction.Continue)
+                return recoveryProcess || ValidateRuntimeConfigForStartup(formalMode);
 
             var installer = Path.Combine(directory, InstallerRelativePath);
             if (!File.Exists(installer))
@@ -129,7 +161,8 @@ namespace MtEmbTest
                 return false;
             }
 
-            if (action == FirstRunBootstrapAction.ConfigureAndContinue) return true;
+            if (action == FirstRunBootstrapAction.ConfigureAndContinue)
+                return ValidateRuntimeConfigForStartup(formalMode);
             if (!File.Exists(installedExecutable))
             {
                 MessageBox.Show(
@@ -161,6 +194,68 @@ namespace MtEmbTest
             return configuredMarkerExists
                 ? FirstRunBootstrapAction.Continue
                 : FirstRunBootstrapAction.ConfigureAndContinue;
+        }
+
+        internal static bool ShouldLaunchInstalledVersion(
+            Version sourceVersion,
+            Version installedVersion,
+            bool installedHealthy)
+        {
+            return installedHealthy && sourceVersion != null && installedVersion != null &&
+                   installedVersion >= sourceVersion;
+        }
+
+        private static bool ShouldLaunchInstalledExecutable(
+            string sourceExecutable,
+            string installedExecutable)
+        {
+            try
+            {
+                if (!File.Exists(installedExecutable)) return false;
+                var installedDirectory = Path.GetDirectoryName(installedExecutable);
+                if (string.IsNullOrWhiteSpace(installedDirectory) ||
+                    !File.Exists(Path.Combine(installedDirectory, ConfiguredMarkerName)))
+                    return false;
+                if (RequiredInstalledComponents.Any(component =>
+                        !File.Exists(Path.Combine(installedDirectory, component))))
+                    return false;
+                var runtimeDirectory = RuntimeConfigPaths.ResolveDirectory(
+                    installedDirectory,
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    installed: true);
+                if (!RuntimeConfigPaths.ValidateDirectory(
+                        runtimeDirectory,
+                        RuntimeConfigPaths.RequiredFiles,
+                        verifyWritable: true,
+                        out _))
+                    return false;
+                var sourceVersion = AssemblyName.GetAssemblyName(sourceExecutable).Version;
+                var installedVersion = AssemblyName.GetAssemblyName(installedExecutable).Version;
+                return ShouldLaunchInstalledVersion(
+                    sourceVersion,
+                    installedVersion,
+                    installedHealthy: true);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool ValidateRuntimeConfigForStartup(bool formalMode)
+        {
+            if (RuntimeConfigPaths.Validate(true, out var error)) return true;
+            MessageBox.Show(
+                "运行配置目录不可用，程序不会继续初始化监控窗口。\r\n\r\n" +
+                "目录：" + RuntimeConfigPaths.Directory + "\r\n" +
+                "原因：" + error +
+                (formalMode
+                    ? "\r\n\r\n请执行一次“一键修复”，修复过程需要管理员权限；之后仍以普通权限启动。"
+                    : "\r\n\r\n开发目录运行时，请补齐相邻 Config 文件并确认该目录可写。"),
+                "运行配置检查失败",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return false;
         }
 
         private static bool HasRecoveryArguments(string[] args)

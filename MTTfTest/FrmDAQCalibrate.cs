@@ -382,7 +382,7 @@ namespace MTEmbTest
         private void FrmDAQCalibrate_Load(object sender, EventArgs e)
         {
 
-           string ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1UsedDaqAIChannels);
+           string ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out Dev1UsedDaqAIChannels);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
@@ -396,7 +396,7 @@ namespace MTEmbTest
             }
 
 
-            ReadMsg = ClsXmlOperation.GetDaqPhyChanelToNameMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out PhyChannelToParaName);
+            ReadMsg = ClsXmlOperation.GetDaqPhyChanelToNameMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out PhyChannelToParaName);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
@@ -412,21 +412,21 @@ namespace MTEmbTest
           
 
 
-            ReadMsg = ClsXmlOperation.GetDaqScaleMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToScale);
+            ReadMsg = ClsXmlOperation.GetDaqScaleMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out ParaNameToScale);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
                 return;
             }
 
-            ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToOffset);
+            ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out ParaNameToOffset);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
                 return;
             }
 
-            ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToZeroValue);
+            ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out ParaNameToZeroValue);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
@@ -890,7 +890,7 @@ namespace MTEmbTest
                         ParaNameToZeroValue["EMB1_distance"] = DistanceZeroList.Average();
                         SafeLogError("零位计算完成！" );
 
-                        string SaveMsg = ClsXmlOperation.UpdateZeroDriftInXml(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", ParaNameToZeroValue);
+                        string SaveMsg = ClsXmlOperation.UpdateZeroDriftInXml(RuntimeConfigPaths.GetPath("AIConfig.xml"), ParaNameToZeroValue);
 
                         if (SaveMsg.IndexOf("OK") < 0)
                         {

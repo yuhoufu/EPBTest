@@ -903,7 +903,7 @@ public static class ConfigLoader
         if (!string.IsNullOrWhiteSpace(path))
             return path;
 
-        var cfgDir = Path.Combine(Environment.CurrentDirectory, "Config");
+        var cfgDir = RuntimeConfigPaths.Directory;
         if (!Directory.Exists(cfgDir))
             Directory.CreateDirectory(cfgDir);
         return Path.Combine(cfgDir, "UiConfig.xml");
@@ -1550,7 +1550,7 @@ public static class ConfigLoader
         if (cfg == null) throw new ArgumentNullException(nameof(cfg));
 
         // 与 LoadAll 一样，默认使用当前目录下的 Config 目录
-        var configDir = Path.Combine(Environment.CurrentDirectory, "Config");
+        var configDir = RuntimeConfigPaths.Directory;
         Directory.CreateDirectory(configDir);
 
         var testPath = Path.Combine(configDir, "TestConfig.xml");
@@ -1570,7 +1570,7 @@ public static class ConfigLoader
     {
         get
         {
-            var dir = Path.Combine(Environment.CurrentDirectory, "Config");
+            var dir = RuntimeConfigPaths.Directory;
             if (!Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
             return dir;

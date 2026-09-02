@@ -42,7 +42,7 @@ namespace MTTFTest.Watchdog
             public string Code { get; set; }
             public string Message { get; set; }
             public string MachineName { get; set; }
-            public string ProductVersion { get; set; } = "V2.14.2.1";
+            public string ProductVersion { get; set; } = "V2.14.2.2";
             public string SessionId { get; set; }
             public long PermitGeneration { get; set; }
             public string FailureDomain { get; set; }
@@ -100,11 +100,12 @@ namespace MTTFTest.Watchdog
             HttpMessageHandler handler,
             int[] retryDelaysMs)
         {
-            _settings = LoadSettings(Path.Combine(
-                executableDirectory ?? Environment.CurrentDirectory,
-                "Config", "UnattendedAlarmConfig.xml"));
+            var applicationDirectory = executableDirectory ?? Environment.CurrentDirectory;
+            _settings = LoadSettings(WatchdogRuntimeConfigPaths.GetPath(
+                applicationDirectory,
+                "UnattendedAlarmConfig.xml"));
             _formalSupervisorRequired = File.Exists(Path.Combine(
-                executableDirectory ?? Environment.CurrentDirectory,
+                applicationDirectory,
                 "MTTFTest.UnattendedMode.required"));
             var root = WatchdogJournalPaths.ValidateProjectDirectory(journalDirectory);
             _localDirectory = Path.Combine(root, "UnattendedAlarmJournal");

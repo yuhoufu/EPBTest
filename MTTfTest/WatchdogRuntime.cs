@@ -1811,10 +1811,7 @@ namespace MTEmbTest
             var projectTestPath = string.IsNullOrWhiteSpace(projectDirectory)
                 ? string.Empty
                 : Path.Combine(projectDirectory, "Config", "TestConfig.xml");
-            var appTestPath = Path.Combine(
-                executableDirectory,
-                "Config",
-                "TestConfig.xml");
+            var appTestPath = RuntimeConfigPaths.GetPath("TestConfig.xml");
             var testConfig = ConfigLoader.LoadTest(
                 File.Exists(projectTestPath) ? projectTestPath : appTestPath,
                 NullLogger.Instance);
@@ -1855,7 +1852,7 @@ namespace MTEmbTest
             var snapshot = WatchdogSafetyConfigSnapshotStore.Create(
                 context.JournalDirectory,
                 seedId,
-                Path.Combine(executableDirectory, "Config"),
+                RuntimeConfigPaths.Directory,
                 string.IsNullOrWhiteSpace(projectDirectory)
                     ? string.Empty
                     : Path.Combine(projectDirectory, "Config"),
@@ -2619,7 +2616,7 @@ namespace MTEmbTest
                 var projectTestPath = string.IsNullOrWhiteSpace(projectDirectory)
                     ? string.Empty
                     : Path.Combine(projectDirectory, "Config", "TestConfig.xml");
-                var appTestPath = Path.Combine(executableDirectory, "Config", "TestConfig.xml");
+                var appTestPath = RuntimeConfigPaths.GetPath("TestConfig.xml");
                 var testConfig = ConfigLoader.LoadTest(
                     File.Exists(projectTestPath) ? projectTestPath : appTestPath,
                     NullLogger.Instance);
@@ -2656,7 +2653,7 @@ namespace MTEmbTest
                 var configSnapshot = WatchdogSafetyConfigSnapshotStore.Create(
                     context.JournalDirectory,
                     handoffId,
-                    Path.Combine(executableDirectory, "Config"),
+                    RuntimeConfigPaths.Directory,
                     string.IsNullOrWhiteSpace(projectDirectory)
                         ? string.Empty
                         : Path.Combine(projectDirectory, "Config"),
