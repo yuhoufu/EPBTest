@@ -113,6 +113,8 @@ namespace MtEmbTest
         private int _applicationExitDeadlineArmed;
         private const int ApplicationExitHardDeadlineSeconds = 30;
         private const int ApplicationExitDiagnosticDeadlineSeconds = 25;
+        private const int IdleApplicationExitHardDeadlineSeconds = 3;
+        private const int ActiveApplicationExitTargetSeconds = 10;
 
         internal WinFormsWatchdogPostTarget WatchdogPostTarget =>
             _watchdogUiAdapter?.PostTarget;
@@ -276,9 +278,10 @@ namespace MtEmbTest
                 return _applicationExitDeadlineReceipt != null ||
                        shutdownIntent == RuntimeShutdownIntent.ApplicationExit;
             var requestedUtc = DateTime.UtcNow;
+            var hardDeadlineSeconds = ResolveApplicationExitHardDeadlineSeconds();
             _applicationExitDeadlineReceipt = WatchdogRuntime.ArmApplicationExitDeadline(
                 reason,
-                TimeSpan.FromSeconds(ApplicationExitHardDeadlineSeconds),
+                TimeSpan.FromSeconds(hardDeadlineSeconds),
                 shutdownIntent,
                 takeoverTransactionId);
             var preservePermit =
@@ -293,7 +296,7 @@ namespace MtEmbTest
                 ? new DateTime(
                     _applicationExitDeadlineReceipt.HardDeadlineUtcTicks,
                     DateTimeKind.Utc)
-                : requestedUtc.AddSeconds(ApplicationExitHardDeadlineSeconds);
+                : requestedUtc.AddSeconds(hardDeadlineSeconds);
             _ = Task.Run(() => RunLocalApplicationExitDeadlineAsync(
                 requestedUtc,
                 deadlineUtc,
@@ -307,6 +310,11 @@ namespace MtEmbTest
             string reason)
         {
             var diagnosticsLogged = false;
+            var activeTargetLogged = false;
+            var totalBudgetSeconds = Math.Max(1, (deadlineUtc - requestedUtc).TotalSeconds);
+            var diagnosticSeconds = Math.Min(
+                ApplicationExitDiagnosticDeadlineSeconds,
+                Math.Max(1, totalBudgetSeconds - 1));
             while (DateTime.UtcNow < deadlineUtc)
             {
                 var elapsed = DateTime.UtcNow - requestedUtc;
@@ -314,13 +322,25 @@ namespace MtEmbTest
                     0,
                     (int)Math.Ceiling((deadlineUtc - DateTime.UtcNow).TotalSeconds));
                 if (!diagnosticsLogged &&
-                    elapsed >= TimeSpan.FromSeconds(ApplicationExitDiagnosticDeadlineSeconds))
+                    elapsed >= TimeSpan.FromSeconds(diagnosticSeconds))
                 {
                     diagnosticsLogged = true;
                     ProjectLogHub.Write(
                         ProjectLogLevel.Error,
                         $"ApplicationExitDiagnosticsDeadline Reason={reason};" +
                         $"RemainingSeconds={remainingSeconds}",
+                        "独立看门狗");
+                }
+                if (!activeTargetLogged &&
+                    totalBudgetSeconds > IdleApplicationExitHardDeadlineSeconds &&
+                    elapsed >= TimeSpan.FromSeconds(ActiveApplicationExitTargetSeconds))
+                {
+                    activeTargetLogged = true;
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        $"ApplicationExitTargetExceeded Reason={reason};" +
+                        $"TargetSeconds={ActiveApplicationExitTargetSeconds};" +
+                        "继续等待仅用于完成数据落盘或既有安全交接。",
                         "独立看门狗");
                 }
                 TryPostApplicationExitCountdown(remainingSeconds);
@@ -350,6 +370,15 @@ namespace MtEmbTest
             }
         }
 
+        private int ResolveApplicationExitHardDeadlineSeconds()
+        {
+            var monitors = MdiChildren.OfType<FrmEpbMainMonitor>().ToArray();
+            if (monitors.Length == 0 ||
+                monitors.All(monitor => monitor.CanUseIdleFastCloseForApplicationExit))
+                return IdleApplicationExitHardDeadlineSeconds;
+            return ApplicationExitHardDeadlineSeconds;
+        }
+
         private void TryPostApplicationExitCountdown(int remainingSeconds)
         {
             if (IsDisposed || Disposing || !IsHandleCreated) return;
@@ -374,6 +403,15 @@ namespace MtEmbTest
                 RuntimeShutdownIntent.SessionClose);
         }
 
+        internal Task<RuntimeShutdownReceipt> ShutdownIdleWatchdogSessionAndReleaseUiAsync(
+            string reason)
+        {
+            return GetOrCreateWatchdogShutdownTask(
+                reason,
+                RuntimeShutdownIntent.SessionClose,
+                TimeSpan.FromSeconds(2));
+        }
+
         internal Task<RuntimeShutdownReceipt> ShutdownWatchdogForApplicationExitAndReleaseUiAsync(
             string reason)
         {
@@ -394,7 +432,8 @@ namespace MtEmbTest
 
         private Task<RuntimeShutdownReceipt> GetOrCreateWatchdogShutdownTask(
             string reason,
-            RuntimeShutdownIntent shutdownIntent)
+            RuntimeShutdownIntent shutdownIntent,
+            TimeSpan? retryWindow = null)
         {
             lock (_watchdogExitGate)
             {
@@ -422,18 +461,21 @@ namespace MtEmbTest
 
                 _watchdogShutdownTask = CompleteSharedWatchdogShutdownAsync(
                     reason,
-                    shutdownIntent);
+                    shutdownIntent,
+                    retryWindow);
                 return _watchdogShutdownTask;
             }
         }
 
         private async Task<RuntimeShutdownReceipt> CompleteSharedWatchdogShutdownAsync(
             string reason,
-            RuntimeShutdownIntent shutdownIntent)
+            RuntimeShutdownIntent shutdownIntent,
+            TimeSpan? retryWindow)
         {
             var receipt = await _watchdogUiAdapter.ShutdownAndReleaseAsync(
                     reason,
-                    shutdownIntent)
+                    shutdownIntent,
+                    retryWindow)
                 .ConfigureAwait(false);
             // A transport terminal receipt is the sole close authorization,
             // regardless of whether it was obtained by manual stop, monitor

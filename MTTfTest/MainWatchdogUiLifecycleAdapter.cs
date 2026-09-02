@@ -294,10 +294,12 @@ namespace MtEmbTest
 
         internal async Task<RuntimeShutdownReceipt> ShutdownAndReleaseAsync(
             string reason,
-            RuntimeShutdownIntent shutdownIntent = RuntimeShutdownIntent.SessionClose)
+            RuntimeShutdownIntent shutdownIntent = RuntimeShutdownIntent.SessionClose,
+            TimeSpan? retryWindow = null)
         {
             RuntimeShutdownReceipt receipt;
-            var deadlineUtc = DateTime.UtcNow.AddSeconds(15);
+            var deadlineUtc = DateTime.UtcNow.Add(
+                retryWindow ?? TimeSpan.FromSeconds(15));
             do
             {
                 Task<RuntimeShutdownReceipt> shutdown;
@@ -321,7 +323,7 @@ namespace MtEmbTest
                 }
                 // Exact identity mismatch is deliberately sticky inside the
                 // retention coordinator.  Replaying the same receipt for the
-                // remainder of the 15-second retry window cannot make progress
+                // remainder of the bounded retry window cannot make progress
                 // and only makes repeated close clicks look unresponsive.
                 if (receipt?.IsStickyBlockingFailure == true)
                 {

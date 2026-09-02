@@ -164,6 +164,8 @@ namespace MTEmbTest
         private int _closePersistenceWarningShown;
         /// <summary>操作员已明确点击“停止试验”；允许关闭或抛弃旧批次诊断后重新开始。</summary>
         private int _operatorStopRequested;
+        private int _monitorLifecycle = (int)EpbMonitorLifecycle.Initializing;
+        private int _monitorEnergizationAttempted;
         private int _stopUiGuard;
         private readonly ManualStopExitReceiptOwner _manualStopExitReceipt =
             new ManualStopExitReceiptOwner();
@@ -347,7 +349,7 @@ namespace MTEmbTest
                 if (CbBuzzerEnabled != null) { CbBuzzerEnabled.Enabled = false; CbBuzzerEnabled.Visible = false; }
                 if (BtnClearAlarms != null) { BtnClearAlarms.Enabled = false; BtnClearAlarms.Visible = false; }
 
-                var alarmCfgPath = Path.Combine(Environment.CurrentDirectory, "Config", "AlarmConfig.xml");
+                var alarmCfgPath = RuntimeConfigPaths.GetPath("AlarmConfig.xml");
                 if (!File.Exists(alarmCfgPath))
                 {
                     logger?.Warn($"未找到报警配置：{alarmCfgPath}（将不启用 RS-485 报警输出）", "报警");
@@ -558,7 +560,7 @@ namespace MTEmbTest
             try
             {
                 // 读取AIConfig.xml配置
-                var configPath = Path.Combine(Application.StartupPath, "Config", "AIConfig.xml");
+                var configPath = RuntimeConfigPaths.GetPath("AIConfig.xml");
                 var aiConfig = AiConfigLoader.Load(configPath);
                 var enabledRecords = aiConfig.Enabled().ToList();
 
@@ -874,6 +876,7 @@ namespace MTEmbTest
 
         private void FrmEpbMainMonitor_Load(object sender, EventArgs e)
         {
+            SetMonitorLifecycle(EpbMonitorLifecycle.Initializing);
             try
             {
                 DaqTimeSpanMilSeconds = 1000.0 / _daqRuntimeSettings.SampleRateHz;
@@ -883,7 +886,7 @@ namespace MTEmbTest
 
 
                 var ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1UsedDaqAIChannels);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out Dev1UsedDaqAIChannels);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -898,7 +901,7 @@ namespace MTEmbTest
 
 
                 ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2UsedDaqAIChannels);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev2", out Dev2UsedDaqAIChannels);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -913,7 +916,7 @@ namespace MTEmbTest
 
 
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", Dev1UsedDaqAIChannels,
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", Dev1UsedDaqAIChannels,
                     out Dev1DaqChannel, new string[] { }); //paramTypeFilter 参数为空，处理所有类型
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
@@ -929,7 +932,7 @@ namespace MTEmbTest
 
                 // Dev2通道, Dev2DaqChannel
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", Dev2UsedDaqAIChannels,
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev2", Dev2UsedDaqAIChannels,
                     out Dev2DaqChannel, new string[] { }); //paramTypeFilter 参数为空，不过滤
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
@@ -945,7 +948,7 @@ namespace MTEmbTest
 
                 // Dev1的系数映射
                 ReadMsg = ClsXmlOperation.GetDaqScaleMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToScale);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out Dev1ParaNameToScale);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -953,7 +956,7 @@ namespace MTEmbTest
                 }
 
                 ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToOffset);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out Dev1ParaNameToOffset);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -961,7 +964,7 @@ namespace MTEmbTest
                 }
 
                 ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToZeroValue);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out Dev1ParaNameToZeroValue);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -970,7 +973,7 @@ namespace MTEmbTest
 
                 // Dev2的系数映射
                 ReadMsg = ClsXmlOperation.GetDaqScaleMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToScale);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev2", out Dev2ParaNameToScale);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -978,7 +981,7 @@ namespace MTEmbTest
                 }
 
                 ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToOffset);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev2", out Dev2ParaNameToOffset);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -986,7 +989,7 @@ namespace MTEmbTest
                 }
 
                 ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToZeroValue);
+                    RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev2", out Dev2ParaNameToZeroValue);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     ShowOperatorMessage(ReadMsg);
@@ -1012,7 +1015,7 @@ namespace MTEmbTest
 
 
                 // 1) 先加载“软件默认 Config”下的配置（主要为了拿到 TestName / StoreDir 以及硬件配置）
-                var defaultConfigDir = Path.Combine(Environment.CurrentDirectory, "Config");
+                var defaultConfigDir = RuntimeConfigPaths.Directory;
                 var defaultCfg = ConfigLoader.LoadAll(defaultConfigDir, logger);
 
                 // 2) 根据默认 TestConfig 推算“项目 Config\TestConfig.xml”
@@ -1118,7 +1121,7 @@ namespace MTEmbTest
                 _ao = new AoController(_cfg.AO, logger);
 
                 aiConfigDetail =
-                    AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
+                    AiConfigLoader.Load(RuntimeConfigPaths.GetPath("AIConfig.xml"));
 
                 twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(
                     aiConfigDetail,
@@ -1236,15 +1239,39 @@ namespace MTEmbTest
                     _dataStorePath = string.Empty;
                     logger?.Info("Raw 原始数据落盘未启用；不创建 DataStore\\时间戳空目录。", "Storage");
                 }
+                SetMonitorLifecycle(EpbMonitorLifecycle.Idle);
             }
 
             catch (Exception ex)
             {
+                SetMonitorLifecycle(EpbMonitorLifecycle.InitializationFailed);
                 logger?.Error("主监控初始化失败。", "启动", ex);
                 ShowOperatorMessage(@"初始化错误 : " + ex.Message, "无人值守初始化", MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
+                if (!IsDisposed && !Disposing && IsHandleCreated)
+                    BeginInvoke((Action)Close);
             }
         }
+
+        internal EpbMonitorLifecycle MonitorLifecycle =>
+            (EpbMonitorLifecycle)Volatile.Read(ref _monitorLifecycle);
+
+        private void SetMonitorLifecycle(EpbMonitorLifecycle lifecycle)
+        {
+            Interlocked.Exchange(ref _monitorLifecycle, (int)lifecycle);
+        }
+
+        private bool CanUseIdleFastClose()
+        {
+            var pendingStop = _stopSessionReceipt.CaptureTask();
+            return EpbMonitorClosePolicy.CanUseIdleFastClose(
+                MonitorLifecycle,
+                _epb?.IsBatchSessionActive == true,
+                Volatile.Read(ref _monitorEnergizationAttempted) != 0,
+                pendingStop != null && !pendingStop.IsCompleted);
+        }
+
+        internal bool CanUseIdleFastCloseForApplicationExit => CanUseIdleFastClose();
 
         /// <summary>
         /// 初始化 EPB 控制器的试验记录列表：
@@ -2007,6 +2034,7 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void FrmEpbMainMonitor_FormClosed(object sender, FormClosedEventArgs e)
         {
+            SetMonitorLifecycle(EpbMonitorLifecycle.Closed);
             try
             {
                 ReleaseOwnedControlHardwareOnce();
@@ -2040,19 +2068,20 @@ namespace MTEmbTest
         private void ReleaseDirectControlHardwareFallback()
         {
             // EpbManager 尚未接管（初始化中途失败）或管理器释放异常时，先断开
-            // 电机DO，再归零液压AO，最后停止采集。每个控制器本身也必须幂等。
+            // 电机DO，再归零液压AO，最后停止采集；随后按创建顺序的逆序释放
+            // DAQ、AO、DO。每个控制器本身也必须幂等。
             try { _do?.AllOff(); }
             catch (Exception ex) { logger?.Warn("直接兜底关闭DO失败：" + ex.Message, "DO"); }
-            try { _do?.Dispose(); }
-            catch (Exception ex) { logger?.Warn("直接兜底释放DO失败：" + ex.Message, "DO"); }
             try { _ao?.ResetAll(); }
             catch (Exception ex) { logger?.Warn("直接兜底归零AO失败：" + ex.Message, "AO"); }
-            try { _ao?.Dispose(); }
-            catch (Exception ex) { logger?.Warn("直接兜底释放AO失败：" + ex.Message, "AO"); }
             try { twoDeviceAiAcquirer?.Stop(); }
             catch (Exception ex) { logger?.Warn("直接兜底停止DAQ失败：" + ex.Message, "DAQ"); }
             try { twoDeviceAiAcquirer?.Dispose(); }
             catch (Exception ex) { logger?.Warn("直接兜底释放DAQ失败：" + ex.Message, "DAQ"); }
+            try { _ao?.Dispose(); }
+            catch (Exception ex) { logger?.Warn("直接兜底释放AO失败：" + ex.Message, "AO"); }
+            try { _do?.Dispose(); }
+            catch (Exception ex) { logger?.Warn("直接兜底释放DO失败：" + ex.Message, "DO"); }
         }
 
         private void RevokeManualStopExitAuthorizationBeforeEnergization()
@@ -2839,6 +2868,8 @@ namespace MTEmbTest
                     if (!combined.CanRestart)
                         throw new InvalidOperationException(
                             "人工停止组合终态未完成：" + combined.Error);
+                    Interlocked.Exchange(ref _monitorEnergizationAttempted, 0);
+                    SetMonitorLifecycle(EpbMonitorLifecycle.Idle);
                     LogInfo($"停止试验组合终态完成；可以关闭软件或重新开始。" +
                             $"CommandId={stopCommandId}; Session={combined.SessionId}; " +
                             $"Lease={combined.SessionLease}");
@@ -3012,6 +3043,7 @@ namespace MTEmbTest
 
             e.Cancel = true;
             if (Interlocked.CompareExchange(ref _closingReentry, 1, 0) != 0) return;
+            SetMonitorLifecycle(EpbMonitorLifecycle.Stopping);
             _isClosing = true;
             ScheduleCloseOverlay();
             BeginMonitorCloseSequence();
@@ -3029,6 +3061,10 @@ namespace MTEmbTest
                     _isClosing = false;
                     Interlocked.Exchange(ref _formClosedFlag, 0);
                     Interlocked.Exchange(ref _closingReentry, 0);
+                    SetMonitorLifecycle(
+                        _epb?.IsBatchSessionActive == true
+                            ? EpbMonitorLifecycle.Running
+                            : EpbMonitorLifecycle.Idle);
                 }
             }
             catch (Exception ex)
@@ -3038,6 +3074,10 @@ namespace MTEmbTest
                 _isClosing = false;
                 Interlocked.Exchange(ref _formClosedFlag, 0);
                 Interlocked.Exchange(ref _closingReentry, 0);
+                SetMonitorLifecycle(
+                    _epb?.IsBatchSessionActive == true
+                        ? EpbMonitorLifecycle.Running
+                        : EpbMonitorLifecycle.Idle);
             }
         }
 
@@ -3068,6 +3108,8 @@ namespace MTEmbTest
         private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseAsync(
             bool closeAfterPreparation)
         {
+                var idleFastClose = CanUseIdleFastClose();
+                SetMonitorLifecycle(EpbMonitorLifecycle.Stopping);
                 var closeContext = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
                 _preparedCloseContext = _preparedCloseContext ?? closeContext;
                 var watchdogOwnsExit = Volatile.Read(ref _watchdogTakeoverExit) != 0;
@@ -3075,7 +3117,7 @@ namespace MTEmbTest
                                            watchdogOwnsExit ||
                                            !(_epb?.IsBatchSessionActive ?? false);
                 StopSafetyResult safety;
-                var stopSessionTask = _stopSessionReceipt.CaptureTask();
+                var stopSessionTask = idleFastClose ? null : _stopSessionReceipt.CaptureTask();
                 StopSessionReceipt combinedStop = null;
                 if (stopSessionTask != null)
                 {
@@ -3096,7 +3138,24 @@ namespace MTEmbTest
                     ? combinedStop.StopSafety
                     : _manualStopExitReceipt.TryCapture(
                         _epb?.IsBatchSessionActive ?? false);
-                if (reusableManualStop != null)
+                if (idleFastClose)
+                {
+                    safety = new StopSafetyResult
+                    {
+                        Source = StopSource.ApplicationClosing,
+                        CorrelationId = Guid.NewGuid().ToString("N"),
+                        MotorOffCommandSucceeded = true,
+                        PowerOffConfirmed = false,
+                        PowerDisposition = PowerShutdownDisposition.NotRequiredNoActiveTrial,
+                        PersistenceBoundaryConfirmed = true,
+                        RawStorageFlushed = true,
+                        LogicalQuiescenceConfirmed = true,
+                        StartedUtc = DateTime.UtcNow,
+                        CompletedUtc = DateTime.UtcNow
+                    };
+                    LogInfo("监控窗未开始试验，执行空闲快速关闭；不连接、不查询程控电源。");
+                }
+                else if (reusableManualStop != null)
                 {
                     safety = reusableManualStop;
                     LogInfo(
@@ -3176,8 +3235,8 @@ namespace MTEmbTest
                     return false;
                 }
 
-                if (!safety.PressureSafeConfirmed)
-                    LogInfo("[安全警告] 电机DO和程控电源均已确认关闭；仅压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
+                if (!idleFastClose && !safety.PressureSafeConfirmed)
+                    LogInfo("[安全警告] 停机处置已满足退出条件；压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
 
             // Main_Frm's shutdown boundary sends ApplicationClosing as part
@@ -3512,11 +3571,15 @@ namespace MTEmbTest
             }
 
             RuntimeShutdownReceipt shutdown = null;
-            if (safety.CanRestartInProcess)
+            if (EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(safety))
             {
                 if (main != null)
-                    shutdown = await main.ShutdownWatchdogSessionAndReleaseUiAsync(
-                            "MonitorCloseCompleted")
+                    shutdown = await (safety.PowerDisposition ==
+                                      PowerShutdownDisposition.NotRequiredNoActiveTrial
+                            ? main.ShutdownIdleWatchdogSessionAndReleaseUiAsync(
+                                "IdleMonitorCloseCompleted")
+                            : main.ShutdownWatchdogSessionAndReleaseUiAsync(
+                                "MonitorCloseCompleted"))
                         .ConfigureAwait(true);
             }
             if (shutdown?.IsCloseAuthorized == true)
@@ -5862,7 +5925,7 @@ namespace MTEmbTest
             {
                 try
                 {
-                    var src = Path.Combine(Environment.CurrentDirectory, "Config", file);
+                    var src = RuntimeConfigPaths.GetPath(file);
                     if (File.Exists(src)) File.Copy(src, Path.Combine(_dataStorePath, file), true);
                 }
                 catch

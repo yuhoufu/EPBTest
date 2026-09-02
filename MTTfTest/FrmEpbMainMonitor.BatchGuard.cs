@@ -110,6 +110,7 @@ namespace MTEmbTest
                     PostSafetyStatus("继续命令已接收，正在执行恢复预检…", false);
                     RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
+                    SetMonitorLifecycle(EpbMonitorLifecycle.Running);
                     var failedHydraulicGroups = await _epb
                         .ResumeInfrastructureAlarmGroupsAsync()
                         .ConfigureAwait(true);
@@ -251,9 +252,11 @@ namespace MTEmbTest
                 WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
                 LogInfo("独立看门狗已就绪。");
 
+                Interlocked.Exchange(ref _monitorEnergizationAttempted, 1);
                 var startTask = WinFormsWatchdogUiEntryCoordinator.StartIfAllowedAsync(
                     entryDecision,
                     () => StartNewBatchAsync(unattendedRecovery));
+                TrackBatchStartLifecycle(startTask);
 
                 if (unattendedRecovery)
                 {
@@ -271,16 +274,11 @@ namespace MTEmbTest
                 for (var i = 0; i < 20 && !(_epb?.IsBatchSessionActive ?? false); i++)
                     await Task.Delay(100).ConfigureAwait(true);
                 if (_epb?.IsBatchSessionActive ?? false)
+                {
                     Interlocked.Exchange(ref _operatorStopRequested, 0);
+                    SetMonitorLifecycle(EpbMonitorLifecycle.Running);
+                }
 
-                // 人工入口维持原来的快速释放按钮行为，但必须观察后台启动任务，避免
-                // async void 异常成为未观察异常。StartNewBatchAsync 的人工路径会自行
-                // 记录并显示可操作错误。
-                _ = startTask.ContinueWith(
-                    task => LogInfo($"启动后台任务异常：{task.Exception?.GetBaseException().Message}"),
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted,
-                    TaskScheduler.Default);
                 return null;
             }
             finally
@@ -292,6 +290,36 @@ namespace MTEmbTest
                 if (!IsDisposed && BtnStartTest != null)
                     ApplyBatchPauseState(_epb?.CurrentBatchPauseState ?? Controller.BatchPauseState.Idle);
             }
+        }
+
+        private void TrackBatchStartLifecycle(Task<BatchStartResult> startTask)
+        {
+            if (startTask == null)
+            {
+                Interlocked.Exchange(ref _monitorEnergizationAttempted, 0);
+                return;
+            }
+
+            _ = startTask.ContinueWith(
+                task =>
+                {
+                    if (task.IsFaulted)
+                        LogInfo($"启动后台任务异常：{task.Exception?.GetBaseException().Message}");
+                    var active = _epb?.IsBatchSessionActive == true;
+                    if (!active)
+                        Interlocked.Exchange(ref _monitorEnergizationAttempted, 0);
+                    var lifecycle = MonitorLifecycle;
+                    if (lifecycle == EpbMonitorLifecycle.Stopping ||
+                        lifecycle == EpbMonitorLifecycle.Closed ||
+                        lifecycle == EpbMonitorLifecycle.InitializationFailed)
+                        return;
+                    SetMonitorLifecycle(active
+                        ? EpbMonitorLifecycle.Running
+                        : EpbMonitorLifecycle.Idle);
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 }

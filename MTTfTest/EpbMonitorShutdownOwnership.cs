@@ -5,6 +5,41 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
+    internal enum EpbMonitorLifecycle
+    {
+        Initializing = 0,
+        Idle = 1,
+        Running = 2,
+        Stopping = 3,
+        InitializationFailed = 4,
+        Closed = 5
+    }
+
+    internal static class EpbMonitorClosePolicy
+    {
+        internal static bool CanUseIdleFastClose(
+            EpbMonitorLifecycle lifecycle,
+            bool batchSessionActive,
+            bool energizationAttempted,
+            bool stopTransactionActive)
+        {
+            return (lifecycle == EpbMonitorLifecycle.Idle ||
+                    lifecycle == EpbMonitorLifecycle.InitializationFailed ||
+                    lifecycle == EpbMonitorLifecycle.Initializing ||
+                    lifecycle == EpbMonitorLifecycle.Stopping) &&
+                   !batchSessionActive &&
+                   !energizationAttempted &&
+                   !stopTransactionActive;
+        }
+
+        internal static bool CanShutdownWatchdogGracefully(StopSafetyResult safety)
+        {
+            return safety != null &&
+                   (safety.CanRestartInProcess ||
+                    safety.PowerDisposition == PowerShutdownDisposition.NotRequiredNoActiveTrial);
+        }
+    }
+
     /// <summary>
     /// Owns the monitor form's hardware release boundary. The manager path is
     /// preferred once EpbManager has taken ownership; direct cleanup is only a

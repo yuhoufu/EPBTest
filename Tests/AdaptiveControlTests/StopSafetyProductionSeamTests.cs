@@ -45,6 +45,8 @@ namespace AdaptiveControlTests
                 EpbManagerHardwareReleaseIsSynchronousAndOnce, ref passed);
             Run("监控窗体硬件释放所有者统一manager与fallback路径",
                 MonitorHardwareReleaseOwnerIsOnce, ref passed);
+            Run("空闲及半初始化监控窗使用快速关闭且运行态禁止旁路",
+                MonitorIdleClosePolicyIsExplicit, ref passed);
             Run("人工停止关闭凭证绑定Run并在新启动时撤权",
                 ManualStopExitReceiptIsRunBound, ref passed);
             Run("AO释放后拒绝写入且不伪报冷启动归零失败",
@@ -155,6 +157,43 @@ namespace AdaptiveControlTests
                        null) &&
                    fallbackCalls == 1 && partialInitializationOwner.ReleaseCount == 1,
                 "EpbManager未创建时没有执行一次直接硬件兜底");
+        }
+
+        private static void MonitorIdleClosePolicyIsExplicit()
+        {
+            Assert(EpbMonitorClosePolicy.CanUseIdleFastClose(
+                       EpbMonitorLifecycle.Idle, false, false, false),
+                "未开始试验的Idle监控窗未进入快速关闭");
+            Assert(EpbMonitorClosePolicy.CanUseIdleFastClose(
+                       EpbMonitorLifecycle.InitializationFailed, false, false, false),
+                "半初始化失败监控窗未进入快速关闭");
+            Assert(EpbMonitorClosePolicy.CanUseIdleFastClose(
+                       EpbMonitorLifecycle.Stopping, false, false, false),
+                "FormClosing置Stopping后丢失了既有空闲关闭资格");
+            Assert(!EpbMonitorClosePolicy.CanUseIdleFastClose(
+                       EpbMonitorLifecycle.Running, true, true, false),
+                "活动试验错误绕过完整StopAll");
+            Assert(!EpbMonitorClosePolicy.CanUseIdleFastClose(
+                       EpbMonitorLifecycle.Idle, false, true, false),
+                "已经尝试上电的会话错误按纯空闲关闭");
+            Assert(!EpbMonitorClosePolicy.CanUseIdleFastClose(
+                       EpbMonitorLifecycle.Idle, false, false, true),
+                "在途停止事务错误按纯空闲关闭");
+
+            var idleSafety = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = false,
+                PowerDisposition = PowerShutdownDisposition.NotRequiredNoActiveTrial,
+                PersistenceBoundaryConfirmed = true,
+                RawStorageFlushed = true,
+                LogicalQuiescenceConfirmed = true
+            };
+            Assert(EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(idleSafety),
+                "空闲关闭应释放已创建的Watchdog UI会话而不是请求安全接管");
+            idleSafety.PowerDisposition = PowerShutdownDisposition.CommunicationUnavailableSkipped;
+            Assert(!EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(idleSafety),
+                "活动试验断电未确认时仍应保留安全接管路径");
         }
 
         private static void ManualStopExitReceiptIsRunBound()
