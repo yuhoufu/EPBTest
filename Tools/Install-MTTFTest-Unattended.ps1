@@ -326,6 +326,9 @@ $root = Resolve-SafeDirectory $InstallRoot 'InstallRoot'
 $source = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
 
 if ($Mode -eq 'Uninstall') {
+    Write-Warning "即将删除 $root 下的程序、服务、计划任务和快捷方式。"
+    Write-Host '卸载前必须先安全停止试验并完全退出主程序。'
+    Write-Host 'ProgramData 中的现场配置、日志和事故证据不会删除。'
     if ($PSCmdlet.ShouldProcess($root, '卸载程序、服务、登录任务和快捷方式（保留 ProgramData）')) {
         Stop-Supervisor
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue

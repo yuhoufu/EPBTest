@@ -1,6 +1,11 @@
 @echo off
 setlocal
-chcp 65001 >nul
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Service -Name MTTFTestSupervisor -ErrorAction SilentlyContinue; $t=Get-ScheduledTask -TaskName MTTFTestSessionAgent -ErrorAction SilentlyContinue; $a=Get-ScheduledTask -TaskName MTTFTestAutoStart -ErrorAction SilentlyContinue; Write-Host ('监督服务：' + $(if($s){$s.Status}else{'未安装'})); Write-Host ('登录代理任务：' + $(if($t){$t.State}else{'未安装'})); Write-Host ('主程序自启动任务：' + $(if($a){$a.State}else{'未安装'})); Get-Process -Name 'MTTFTest','MTTFTest.Watchdog','MTTFTest.SessionAgent','MTTFTest.SafetyAgent' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,SessionId,StartTime,Path | Format-Table -AutoSize"
+if defined MTTFTEST_QUICKDEPLOY_PARSE_ONLY goto :parse_only
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Service -Name MTTFTestSupervisor -ErrorAction SilentlyContinue; $t=Get-ScheduledTask -TaskName MTTFTestSessionAgent -ErrorAction SilentlyContinue; $a=Get-ScheduledTask -TaskName MTTFTestAutoStart -ErrorAction SilentlyContinue; Write-Host ('Supervisor service: ' + $(if($s){$s.Status}else{'Not installed'})); Write-Host ('SessionAgent task: ' + $(if($t){$t.State}else{'Not installed'})); Write-Host ('AutoStart task: ' + $(if($a){$a.State}else{'Not installed'})); Get-Process -Name 'MTTFTest','MTTFTest.Watchdog','MTTFTest.SessionAgent','MTTFTest.SafetyAgent' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,SessionId,StartTime,Path | Format-Table -AutoSize"
+set "MTTFTEST_RESULT=%ERRORLEVEL%"
 if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
+endlocal & exit /b %MTTFTEST_RESULT%
+:parse_only
+echo QUICKDEPLOY_STATUS_PARSE_PASS
 endlocal
+exit /b 0

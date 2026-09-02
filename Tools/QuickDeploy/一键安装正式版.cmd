@@ -1,6 +1,5 @@
 @echo off
 setlocal
-chcp 65001 >nul
 set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
 set "MTTFTEST_PACKAGE_SOURCE=%~dp0"
 set "MTTFTEST_ELEVATE_TARGET=%~f0"
@@ -11,18 +10,9 @@ if errorlevel 1 (
   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
   exit /b
 )
-echo 正在安装主程序、监督服务、登录任务和快捷方式...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $source = Get-Content -LiteralPath $env:MTTFTEST_DEPLOY_SCRIPT -Raw -Encoding UTF8; & ([ScriptBlock]::Create($source)) -Mode Install -SourceDirectory $env:MTTFTEST_PACKAGE_SOURCE -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') } catch { Write-Error $_; exit 1 }"
-if errorlevel 1 goto :failed
-echo.
-echo 安装完成。以后请使用桌面快捷方式启动程序。
-set "MTTFTEST_RESULT=0"
-goto :done
-:failed
-echo.
-echo 安装失败，请保留本窗口信息用于排查。
-set "MTTFTEST_RESULT=1"
-:done
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Install -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%ProgramFiles%\MTTFTest"
+set "MTTFTEST_RESULT=%ERRORLEVEL%"
+if not "%MTTFTEST_RESULT%"=="0" echo ERROR: installation failed. ExitCode=%MTTFTEST_RESULT%
 if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause
 endlocal & exit /b %MTTFTEST_RESULT%
 :parse_only

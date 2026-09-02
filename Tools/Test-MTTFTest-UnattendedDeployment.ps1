@@ -113,10 +113,16 @@ try {
     foreach ($quickDeployFile in @(
             '一键安装正式版.cmd', '一键修复.cmd', '一键卸载.cmd',
             '检查运行状态.cmd', '启动试验.cmd', '快捷部署说明.md')) {
-        if (-not (Test-Path -LiteralPath `
-                (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') $quickDeployFile) `
-                -PathType Leaf)) {
+        $quickDeployPath = Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') $quickDeployFile
+        if (-not (Test-Path -LiteralPath $quickDeployPath -PathType Leaf)) {
             throw "快捷部署目录缺少文件：$quickDeployFile"
+        }
+        if ([IO.Path]::GetExtension($quickDeployPath) -eq '.cmd') {
+            $nonAsciiBytes = @([IO.File]::ReadAllBytes($quickDeployPath) |
+                Where-Object { $_ -gt 127 })
+            if ($nonAsciiBytes.Count -ne 0) {
+                throw "快捷部署批处理必须保持纯 ASCII，中文提示应由 PowerShell 输出：$quickDeployFile"
+            }
         }
     }
     Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'QuickDeploy') -File |
@@ -134,7 +140,9 @@ try {
         $commandCases = @(
             @('一键安装正式版.cmd', 'QUICKDEPLOY_INSTALL_PARSE_PASS'),
             @('一键修复.cmd', 'QUICKDEPLOY_REPAIR_PARSE_PASS'),
-            @('一键卸载.cmd', 'QUICKDEPLOY_UNINSTALL_PARSE_PASS'))
+            @('一键卸载.cmd', 'QUICKDEPLOY_UNINSTALL_PARSE_PASS'),
+            @('检查运行状态.cmd', 'QUICKDEPLOY_STATUS_PARSE_PASS'),
+            @('启动试验.cmd', 'QUICKDEPLOY_LAUNCH_PARSE_PASS'))
         foreach ($case in $commandCases) {
             $commandPath = Join-Path $testRoot $case[0]
             $output = @(& $env:ComSpec /d /c "`"$commandPath`"" 2>&1)
@@ -147,7 +155,7 @@ try {
     finally {
         $env:MTTFTEST_QUICKDEPLOY_PARSE_ONLY = $previousParseOnly
     }
-    Write-Output 'PASS QuickDeployCommandParse 3/3'
+    Write-Output 'PASS QuickDeployCommandParse 5/5'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
