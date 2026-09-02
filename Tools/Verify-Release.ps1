@@ -130,8 +130,11 @@ function Assert-VerificationEvidence {
 
     Assert-CompletePassSummary 'powerSupplyDebuggerTests' (
         Get-RequiredJsonProperty $Verification 'powerSupplyDebuggerTests' 'identity.verification')
-    Assert-CompletePassSummary 'releaseBuildNoMandatorySoak' (
-        Get-RequiredJsonProperty $Verification 'releaseBuildNoMandatorySoak' 'identity.verification')
+    $noMandatorySoak = Get-RequiredJsonProperty `
+        $Verification 'releaseBuildNoMandatorySoak' 'identity.verification'
+    if ($noMandatorySoak -ne 'PASS ReleaseBuildNoMandatorySoak 1/1') {
+        throw "verification.releaseBuildNoMandatorySoak 未通过：$noMandatorySoak"
+    }
 
     $fieldGateSummary = Get-RequiredJsonProperty $Verification 'fieldGateTests' 'identity.verification'
     if ($fieldGateSummary -isnot [string] -or
