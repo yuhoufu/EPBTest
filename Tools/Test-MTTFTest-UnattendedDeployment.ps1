@@ -78,6 +78,29 @@ foreach ($releaseScript in $releaseScripts) {
 }
 Write-Output 'PASS ReleaseBuildNoMandatorySoak 1/1'
 
+$simplePackageScript = Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'
+$simplePackageText = [IO.File]::ReadAllText($simplePackageScript, [Text.Encoding]::UTF8)
+foreach ($removedComplexStep in @(
+        'Build-Release.ps1',
+        'Verify-Release.ps1',
+        'New-QuickDeployBundle.ps1',
+        'AllowDirtyCandidate')) {
+    if ($simplePackageText.Contains($removedComplexStep)) {
+        throw "简易打包仍依赖复杂发布步骤：$removedComplexStep"
+    }
+}
+foreach ($requiredSimpleStep in @(
+        'MTTfTest\MTTfTest.csproj',
+        '/t:Rebuild',
+        '/p:Configuration=Release',
+        '7-Zip 完整性测试失败',
+        'Get-FileHash')) {
+    if (-not $simplePackageText.Contains($requiredSimpleStep)) {
+        throw "简易打包缺少必要步骤：$requiredSimpleStep"
+    }
+}
+Write-Output 'PASS SimpleVsReleasePackaging 1/1'
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ('EPBTest-QuickDeploy-' + [Guid]::NewGuid().ToString('N'))
 try {
