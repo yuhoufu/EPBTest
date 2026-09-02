@@ -38,6 +38,8 @@ foreach ($required in @(
         'Stop-InstalledSessionAgent',
         'Assert-InstalledMainStopped',
         'Initialize-RuntimeConfig',
+        'Remove-InstalledProgramFiles',
+        'ProgramData 配置、日志和事故证据已保留',
         'Test-CurrentSlotReplacementRequired',
         'MTTFTestAutoStart',
         'MTTFTest.FirstRun.configured',
@@ -93,6 +95,9 @@ foreach ($requiredSimpleStep in @(
         'MTTfTest\MTTfTest.csproj',
         '/t:Rebuild',
         '/p:Configuration=Release',
+        'QuickDeploy-Installer.ps1',
+        'MTTFTest.UnattendedMode.required',
+        '一键卸载.cmd',
         '7-Zip 完整性测试失败',
         'Get-FileHash')) {
     if (-not $simplePackageText.Contains($requiredSimpleStep)) {
@@ -105,6 +110,15 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ('EPBTest-QuickDeploy-' + [Guid]::NewGuid().ToString('N'))
 try {
     [void](New-Item -ItemType Directory -Path $testRoot)
+    foreach ($quickDeployFile in @(
+            '一键安装正式版.cmd', '一键修复.cmd', '一键卸载.cmd',
+            '检查运行状态.cmd', '启动试验.cmd', '快捷部署说明.md')) {
+        if (-not (Test-Path -LiteralPath `
+                (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') $quickDeployFile) `
+                -PathType Leaf)) {
+            throw "快捷部署目录缺少文件：$quickDeployFile"
+        }
+    }
     Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'QuickDeploy') -File |
         Copy-Item -Destination $testRoot -Force
     Copy-Item -LiteralPath $installer `

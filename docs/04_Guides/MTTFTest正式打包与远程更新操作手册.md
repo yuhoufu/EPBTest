@@ -18,7 +18,7 @@ MTTfTest.csproj Release Rebuild
     → SHA-256
 ```
 
-不再经过受控 Release 中转、Git 干净门禁、完整自动化回归或二次 QuickDeploy 封包。
+不再经过受控 Release 中转、Git 干净门禁、完整自动化回归或二次 QuickDeploy 封包。构建完成后，脚本会自动把 `Tools\QuickDeploy` 的最新版脚本和说明加入正式包根目录。
 
 ## 2. 成功判断
 
@@ -51,7 +51,7 @@ MTTFTest_V<版本>_<时间>.7z.result.json
 1. 自动查找 Visual Studio MSBuild；
 2. 自动查找 `7z.exe`；
 3. 对主项目执行 `Release`、`AnyCPU` 重建，项目自身目标平台仍为 x86；
-4. 确认主程序、配置、Controller 和 Watchdog/Agent 文件存在；
+4. 确认主程序、配置、Controller、Watchdog/Agent 及 QuickDeploy 维护文件存在；
 5. 使用 7-Zip 压缩 `MTTfTest\bin\Release`；
 6. 执行 `7z t` 完整性测试；
 7. 生成 SHA-256 和结果摘要。
@@ -112,9 +112,33 @@ git status --short
 1. 安全停止正在运行的试验；
 2. 等待 DO、AO、电源处置和数据落盘完成；
 3. 完全退出旧程序；
-4. 解压新包并运行其中的 `MTTFTest.exe`。
+4. 解压新包并运行其中的 `一键安装正式版.cmd`。
 
-## 7. 常见失败
+正式包根目录同时提供：
+
+```text
+一键安装正式版.cmd
+一键修复.cmd
+一键卸载.cmd
+检查运行状态.cmd
+启动试验.cmd
+快捷部署说明.md
+```
+
+## 7. 卸载旧程序
+
+安全停止试验并完全退出主程序后，从任一完整解压的正式包中双击 `一键卸载.cmd`，接受管理员权限提示并输入 `Y` 确认。
+
+卸载会删除以下内容：
+
+- `C:\Program Files\MTTFTest` 程序目录；
+- `MTTFTestSupervisor` 服务；
+- `MTTFTestSessionAgent` 和 `MTTFTestAutoStart` 计划任务；
+- 桌面和开始菜单快捷方式。
+
+`C:\ProgramData\MTTFTest` 下的现场配置、日志和事故证据会保留。重新安装最新版时，运行新包中的 `一键安装正式版.cmd` 即可继续使用原配置。
+
+## 8. 常见失败
 
 ### 找不到 MSBuild
 
@@ -136,6 +160,6 @@ git status --short
 
 该压缩包不可交付，修复磁盘空间或 7-Zip 环境后重新生成。
 
-## 8. 严格发布流程
+## 9. 严格发布流程
 
 原有 `Build-Release.ps1`、`Verify-Release.ps1` 和 `New-QuickDeployBundle.ps1` 仍保留，供需要完整自动化回归、构建身份和严格审计时手工使用。普通 VS 风格打包不再调用这些脚本。

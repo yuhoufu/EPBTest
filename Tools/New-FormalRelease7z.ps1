@@ -139,6 +139,29 @@ try {
     if ([string]::IsNullOrWhiteSpace($version) -or $version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
         throw "无法从 MTTFTest.exe 识别四段版本号：$version"
     }
+
+    $quickDeploySource = Join-Path $PSScriptRoot 'QuickDeploy'
+    if (-not (Test-Path -LiteralPath $quickDeploySource -PathType Container)) {
+        throw "维护脚本目录不存在：$quickDeploySource"
+    }
+    foreach ($file in Get-ChildItem -LiteralPath $quickDeploySource -File) {
+        Copy-Item -LiteralPath $file.FullName -Destination $releaseDirectory -Force
+    }
+    $installerSource = Join-Path $PSScriptRoot 'Install-MTTFTest-Unattended.ps1'
+    $installerDestination = Join-Path $releaseDirectory 'QuickDeploy-Installer.ps1'
+    [IO.File]::WriteAllText(
+        $installerDestination,
+        [IO.File]::ReadAllText($installerSource, [Text.Encoding]::UTF8),
+        (New-Object Text.UTF8Encoding($true)))
+    foreach ($commandFile in Get-ChildItem -LiteralPath $releaseDirectory -Filter '*.cmd' -File) {
+        [IO.File]::WriteAllLines(
+            $commandFile.FullName,
+            [IO.File]::ReadAllLines($commandFile.FullName, [Text.Encoding]::UTF8),
+            $utf8NoBom)
+    }
+    [void](New-Item -ItemType File -Path `
+        (Join-Path $releaseDirectory 'MTTFTest.UnattendedMode.required') -Force)
+
     $requiredFiles = @(
         'MTTFTest.exe',
         'Controller.dll',
@@ -147,7 +170,14 @@ try {
         'MTTFTest.SessionAgent.exe',
         'MTTFTest.SafetyAgent.exe',
         'MTTFTest.Watchdog.Protocol.dll',
-        'Config\TestConfig.xml'
+        'Config\TestConfig.xml',
+        'QuickDeploy-Installer.ps1',
+        '一键安装正式版.cmd',
+        '一键修复.cmd',
+        '一键卸载.cmd',
+        '检查运行状态.cmd',
+        '快捷部署说明.md',
+        'MTTFTest.UnattendedMode.required'
     )
     $missing = @($requiredFiles | Where-Object {
         -not (Test-Path -LiteralPath (Join-Path $releaseDirectory $_) -PathType Leaf)
