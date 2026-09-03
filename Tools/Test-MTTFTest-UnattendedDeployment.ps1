@@ -331,6 +331,27 @@ try {
     }
     Write-Output 'PASS QuickDeployArgumentBinding 3/3'
 
+    $nestedPackage = Join-Path $testRoot 'Package'
+    [void](New-Item -ItemType Directory -Path $nestedPackage)
+    [IO.File]::WriteAllText(
+        (Join-Path $nestedPackage 'MTTFTest.exe'),
+        'nested-parse-only',
+        (New-Object Text.UTF8Encoding($false)))
+    try {
+        $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = '1'
+        $commandPath = Join-Path $testRoot '一键安装正式版.cmd'
+        $output = @(& $env:ComSpec /d /c "`"$commandPath`"" 2>&1)
+        $expected = "QUICKDEPLOY_ARGUMENT_PROBE_PASS Mode=Install Source=$nestedPackage Root=$expectedInstallRoot"
+        if ($LASTEXITCODE -ne 0 -or
+            (@($output | Where-Object { [string]$_ -eq $expected }).Count -ne 1)) {
+            throw "快捷部署没有优先使用嵌套正式包：Expected=$expected; Exit=$LASTEXITCODE; Output=$($output -join ' | ')"
+        }
+    }
+    finally {
+        $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = $previousArgumentProbe
+    }
+    Write-Output 'PASS QuickDeployNestedFormalPackage 1/1'
+
     $uninstallCommandText = [IO.File]::ReadAllText(
         (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') '一键卸载.cmd'),
         [Text.Encoding]::ASCII)

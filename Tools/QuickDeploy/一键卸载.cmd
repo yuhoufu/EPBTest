@@ -1,7 +1,8 @@
 @echo off
 setlocal
 set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
-set "MTTFTEST_PACKAGE_SOURCE=%~dp0."
+set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+if not exist "%MTTFTEST_PACKAGE_SOURCE%\MTTFTest.exe" set "MTTFTEST_PACKAGE_SOURCE=%~dp0."
 set "MTTFTEST_ELEVATE_TARGET=%~f0"
 set "MTTFTEST_PROGRAM_FILES=%ProgramFiles(x86)%"
 if not defined MTTFTEST_PROGRAM_FILES set "MTTFTEST_PROGRAM_FILES=%ProgramFiles%"
