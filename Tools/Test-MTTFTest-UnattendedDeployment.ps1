@@ -307,6 +307,19 @@ foreach ($requiredV3PackageContract in @(
 }
 Write-Output 'PASS V3OperatorPackageBuilderContract 1/1'
 
+foreach ($windowsPowerShellEntry in @(
+        (Join-Path $PSScriptRoot 'Build-V3Installer.ps1'),
+        (Join-Path $PSScriptRoot 'New-QuickDeployBundle.ps1'))) {
+    $entryBytes = [IO.File]::ReadAllBytes($windowsPowerShellEntry)
+    if ($entryBytes.Length -lt 3 -or
+        $entryBytes[0] -ne 0xEF -or
+        $entryBytes[1] -ne 0xBB -or
+        $entryBytes[2] -ne 0xBF) {
+        throw "Windows PowerShell 5.1 中文入口缺少 UTF-8 BOM：$windowsPowerShellEntry"
+    }
+}
+Write-Output 'PASS V3PackageWindowsPowerShell51Encoding 1/1'
+
 $simplePackageScript = Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'
 $simplePackageText = [IO.File]::ReadAllText($simplePackageScript, [Text.Encoding]::UTF8)
 foreach ($removedComplexStep in @(
