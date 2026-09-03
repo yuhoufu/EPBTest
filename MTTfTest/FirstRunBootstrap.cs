@@ -81,9 +81,14 @@ namespace MtEmbTest
             if (formalMode && !recoveryProcess && !runningFromInstalledDirectory &&
                 ShouldLaunchInstalledExecutable(executable, installedExecutable))
             {
+                var installedLauncher = Path.Combine(
+                    Path.GetDirectoryName(installedExecutable),
+                    "MTTFTest.Watchdog.exe");
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = installedExecutable,
+                    FileName = installedLauncher,
+                    Arguments = "--launch-main --main-executable " +
+                                Quote(installedExecutable),
                     WorkingDirectory = Path.GetDirectoryName(installedExecutable),
                     UseShellExecute = true
                 });
@@ -170,9 +175,14 @@ namespace MtEmbTest
                     MessageBoxIcon.Error);
                 return false;
             }
+            var launcher = Path.Combine(
+                Path.GetDirectoryName(installedExecutable),
+                "MTTFTest.Watchdog.exe");
             Process.Start(new ProcessStartInfo
             {
-                FileName = installedExecutable,
+                FileName = launcher,
+                Arguments = "--launch-main --main-executable " +
+                            Quote(installedExecutable),
                 WorkingDirectory = Path.GetDirectoryName(installedExecutable),
                 UseShellExecute = true
             });

@@ -30,7 +30,8 @@ namespace MTTFTest.SessionAgent
                 {
                     WriteAudit(
                         "SessionAgentStarted",
-                        $"Schema=5;DesktopSession={process.SessionId};PID={process.Id}");
+                        $"Schema={SessionAgentProtocol.SchemaVersion};" +
+                        $"DesktopSession={process.SessionId};PID={process.Id}");
                     while (true)
                     {
                         using (var pipe = CreatePipe(process.SessionId))
@@ -141,29 +142,28 @@ namespace MTTFTest.SessionAgent
                     StringComparison.Ordinal))
                 throw new InvalidDataException("LaunchCapabilityExecutableMismatch");
 
-            var stateDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "MTTFTest",
-                "SessionAgent",
-                "capabilities");
+            var path = SessionAgentProtocol.ConsumptionPath(
+                capability.CapabilityId);
+            var stateDirectory = Path.GetDirectoryName(path);
             Directory.CreateDirectory(stateDirectory);
-            var path = Path.Combine(
-                stateDirectory,
-                "capability-" + capability.CapabilityId + ".json");
             if (File.Exists(path))
                 throw new InvalidOperationException("LaunchCapabilityAlreadyConsumed");
-            var record = new CapabilityConsumptionRecord
+            var record = new SessionLaunchConsumptionRecord
             {
-                SchemaVersion = 5,
+                SchemaVersion = SessionAgentProtocol.SchemaVersion,
                 CapabilityId = capability.CapabilityId,
                 SessionId = capability.SessionId,
                 PermitGeneration = capability.PermitGeneration,
                 PermitId = capability.PermitId,
+                LaunchNonce = capability.LaunchNonce,
+                ExecutablePath = executable,
                 ExecutableSha256 = capability.ExecutableSha256,
                 ArgumentsSha256 = capability.ArgumentsSha256,
+                CapabilitySealBase64 = Convert.ToBase64String(seal),
                 State = "LaunchIntent",
                 ConsumedUtcTicks = now
             };
+            WriteNew(path + ".capability", Json.Serialize(capability));
             WriteNew(path, Json.Serialize(record));
             var process = Process.Start(new ProcessStartInfo
             {
@@ -252,19 +252,5 @@ namespace MTTFTest.SessionAgent
             catch { }
         }
 
-        private sealed class CapabilityConsumptionRecord
-        {
-            public int SchemaVersion { get; set; }
-            public string CapabilityId { get; set; }
-            public string SessionId { get; set; }
-            public long PermitGeneration { get; set; }
-            public string PermitId { get; set; }
-            public string ExecutableSha256 { get; set; }
-            public string ArgumentsSha256 { get; set; }
-            public string State { get; set; }
-            public long ConsumedUtcTicks { get; set; }
-            public int ProcessId { get; set; }
-            public long ProcessStartUtcTicks { get; set; }
-        }
     }
 }

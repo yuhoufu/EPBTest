@@ -593,6 +593,49 @@ namespace MTTFTest.Watchdog
 
     internal sealed class WatchdogHost : IDisposable
     {
+        internal static bool RequiresSupervisorSafetyAuthority(
+            string executablePath)
+        {
+            if (string.IsNullOrWhiteSpace(executablePath)) return false;
+            string directory;
+            try
+            {
+                directory = Path.GetDirectoryName(Path.GetFullPath(executablePath));
+            }
+            catch
+            {
+                return false;
+            }
+            return !string.IsNullOrWhiteSpace(directory) &&
+                   File.Exists(Path.Combine(
+                       directory,
+                       WatchdogRuntimeConfigPaths.FormalModeMarkerName));
+        }
+
+        internal static bool ExecutableSha256Matches(
+            string executablePath,
+            string expectedSha256)
+        {
+            if (string.IsNullOrWhiteSpace(executablePath) ||
+                !File.Exists(executablePath))
+                return false;
+            var actual = SupervisorProtocol.ComputeSha256(executablePath);
+            return Sha256Equals(actual, expectedSha256);
+        }
+
+        private static bool Sha256Equals(string actual, string expected)
+        {
+            if ((actual?.Length ?? 0) != 64 || (expected?.Length ?? 0) != 64)
+                return false;
+            for (var index = 0; index < 64; index++)
+            {
+                if (!Uri.IsHexDigit(actual[index]) ||
+                    !Uri.IsHexDigit(expected[index]))
+                    return false;
+            }
+            return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
+        }
+
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private readonly WatchdogArguments _args;
         private readonly object _gate = new object();
@@ -653,6 +696,7 @@ namespace MTTFTest.Watchdog
         private int _safetyPrerequisiteRetryStarted;
         private int _recoveryBlockedStopRequested;
         private int _heartbeatSuspectLogged;
+        private int _firstLivenessEvidenceCaptured;
         private int _unstructuredRecoveryLogged;
         private int _terminalPublished;
         private int _circuitHalfOpenStarted;
@@ -666,6 +710,8 @@ namespace MTTFTest.Watchdog
         private int _manualStopTakeoverStarted;
         private int _manualPauseSafetyTakeoverStarted;
         private int _safetyHandoffStarted;
+        private readonly object _safetyAuthorityTokenGate = new object();
+        private SupervisorSafetyAuthorityToken _safetyAuthorityToken;
         private int _applicationExitDeadlineStarted;
         private int _physicalStopConfirmed;
         private int _transitionActive;
@@ -1744,7 +1790,11 @@ namespace MTTFTest.Watchdog
                     }
                     _attached = true;
                     Interlocked.Exchange(ref _heartbeatSuspectLogged, 0);
-                    _applicationLiveness.ObserveHeartbeat();
+                    var semanticAgeSeconds = SemanticSnapshotAgeSeconds(
+                        message.Heartbeat,
+                        DateTime.UtcNow);
+                    if (semanticAgeSeconds < 2)
+                        _applicationLiveness.ObserveHeartbeat();
                     message.Heartbeat.AttachEpoch = Volatile.Read(
                         ref _validatedAttachEpoch);
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
@@ -2438,6 +2488,38 @@ namespace MTTFTest.Watchdog
                         Send(WatchdogMessageType.Ping, "HeartbeatSuspect", null);
                     }
                     var heartbeat = _journal.LastHeartbeat;
+                    var semanticSnapshotAge = SemanticSnapshotAgeSeconds(
+                        heartbeat,
+                        DateTime.UtcNow);
+                    var typedClosingGrace = heartbeat != null &&
+                        !string.IsNullOrWhiteSpace(heartbeat.TypedExitTransactionId) &&
+                        semanticSnapshotAge < 30 &&
+                        (string.Equals(heartbeat.UiLifecycle, "Stopping",
+                             StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(heartbeat.UiLifecycle, "Closed",
+                             StringComparison.OrdinalIgnoreCase));
+                    if (semanticSnapshotAge >= 1 && !typedClosingGrace &&
+                        Interlocked.CompareExchange(
+                            ref _firstLivenessEvidenceCaptured,
+                            1,
+                            0) == 0)
+                    {
+                        RecordEvent(
+                            "SemanticSnapshotStalledFirstEvidence",
+                            $"Pulse={heartbeat?.PulseSequence};" +
+                            $"SnapshotRevision={heartbeat?.SnapshotRevision};" +
+                            $"SnapshotAgeSeconds={semanticSnapshotAge:F3};" +
+                            $"UiLifecycle={heartbeat?.UiLifecycle};" +
+                            $"ControlProgress={heartbeat?.ControlProgressVersion}");
+                        CaptureFirstLivenessEvidence(
+                            currentProcessId: _journal.CurrentPid,
+                            currentProcessStartUtcTicks:
+                                _journal.CurrentProcessStartUtcTicks,
+                            reason: "SemanticSnapshotStalled");
+                    }
+                    var effectiveHeartbeatAge = typedClosingGrace
+                        ? heartbeatAge
+                        : Math.Max(heartbeatAge, semanticSnapshotAge);
                     var eligibleChannels = GetRecoveryEligibleChannels(heartbeat);
                     var processAlive = IsCurrentProcessAlive();
                     int currentProcessId;
@@ -2451,7 +2533,7 @@ namespace MTTFTest.Watchdog
                     lock (_gate) activeSendOwner = _sendOwner;
                     var attachEpoch = Volatile.Read(ref _validatedAttachEpoch);
                     var liveness = _applicationLiveness.Evaluate(
-                        heartbeatAge,
+                        effectiveHeartbeatAge,
                         processAlive,
                         currentProcessId,
                         currentProcessStartUtcTicks,
@@ -2487,7 +2569,7 @@ namespace MTTFTest.Watchdog
                     }
                     var heartbeatAgeForTakeover = liveness.SuppressHeartbeatTakeover
                         ? 0
-                        : heartbeatAge;
+                        : effectiveHeartbeatAge;
                     var nowUtc = DateTime.UtcNow;
                     var manualPauseCommanded = heartbeat != null &&
                         WatchdogTakeoverPolicy.IsManualPauseCommanded(
@@ -3501,7 +3583,7 @@ namespace MTTFTest.Watchdog
                 }
                 else
                 {
-                    handoff.SchemaVersion = 5;
+                    handoff.SchemaVersion = SupervisorProtocol.SchemaVersion;
                     handoff.CrashRecovery = true;
                     handoff.OldProcessExitProven = true;
                     handoff.OldProcessId = oldIdentity.ProcessId;
@@ -3555,7 +3637,7 @@ namespace MTTFTest.Watchdog
                     return false;
                 if (!closing.OldProcessExitProven || closing.SchemaVersion < 5)
                 {
-                    closing.SchemaVersion = 5;
+                    closing.SchemaVersion = SupervisorProtocol.SchemaVersion;
                     closing.OldProcessExitProven = true;
                     closing.OldProcessId = oldIdentity.ProcessId;
                     closing.OldProcessStartUtcTicks =
@@ -3683,14 +3765,12 @@ namespace MTTFTest.Watchdog
                     !File.Exists(seed.SafetyAgentExecutablePath))
                     throw new FileNotFoundException(
                         "CrashRecoverySeedExecutableMissing");
-                var mainSha = DurableJsonFileStore.ComputeSha256(
-                    File.ReadAllBytes(seed.MainExecutablePath));
-                var agentSha = DurableJsonFileStore.ComputeSha256(
-                    File.ReadAllBytes(seed.SafetyAgentExecutablePath));
-                if (!string.Equals(mainSha, seed.MainExecutableSha256,
-                        StringComparison.Ordinal) ||
-                    !string.Equals(agentSha, seed.SafetyAgentExecutableSha256,
-                        StringComparison.Ordinal))
+                var mainSha = SupervisorProtocol.ComputeSha256(
+                    seed.MainExecutablePath);
+                var agentSha = SupervisorProtocol.ComputeSha256(
+                    seed.SafetyAgentExecutablePath);
+                if (!Sha256Equals(mainSha, seed.MainExecutableSha256) ||
+                    !Sha256Equals(agentSha, seed.SafetyAgentExecutableSha256))
                     throw new InvalidDataException(
                         "CrashRecoverySeedExecutableHashChanged");
 
@@ -3762,7 +3842,7 @@ namespace MTTFTest.Watchdog
                     : Guid.NewGuid().ToString("N");
                 var receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = 5,
+                    SchemaVersion = SupervisorProtocol.SchemaVersion,
                     SessionId = _args.SessionId,
                     SessionGeneration = seed.SessionGeneration,
                     SessionLease = seed.SessionLease,
@@ -3863,7 +3943,7 @@ namespace MTTFTest.Watchdog
                     : Guid.NewGuid().ToString("N");
             return new WatchdogClosingTombstone
             {
-                SchemaVersion = 5,
+                SchemaVersion = SupervisorProtocol.SchemaVersion,
                 SessionId = _args.SessionId,
                 SessionGeneration = seed.SessionGeneration,
                 SessionLease = seed.SessionLease,
@@ -3933,6 +4013,9 @@ namespace MTTFTest.Watchdog
                 : timeout;
             var deadline = Stopwatch.GetTimestamp() +
                            (long)Math.Ceiling(effective.TotalSeconds * Stopwatch.Frequency);
+            var supervisorAuthorityRequired =
+                RequiresSupervisorSafetyAuthority(_args.ExecutablePath);
+            var lastAuthorityReadFailure = string.Empty;
             while (!_stop.IsCancellationRequested && Stopwatch.GetTimestamp() <= deadline)
             {
                 WatchdogClosingTombstone closing;
@@ -3987,10 +4070,42 @@ namespace MTTFTest.Watchdog
                 }
 
                 WatchdogSafetyHandoffReceipt receipt;
-                if (!WatchdogSafetyHandoffReceiptStore.TryRead(
-                        _args.JournalDirectory,
-                        _args.SessionId,
-                        out receipt))
+                if (supervisorAuthorityRequired)
+                {
+                    var authorityToken = GetSafetyAuthorityToken(
+                        closing.SafetyHandoffId,
+                        closing.RelaunchPermitGeneration,
+                        closing.RelaunchPermitId);
+                    if (authorityToken == null)
+                    {
+                        await Task.Delay(250).ConfigureAwait(false);
+                        continue;
+                    }
+                    string authorityReadFailure;
+                    if (!SupervisorSafetyAgentLaunchClient.TryReadAuthority(
+                            authorityToken,
+                            out receipt,
+                            out authorityReadFailure))
+                    {
+                        if (!string.Equals(
+                                lastAuthorityReadFailure,
+                                authorityReadFailure,
+                                StringComparison.Ordinal))
+                        {
+                            lastAuthorityReadFailure = authorityReadFailure ??
+                                                       "SupervisorSafetyAuthorityReadFailed";
+                            Record(
+                                "SupervisorSafetyAuthorityReadFailed",
+                                lastAuthorityReadFailure);
+                        }
+                        await Task.Delay(250).ConfigureAwait(false);
+                        continue;
+                    }
+                }
+                else if (!WatchdogSafetyHandoffReceiptStore.TryRead(
+                             _args.JournalDirectory,
+                             _args.SessionId,
+                             out receipt))
                 {
                     return new SafetyHandoffWaitResult
                     {
@@ -4071,7 +4186,9 @@ namespace MTTFTest.Watchdog
             {
                 Outcome = WatchdogSafetyHandoffWaitOutcome.TimedOut,
                 Detail = $"PermitGeneration={permitGeneration};" +
-                         $"TimeoutSeconds={effective.TotalSeconds:F0}"
+                         $"TimeoutSeconds={effective.TotalSeconds:F0};" +
+                         $"AuthoritySource={(supervisorAuthorityRequired ? "Supervisor" : "EvidenceMirror")};" +
+                         $"LastAuthorityReadFailure={lastAuthorityReadFailure}"
             };
         }
 
@@ -4136,7 +4253,7 @@ namespace MTTFTest.Watchdog
             _transitionWindow.Show(
                 "设备保持断能，等待安全前置复核",
                 $"首发故障：{outcome}；停止结果：安全回执未放行；" +
-                $"恢复门禁：schema 5 精确证据；当前动作：退避复核；" +
+                $"恢复门禁：schema 6 Supervisor 权威证据；当前动作：退避复核；" +
                 $"安全前置失败计数：{_journal.SafetyPrerequisiteFailureCount}；" +
                 $"下次重试：{DateTime.Now.AddSeconds(delaySeconds):yyyy-MM-dd HH:mm:ss}\r\n" +
                 detail,
@@ -5595,16 +5712,13 @@ namespace MTTFTest.Watchdog
                 if (!File.Exists(mainExecutablePath) ||
                     !File.Exists(safetyAgentExecutablePath))
                     throw new FileNotFoundException("HalfOpenExecutableMissing");
-                var mainSha = DurableJsonFileStore.ComputeSha256(
-                    File.ReadAllBytes(mainExecutablePath));
-                var agentSha = DurableJsonFileStore.ComputeSha256(
-                    File.ReadAllBytes(safetyAgentExecutablePath));
+                var mainSha = SupervisorProtocol.ComputeSha256(mainExecutablePath);
+                var agentSha = SupervisorProtocol.ComputeSha256(
+                    safetyAgentExecutablePath);
                 if (string.Equals(mainExecutablePath, previous.MainExecutablePath,
                         StringComparison.OrdinalIgnoreCase) &&
-                    (!string.Equals(mainSha, previous.MainExecutableSha256,
-                         StringComparison.Ordinal) ||
-                     !string.Equals(agentSha, previous.SafetyAgentExecutableSha256,
-                         StringComparison.Ordinal)))
+                    (!Sha256Equals(mainSha, previous.MainExecutableSha256) ||
+                     !Sha256Equals(agentSha, previous.SafetyAgentExecutableSha256)))
                     throw new InvalidDataException("HalfOpenExecutableHashChanged");
 
                 var handoffId = Guid.NewGuid().ToString("N");
@@ -5628,7 +5742,7 @@ namespace MTTFTest.Watchdog
 
                 receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = 5,
+                    SchemaVersion = SupervisorProtocol.SchemaVersion,
                     SessionId = _args.SessionId,
                     SessionGeneration = previous.SessionGeneration,
                     SessionLease = previous.SessionLease,
@@ -6306,8 +6420,170 @@ namespace MTTFTest.Watchdog
                     _args.JournalDirectory,
                     _args.SessionId,
                     TimeSpan.FromSeconds(3),
-                    message => RecordEvent("MiniDump", message))
+                    message => RecordEvent("MiniDump", message),
+                    fullMemory: true)
                 .ConfigureAwait(false);
+        }
+
+        private void CaptureFirstLivenessEvidence(
+            int currentProcessId,
+            long currentProcessStartUtcTicks,
+            string reason)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using (var process = Process.GetProcessById(currentProcessId))
+                    {
+                        if (!MatchesExactProcess(
+                                process,
+                                currentProcessStartUtcTicks))
+                            return;
+                        WriteFirstLivenessSnapshot(process, reason);
+                        await MiniDumpCapture.TryCaptureAsync(
+                                process,
+                                _args.JournalDirectory,
+                                _args.SessionId,
+                                TimeSpan.FromSeconds(2),
+                                message => RecordEvent(
+                                    "FirstLivenessMiniDump",
+                                    message),
+                                fullMemory: false)
+                            .ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    RecordEvent(
+                        "FirstLivenessEvidenceFailed",
+                        reason + ":" + ex.GetBaseException().Message);
+                }
+            });
+        }
+
+        private void WriteFirstLivenessSnapshot(Process process, string reason)
+        {
+            try
+            {
+                WatchdogHeartbeat heartbeat;
+                lock (_journalGate) heartbeat = _journal.LastHeartbeat;
+                var threads = new List<Dictionary<string, object>>();
+                foreach (ProcessThread thread in process.Threads)
+                {
+                    try
+                    {
+                        threads.Add(new Dictionary<string, object>
+                        {
+                            ["Id"] = thread.Id,
+                            ["State"] = thread.ThreadState.ToString(),
+                            ["WaitReason"] = thread.ThreadState ==
+                                System.Diagnostics.ThreadState.Wait
+                                    ? thread.WaitReason.ToString()
+                                    : string.Empty,
+                            ["StartUtcTicks"] = thread.StartTime
+                                .ToUniversalTime().Ticks,
+                            ["TotalProcessorTimeMs"] =
+                                thread.TotalProcessorTime.TotalMilliseconds
+                        });
+                    }
+                    catch { }
+                    finally { thread.Dispose(); }
+                    if (threads.Count >= 256) break;
+                }
+                var evidence = new Dictionary<string, object>
+                {
+                    ["SchemaVersion"] = SupervisorProtocol.SchemaVersion,
+                    ["SessionId"] = _args.SessionId,
+                    ["CapturedUtc"] = DateTime.UtcNow.ToString("O"),
+                    ["Reason"] = reason ?? string.Empty,
+                    ["ProcessId"] = process.Id,
+                    ["ProcessStartUtcTicks"] = process.StartTime
+                        .ToUniversalTime().Ticks,
+                    ["MainExecutablePath"] = _args.ExecutablePath,
+                    ["MainExecutableSha256"] = File.Exists(_args.ExecutablePath)
+                        ? SupervisorProtocol.ComputeSha256(_args.ExecutablePath)
+                        : string.Empty,
+                    ["WorkingSetBytes"] = process.WorkingSet64,
+                    ["PrivateMemoryBytes"] = process.PrivateMemorySize64,
+                    ["HandleCount"] = process.HandleCount,
+                    ["ThreadCount"] = threads.Count,
+                    ["Threads"] = threads,
+                    ["SemanticHeartbeat"] = heartbeat,
+                    ["WindowsEventLog"] = CaptureRecentWindowsEvents()
+                };
+                var directory = Path.Combine(
+                    _args.JournalDirectory,
+                    "WatchdogEvidence");
+                var path = Path.Combine(
+                    directory,
+                    "session-" + _args.SessionId + "-first-liveness-" +
+                    DateTime.UtcNow.ToString("yyyyMMddHHmmssfff") + ".json");
+                DurableJsonFileStore.WriteAtomicWithBackup(
+                    path,
+                    new UTF8Encoding(false).GetBytes(Json.Serialize(evidence)));
+                RecordEvent("FirstLivenessEvidenceFrozen", path);
+            }
+            catch (Exception ex)
+            {
+                RecordEvent(
+                    "FirstLivenessSnapshotFailed",
+                    ex.GetBaseException().Message);
+            }
+        }
+
+        private static List<Dictionary<string, object>> CaptureRecentWindowsEvents()
+        {
+            var result = new List<Dictionary<string, object>>();
+            var cutoff = DateTime.Now.AddMinutes(-10);
+            foreach (var logName in new[] { "Application", "System" })
+            {
+                try
+                {
+                    using (var log = new EventLog(logName))
+                    {
+                        for (var index = log.Entries.Count - 1;
+                             index >= 0 && result.Count < 40;
+                             index--)
+                        {
+                            var entry = log.Entries[index];
+                            if (entry.TimeGenerated < cutoff) break;
+                            if (entry.EntryType != EventLogEntryType.Error &&
+                                entry.EntryType != EventLogEntryType.Warning)
+                                continue;
+                            var message = entry.Message ?? string.Empty;
+                            result.Add(new Dictionary<string, object>
+                            {
+                                ["Log"] = logName,
+                                ["Utc"] = entry.TimeGenerated.ToUniversalTime()
+                                    .ToString("O"),
+                                ["Type"] = entry.EntryType.ToString(),
+                                ["Source"] = entry.Source ?? string.Empty,
+                                ["EventId"] = entry.InstanceId,
+                                ["Message"] = message.Length <= 2000
+                                    ? message
+                                    : message.Substring(0, 2000)
+                            });
+                        }
+                    }
+                }
+                catch { }
+            }
+            return result;
+        }
+
+        private static double SemanticSnapshotAgeSeconds(
+            WatchdogHeartbeat heartbeat,
+            DateTime nowUtc)
+        {
+            if (heartbeat == null) return double.PositiveInfinity;
+            if (heartbeat.SnapshotRevision <= 0 ||
+                heartbeat.SnapshotCapturedUtcTicks <= 0)
+                return 0;
+            return Math.Max(
+                0,
+                (nowUtc.Ticks - heartbeat.SnapshotCapturedUtcTicks) /
+                (double)TimeSpan.TicksPerSecond);
         }
 
         private static int[] GetRecoveryEligibleChannels(WatchdogHeartbeat heartbeat)
@@ -6753,9 +7029,55 @@ namespace MTTFTest.Watchdog
 
         private bool BeginSafetyHandoff(WatchdogSafetyHandoffReceipt receipt)
         {
-            if (receipt == null || receipt.IsTerminal || !receipt.IsValidFor(_args.SessionId) ||
-                Interlocked.CompareExchange(ref _safetyHandoffStarted, 1, 0) != 0)
+            if (receipt == null || receipt.IsTerminal ||
+                !receipt.IsValidFor(_args.SessionId))
                 return false;
+            if (Interlocked.CompareExchange(ref _safetyHandoffStarted, 1, 0) != 0)
+                return false;
+
+            var authorityToken = GetSafetyAuthorityToken(
+                receipt.HandoffId,
+                receipt.RelaunchPermitGeneration,
+                receipt.RelaunchPermitId);
+            if (authorityToken != null)
+            {
+                WatchdogSafetyHandoffReceipt authoritativeReceipt;
+                string authorityReadFailure;
+                if (!TryReadExactSafetyHandoff(
+                        receipt.HandoffId,
+                        receipt.Nonce,
+                        authorityToken,
+                        out authoritativeReceipt,
+                        out authorityReadFailure))
+                {
+                    RecordRepeatedObservation(
+                        "SupervisorSafetyAuthorityReadFailed",
+                        receipt.HandoffId,
+                        authorityReadFailure);
+                    _unattendedAlarmSink.Publish(
+                        "P0",
+                        "SupervisorSafetyAuthorityReadFailed",
+                        authorityReadFailure,
+                        RecoveryFailureDomain.EvidenceBinding,
+                        receipt);
+                    Interlocked.Exchange(ref _safetyHandoffStarted, 0);
+                    return true;
+                }
+
+                receipt = authoritativeReceipt;
+                if (receipt.IsTerminal)
+                {
+                    RecordRepeatedObservation(
+                        "SupervisorSafetyAuthorityTerminalObserved",
+                        receipt.HandoffId + "|" +
+                        receipt.Revision.ToString(CultureInfo.InvariantCulture),
+                        $"State={receipt.State};Revision={receipt.Revision};" +
+                        "Project mirror ignored in favor of Supervisor authority.");
+                    Interlocked.Exchange(ref _safetyHandoffStarted, 0);
+                    return true;
+                }
+            }
+
             var snapshot = WatchdogSafetyConfigSnapshotStore.Validate(
                 _args.JournalDirectory,
                 receipt.HandoffId,
@@ -6768,6 +7090,7 @@ namespace MTTFTest.Watchdog
                     receipt,
                     "SafetyConfigSnapshotInvalid",
                     snapshot?.Error ?? "SnapshotValidationUnavailable");
+                Interlocked.Exchange(ref _safetyHandoffStarted, 0);
                 return true;
             }
             if (receipt.RelaunchDisposition ==
@@ -6784,6 +7107,7 @@ namespace MTTFTest.Watchdog
                         receipt,
                         "SafetyHandoffPermitMismatch",
                         "Typed handoff does not match durable authority.");
+                    Interlocked.Exchange(ref _safetyHandoffStarted, 0);
                     return true;
                 }
             }
@@ -6860,8 +7184,13 @@ namespace MTTFTest.Watchdog
         {
             try
             {
+                SupervisorSafetyAuthorityToken authorityToken = null;
                 WatchdogSafetyHandoffReceipt receipt;
                 if (!TryReadExactSafetyHandoff(handoffId, nonce, out receipt)) return;
+                authorityToken = GetSafetyAuthorityToken(
+                    handoffId,
+                    receipt.RelaunchPermitGeneration,
+                    receipt.RelaunchPermitId);
                 if (receipt.State == WatchdogSafetyHandoffState.Failed)
                     return;
                 if (receipt.State == WatchdogSafetyHandoffState.Requested)
@@ -6878,7 +7207,28 @@ namespace MTTFTest.Watchdog
 
                 while (!_stop.IsCancellationRequested)
                 {
-                    if (!TryReadExactSafetyHandoff(handoffId, nonce, out receipt)) return;
+                    if (authorityToken == null)
+                    {
+                        authorityToken = GetSafetyAuthorityToken(
+                            handoffId,
+                            receipt.RelaunchPermitGeneration,
+                            receipt.RelaunchPermitId);
+                    }
+                    string authorityReadFailure;
+                    if (!TryReadExactSafetyHandoff(
+                            handoffId,
+                            nonce,
+                            authorityToken,
+                            out receipt,
+                            out authorityReadFailure))
+                    {
+                        if (authorityToken == null) return;
+                        Record(
+                            "SupervisorSafetyAuthorityReadFailed",
+                            authorityReadFailure);
+                        await Task.Delay(1000).ConfigureAwait(false);
+                        continue;
+                    }
                     if (receipt.State == WatchdogSafetyHandoffState.Completed &&
                         receipt.IsSafetyCompleted)
                     {
@@ -6946,10 +7296,9 @@ namespace MTTFTest.Watchdog
                         var executable = receipt.SafetyAgentExecutablePath;
                         if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
                             throw new FileNotFoundException("SafetyAgentExecutableMissing", executable);
-                        var executableSha = DurableJsonFileStore.ComputeSha256(
-                            File.ReadAllBytes(executable));
-                        if (!string.Equals(executableSha, receipt.SafetyAgentExecutableSha256,
-                                StringComparison.Ordinal))
+                        if (!ExecutableSha256Matches(
+                                executable,
+                                receipt.SafetyAgentExecutableSha256))
                             throw new InvalidDataException("SafetyAgentExecutableHashMismatch");
                         // Persist the attempt before Process.Start.  The independent agent may
                         // advance the receipt immediately after it starts; writing an older
@@ -6973,12 +7322,21 @@ namespace MTTFTest.Watchdog
                         var formalMarker = Path.Combine(
                             Path.GetDirectoryName(executable) ?? string.Empty,
                             "MTTFTest.UnattendedMode.required");
-                        worker = File.Exists(formalMarker)
-                            ? SupervisorSafetyAgentLaunchClient.Start(
+                        if (File.Exists(formalMarker))
+                        {
+                            SupervisorSafetyAuthorityToken launchedAuthorityToken;
+                            worker = SupervisorSafetyAgentLaunchClient.Start(
                                 receipt,
                                 executable,
-                                arguments)
-                            : Process.Start(new ProcessStartInfo
+                                arguments,
+                                authorityToken,
+                                out launchedAuthorityToken);
+                            RememberSafetyAuthorityToken(launchedAuthorityToken);
+                            authorityToken = launchedAuthorityToken;
+                        }
+                        else
+                        {
+                            worker = Process.Start(new ProcessStartInfo
                             {
                                 FileName = executable,
                                 Arguments = arguments,
@@ -6987,6 +7345,7 @@ namespace MTTFTest.Watchdog
                                 CreateNoWindow = true,
                                 WindowStyle = ProcessWindowStyle.Hidden
                             });
+                        }
                         if (worker == null) throw new InvalidOperationException("SafetyWorkerStartReturnedNull");
                         if (receipt.RelaunchDisposition ==
                             WatchdogRelaunchDisposition.PreserveApprovedPermit)
@@ -7025,10 +7384,21 @@ namespace MTTFTest.Watchdog
                         try { worker?.Dispose(); } catch { }
                     }
 
-                    if (TryReadExactSafetyHandoff(handoffId, nonce, out receipt) &&
+                    string postWorkerReadFailure;
+                    if (TryReadExactSafetyHandoff(
+                            handoffId,
+                            nonce,
+                            authorityToken,
+                            out receipt,
+                            out postWorkerReadFailure) &&
                         receipt.State == WatchdogSafetyHandoffState.Completed &&
                         receipt.IsSafetyCompleted)
                         continue;
+                    if (authorityToken != null &&
+                        !string.IsNullOrWhiteSpace(postWorkerReadFailure))
+                        Record(
+                            "SupervisorSafetyAuthorityReadFailed",
+                            postWorkerReadFailure);
                     if (receipt != null &&
                         receipt.FailureDomain != RecoveryFailureDomain.None &&
                         receipt.AttemptCount == 1)
@@ -7066,6 +7436,124 @@ namespace MTTFTest.Watchdog
                 return false;
             return string.Equals(receipt.HandoffId, handoffId, StringComparison.Ordinal) &&
                    string.Equals(receipt.Nonce, nonce, StringComparison.Ordinal);
+        }
+
+        private void RememberSafetyAuthorityToken(
+            SupervisorSafetyAuthorityToken authorityToken)
+        {
+            if (authorityToken?.IsValid() != true)
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityTokenInvalid");
+            lock (_safetyAuthorityTokenGate)
+            {
+                if (_safetyAuthorityToken == null)
+                {
+                    _safetyAuthorityToken = CloneSafetyAuthorityToken(
+                        authorityToken);
+                    return;
+                }
+                if (!SafetyAuthorityTokensMatch(
+                        _safetyAuthorityToken,
+                        authorityToken))
+                    throw new InvalidDataException(
+                        "SupervisorSafetyAuthorityTokenChanged");
+            }
+        }
+
+        private SupervisorSafetyAuthorityToken GetSafetyAuthorityToken(
+            string handoffId,
+            long permitGeneration,
+            string permitId)
+        {
+            lock (_safetyAuthorityTokenGate)
+            {
+                var token = _safetyAuthorityToken;
+                if (token?.IsValid() != true ||
+                    !string.Equals(token.SessionId, _args.SessionId,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(token.HandoffId, handoffId,
+                        StringComparison.Ordinal) ||
+                    token.PermitGeneration != permitGeneration ||
+                    !string.Equals(token.PermitId, permitId,
+                        StringComparison.Ordinal))
+                    return null;
+                return CloneSafetyAuthorityToken(token);
+            }
+        }
+
+        private static SupervisorSafetyAuthorityToken CloneSafetyAuthorityToken(
+            SupervisorSafetyAuthorityToken token)
+        {
+            if (token == null) return null;
+            return new SupervisorSafetyAuthorityToken
+            {
+                SchemaVersion = token.SchemaVersion,
+                AuthorityId = token.AuthorityId,
+                SessionId = token.SessionId,
+                HandoffId = token.HandoffId,
+                PermitGeneration = token.PermitGeneration,
+                PermitId = token.PermitId,
+                ReceiptRevision = token.ReceiptRevision,
+                ReceiptCanonicalSha256 = token.ReceiptCanonicalSha256
+            };
+        }
+
+        private static bool SafetyAuthorityTokensMatch(
+            SupervisorSafetyAuthorityToken left,
+            SupervisorSafetyAuthorityToken right)
+        {
+            return left?.IsValid() == true && right?.IsValid() == true &&
+                   left.SchemaVersion == right.SchemaVersion &&
+                   string.Equals(left.AuthorityId, right.AuthorityId,
+                       StringComparison.Ordinal) &&
+                   string.Equals(left.SessionId, right.SessionId,
+                       StringComparison.Ordinal) &&
+                   string.Equals(left.HandoffId, right.HandoffId,
+                       StringComparison.Ordinal) &&
+                   left.PermitGeneration == right.PermitGeneration &&
+                   string.Equals(left.PermitId, right.PermitId,
+                       StringComparison.Ordinal) &&
+                   left.ReceiptRevision == right.ReceiptRevision &&
+                   string.Equals(left.ReceiptCanonicalSha256,
+                       right.ReceiptCanonicalSha256,
+                       StringComparison.Ordinal);
+        }
+
+        private bool TryReadExactSafetyHandoff(
+            string handoffId,
+            string nonce,
+            SupervisorSafetyAuthorityToken authorityToken,
+            out WatchdogSafetyHandoffReceipt receipt,
+            out string failure)
+        {
+            failure = string.Empty;
+            if (authorityToken == null)
+            {
+                if (TryReadExactSafetyHandoff(handoffId, nonce, out receipt))
+                    return true;
+                failure = "LocalSafetyHandoffReceiptMissingOrIdentityMismatch";
+                return false;
+            }
+
+            if (!SupervisorSafetyAgentLaunchClient.TryReadAuthority(
+                    authorityToken,
+                    out receipt,
+                    out failure))
+                return false;
+            if (!string.Equals(receipt.HandoffId, handoffId,
+                    StringComparison.Ordinal))
+            {
+                failure = "SupervisorSafetyAuthorityReadHandoffIdMismatch";
+                receipt = null;
+                return false;
+            }
+            if (!string.Equals(receipt.Nonce, nonce, StringComparison.Ordinal))
+            {
+                failure = "SupervisorSafetyAuthorityReadNonceMismatch";
+                receipt = null;
+                return false;
+            }
+            return true;
         }
 
         private void SendSafetyHandoff(string type, WatchdogSafetyHandoffReceipt receipt)

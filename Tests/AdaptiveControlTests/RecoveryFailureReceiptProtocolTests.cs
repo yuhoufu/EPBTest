@@ -96,7 +96,7 @@ namespace AdaptiveControlTests
             Run("CAS压力1000次无回退", CasStress1000, ref passed);
             Run("不同session serializer隔离", DifferentSessionsIsolation, ref passed);
             Run("大小写目录别名共享authority mutex", CaseInsensitivePathAlias, ref passed);
-            Run("协议exact v5/外层身份/nonce隔离", ReceiptValidator, ref passed);
+            Run("协议exact v6/外层身份/nonce隔离", ReceiptValidator, ref passed);
             Run("原始JSON白名单与字段类型严格校验", RawWireWhitelist, ref passed);
             Run("失败请求exact-v4原始hash与重放身份", RecoveryFailureRequestWire, ref passed);
             Run("协议拒绝v0/v2/v3", ExactProtocolVersions, ref passed);
@@ -737,7 +737,9 @@ namespace AdaptiveControlTests
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongType, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ReceiptType", "numeric field with string type accepted");
-            var wrongVersion = json.Replace("\"ProtocolVersion\":5", "\"ProtocolVersion\":3");
+            var canonicalProtocol = "\"ProtocolVersion\":" +
+                WatchdogProtocol.Version.ToString(CultureInfo.InvariantCulture);
+            var wrongVersion = json.Replace(canonicalProtocol, "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongVersion, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ProtocolVersion", "v2 raw receipt accepted");
@@ -747,7 +749,7 @@ namespace AdaptiveControlTests
             // data into a valid authority receipt.
             var missingTop = new[]
             {
-                json.Replace("\"ProtocolVersion\":5,", string.Empty),
+                json.Replace(canonicalProtocol + ",", string.Empty),
                 json.Replace("\"Type\":\"RecoveryAttemptFailedReceipt\",", string.Empty),
                 json.Replace("\"SessionId\":\"" + session + "\",", string.Empty),
                 json.Replace("\"CorrelationId\":\"" + corr + "\",", string.Empty),
@@ -851,7 +853,8 @@ namespace AdaptiveControlTests
                    reason == "RequestShape",
                 "unknown/launch-only request key accepted");
             var v2 = wire.Replace(
-                "\"ProtocolVersion\":5", "\"ProtocolVersion\":3");
+                "\"ProtocolVersion\":" + WatchdogProtocol.Version.ToString(CultureInfo.InvariantCulture),
+                "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureRequestWire(
                        v2, session, out _, out _, out reason) &&
                    reason == "RequestProtocolOrType",
@@ -1265,7 +1268,8 @@ namespace AdaptiveControlTests
                 File.WriteAllText(relaunchPath, legacy, new UTF8Encoding(false));
                 var first = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
                 Assert(first.Succeeded && first.Authority.Snapshot.State == DurableRelaunchPermitState.Blocked &&
-                    first.Authority.Snapshot.SchemaVersion == 5, "legacy ambiguous record was not durably migrated to Blocked");
+                    first.Authority.Snapshot.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion,
+                    "legacy ambiguous record was not durably migrated to Blocked");
                 var durableBlockedBytes = File.ReadAllBytes(relaunchPath);
                 var second = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
                 Assert(second.Succeeded && second.Authority.Snapshot.State == DurableRelaunchPermitState.Blocked &&

@@ -145,7 +145,9 @@ namespace Controller
     {
         PendingSafetyClosure = 1,
         Closed = 2,
-        TimedOut = 3
+        TimedOut = 3,
+        NoProgress = 4,
+        PhysicalStateReversed = 5
     }
 
     internal sealed class FormalSafetyClosureObservation
@@ -156,6 +158,7 @@ namespace Controller
         public bool PersistenceRequired { get; set; }
         public bool PersistenceClosed { get; set; }
         public CycleAttemptClosureReceipt ClosureReceipt { get; set; }
+        public string FailureReason { get; set; } = string.Empty;
 
         public bool IsClosed =>
             MotorOffConfirmed && HydraulicReleased &&
@@ -165,22 +168,49 @@ namespace Controller
     internal static class FormalSafetyClosurePolicy
     {
         internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
+        internal static readonly TimeSpan DefaultNoProgressTimeout = TimeSpan.FromSeconds(10);
 
         internal static async Task<FormalSafetyClosureObservation> AwaitAsync(
             Func<FormalSafetyClosureObservation> observe,
             TimeSpan timeout,
             CancellationToken token,
-            Func<TimeSpan, CancellationToken, Task> delay = null)
+            Func<TimeSpan, CancellationToken, Task> delay = null,
+            TimeSpan? noProgressTimeout = null)
         {
             if (observe == null) throw new ArgumentNullException(nameof(observe));
             var bounded = timeout <= TimeSpan.Zero ? DefaultTimeout : timeout;
             var deadline = DateTime.UtcNow.Add(bounded);
+            var noProgressBound = noProgressTimeout.GetValueOrDefault(
+                DefaultNoProgressTimeout);
+            if (noProgressBound <= TimeSpan.Zero || noProgressBound > bounded)
+                noProgressBound = bounded;
+            var lastProgressUtc = DateTime.UtcNow;
+            var lastMotorOff = false;
+            var lastHydraulicReleased = false;
+            var lastPersistenceClosed = false;
+            var motorOffWasConfirmed = false;
             var wait = delay ?? ((duration, cancellation) =>
                 Task.Delay(duration, cancellation));
             while (true)
             {
                 token.ThrowIfCancellationRequested();
                 var current = observe() ?? new FormalSafetyClosureObservation();
+                if (motorOffWasConfirmed && !current.MotorOffConfirmed)
+                {
+                    current.State = FormalSafetyClosureState.PhysicalStateReversed;
+                    current.FailureReason = "MotorOffStateReversed";
+                    return current;
+                }
+                if (current.MotorOffConfirmed) motorOffWasConfirmed = true;
+                if (current.MotorOffConfirmed != lastMotorOff ||
+                    current.HydraulicReleased != lastHydraulicReleased ||
+                    current.PersistenceClosed != lastPersistenceClosed)
+                {
+                    lastMotorOff = current.MotorOffConfirmed;
+                    lastHydraulicReleased = current.HydraulicReleased;
+                    lastPersistenceClosed = current.PersistenceClosed;
+                    lastProgressUtc = DateTime.UtcNow;
+                }
                 if (current.IsClosed)
                 {
                     current.State = FormalSafetyClosureState.Closed;
@@ -189,6 +219,13 @@ namespace Controller
                 if (DateTime.UtcNow >= deadline)
                 {
                     current.State = FormalSafetyClosureState.TimedOut;
+                    current.FailureReason = "SafetyClosureDeadlineExceeded";
+                    return current;
+                }
+                if (DateTime.UtcNow - lastProgressUtc >= noProgressBound)
+                {
+                    current.State = FormalSafetyClosureState.NoProgress;
+                    current.FailureReason = "SafetyClosureNoProgress";
                     return current;
                 }
                 current.State = FormalSafetyClosureState.PendingSafetyClosure;
@@ -199,6 +236,36 @@ namespace Controller
                             : TimeSpan.FromMilliseconds(25),
                         token)
                     .ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One formal slot/channel has exactly one safety-closure task.  Normal
+    /// completion, exception unwind and coordinator fallback all observe the
+    /// same result and therefore cannot issue duplicate physical escalation.
+    /// </summary>
+    internal sealed class FormalSafetyClosureTransaction
+    {
+        private readonly object _gate = new object();
+        private Task<FormalSafetyClosureObservation> _completion;
+
+        internal Task<FormalSafetyClosureObservation> RunAsync(
+            Func<Task<FormalSafetyClosureObservation>> action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            lock (_gate)
+            {
+                if (_completion != null) return _completion;
+                try
+                {
+                    _completion = action();
+                }
+                catch (Exception ex)
+                {
+                    _completion = Task.FromException<FormalSafetyClosureObservation>(ex);
+                }
+                return _completion;
             }
         }
     }
@@ -263,6 +330,9 @@ namespace Controller
             new GlobalHydraulicSlotCoordinator();
         private readonly FormalBatchSlotCoordinator _formalBatchSlots =
             new FormalBatchSlotCoordinator();
+        private readonly ConcurrentDictionary<string, FormalSafetyClosureTransaction>
+            _formalSafetyClosureTransactions =
+                new ConcurrentDictionary<string, FormalSafetyClosureTransaction>();
         private readonly ConcurrentDictionary<int, FormalBatchParticipantLease> _formalParticipantLeases =
             new ConcurrentDictionary<int, FormalBatchParticipantLease>();
         private readonly int _globalFormalSlotAdmissionWindowMs;
@@ -2236,8 +2306,27 @@ namespace Controller
             }
         }
 
+        private Task<FormalSafetyClosureObservation> AwaitFormalSafetyClosureAsync(
+            int channel,
+            long formalSlot,
+            CycleAttemptContext attempt,
+            bool persistenceRequired)
+        {
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var key = $"{runId:N}:{runEpoch}:{formalSlot}:{channel}";
+            var transaction = _formalSafetyClosureTransactions.GetOrAdd(
+                key,
+                _ => new FormalSafetyClosureTransaction());
+            return transaction.RunAsync(() => ExecuteFormalSafetyClosureAsync(
+                channel,
+                formalSlot,
+                attempt,
+                persistenceRequired));
+        }
+
         private async Task<FormalSafetyClosureObservation>
-            AwaitFormalSafetyClosureAsync(
+            ExecuteFormalSafetyClosureAsync(
                 int channel,
                 long formalSlot,
                 CycleAttemptContext attempt,
@@ -2288,7 +2377,8 @@ namespace Controller
                 $"FormalSlotSafetyClosureResolved Slot={formalSlot} EPB={channel} " +
                 $"State={result.State} MotorOff={result.MotorOffConfirmed} " +
                 $"HydraulicReleased={result.HydraulicReleased} " +
-                $"Persistence={result.PersistenceClosed}",
+                $"Persistence={result.PersistenceClosed} " +
+                $"Failure={result.FailureReason}",
                 "EPB-Safety");
             return result;
         }
@@ -3094,6 +3184,13 @@ namespace Controller
             Interlocked.Exchange(ref _batchSessionActive, 0);
             Interlocked.Exchange(ref _formalPhaseCommitted, 0);
             _formalBatchSlots.ClearRun(_activeBatchId);
+            var closurePrefix = _activeBatchId.ToString("N") + ":";
+            foreach (var key in _formalSafetyClosureTransactions.Keys
+                         .Where(key => key.StartsWith(
+                             closurePrefix,
+                             StringComparison.Ordinal))
+                         .ToArray())
+                _formalSafetyClosureTransactions.TryRemove(key, out _);
             foreach (var pair in _formalParticipantLeases.Where(pair =>
                          pair.Value != null && pair.Value.RunId == _activeBatchId).ToArray())
                 ((ICollection<KeyValuePair<int, FormalBatchParticipantLease>>)_formalParticipantLeases)
@@ -3358,18 +3455,23 @@ namespace Controller
                                             "WaitingForSlotBarrier",
                                             "本卡钳已关闭输出，等待同一正式周期槽安全收尾"),
                                         token,
-                                        () =>
+                                        async () =>
                                         {
-                                            var fallbackMotorOff = !IsChannelEnergized(ch);
-                                            var fallbackHydraulicReleased =
-                                                !_hydraulicLeaseByChannel.TryGetValue(
+                                            ResolveFormalFallbackPersistence(
+                                                formalCycleAttempt,
+                                                out var fallbackPersistenceRequired);
+                                            var closure = await AwaitFormalSafetyClosureAsync(
                                                     ch,
-                                                    out var fallbackLease) ||
-                                                fallbackLease.IsClosed;
-                                            var fallbackPersistenceCommitted =
-                                                ResolveFormalFallbackPersistence(
+                                                    phaseSlot,
                                                     formalCycleAttempt,
-                                                    out var fallbackPersistenceRequired);
+                                                    fallbackPersistenceRequired)
+                                                .ConfigureAwait(false);
+                                            var fallbackMotorOff =
+                                                closure.MotorOffConfirmed;
+                                            var fallbackHydraulicReleased =
+                                                closure.HydraulicReleased;
+                                            var fallbackPersistenceCommitted =
+                                                closure.PersistenceClosed;
                                             if (ShouldDelegateFormalPersistenceToHydraulicRecovery(
                                                     IsHydraulicGroupRecoveryActiveForChannel(ch),
                                                     fallbackMotorOff,
@@ -3381,7 +3483,7 @@ namespace Controller
                                             var fallbackReceipt = formalCycleAttempt == null
                                                 ? null
                                                 : EnrichFormalClosureReceipt(
-                                                    formalCycleAttempt.CaptureClosureReceipt(),
+                                                    closure.ClosureReceipt,
                                                     phaseSlot);
                                             var fallbackDisposition = ResolveFormalSlotDisposition(
                                                 fallbackMotorOff,
@@ -3406,7 +3508,11 @@ namespace Controller
                                                     fallbackPersistenceRequired,
                                                 PersistenceCommitted =
                                                     fallbackPersistenceCommitted,
-                                                Result = "CallbackExitedBeforeFormalCycleBoundary",
+                                                Result = string.IsNullOrWhiteSpace(
+                                                    closure.FailureReason)
+                                                    ? "CallbackExitedBeforeFormalCycleBoundary"
+                                                    : "CallbackExitedBeforeFormalCycleBoundary:" +
+                                                      closure.FailureReason,
                                                 CallbackElapsedMs =
                                                     callbackStopwatch.ElapsedMilliseconds,
                                                 SharedCoordinationWaitMs = 0,

@@ -2690,11 +2690,11 @@ namespace Controller
             _daqLivenessWatchdogIntervalMs = ReadIntAppSetting(
                 "DaqLivenessWatchdogIntervalMs", 20, 10, 1000);
             _daqLivenessWarnThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessWarnThresholdMs", 250, 100, 5000);
+                "DaqLivenessWarnThresholdMs", 75, 20, 200);
             _daqLivenessSuspectThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessSuspectThresholdMs", 1500, 200, 30000);
+                "DaqLivenessSuspectThresholdMs", 100, 50, 249);
             _daqLivenessTripThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessTripThresholdMs", 5000, 300, 300000);
+                "DaqLivenessTripThresholdMs", 250, 100, 5000);
             if (!AreDaqLivenessThresholdsStrictlyIncreasing(
                     _daqLivenessWarnThresholdMs,
                     _daqLivenessSuspectThresholdMs,

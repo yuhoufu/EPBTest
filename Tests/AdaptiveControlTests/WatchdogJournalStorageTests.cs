@@ -23,6 +23,8 @@ namespace AdaptiveControlTests
             RunOpenExistingRegression(ref passed);
             Run("Watchdog Journal配置缺失非法时安全回退", PolicyDefaultsAndValidation, ref passed);
             Run("Watchdog项目Journal包含快照事件错误与终态manifest", DirectProjectJournalIsAuditable, ref passed);
+            Run("Watchdog并发异步与安全关键同步快照保持持久化顺序",
+                ConcurrentSnapshotWritesStayDurable, ref passed);
             Run("Watchdog恢复ClientAuditOnly不接管快照租约终态或pending spool",
                 ClientAuditOnlyCannotMutateAuthorityArtifacts, ref passed);
             Run("Watchdog ClientAuditOnly使用隔离有界audit spool并可恢复回放",
@@ -178,7 +180,7 @@ namespace AdaptiveControlTests
                        error == WatchdogJournalOpenExistingError.SessionMismatch && receipt == null,
                     "错误SessionId未返回SessionMismatch：" + error);
 
-                foreach (var schema in new[] { 0, 1, 6, 999 })
+                foreach (var schema in new[] { 0, 1, 7, 999 })
                 {
                     File.WriteAllText(path,
                         "{\"SchemaVersion\":" + schema.ToString(CultureInfo.InvariantCulture) +
@@ -507,7 +509,9 @@ namespace AdaptiveControlTests
                 "\"RecoveryFailureCode\":\"ConfigDuplicateEpbId\",\"ConsecutiveStartupFailures\":3}";
             var migratedJournal = WatchdogJournalMigration.MigrateJournalJson(legacyJournal);
             Assert(!string.IsNullOrWhiteSpace(migratedJournal) &&
-                   migratedJournal.Contains("\"SchemaVersion\":5") &&
+                   migratedJournal.Contains(
+                       "\"SchemaVersion\":" +
+                       WatchdogJournalPolicy.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture)) &&
                    migratedJournal.Contains("\"RecoveryBlocked\":true") &&
                    migratedJournal.Contains("ConfigDuplicateEpbId"),
                 "V2 Journal迁移丢失RecoveryBlocked或失败证据");
@@ -589,6 +593,70 @@ namespace AdaptiveControlTests
                     "缺少终态manifest");
                 Assert(!File.Exists(Path.Combine(root, "session-" + session + ".lease.json")),
                     "终态Session仍残留活动租约");
+            });
+        }
+
+        private static void ConcurrentSnapshotWritesStayDurable()
+        {
+            WithTempRoot("ConcurrentSnapshotWrites", root =>
+            {
+                var session = Guid.NewGuid().ToString("N");
+                using (var process = Process.GetCurrentProcess())
+                using (var store = new WatchdogJournalStore(
+                           root,
+                           session,
+                           "sidecar",
+                           new WatchdogJournalPolicy(),
+                           process.Id,
+                           process.StartTime.ToUniversalTime().Ticks))
+                using (var stopPublishing = new CancellationTokenSource())
+                {
+                    var published = 0;
+                    var publisher = Task.Run(() =>
+                    {
+                        var sequence = 0;
+                        while (!stopPublishing.IsCancellationRequested)
+                        {
+                            store.PublishSnapshot(
+                                "{\"kind\":\"async\",\"sequence\":" +
+                                sequence++.ToString(CultureInfo.InvariantCulture) + "}");
+                            Interlocked.Increment(ref published);
+                            Thread.Yield();
+                        }
+                    });
+
+                    Assert(SpinWait.SpinUntil(
+                               () => Volatile.Read(ref published) >= 100,
+                               TimeSpan.FromSeconds(5)),
+                        "Asynchronous snapshot publisher did not start.");
+                    var synchronousFailures = 0;
+                    for (var index = 0; index < 100; index++)
+                    {
+                        if (!store.TryPublishSnapshotSynchronously(
+                                "{\"kind\":\"synchronous\",\"sequence\":" +
+                                index.ToString(CultureInfo.InvariantCulture) + "}"))
+                            synchronousFailures++;
+                    }
+
+                    stopPublishing.Cancel();
+                    Assert(publisher.Wait(TimeSpan.FromSeconds(10)),
+                        "Asynchronous snapshot publisher did not stop.");
+                    Assert(synchronousFailures == 0,
+                        "Safety-critical synchronous snapshot reported a false persistence failure.");
+
+                    const string finalSnapshot =
+                        "{\"kind\":\"final-synchronous\",\"sequence\":101}";
+                    Assert(store.TryPublishSnapshotSynchronously(finalSnapshot),
+                        "Final safety-critical snapshot was not persisted.");
+                    Thread.Sleep(250);
+                    Assert(string.Equals(
+                               File.ReadAllText(
+                                   SessionSnapshotPath(root, session),
+                                   Encoding.UTF8),
+                               finalSnapshot,
+                               StringComparison.Ordinal),
+                        "An older asynchronous snapshot overwrote the synchronous commit.");
+                }
             });
         }
 

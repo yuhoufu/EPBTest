@@ -257,8 +257,49 @@ namespace MTEmbTest
             var watchdogRunId = aggregate?.Infrastructure?.RunId ?? Guid.Empty;
             var watchdogRunEpoch = aggregate?.Infrastructure?.RunEpoch ?? 0;
             var logHealth = ProjectLogHub.CaptureHealth();
+            IO.NI.DaqFreshnessSnapshot daqDev1 = null;
+            IO.NI.DaqFreshnessSnapshot daqDev2 = null;
+            try
+            {
+                daqDev1 = twoDeviceAiAcquirer?.GetDaqFreshnessSnapshot("Dev1", 100);
+                daqDev2 = twoDeviceAiAcquirer?.GetDaqFreshnessSnapshot("Dev2", 100);
+            }
+            catch { }
+            ThreadPool.GetAvailableThreads(
+                out var availableWorkerThreads,
+                out var availableIoThreads);
             return new WatchdogHeartbeat
             {
+                UiLifecycle = MonitorLifecycle.ToString(),
+                ControlProgressVersion = Math.Max(
+                    logical?.SourceVersion ?? 0,
+                    stop?.ProgressVersion ?? 0),
+                TypedExitTransactionId =
+                    WatchdogRuntime.LatestTypedExitTransactionId,
+                GcTotalMemoryBytes = GC.GetTotalMemory(false),
+                GcCollectionCount0 = GC.CollectionCount(0),
+                GcCollectionCount1 = GC.CollectionCount(1),
+                GcCollectionCount2 = GC.CollectionCount(2),
+                ThreadPoolAvailableWorkerThreads = availableWorkerThreads,
+                ThreadPoolAvailableIoThreads = availableIoThreads,
+                DaqDev1SampleAgeMs = NormalizeEvidenceAge(
+                    daqDev1?.SampleAgeMs),
+                DaqDev1BufferedSamples = daqDev1?.BufferedSamples ?? 0,
+                DaqDev1ReaderLagState =
+                    daqDev1?.ReaderLagState.ToString() ?? "Unavailable",
+                DaqDev1DroppedFromSequence =
+                    daqDev1?.DroppedStaleFromSequence ?? 0,
+                DaqDev1DroppedToSequence =
+                    daqDev1?.DroppedStaleToSequence ?? 0,
+                DaqDev2SampleAgeMs = NormalizeEvidenceAge(
+                    daqDev2?.SampleAgeMs),
+                DaqDev2BufferedSamples = daqDev2?.BufferedSamples ?? 0,
+                DaqDev2ReaderLagState =
+                    daqDev2?.ReaderLagState.ToString() ?? "Unavailable",
+                DaqDev2DroppedFromSequence =
+                    daqDev2?.DroppedStaleFromSequence ?? 0,
+                DaqDev2DroppedToSequence =
+                    daqDev2?.DroppedStaleToSequence ?? 0,
                 RunId = watchdogRunId == Guid.Empty ? string.Empty : watchdogRunId.ToString("N"),
                 RunEpoch = watchdogRunEpoch,
                 Phase = phase,
@@ -451,6 +492,14 @@ namespace MTEmbTest
                 DiagnosticSinkFailure = logHealth.LastError,
                 RunActive = logical?.BatchSessionActive ?? false
             };
+        }
+
+        private static double NormalizeEvidenceAge(double? value)
+        {
+            return value.HasValue && !double.IsNaN(value.Value) &&
+                   !double.IsInfinity(value.Value)
+                ? Math.Max(0, value.Value)
+                : -1;
         }
 
         private sealed class WatchdogRecoveryEvidence

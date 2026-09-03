@@ -121,7 +121,7 @@ namespace MTTFTest.Watchdog.Protocol
         // V4 adds durable pause/closing evidence and bounded safety handoff.
         // Safety messages are exact-version contracts: a peer must not infer
         // missing v4 fields from an older payload.
-        public const int Version = 5;
+        public const int Version = 6;
         public const int MinimumCompatibleVersion = 4;
         public static string Serialize(WatchdogMessage message)
         {
@@ -145,7 +145,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (message != null && string.Equals(message.Type, WatchdogMessageType.RecoveryAttemptFailed, StringComparison.Ordinal))
             {
                 // This request is durable authority input.  Serialize only
-                // its exact v5 shape so the host can hash the accepted raw
+                // its exact v6 shape so the host can hash the accepted raw
                 // bytes and a retry can reproduce the same operation.
                 var values = new Dictionary<string, object>(StringComparer.Ordinal)
                 {
@@ -783,6 +783,31 @@ namespace MTTFTest.Watchdog.Protocol
     public sealed class WatchdogHeartbeat
     {
         public long Sequence { get; set; }
+        /// <summary>Dedicated transport-thread pulse; independent of semantic capture.</summary>
+        public long PulseSequence { get; set; }
+        /// <summary>Revision of the atomically published semantic snapshot.</summary>
+        public long SnapshotRevision { get; set; }
+        public long SnapshotCapturedUtcTicks { get; set; }
+        public double SnapshotAgeMs { get; set; }
+        public string UiLifecycle { get; set; }
+        public long ControlProgressVersion { get; set; }
+        public string TypedExitTransactionId { get; set; }
+        public long GcTotalMemoryBytes { get; set; }
+        public int GcCollectionCount0 { get; set; }
+        public int GcCollectionCount1 { get; set; }
+        public int GcCollectionCount2 { get; set; }
+        public int ThreadPoolAvailableWorkerThreads { get; set; }
+        public int ThreadPoolAvailableIoThreads { get; set; }
+        public double DaqDev1SampleAgeMs { get; set; }
+        public int DaqDev1BufferedSamples { get; set; }
+        public string DaqDev1ReaderLagState { get; set; }
+        public long DaqDev1DroppedFromSequence { get; set; }
+        public long DaqDev1DroppedToSequence { get; set; }
+        public double DaqDev2SampleAgeMs { get; set; }
+        public int DaqDev2BufferedSamples { get; set; }
+        public string DaqDev2ReaderLagState { get; set; }
+        public long DaqDev2DroppedFromSequence { get; set; }
+        public long DaqDev2DroppedToSequence { get; set; }
         public string SessionId { get; set; }
         public int ProcessId { get; set; }
         public long ProcessStartUtcTicks { get; set; }

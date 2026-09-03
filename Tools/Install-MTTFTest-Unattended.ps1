@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
-$shortcutName = 'MT EPB 试验系统 V2.14.lnk'
+$shortcutName = 'MT EPB 试验系统 V2.15.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
 $runtimeConfigNames = @(
     'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
@@ -142,16 +142,21 @@ function Install-ServiceAndAgent([string]$Root) {
 
     $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $action = New-ScheduledTaskAction -Execute $sessionAgent
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $account
+    $keepaliveTrigger = New-ScheduledTaskTrigger -Once `
+        -At ((Get-Date).AddMinutes(1)) `
+        -RepetitionInterval ([TimeSpan]::FromMinutes(1))
     $principal = New-ScheduledTaskPrincipal -UserId $account `
         -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
         -RestartCount 255 -RestartInterval ([TimeSpan]::FromMinutes(1)) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+    Register-ScheduledTask -TaskName $taskName -Action $action `
+        -Trigger @($logonTrigger, $keepaliveTrigger) `
         -Principal $principal -Settings $settings -Force | Out-Null
 
-    $autoStartAction = New-ScheduledTaskAction -Execute $mainApplication `
+    $autoStartAction = New-ScheduledTaskAction -Execute $watchdog `
+        -Argument '--launch-main' `
         -WorkingDirectory $current
     $autoStartTrigger = New-ScheduledTaskTrigger -AtLogOn -User $account
     $autoStartTrigger.Delay = 'PT15S'
@@ -262,6 +267,93 @@ function Stop-InstalledRuntimeTasks([string]$Root) {
     Stop-InstalledSessionAgent $Root
 }
 
+function Invoke-Schema5SafeRollover([string]$Root) {
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+    $stateRoot = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'MTTFTest'))
+    $archiveRoot = [IO.Path]::GetFullPath(
+        (Join-Path $stateRoot ("MigrationArchive\schema5-$stamp")))
+    [void](New-Item -ItemType Directory -Path $archiveRoot -Force)
+
+    $checkpoint = [IO.Path]::GetFullPath(
+        (Join-Path $env:LOCALAPPDATA 'MTTFTest\unattended-run-checkpoint.json'))
+    $legacy = $null
+    if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
+        try { $legacy = Get-Content -LiteralPath $checkpoint -Raw | ConvertFrom-Json }
+        catch { throw "schema 5 检查点无法读取，拒绝换代：$($_.Exception.Message)" }
+    }
+
+    $migration = [ordered]@{
+        migrationSchemaVersion = 6
+        sourceSchemaVersion = if ($null -eq $legacy) { 0 } else { [int]$legacy.SchemaVersion }
+        migratedUtc = [DateTime]::UtcNow.ToString('O')
+        safetyState = 'SafeIdleAlarmed'
+        authorizationMigrated = $false
+        permitMigrated = $false
+        nonceMigrated = $false
+        storeDir = if ($null -eq $legacy) { '' } else { [string]$legacy.StoreDir }
+        testName = if ($null -eq $legacy) { '' } else { [string]$legacy.TestName }
+        selectedChannels = if ($null -eq $legacy) { @() } else { @($legacy.SelectedChannels) }
+        remainingFormalCycles = if ($null -eq $legacy) { @{} } else { $legacy.RemainingFormalCycles }
+        archiveRoot = $archiveRoot
+    }
+
+    if ($null -ne $legacy -and [int]$legacy.SchemaVersion -eq 5) {
+        if (-not [bool]$legacy.MotorOffConfirmed -or
+            -not [bool]$legacy.PressureSafeConfirmed -or
+            -not [bool]$legacy.PersistenceDrained) {
+            throw 'schema 5 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。'
+        }
+
+        foreach ($path in @($checkpoint, "$checkpoint.bak")) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $destination = Join-Path $archiveRoot ([IO.Path]::GetFileName($path))
+            Move-Item -LiteralPath $path -Destination $destination
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$legacy.StoreDir) -and
+            -not [string]::IsNullOrWhiteSpace([string]$legacy.TestName)) {
+            $projectRoot = [IO.Path]::GetFullPath(
+                (Join-Path ([string]$legacy.StoreDir) ([string]$legacy.TestName)))
+            $projectCheckpoint = Join-Path $projectRoot 'Recovery\unattended-run-checkpoint.json'
+            foreach ($path in @($projectCheckpoint, "$projectCheckpoint.bak")) {
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+                $name = 'project-' + [IO.Path]::GetFileName($path)
+                Move-Item -LiteralPath $path -Destination (Join-Path $archiveRoot $name)
+            }
+            $sessions = Join-Path $projectRoot 'WatchdogSessions'
+            if (Test-Path -LiteralPath $sessions -PathType Container) {
+                $sealed = Join-Path $projectRoot "WatchdogSessions.Schema5Sealed-$stamp"
+                Move-Item -LiteralPath $sessions -Destination $sealed
+                $migration['projectSessionArchive'] = $sealed
+            }
+        }
+    }
+
+    foreach ($supervisorRoot in @(
+            (Join-Path $stateRoot 'Supervisor\sessions'),
+            (Join-Path $env:LOCALAPPDATA 'MTTFTest\SupervisorConsole\sessions'))) {
+        if (-not (Test-Path -LiteralPath $supervisorRoot -PathType Container)) { continue }
+        foreach ($file in @(Get-ChildItem -LiteralPath $supervisorRoot -File -Filter '*.json')) {
+            $isSchema5 = $false
+            try {
+                $json = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+                $isSchema5 = [int]$json.SchemaVersion -eq 5
+            }
+            catch { }
+            if (-not $isSchema5) { continue }
+            Move-Item -LiteralPath $file.FullName -Destination `
+                (Join-Path $archiveRoot ("supervisor-" + $file.Name))
+        }
+    }
+
+    $migrationRoot = Join-Path $stateRoot 'Migration'
+    [void](New-Item -ItemType Directory -Path $migrationRoot -Force)
+    $migrationPath = Join-Path $migrationRoot 'schema5-remaining-cycles-migration.json'
+    $migration | ConvertTo-Json -Depth 8 | Set-Content `
+        -LiteralPath $migrationPath -Encoding UTF8
+    Write-Host "schema 5 已安全封存；仅迁移剩余圈数：$migrationPath"
+}
+
 function Assert-Health([string]$Root) {
     $current = Join-Path $Root 'Current'
     Assert-RequiredProgramFiles $current
@@ -270,6 +362,12 @@ function Assert-Health([string]$Root) {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
     if ($task.Settings.RestartCount -lt 1) {
         throw 'SessionAgent 登录任务缺少崩溃自动重启策略。'
+    }
+    $keepaliveTriggers = @($task.Triggers | Where-Object {
+        $null -ne $_.Repetition -and $_.Repetition.Interval -eq 'PT1M'
+    })
+    if ($task.Triggers.Count -lt 2 -or $keepaliveTriggers.Count -ne 1) {
+        throw 'SessionAgent 登录任务缺少每分钟存活触发器。'
     }
     [void](Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction Stop)
     $runtimeConfig = Join-Path (Join-Path $env:ProgramData 'MTTFTest') 'Config'
@@ -288,15 +386,15 @@ function Write-ConfiguredMarker([string]$Root) {
         (New-Object Text.UTF8Encoding($false)))
 }
 
-function Get-ShortcutPaths {
+function Get-ShortcutPaths([string]$Name = $shortcutName) {
     $paths = @()
     $desktop = [Environment]::GetFolderPath('DesktopDirectory')
     $programs = [Environment]::GetFolderPath('Programs')
     if (-not [string]::IsNullOrWhiteSpace($desktop)) {
-        $paths += (Join-Path $desktop $shortcutName)
+        $paths += (Join-Path $desktop $Name)
     }
     if (-not [string]::IsNullOrWhiteSpace($programs)) {
-        $paths += (Join-Path $programs $shortcutName)
+        $paths += (Join-Path $programs $Name)
     }
     return @($paths)
 }
@@ -304,11 +402,18 @@ function Get-ShortcutPaths {
 function Install-Shortcuts([string]$Root) {
     $current = Join-Path $Root 'Current'
     $target = Join-Path $current 'MTTFTest.exe'
-    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
-        throw "快捷方式目标不存在：$target"
+    $launcher = Join-Path $current 'MTTFTest.Watchdog.exe'
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+        throw "快捷方式主程序或 Supervisor 启动器不存在：$current"
     }
     $targetVersion = (Get-Item -LiteralPath $target).VersionInfo.FileVersion
     if ([string]::IsNullOrWhiteSpace($targetVersion)) { $targetVersion = '未知版本' }
+    foreach ($legacy in @(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk')) {
+        if (Test-Path -LiteralPath $legacy -PathType Leaf) {
+            Remove-Item -LiteralPath $legacy -Force -Confirm:$false
+        }
+    }
     $shell = New-Object -ComObject WScript.Shell
     foreach ($path in @(Get-ShortcutPaths)) {
         $parent = Split-Path -Parent $path
@@ -316,10 +421,11 @@ function Install-Shortcuts([string]$Root) {
             [void](New-Item -ItemType Directory -Path $parent -Force)
         }
         $shortcut = $shell.CreateShortcut($path)
-        $shortcut.TargetPath = $target
+        $shortcut.TargetPath = $launcher
+        $shortcut.Arguments = "--launch-main --main-executable `"$target`""
         $shortcut.WorkingDirectory = $current
         $shortcut.IconLocation = "$target,0"
-        $shortcut.Description = "MT EPB 试验系统 V$targetVersion（正式包，运行状态由操作人员负责）"
+        $shortcut.Description = "MT EPB 试验系统 V$targetVersion（Supervisor 无人值守正式版）"
         $shortcut.Save()
         $shortcutBytes = [IO.File]::ReadAllBytes($path)
         if ($shortcutBytes.Length -lt 22) {
@@ -332,7 +438,9 @@ function Install-Shortcuts([string]$Root) {
 }
 
 function Remove-Shortcuts {
-    foreach ($path in @(Get-ShortcutPaths)) {
+    foreach ($path in @(
+            @(Get-ShortcutPaths) +
+            @(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk'))) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Remove-Item -LiteralPath $path -Force -Confirm:$false
         }
@@ -519,27 +627,29 @@ if ([string]::IsNullOrWhiteSpace($sourceVersion)) {
 }
 if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环境")) {
     Write-OperationContext "$Mode V$sourceVersion" $root $source
-    Write-OperationStep 1 8 '确认已安装的主程序没有运行。'
+    Write-OperationStep 1 9 '确认已安装的主程序没有运行。'
     Assert-InstalledMainStopped $root
-    Write-OperationStep 2 8 '停止旧监督服务和运行任务。'
+    Write-OperationStep 2 9 '停止旧监督服务和运行任务。'
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
-    Write-OperationStep 3 8 '初始化并保留现场运行配置。'
+    Write-OperationStep 3 9 '确认断能证明、封存 schema 5 会话并仅迁移剩余圈数。'
+    Invoke-Schema5SafeRollover $root
+    Write-OperationStep 4 9 '初始化并保留现场运行配置。'
     Initialize-RuntimeConfig $source $root
-    Write-OperationStep 4 8 '安装或更新程序文件。'
+    Write-OperationStep 5 9 '安装或更新程序文件。'
     if (Test-CurrentSlotReplacementRequired $source $root) {
         [void](Install-CurrentSlot $source $root)
     }
     else {
         Write-Host '已安装版本不低于来源版本，保留 Current，不创建重复 retired 目录。'
     }
-    Write-OperationStep 5 8 '配置程序目录和 ProgramData 权限。'
+    Write-OperationStep 6 9 '配置程序目录和 ProgramData 权限。'
     Set-UnattendedAcl $root
-    Write-OperationStep 6 8 '安装监督服务、登录代理和自启动任务。'
+    Write-OperationStep 7 9 '安装 schema 6 监督服务、登录代理和自启动任务。'
     Install-ServiceAndAgent $root
-    Write-OperationStep 7 8 '检查程序文件、服务和任务状态。'
+    Write-OperationStep 8 9 '检查程序文件、服务和任务状态。'
     Assert-Health $root
-    Write-OperationStep 8 8 '创建快捷方式并写入配置标记。'
+    Write-OperationStep 9 9 '创建 Supervisor 启动快捷方式并写入配置标记。'
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
     Write-Host "V$sourceVersion 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"

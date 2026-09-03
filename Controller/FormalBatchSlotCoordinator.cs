@@ -103,7 +103,7 @@ namespace Controller
     {
         private FormalBatchSlotCoordinator _owner;
         private readonly FormalBatchSlotCoordinator.SlotEntry _entry;
-        private readonly Func<FormalBatchParticipantTerminal> _fallbackTerminalFactory;
+        private readonly Func<Task<FormalBatchParticipantTerminal>> _fallbackTerminalFactory;
         private int _completed;
 
         internal FormalBatchSlotScope(
@@ -111,7 +111,7 @@ namespace Controller
             FormalBatchSlotCoordinator.SlotEntry entry,
             int channel,
             long sharedWaitMs,
-            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory)
+            Func<Task<FormalBatchParticipantTerminal>> fallbackTerminalFactory)
         {
             _owner = owner;
             _entry = entry;
@@ -140,10 +140,33 @@ namespace Controller
 
         public void Dispose()
         {
-            FormalBatchParticipantTerminal terminal = null;
-            try { terminal = _fallbackTerminalFactory?.Invoke(); }
+            if (Volatile.Read(ref _completed) != 0) return;
+            Task<FormalBatchParticipantTerminal> pending = null;
+            try { pending = _fallbackTerminalFactory?.Invoke(); }
             catch { }
-            Complete(terminal ?? new FormalBatchParticipantTerminal
+            if (pending == null)
+            {
+                Complete(CreateFallbackFailureTerminal());
+                return;
+            }
+
+            // Dispose must never manufacture SafetyUnproven synchronously while
+            // motor OFF / hydraulic release / persistence evidence is still in
+            // flight.  The slot remains pending until the shared asynchronous
+            // closure transaction resolves.
+            pending.ContinueWith(
+                completed => Complete(
+                    completed.Status == TaskStatus.RanToCompletion
+                        ? completed.Result
+                        : CreateFallbackFailureTerminal()),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private FormalBatchParticipantTerminal CreateFallbackFailureTerminal()
+        {
+            return new FormalBatchParticipantTerminal
             {
                 Channel = Channel,
                 Disposition = FormalParticipantDisposition.SafetyUnproven,
@@ -151,9 +174,9 @@ namespace Controller
                 HydraulicMemberReleased = false,
                 PersistenceBoundaryRequired = true,
                 PersistenceCommitted = false,
-                Result = "CallbackExitedWithoutExplicitTerminal",
+                Result = "AsynchronousSafetyClosureFailed",
                 CompletedUtc = DateTime.UtcNow
-            });
+            };
         }
     }
 
@@ -219,7 +242,7 @@ namespace Controller
             int periodMs,
             Action waitingCallback,
             CancellationToken token,
-            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null,
+            Func<Task<FormalBatchParticipantTerminal>> fallbackTerminalFactory = null,
             int previousSlotClosureTimeoutMs = 0,
             Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null)
         {
@@ -255,7 +278,7 @@ namespace Controller
             int periodMs,
             Action waitingCallback,
             CancellationToken token,
-            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null,
+            Func<Task<FormalBatchParticipantTerminal>> fallbackTerminalFactory = null,
             int previousSlotClosureTimeoutMs = 0,
             Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null)
         {

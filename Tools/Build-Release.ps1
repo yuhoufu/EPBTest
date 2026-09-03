@@ -8,13 +8,16 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$releaseProjectPath = Join-Path $repo 'MTTfTest\MTTfTest.csproj'
-[xml]$releaseProjectXml = Get-Content -LiteralPath $releaseProjectPath -Raw
-$expectedProductVersion = ([string]$releaseProjectXml.Project.PropertyGroup.ApplicationVersion |
+$versionPropsPath = Join-Path $repo 'Build\UnattendedVersion.props'
+if (-not (Test-Path -LiteralPath $versionPropsPath -PathType Leaf)) {
+    throw '缺少统一版本源 Build\UnattendedVersion.props。'
+}
+[xml]$versionPropsXml = Get-Content -LiteralPath $versionPropsPath -Raw
+$expectedProductVersion = ([string]$versionPropsXml.Project.PropertyGroup.UnattendedProductVersion |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Select-Object -First 1).Trim()
 if ([string]::IsNullOrWhiteSpace($expectedProductVersion)) {
-    throw 'MTTfTest.csproj 未声明 ApplicationVersion。'
+    throw '统一版本源未声明 UnattendedProductVersion。'
 }
 $expectedProductLabel = 'V' + $expectedProductVersion
 $expectedAssemblyName = 'MTTFTest'
@@ -277,6 +280,7 @@ Assert-LegacyCompileItems -ProjectRelativePath 'Watchdog.Protocol\Watchdog.Proto
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.Watchdog\MTTFTest.Watchdog.csproj' -RequiredItems @(
     'UnattendedAlarmSink.cs',
     'SupervisorServiceHost.cs',
+    'SupervisorMainLaunchClient.cs',
     'SessionAgentLaunchClient.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj' -RequiredItems @(
@@ -288,8 +292,8 @@ $snapshotSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\W
 $receiptSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyReceipts.cs') -Raw
 $programSource = Get-Content -LiteralPath (Join-Path $repo 'MTTfTest\Program.cs') -Raw
 if ($snapshotSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*2' -or
-    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*5') {
-    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 5 支持。'
+    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*6') {
+    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 6 支持。'
 }
 if ($programSource -match 'watchdog-safety-shutdown' -or
     (Test-Path -LiteralPath (Join-Path $repo 'MTTfTest\WatchdogSafetyShutdownWorker.cs'))) {
@@ -586,7 +590,7 @@ if ($deploymentContractSummary.Count -ne 1) {
 }
 $quickDeployParseSummary = @($deploymentContractOutput |
     ForEach-Object { [string]$_ } |
-    Where-Object { $_ -match '^PASS\s+QuickDeployCommandParse\s+3/3$' } |
+    Where-Object { $_ -match '^PASS\s+QuickDeployCommandParse\s+5/5$' } |
     Select-Object -Last 1)
 if ($quickDeployParseSummary.Count -ne 1) {
     throw '快捷部署批处理解析测试未通过。'
@@ -659,6 +663,7 @@ New-Item -ItemType File -Path (Join-Path $output 'MTTFTest.UnattendedMode.requir
 
 $files = Get-RecursivePackageFiles -Root $output `
     -ExcludedRelativePaths @('build-identity.json', 'SHA256SUMS.txt')
+$packageContentSha256 = Get-AggregateFileHash $files
 $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
     $file = Get-Item -LiteralPath $entry.Value
     [ordered]@{
@@ -667,6 +672,23 @@ $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
         sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
+$componentIdentities = @(
+    @($exePath) + @($versionedComponents) |
+    Sort-Object -Unique |
+    ForEach-Object {
+        $componentPath = [IO.Path]::GetFullPath($_)
+        $pdbPath = [IO.Path]::ChangeExtension($componentPath, '.pdb')
+        if (-not (Test-Path -LiteralPath $pdbPath -PathType Leaf)) {
+            throw "正式组件缺少 PDB 身份：$componentPath"
+        }
+        [ordered]@{
+            name = [IO.Path]::GetFileName($componentPath)
+            fileVersion = (Get-Item -LiteralPath $componentPath).VersionInfo.FileVersion
+            sha256 = (Get-FileHash -LiteralPath $componentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            pdb = [IO.Path]::GetFileName($pdbPath)
+            pdbSha256 = (Get-FileHash -LiteralPath $pdbPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    })
 $identity = [ordered]@{
     productVersion = $expectedProductLabel
     fileVersion = $actualFileVersion
@@ -679,10 +701,13 @@ $identity = [ordered]@{
     gitBranch = $branch
     gitDirty = $isDirty
     buildUtc = $buildUtc
+    mainExecutableSha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    packageContentSha256 = $packageContentSha256
     configSha256 = $configHash
     platform = 'x86'
-    watchdogSchema = 5
+    watchdogSchema = 6
     packageSlotSchema = 5
+    componentIdentities = $componentIdentities
     verification = $verification
     files = @($manifestFiles)
 }

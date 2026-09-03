@@ -38,6 +38,7 @@ namespace MtEmbTest
         static void Main(string[] args)
         {
             if (FirstRunBootstrap.TryRunElevatedWorker(args)) return;
+            if (!LaunchCapabilityGate.ValidateOrReject(args)) return;
             if (!FirstRunBootstrap.PrepareOrExit(args)) return;
             var watchdogRecoveryIntent = WatchdogRecoveryIntent.Parse(args);
             var recoveryIntent = watchdogRecoveryIntent == null

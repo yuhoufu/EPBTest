@@ -118,7 +118,8 @@ namespace IO.NI
         DuplicateBatch = 64,
         OutOfOrderBatch = 128,
         MonotonicTickInvalid = 256,
-        FilterStateInvalid = 512
+        FilterStateInvalid = 512,
+        SampleStale = 1024
     }
 
     /// <summary>控制器使用的结构化快速电流样本。</summary>
@@ -163,7 +164,8 @@ namespace IO.NI
                              FastSignalQualityFlags.DuplicateBatch |
                              FastSignalQualityFlags.OutOfOrderBatch |
                              FastSignalQualityFlags.MonotonicTickInvalid |
-                             FastSignalQualityFlags.FilterStateInvalid)) == 0;
+                             FastSignalQualityFlags.FilterStateInvalid |
+                             FastSignalQualityFlags.SampleStale)) == 0;
     }
 
     /// <summary>兼容轮询控制所需的最近快速样本及新鲜度。</summary>

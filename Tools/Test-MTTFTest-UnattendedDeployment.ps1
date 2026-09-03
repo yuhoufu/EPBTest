@@ -49,6 +49,13 @@ foreach ($required in @(
         'RunLevel Highest',
         'shortcutBytes[21]',
         'Test-CurrentSlotReplacementRequired',
+        'Invoke-Schema5SafeRollover',
+        'authorizationMigrated = $false',
+        'permitMigrated = $false',
+        'nonceMigrated = $false',
+        'SafeIdleAlarmed',
+        "'obj=' 'LocalSystem'",
+        "-Argument '--launch-main'",
         'MTTFTestAutoStart',
         'MTTFTest.FirstRun.configured',
         "'Configure'",
@@ -78,6 +85,35 @@ if (-not $firstRunText.Contains('ProgramFilesX86') -or
     -not $runtimePathsText.Contains('ProgramFilesX86')) {
     throw 'x86 主程序和运行配置路径必须统一使用 ProgramFilesX86。'
 }
+$programText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTfTest\Program.cs'), [Text.Encoding]::UTF8)
+$supervisorProtocolText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'Watchdog.Protocol\SupervisorProtocol.cs'), [Text.Encoding]::UTF8)
+$sessionProtocolText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'Watchdog.Protocol\SessionAgentProtocol.cs'), [Text.Encoding]::UTF8)
+$sessionAgentHostText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.SessionAgent\SessionAgentHost.cs'), [Text.Encoding]::UTF8)
+$supervisorHostText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.Watchdog\SupervisorServiceHost.cs'), [Text.Encoding]::UTF8)
+$sessionLaunchClientText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.Watchdog\SessionAgentLaunchClient.cs'), [Text.Encoding]::UTF8)
+$supervisorMainLaunchClientText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.Watchdog\SupervisorMainLaunchClient.cs'), [Text.Encoding]::UTF8)
+if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
+    -not $supervisorProtocolText.Contains('public const int SchemaVersion = 6') -or
+    -not $sessionProtocolText.Contains('public const int SchemaVersion = 6') -or
+    -not $sessionAgentHostText.Contains('LaunchCapabilityAlreadyConsumed') -or
+    -not $supervisorHostText.Contains('MainProcessStartUtcTicks') -or
+    -not $supervisorHostText.Contains('SupervisorSafetyHandoffOldProcessIdentityMismatch') -or
+    -not $supervisorHostText.Contains('SupervisorSafetyHandoffRegisteredPathMismatch') -or
+    -not $supervisorHostText.Contains('SupervisorSafetyHandoffRegisteredExecutableMismatch') -or
+    -not $sessionProtocolText.Contains('RecoveryAuthoritySha256') -or
+    -not $sessionLaunchClientText.Contains('SupervisorMainLaunchClient.Start(source)') -or
+    -not $supervisorMainLaunchClientText.Contains('IsRecoveryLaunch = true') -or
+    -not $supervisorHostText.Contains('SupervisorMainRecoverySessionMismatch') -or
+    -not $supervisorHostText.Contains('SupervisorRecoveryCapabilitySessionAgentLaunch')) {
+    throw 'schema 6 Supervisor 单次 LaunchCapability 生产门禁不完整。'
+}
 foreach ($commandName in @(
         '一键安装正式版.cmd', '一键修复.cmd', '一键卸载.cmd', '启动试验.cmd')) {
     $commandText = [IO.File]::ReadAllText(
@@ -87,7 +123,62 @@ foreach ($commandName in @(
         throw "快捷入口未统一 32/64 位安装路径：$commandName"
     }
 }
+$launchCommandText = [IO.File]::ReadAllText(
+    (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') '启动试验.cmd'),
+    [Text.Encoding]::ASCII)
+if (-not $launchCommandText.Contains('MTTFTest.Watchdog.exe') -or
+    -not $launchCommandText.Contains('--launch-main') -or
+    $launchCommandText.Contains('start "MT EPB Test System" /d "%MTTFTEST_PROGRAM_FILES%\MTTFTest\Current" "%APP%"')) {
+    throw '正式启动入口未唯一收口到 Supervisor launcher。'
+}
 Write-Output 'PASS RequireAdministratorLaunchContract 1/1'
+
+$e2eBuildPath = Join-Path $PSScriptRoot 'Build-UnattendedRecoveryE2EPackage.ps1'
+$e2eRunPath = Join-Path $PSScriptRoot 'Test-MTTFTest-InstalledRecoveryE2E.ps1'
+$e2eMainPath = Join-Path $repo `
+    'Tests\UnattendedRecoveryE2E\TestMainProgram.cs'
+$e2eAgentPath = Join-Path $repo `
+    'Tests\UnattendedRecoveryE2E\NoHardwareSafetyAgentProgram.cs'
+foreach ($path in @($e2eBuildPath, $e2eRunPath, $e2eMainPath, $e2eAgentPath)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "安装态 E2E 测试宿主缺失：$path"
+    }
+}
+$e2eRunText = [IO.File]::ReadAllText($e2eRunPath, [Text.Encoding]::UTF8)
+$e2eMainText = [IO.File]::ReadAllText($e2eMainPath, [Text.Encoding]::UTF8)
+$e2eAgentText = [IO.File]::ReadAllText($e2eAgentPath, [Text.Encoding]::UTF8)
+foreach ($required in @(
+        'ConfirmIsolatedEnvironment',
+        'WindowsBuiltInRole]::Administrator',
+        "'obj=' 'LocalSystem'",
+        "'reset=' '0'",
+        'sc.exe qfailure',
+        '配置 Supervisor SCM failure actions 失败',
+        'keepaliveTrigger',
+        'e2e-session-agent-task.xml',
+        'KillSupervisorAndRecover',
+        'KillSessionAgentAndRecover',
+        'KillSafetyAgentAndResumeAuthority',
+        'MotorOffWithin250ms',
+        'IndependentSafetyProofWithin30Seconds',
+        'RecoveryFirstCycleCommitted',
+        'ExactlyOneMainProcess',
+        'ExactlyOneEffectivePermit')) {
+    if (-not $e2eRunText.Contains($required)) {
+        throw "安装态 E2E 驱动缺少门禁或指标：$required"
+    }
+}
+if (-not $installerText.Contains('keepaliveTrigger') -or
+    -not $installerText.Contains('SessionAgent 登录任务缺少每分钟存活触发器')) {
+    throw '正式 SessionAgent 任务缺少登录与周期存活双触发门禁。'
+}
+if (-not $e2eMainText.Contains('LaunchCapabilityGate.TryValidate') -or
+    -not $e2eMainText.Contains('SupervisorSidecarProcessLauncher') -or
+    -not $e2eAgentText.Contains('E2ENoHardwareMotorOffConfirmed') -or
+    -not $e2eAgentText.Contains('SupervisorSafetyAuthorityStore.Advance')) {
+    throw '独立 E2E 主进程/无硬件 SafetyAgent 未复用正式授权链。'
+}
+Write-Output 'PASS InstalledRecoveryE2ETestHostContract 1/1'
 
 $releaseScripts = @(
     (Join-Path $PSScriptRoot 'Build-Release.ps1'),

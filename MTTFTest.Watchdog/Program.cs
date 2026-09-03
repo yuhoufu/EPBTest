@@ -12,6 +12,11 @@ namespace MTTFTest.Watchdog
                 args = args ?? Array.Empty<string>();
                 if (args.Any(value => string.Equals(
                         value,
+                        "--launch-main",
+                        StringComparison.OrdinalIgnoreCase)))
+                    return SupervisorMainLaunchClient.Run(args);
+                if (args.Any(value => string.Equals(
+                        value,
                         "--session-host",
                         StringComparison.OrdinalIgnoreCase)))
                     return WatchdogHost.Run(args.Where(value => !string.Equals(
