@@ -67,8 +67,12 @@ foreach ($required in @(
         'Read-Utf8JsonFile',
         'New-Object Text.UTF8Encoding($false, $true)',
         'Invoke-LegacyCheckpointSafeRollover',
+        'Test-LegacyCheckpointIsProvablyInert',
+        'Assert-LegacyCheckpointCanRollover',
+        'Assert-LegacyCheckpointRolloverPreflight',
         'Ensure-V3BaselineLastKnownGood',
-        'legacySchema -notin @(5, 6)',
+        'legacySchema -ge 1 -and $legacySchema -le 4',
+        'ArchivedProvablyInertTombstone',
         'authorizationMigrated = $false',
         'permitMigrated = $false',
         'nonceMigrated = $false',
@@ -89,6 +93,103 @@ foreach ($required in @(
 }
 Write-Output 'PASS SimpleUnattendedDeploymentContract 1/1'
 Write-Output 'PASS WindowsPowerShell51ScheduledTaskCompatibility 1/1'
+$preflightCallIndex = $installerText.LastIndexOf(
+    '    Assert-LegacyCheckpointRolloverPreflight',
+    [StringComparison]::Ordinal)
+$runtimeStopIndex = $installerText.LastIndexOf(
+    '    Stop-Supervisor',
+    [StringComparison]::Ordinal)
+if ($preflightCallIndex -lt 0 -or
+    $runtimeStopIndex -lt 0 -or
+    $preflightCallIndex -ge $runtimeStopIndex) {
+    throw '旧检查点迁移资格必须在停止已安装运行环境之前完成只读预检。'
+}
+Write-Output 'PASS LegacyCheckpointPreflightBeforeRuntimeStop 1/1'
+
+$inertFunctionAst = @($ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Test-LegacyCheckpointIsProvablyInert'
+}, $true))
+if ($inertFunctionAst.Count -ne 1) {
+    throw '无法定位旧检查点空闲墓碑判定函数。'
+}
+Invoke-Expression $inertFunctionAst[0].Extent.Text
+$inertSchema1Json = '{"SchemaVersion":1,"Armed":false,"RestartPending":false,"GracefulPaused":false,"RecoveryChainPendingStart":false,"InProcessRecoveryPending":false,"RootRunId":null,"ParentRunId":null,"RunId":null,"RecoveryNonce":"","ActiveFaultCorrelationId":null,"WatchdogSessionId":"","SelectedChannels":[],"RemainingFormalCycles":{},"RestartHistoryUtc":[],"InProcessRecoveryHistory":[],"LastReason":"MonitorClosing"}'
+$inertSchema1 = $inertSchema1Json | ConvertFrom-Json
+if (-not (Test-LegacyCheckpointIsProvablyInert $inertSchema1)) {
+    throw 'schema 1 MonitorClosing 空闲墓碑被错误拒绝。'
+}
+foreach ($activeJson in @(
+        ($inertSchema1Json -replace '"Armed":false', '"Armed":true'),
+        ($inertSchema1Json -replace '"RunId":null', '"RunId":"active-run"'),
+        ($inertSchema1Json -replace '"SelectedChannels":\[\]', '"SelectedChannels":[4]'),
+        ($inertSchema1Json -replace '"RemainingFormalCycles":\{\}', '"RemainingFormalCycles":{"4":123}'),
+        ($inertSchema1Json -replace ',"WatchdogSessionId":""', ''))) {
+    if (Test-LegacyCheckpointIsProvablyInert ($activeJson | ConvertFrom-Json)) {
+        throw "活动或身份不完整的旧检查点被错误判定为空闲：$activeJson"
+    }
+}
+Write-Output 'PASS LegacySchema1InertTombstoneMigration 6/6'
+
+foreach ($functionName in @(
+        'Read-Utf8JsonFile', 'Assert-LegacyCheckpointCanRollover',
+        'Invoke-LegacyCheckpointSafeRollover')) {
+    $definition = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $functionName
+    }, $true))
+    if ($definition.Count -ne 1) {
+        throw "无法定位安装迁移函数：$functionName"
+    }
+    Invoke-Expression $definition[0].Extent.Text
+}
+$migrationProbeRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ('EPBTest-Schema1-Inert-Migration-' + [Guid]::NewGuid().ToString('N'))
+$savedProgramData = $env:ProgramData
+$savedLocalAppData = $env:LOCALAPPDATA
+try {
+    $probeProgramData = Join-Path $migrationProbeRoot 'ProgramData'
+    $probeLocalAppData = Join-Path $migrationProbeRoot 'LocalAppData'
+    $probeCheckpointRoot = Join-Path $probeLocalAppData 'MTTFTest'
+    [void](New-Item -ItemType Directory -Path $probeProgramData -Force)
+    [void](New-Item -ItemType Directory -Path $probeCheckpointRoot -Force)
+    $probeCheckpoint = Join-Path $probeCheckpointRoot 'unattended-run-checkpoint.json'
+    [IO.File]::WriteAllText(
+        $probeCheckpoint,
+        $inertSchema1Json,
+        (New-Object Text.UTF8Encoding($false)))
+    $env:ProgramData = $probeProgramData
+    $env:LOCALAPPDATA = $probeLocalAppData
+    Invoke-LegacyCheckpointSafeRollover (Join-Path $migrationProbeRoot 'Install')
+    if (Test-Path -LiteralPath $probeCheckpoint -PathType Leaf) {
+        throw 'schema 1 空闲墓碑迁移后仍留在活动检查点路径。'
+    }
+    $probeMigrationPath = Join-Path $probeProgramData `
+        'MTTFTest\Migration\schema5-remaining-cycles-migration.json'
+    $probeMigration = [IO.File]::ReadAllText(
+        $probeMigrationPath,
+        (New-Object Text.UTF8Encoding($false, $true))) | ConvertFrom-Json
+    if ($probeMigration.sourceSchemaVersion -ne 1 -or
+        $probeMigration.sourceDisposition -ne 'ArchivedProvablyInertTombstone' -or
+        [bool]$probeMigration.authorizationMigrated -or
+        @($probeMigration.selectedChannels).Count -ne 0 -or
+        @($probeMigration.remainingFormalCycles.PSObject.Properties).Count -ne 0 -or
+        -not (Test-Path -LiteralPath `
+            (Join-Path $probeMigration.archiveRoot 'unattended-run-checkpoint.json') `
+            -PathType Leaf)) {
+        throw 'schema 1 空闲墓碑没有按“只封存、零授权、零圈数”完成迁移。'
+    }
+}
+finally {
+    $env:ProgramData = $savedProgramData
+    $env:LOCALAPPDATA = $savedLocalAppData
+    if (Test-Path -LiteralPath $migrationProbeRoot -PathType Container) {
+        Remove-Item -LiteralPath $migrationProbeRoot -Recurse -Force
+    }
+}
+Write-Output 'PASS LegacySchema1InertTombstoneRollover 1/1'
 
 $utf8RegressionRoot = Join-Path ([IO.Path]::GetTempPath()) `
     ('EPBTest-PS51-Utf8-' + [Guid]::NewGuid().ToString('N'))
@@ -299,7 +400,7 @@ foreach ($requiredV3PackageContract in @(
         'installedCrashMatrixPassed',
         'hardwareMatrixPassed',
         'soak168HoursPassed',
-        'QUICKDEPLOY_R22',
+        'QUICKDEPLOY_R23',
         'archiveSha256')) {
     if (-not $v3InstallerText.Contains($requiredV3PackageContract)) {
         throw "V3 一键安装包脚本缺少契约：$requiredV3PackageContract"

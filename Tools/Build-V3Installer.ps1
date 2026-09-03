@@ -155,7 +155,7 @@ if (-not $FormalRelease) {
 
 $shortCommit = ([string]$identity.gitCommit).Substring(0, 12)
 $bundleKind = if ($FormalRelease) { '操作员包' } else { '现场验证包' }
-$bundleName = "V${version}_${bundleKind}_${shortCommit}_QUICKDEPLOY_R22"
+$bundleName = "V${version}_${bundleKind}_${shortCommit}_QUICKDEPLOY_R23"
 $bundleDirectory = Join-Path $outputRootFull $bundleName
 $archive = $bundleDirectory + '.7z'
 $archiveHashPath = $archive + '.sha256'

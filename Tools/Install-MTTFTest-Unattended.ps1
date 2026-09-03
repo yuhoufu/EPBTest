@@ -322,6 +322,76 @@ function Stop-InstalledRuntimeTasks([string]$Root) {
     Stop-InstalledSessionAgent $Root
 }
 
+function Test-LegacyCheckpointIsProvablyInert([object]$Legacy) {
+    if ($null -eq $Legacy) { return $false }
+
+    # schema 1-4 没有 V3 可接受的安全证明，绝不能迁移它们的授权或剩余圈。
+    # 这里只识别旧程序在“从未启动试验/已经清空授权”后写出的显式空闲墓碑。
+    # 关键字段缺失也视为不确定，保持失败安全。
+    foreach ($name in @(
+            'Armed', 'RestartPending', 'GracefulPaused',
+            'RecoveryChainPendingStart', 'InProcessRecoveryPending')) {
+        $property = $Legacy.PSObject.Properties[$name]
+        if ($null -eq $property -or [bool]$property.Value) { return $false }
+    }
+
+    foreach ($name in @(
+            'RootRunId', 'ParentRunId', 'RunId', 'RecoveryNonce',
+            'ActiveFaultCorrelationId', 'WatchdogSessionId')) {
+        $property = $Legacy.PSObject.Properties[$name]
+        if ($null -eq $property -or
+            -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+            return $false
+        }
+    }
+
+    foreach ($name in @(
+            'SelectedChannels', 'RemainingFormalCycles',
+            'RestartHistoryUtc', 'InProcessRecoveryHistory')) {
+        $property = $Legacy.PSObject.Properties[$name]
+        if ($null -eq $property -or $null -eq $property.Value) { return $false }
+        if ($property.Value -is [Collections.IDictionary]) {
+            if ($property.Value.Count -ne 0) { return $false }
+            continue
+        }
+        if ($name -eq 'RemainingFormalCycles') {
+            if (@($property.Value.PSObject.Properties).Count -ne 0) { return $false }
+            continue
+        }
+        if (@($property.Value).Count -ne 0) { return $false }
+    }
+
+    return $true
+}
+
+function Assert-LegacyCheckpointCanRollover([object]$Legacy) {
+    if ($null -eq $Legacy) { return }
+    $legacySchema = [int]$Legacy.SchemaVersion
+    if ($legacySchema -ge 1 -and $legacySchema -le 4) {
+        if (-not (Test-LegacyCheckpointIsProvablyInert $Legacy)) {
+            throw "旧运行检查点 SchemaVersion=$legacySchema 不是可证明无授权的空闲墓碑；保持 SafeIdleAlarmed，拒绝安装新授权。"
+        }
+        return
+    }
+    if ($legacySchema -notin @(5, 6)) {
+        throw "旧运行检查点 SchemaVersion=$legacySchema 不受支持；保持 SafeIdleAlarmed，拒绝安装新授权。"
+    }
+    if (-not [bool]$Legacy.MotorOffConfirmed -or
+        -not [bool]$Legacy.PressureSafeConfirmed -or
+        -not [bool]$Legacy.PersistenceDrained) {
+        throw "schema $legacySchema 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。"
+    }
+}
+
+function Assert-LegacyCheckpointRolloverPreflight {
+    $checkpoint = [IO.Path]::GetFullPath(
+        (Join-Path $env:LOCALAPPDATA 'MTTFTest\unattended-run-checkpoint.json'))
+    if (-not (Test-Path -LiteralPath $checkpoint -PathType Leaf)) { return }
+    try { $legacy = Read-Utf8JsonFile $checkpoint '旧运行检查点' }
+    catch { throw "旧检查点无法读取，拒绝换代：$($_.Exception.Message)" }
+    Assert-LegacyCheckpointCanRollover $legacy
+}
+
 function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
     $stateRoot = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'MTTFTest'))
@@ -354,13 +424,15 @@ function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
 
     if ($null -ne $legacy) {
         $legacySchema = [int]$legacy.SchemaVersion
-        if ($legacySchema -notin @(5, 6)) {
-            throw "旧运行检查点 SchemaVersion=$legacySchema 不受支持；保持 SafeIdleAlarmed，拒绝安装新授权。"
+        Assert-LegacyCheckpointCanRollover $legacy
+        if ($legacySchema -ge 1 -and $legacySchema -le 4) {
+            # 旧空闲墓碑只封存、不迁移；它没有活动运行，也没有可信的剩余圈语义。
+            $migration['selectedChannels'] = @()
+            $migration['remainingFormalCycles'] = @{}
+            $migration['sourceDisposition'] = 'ArchivedProvablyInertTombstone'
         }
-        if (-not [bool]$legacy.MotorOffConfirmed -or
-            -not [bool]$legacy.PressureSafeConfirmed -or
-            -not [bool]$legacy.PersistenceDrained) {
-            throw "schema $legacySchema 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。"
+        else {
+            $migration['sourceDisposition'] = 'ArchivedSafetyProvenCheckpoint'
         }
 
         foreach ($path in @($checkpoint, "$checkpoint.bak")) {
@@ -410,7 +482,7 @@ function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
     $migrationPath = Join-Path $migrationRoot 'schema5-remaining-cycles-migration.json'
     $migration | ConvertTo-Json -Depth 8 | Set-Content `
         -LiteralPath $migrationPath -Encoding UTF8
-    Write-Host "旧 schema 5/6 检查点已安全封存；仅迁移剩余圈数：$migrationPath"
+    Write-Host "旧 schema 1-6 检查点已安全分类并封存；仅 schema 5/6 可迁移剩余圈数：$migrationPath"
 }
 
 function Assert-Health([string]$Root) {
@@ -686,10 +758,11 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Write-OperationContext "$Mode V$sourceVersion" $root $source
     Write-OperationStep 1 9 '确认已安装的主程序没有运行。'
     Assert-InstalledMainStopped $root
-    Write-OperationStep 2 9 '停止旧监督服务和运行任务。'
+    Write-OperationStep 2 9 '只读预检旧检查点，再停止旧监督服务和运行任务。'
+    Assert-LegacyCheckpointRolloverPreflight
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
-    Write-OperationStep 3 9 '确认断能证明、封存旧 schema 5/6 检查点并仅迁移剩余圈数。'
+    Write-OperationStep 3 9 '分类封存旧 schema 1-6 检查点；仅安全证明完整的 schema 5/6 迁移剩余圈数。'
     Invoke-LegacyCheckpointSafeRollover $root
     Write-OperationStep 4 9 '初始化并保留现场运行配置。'
     Initialize-RuntimeConfig $source $root
