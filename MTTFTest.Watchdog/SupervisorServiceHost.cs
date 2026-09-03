@@ -642,7 +642,7 @@ namespace MTTFTest.Watchdog
                     : Guid.NewGuid().ToString("N");
                 var sessionId = request.IsRecoveryLaunch
                     ? request.RecoverySessionId
-                    : Guid.NewGuid().ToString("N");
+                    : string.Empty;
                 var permitGeneration = request.IsRecoveryLaunch
                     ? request.RecoveryPermitGeneration
                     : 1;
@@ -650,7 +650,7 @@ namespace MTTFTest.Watchdog
                     ? request.RecoveryPermitId
                     : Guid.NewGuid().ToString("N");
                 string engineRunId;
-                const long engineRunEpoch = 1;
+                long engineRunEpoch;
                 if (request.IsRecoveryLaunch)
                 {
                     var engine = EngineHostPipeClient.ReadSnapshot(3000);
@@ -659,16 +659,66 @@ namespace MTTFTest.Watchdog
                         throw new InvalidDataException(
                             "SupervisorUiRecoveryEngineIdentityMismatch");
                     engineRunId = engine.RunId;
+                    engineRunEpoch = engine.RunEpoch;
                 }
                 else
                 {
-                    engineRunId = Guid.NewGuid().ToString("N");
-                    LaunchEngineHostThroughSessionAgent(
-                        launcherDirectory,
-                        targetDesktopSessionId,
-                        sessionId,
-                        engineRunId,
-                        engineRunEpoch);
+                    EngineStateSnapshot existingEngine = null;
+                    try
+                    {
+                        existingEngine = EngineHostPipeClient.ReadSnapshot(3000);
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteAudit(
+                            "SupervisorInitialUiEngineProbeUnavailable",
+                            ex.GetBaseException().Message);
+                    }
+                    if (TryBindExistingEngineHostForUserInterface(
+                            existingEngine,
+                            out sessionId,
+                            out engineRunId,
+                            out engineRunEpoch))
+                    {
+                        WriteAudit(
+                            "SupervisorInitialUiReusedEngineHost",
+                            $"Session={sessionId};Run={engineRunId};" +
+                            $"Epoch={engineRunEpoch};" +
+                            $"State={existingEngine.State};" +
+                            $"HardwareInitialized={existingEngine.HardwareInitialized}");
+                    }
+                    else
+                    {
+                        sessionId = Guid.NewGuid().ToString("N");
+                        engineRunId = Guid.NewGuid().ToString("N");
+                        engineRunEpoch = 1;
+                        try
+                        {
+                            LaunchEngineHostThroughSessionAgent(
+                                launcherDirectory,
+                                targetDesktopSessionId,
+                                sessionId,
+                                engineRunId,
+                                engineRunEpoch);
+                        }
+                        catch (InvalidOperationException ex) when (
+                            ex.Message.IndexOf(
+                                "ProcessRoleAlreadyRunning:EngineHost",
+                                StringComparison.Ordinal) >= 0)
+                        {
+                            existingEngine = WaitForExistingEngineHostForUserInterface(5000);
+                            if (!TryBindExistingEngineHostForUserInterface(
+                                    existingEngine,
+                                    out sessionId,
+                                    out engineRunId,
+                                    out engineRunEpoch))
+                                throw;
+                            WriteAudit(
+                                "SupervisorInitialUiReusedRacingEngineHost",
+                                $"Session={sessionId};Run={engineRunId};" +
+                                $"Epoch={engineRunEpoch};State={existingEngine.State}");
+                        }
+                    }
                 }
                 var launchNonce = Guid.NewGuid().ToString("N");
                 var uiBaseArguments = (request.Arguments ?? string.Empty) +
@@ -745,6 +795,46 @@ namespace MTTFTest.Watchdog
                     };
                 }
             }
+        }
+
+        internal static bool TryBindExistingEngineHostForUserInterface(
+            EngineStateSnapshot snapshot,
+            out string sessionId,
+            out string runId,
+            out long runEpoch)
+        {
+            sessionId = string.Empty;
+            runId = string.Empty;
+            runEpoch = 0;
+            if (snapshot?.IsStructurallyValid() != true)
+                return false;
+            sessionId = snapshot.SessionId;
+            runId = snapshot.RunId;
+            runEpoch = snapshot.RunEpoch;
+            return true;
+        }
+
+        private static EngineStateSnapshot WaitForExistingEngineHostForUserInterface(
+            int timeoutMilliseconds)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+            Exception last = null;
+            do
+            {
+                try
+                {
+                    return EngineHostPipeClient.ReadSnapshot(1000);
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    Thread.Sleep(100);
+                }
+            } while (DateTime.UtcNow <= deadline);
+            throw new InvalidOperationException(
+                "ExistingEngineHostAdmissionTimedOut:" +
+                (last?.GetBaseException().Message ?? "NoSnapshot"),
+                last);
         }
 
         private void StartUserInterfaceMonitor(
@@ -990,7 +1080,7 @@ namespace MTTFTest.Watchdog
                     try
                     {
                         snapshot = EngineHostPipeClient.ReadSnapshot(1000);
-                        if (snapshot.HardwareInitialized &&
+                        if (snapshot.IsStructurallyValid() &&
                             string.Equals(snapshot.SessionId, sessionId,
                                 StringComparison.Ordinal) &&
                             string.Equals(snapshot.RunId, runId,
@@ -1001,7 +1091,7 @@ namespace MTTFTest.Watchdog
                     catch (Exception ex) { last = ex; }
                     Thread.Sleep(100);
                 }
-                if (snapshot?.HardwareInitialized != true ||
+                if (snapshot?.IsStructurallyValid() != true ||
                     !string.Equals(snapshot.SessionId, sessionId, StringComparison.Ordinal) ||
                     !string.Equals(snapshot.RunId, runId, StringComparison.Ordinal) ||
                     snapshot.RunEpoch != runEpoch)
@@ -1012,6 +1102,7 @@ namespace MTTFTest.Watchdog
                     "SupervisorEngineHostLaunchCapabilityConsumed",
                     "Capability=" + capabilityId + ";Session=" + sessionId +
                     ";Run=" + runId + ";Epoch=" + runEpoch +
+                    ";HardwareInitialized=" + snapshot.HardwareInitialized +
                     ";PID=" + process.Id +
                     ";StartUtcTicks=" + processStartUtcTicks +
                     ";ExecutableSha256=" + executableSha256 +

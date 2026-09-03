@@ -276,7 +276,9 @@ if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
     -not $sessionLaunchClientText.Contains('SupervisorMainLaunchClient.Start(source)') -or
     -not $supervisorMainLaunchClientText.Contains('IsRecoveryLaunch = true') -or
     -not $supervisorHostText.Contains('SupervisorMainRecoverySessionMismatch') -or
-    -not $supervisorHostText.Contains('SupervisorRecoveryCapabilitySessionAgentLaunch')) {
+    -not $supervisorHostText.Contains('SupervisorRecoveryCapabilitySessionAgentLaunch') -or
+    -not $supervisorHostText.Contains('TryBindExistingEngineHostForUserInterface') -or
+    -not $supervisorHostText.Contains('SupervisorInitialUiReusedEngineHost')) {
     throw 'schema 7 Supervisor 单次角色 LaunchCapability 生产门禁不完整。'
 }
 foreach ($commandName in @(
@@ -400,7 +402,7 @@ foreach ($requiredV3PackageContract in @(
         'installedCrashMatrixPassed',
         'hardwareMatrixPassed',
         'soak168HoursPassed',
-        'QUICKDEPLOY_R23',
+        'QUICKDEPLOY_R24',
         'archiveSha256')) {
     if (-not $v3InstallerText.Contains($requiredV3PackageContract)) {
         throw "V3 一键安装包脚本缺少契约：$requiredV3PackageContract"

@@ -47,6 +47,9 @@ namespace AdaptiveControlTests
             Run("Supervisor恢复拉起协议完整绑定原intent、Session、permit和authority",
                 SupervisorRecoveryMainLaunchProtocolBindsDurableAuthority,
                 ref passed);
+            Run("Supervisor初始启动复用现有EngineHost身份且不重复拉起硬件宿主",
+                SupervisorInitialUiLaunchReusesExistingEngineHost,
+                ref passed);
             Run("schema6权威回执拒绝镜像竞争、revision漂移和单字段篡改",
                 SupervisorSafetyAuthorityRejectsCompetingEvidenceAndTamper,
                 ref passed);
@@ -75,6 +78,40 @@ namespace AdaptiveControlTests
             Run("生产与校正采集入口显式保持不可变DAQ参数",
                 AcquisitionEntrypointsKeepImmutableSettings, ref passed);
             return passed;
+        }
+
+        private static void SupervisorInitialUiLaunchReusesExistingEngineHost()
+        {
+            var sessionId = Guid.NewGuid().ToString("N");
+            var runId = Guid.NewGuid().ToString("N");
+            var snapshot = new EngineStateSnapshot
+            {
+                EngineInstanceId = Guid.NewGuid().ToString("N"),
+                SessionId = sessionId,
+                RunId = runId,
+                RunEpoch = 7,
+                Revision = 11,
+                PulseSequence = 13,
+                State = SystemTerminalState.SafeIdleAlarmed,
+                HardwareInitialized = false,
+                CapturedUtcTicks = DateTime.UtcNow.Ticks
+            };
+            Assert(SupervisorServiceRuntime.TryBindExistingEngineHostForUserInterface(
+                       snapshot,
+                       out var boundSessionId,
+                       out var boundRunId,
+                       out var boundRunEpoch),
+                "已在线EngineHost没有被UI启动入口复用。");
+            Assert(boundSessionId == sessionId &&
+                   boundRunId == runId &&
+                   boundRunEpoch == 7,
+                "UI没有精确继承现有EngineHost的Session/Run/Epoch。");
+            Assert(!SupervisorServiceRuntime.TryBindExistingEngineHostForUserInterface(
+                       new EngineStateSnapshot(),
+                       out _,
+                       out _,
+                       out _),
+                "无效EngineHost快照不应绕过新建宿主流程。");
         }
 
         private static void WatchdogRuntimeConfigPathMatchesApplicationPolicy()
