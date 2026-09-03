@@ -64,7 +64,10 @@ foreach ($required in @(
         'RunLevel Highest',
         'shortcutBytes[21]',
         'Test-CurrentSlotReplacementRequired',
-        'Invoke-Schema5SafeRollover',
+        'Read-Utf8JsonFile',
+        'New-Object Text.UTF8Encoding($false, $true)',
+        'Invoke-LegacyCheckpointSafeRollover',
+        'legacySchema -notin @(5, 6)',
         'authorizationMigrated = $false',
         'permitMigrated = $false',
         'nonceMigrated = $false',
@@ -83,6 +86,48 @@ foreach ($required in @(
 }
 Write-Output 'PASS SimpleUnattendedDeploymentContract 1/1'
 Write-Output 'PASS WindowsPowerShell51ScheduledTaskCompatibility 1/1'
+
+$utf8RegressionRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ('EPBTest-PS51-Utf8-' + [Guid]::NewGuid().ToString('N'))
+try {
+    [void](New-Item -ItemType Directory -Path $utf8RegressionRoot)
+    $utf8RegressionPath = Join-Path $utf8RegressionRoot 'checkpoint.json'
+    $utf8RegressionJson = '{"SchemaVersion":6,"MotorOffConfirmed":true,"PressureSafeConfirmed":true,"PersistenceDrained":true,"LastInProcessRecoveryResult":"必须由 Watchdog 重启软件。","RemainingFormalCycles":{"4":123}}'
+    [IO.File]::WriteAllText(
+        $utf8RegressionPath,
+        $utf8RegressionJson,
+        (New-Object Text.UTF8Encoding($false)))
+    $utf8ReaderScript = Join-Path $utf8RegressionRoot 'read-checkpoint.ps1'
+    $utf8ReaderCommand = @'
+param([Parameter(Mandatory = $true)][string]$CheckpointPath)
+$ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding($false, $true)
+$json = [IO.File]::ReadAllText($CheckpointPath, $utf8) | ConvertFrom-Json
+if ($json.SchemaVersion -ne 6 -or
+    -not $json.MotorOffConfirmed -or
+    $json.LastInProcessRecoveryResult -ne '必须由 Watchdog 重启软件。' -or
+    $json.RemainingFormalCycles.'4' -ne 123) {
+    throw 'UTF-8 checkpoint mismatch'
+}
+'UTF8_CHECKPOINT_PASS'
+'@
+    [IO.File]::WriteAllText(
+        $utf8ReaderScript,
+        $utf8ReaderCommand,
+        (New-Object Text.UTF8Encoding($true)))
+    $utf8Output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+        -File $utf8ReaderScript `
+        -CheckpointPath $utf8RegressionPath 2>&1)
+    if ($LASTEXITCODE -ne 0 -or 'UTF8_CHECKPOINT_PASS' -notin $utf8Output) {
+        throw "Windows PowerShell 5.1 无 BOM UTF-8 检查点回归失败：$($utf8Output -join ' | ')"
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $utf8RegressionRoot -PathType Container) {
+        Remove-Item -LiteralPath $utf8RegressionRoot -Recurse -Force
+    }
+}
+Write-Output 'PASS WindowsPowerShell51Utf8Checkpoint 1/1'
 
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $manifestPath = Join-Path $repo 'MTTfTest\app.manifest'

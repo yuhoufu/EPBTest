@@ -45,6 +45,20 @@ function Resolve-SafeDirectory([string]$Path, [string]$Label) {
     return $resolved
 }
 
+function Read-Utf8JsonFile([string]$Path, [string]$Label) {
+    try {
+        # V2.14.x 使用无 BOM UTF-8 原子写入检查点。Windows PowerShell 5.1
+        # 的 Get-Content 默认使用本机 ANSI，GBK 双字节解码可能吞掉紧邻中文的
+        # JSON 引号。使用严格 UTF-8，同时仍允许 StreamReader 自动识别 BOM。
+        $utf8 = New-Object Text.UTF8Encoding($false, $true)
+        $text = [IO.File]::ReadAllText($Path, $utf8)
+        return $text | ConvertFrom-Json
+    }
+    catch {
+        throw "$Label 无法按 UTF-8 JSON 读取：$($_.Exception.Message)"
+    }
+}
+
 function Assert-RequiredProgramFiles([string]$Directory) {
     foreach ($name in @(
             'MTTFTest.exe', 'MTTFTest.Watchdog.exe', 'MTTFTest.SessionAgent.exe',
@@ -266,19 +280,19 @@ function Stop-InstalledRuntimeTasks([string]$Root) {
     Stop-InstalledSessionAgent $Root
 }
 
-function Invoke-Schema5SafeRollover([string]$Root) {
+function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
     $stateRoot = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'MTTFTest'))
     $archiveRoot = [IO.Path]::GetFullPath(
-        (Join-Path $stateRoot ("MigrationArchive\schema5-$stamp")))
+        (Join-Path $stateRoot ("MigrationArchive\legacy-checkpoint-$stamp")))
     [void](New-Item -ItemType Directory -Path $archiveRoot -Force)
 
     $checkpoint = [IO.Path]::GetFullPath(
         (Join-Path $env:LOCALAPPDATA 'MTTFTest\unattended-run-checkpoint.json'))
     $legacy = $null
     if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
-        try { $legacy = Get-Content -LiteralPath $checkpoint -Raw | ConvertFrom-Json }
-        catch { throw "schema 5 检查点无法读取，拒绝换代：$($_.Exception.Message)" }
+        try { $legacy = Read-Utf8JsonFile $checkpoint '旧运行检查点' }
+        catch { throw "旧检查点无法读取，拒绝换代：$($_.Exception.Message)" }
     }
 
     $migration = [ordered]@{
@@ -296,11 +310,15 @@ function Invoke-Schema5SafeRollover([string]$Root) {
         archiveRoot = $archiveRoot
     }
 
-    if ($null -ne $legacy -and [int]$legacy.SchemaVersion -eq 5) {
+    if ($null -ne $legacy) {
+        $legacySchema = [int]$legacy.SchemaVersion
+        if ($legacySchema -notin @(5, 6)) {
+            throw "旧运行检查点 SchemaVersion=$legacySchema 不受支持；保持 SafeIdleAlarmed，拒绝安装新授权。"
+        }
         if (-not [bool]$legacy.MotorOffConfirmed -or
             -not [bool]$legacy.PressureSafeConfirmed -or
             -not [bool]$legacy.PersistenceDrained) {
-            throw 'schema 5 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。'
+            throw "schema $legacySchema 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。"
         }
 
         foreach ($path in @($checkpoint, "$checkpoint.bak")) {
@@ -321,7 +339,7 @@ function Invoke-Schema5SafeRollover([string]$Root) {
             }
             $sessions = Join-Path $projectRoot 'WatchdogSessions'
             if (Test-Path -LiteralPath $sessions -PathType Container) {
-                $sealed = Join-Path $projectRoot "WatchdogSessions.Schema5Sealed-$stamp"
+                $sealed = Join-Path $projectRoot "WatchdogSessions.LegacySealed-$stamp"
                 Move-Item -LiteralPath $sessions -Destination $sealed
                 $migration['projectSessionArchive'] = $sealed
             }
@@ -335,7 +353,7 @@ function Invoke-Schema5SafeRollover([string]$Root) {
         foreach ($file in @(Get-ChildItem -LiteralPath $supervisorRoot -File -Filter '*.json')) {
             $isSchema5 = $false
             try {
-                $json = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+                $json = Read-Utf8JsonFile $file.FullName 'Supervisor 旧会话'
                 $isSchema5 = [int]$json.SchemaVersion -eq 5
             }
             catch { }
@@ -350,7 +368,7 @@ function Invoke-Schema5SafeRollover([string]$Root) {
     $migrationPath = Join-Path $migrationRoot 'schema5-remaining-cycles-migration.json'
     $migration | ConvertTo-Json -Depth 8 | Set-Content `
         -LiteralPath $migrationPath -Encoding UTF8
-    Write-Host "schema 5 已安全封存；仅迁移剩余圈数：$migrationPath"
+    Write-Host "旧 schema 5/6 检查点已安全封存；仅迁移剩余圈数：$migrationPath"
 }
 
 function Assert-Health([string]$Root) {
@@ -629,8 +647,8 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Write-OperationStep 2 9 '停止旧监督服务和运行任务。'
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
-    Write-OperationStep 3 9 '确认断能证明、封存 schema 5 会话并仅迁移剩余圈数。'
-    Invoke-Schema5SafeRollover $root
+    Write-OperationStep 3 9 '确认断能证明、封存旧 schema 5/6 检查点并仅迁移剩余圈数。'
+    Invoke-LegacyCheckpointSafeRollover $root
     Write-OperationStep 4 9 '初始化并保留现场运行配置。'
     Initialize-RuntimeConfig $source $root
     Write-OperationStep 5 9 '安装或更新程序文件。'
