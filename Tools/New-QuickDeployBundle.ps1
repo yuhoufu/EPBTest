@@ -3,11 +3,13 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseDirectory,
     [string]$OutputRoot = '',
-    [switch]$Force
+    [string]$SevenZip = '',
+    [switch]$Force,
+    [switch]$AllowFieldValidationCandidate
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 21
+$bundleRevision = 22
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
@@ -29,10 +31,16 @@ catch {
     throw "原始正式包校验失败，拒绝生成快捷部署包：$($_.Exception.Message)"
 }
 $verification = $verificationJson | ConvertFrom-Json
-if (-not [bool]$verification.verified -or
-    [string]$verification.releaseStatus -ne 'FORMAL_RELEASE' -or
-    -not [bool]$verification.deploymentApproved -or
-    [bool]$verification.gitDirty) {
+$isFormalRelease = [bool]$verification.verified -and
+    [string]$verification.releaseStatus -eq 'FORMAL_RELEASE' -and
+    [bool]$verification.deploymentApproved -and
+    -not [bool]$verification.gitDirty
+$isFieldValidationCandidate = [bool]$verification.verified -and
+    $AllowFieldValidationCandidate -and
+    [string]$verification.releaseStatus -eq 'FIELD_VALIDATION_CANDIDATE' -and
+    -not [bool]$verification.deploymentApproved -and
+    -not [bool]$verification.gitDirty
+if (-not $isFormalRelease -and -not $isFieldValidationCandidate) {
     throw "原始包不是干净且批准的正式版本，拒绝生成快捷部署包：$verificationJson"
 }
 $identity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
@@ -52,7 +60,8 @@ $shortCommit = if ($identityCommit.Length -ge 12) {
     ($identityCommit -replace '[^0-9A-Za-z._-]', '_')
 }
 $safeVersion = ([string]$identity.productVersion -replace '[^0-9A-Za-z._-]', '_')
-$name = "${safeVersion}_操作员包_${shortCommit}_QUICKDEPLOY_R$bundleRevision"
+$bundleKind = if ($isFieldValidationCandidate) { '现场验证包' } else { '操作员包' }
+$name = "${safeVersion}_${bundleKind}_${shortCommit}_QUICKDEPLOY_R$bundleRevision"
 $output = [IO.Path]::GetFullPath((Join-Path $outputRootFull $name))
 $prefix = $outputRootFull.TrimEnd('\', '/') + '\'
 if (-not $output.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -113,10 +122,30 @@ try {
         packageVerified = [bool]$verification.verified
         mainExecutableSha256 = [string]$verification.exeSha256
         packageContentSha256 = [string]$verification.packageContentSha256
-        packageManagement = 'QUICKDEPLOY_NESTED_FORMAL_PACKAGE'
+        packageManagement = if ($isFieldValidationCandidate) {
+            'QUICKDEPLOY_NESTED_FIELD_VALIDATION_PACKAGE'
+        }
+        else {
+            'QUICKDEPLOY_NESTED_FORMAL_PACKAGE'
+        }
+        installationClass = if ($isFieldValidationCandidate) {
+            'FIELD_VALIDATION_CANDIDATE_NOT_FORMAL_RELEASE'
+        }
+        else {
+            'FORMAL_RELEASE'
+        }
     }
     $identitySummary | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `
         (Join-Path $staging '快捷部署包身份.json') -Encoding UTF8
+    if ($isFieldValidationCandidate) {
+        [IO.File]::WriteAllLines(
+            (Join-Path $staging '现场验证候选包-未正式放行.txt'),
+            @(
+                '本包仅用于受控安装、现场硬件验证和长稳验证。',
+                '本包尚未完成正式无人值守放行，不得作为量产正式包归档。',
+                '安装前必须停止试验、确认物理断能并完整备份现场数据。'),
+            (New-Object Text.UTF8Encoding($true)))
+    }
     $hashLines = Get-ChildItem -LiteralPath $staging -File -Recurse |
         Where-Object { $_.Name -ne '快捷部署包-SHA256.txt' } |
         Sort-Object FullName |
@@ -139,7 +168,14 @@ catch {
 }
 Write-Host "快捷部署包已生成：$output"
 
-function Resolve-SevenZipExecutable {
+function Resolve-SevenZipExecutable([string]$RequestedPath) {
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        $resolved = [IO.Path]::GetFullPath($RequestedPath)
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+            throw "指定的 7z.exe 不存在：$resolved"
+        }
+        return $resolved
+    }
     $candidates = @(
         (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source,
         (Join-Path $env:ProgramFiles '7-Zip\7z.exe'),
@@ -154,7 +190,7 @@ function Resolve-SevenZipExecutable {
     throw '找不到本机 7-Zip 7z.exe，无法生成 Ultra 交付压缩包。'
 }
 
-$sevenZip = Resolve-SevenZipExecutable
+$sevenZip = Resolve-SevenZipExecutable $SevenZip
 $archive = $output + '.7z'
 $archiveHashFile = $archive + '.sha256'
 foreach ($target in @($archive, $archiveHashFile)) {

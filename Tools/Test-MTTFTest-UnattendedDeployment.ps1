@@ -247,7 +247,8 @@ Write-Output 'PASS InstalledRecoveryE2ETestHostContract 1/1'
 $releaseScripts = @(
     (Join-Path $PSScriptRoot 'Build-Release.ps1'),
     (Join-Path $PSScriptRoot 'Verify-Release.ps1'),
-    (Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'))
+    (Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'),
+    (Join-Path $PSScriptRoot 'Build-V3Installer.ps1'))
 foreach ($releaseScript in $releaseScripts) {
     $releaseTokens = $null
     $releaseParseErrors = $null
@@ -286,6 +287,25 @@ foreach ($requiredNativeCaptureGuard in @(
     }
 }
 Write-Output 'PASS ReleaseNativeStderrExitCodeContract 1/1'
+
+$v3InstallerText = [IO.File]::ReadAllText(
+    (Join-Path $PSScriptRoot 'Build-V3Installer.ps1'),
+    [Text.Encoding]::UTF8)
+foreach ($requiredV3PackageContract in @(
+        'FieldValidationCandidate',
+        'AllowFieldValidationCandidate',
+        'New-QuickDeployBundle.ps1',
+        'FormalApprovalEvidencePath',
+        'installedCrashMatrixPassed',
+        'hardwareMatrixPassed',
+        'soak168HoursPassed',
+        'QUICKDEPLOY_R22',
+        'archiveSha256')) {
+    if (-not $v3InstallerText.Contains($requiredV3PackageContract)) {
+        throw "V3 一键安装包脚本缺少契约：$requiredV3PackageContract"
+    }
+}
+Write-Output 'PASS V3OperatorPackageBuilderContract 1/1'
 
 $simplePackageScript = Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'
 $simplePackageText = [IO.File]::ReadAllText($simplePackageScript, [Text.Encoding]::UTF8)

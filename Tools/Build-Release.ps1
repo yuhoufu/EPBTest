@@ -1,7 +1,8 @@
 ﻿param(
     [string]$MsBuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe',
     [string]$PackageRoot = '',
-    [switch]$AllowDirtyCandidate
+    [switch]$AllowDirtyCandidate,
+    [switch]$FieldValidationCandidate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -821,6 +822,9 @@ $packageStamp = [DateTime]::UtcNow.ToString('yyyyMMdd_HHmmss')
 $packageName = if ($isDirty) {
     "$expectedProductLabel-$shortCommit-$packageStamp-DIRTY"
 }
+elseif ($FieldValidationCandidate) {
+    "$expectedProductLabel-$shortCommit-$packageStamp-FIELD-VALIDATION"
+}
 else {
     "$expectedProductLabel-$shortCommit-$packageStamp"
 }
@@ -845,10 +849,13 @@ try {
     $identity.releaseStatus = if ($isDirty) {
         'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION'
     }
+    elseif ($FieldValidationCandidate) {
+        'FIELD_VALIDATION_CANDIDATE'
+    }
     else {
         'FORMAL_RELEASE'
     }
-    $identity.deploymentApproved = -not $isDirty
+    $identity.deploymentApproved = -not $isDirty -and -not $FieldValidationCandidate
     $identity | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath $packageIdentityPath -Encoding UTF8
     $packageChecksumMap = Get-RecursivePackageFiles -Root $stagingOutput `
@@ -881,6 +888,9 @@ catch {
 
 if ($isDirty) {
     Write-Warning "已生成独立 DIRTY CANDIDATE：仅用于当前代码验证，不得作为正式生产放行包。"
+}
+elseif ($FieldValidationCandidate) {
+    Write-Warning "已生成 FIELD VALIDATION CANDIDATE：可用于受控安装和现场验证，不代表正式无人值守放行。"
 }
 else {
     Write-Host "Release 正式包已生成并独立校验：$packageOutput"
