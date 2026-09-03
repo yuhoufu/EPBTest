@@ -213,6 +213,7 @@ $formalReleaseText = [IO.File]::ReadAllText(
 foreach ($requiredNativeCaptureGuard in @(
         'RedirectStandardOutput = $stdoutPath',
         'RedirectStandardError = $stderrPath',
+        '$processHandle = $process.Handle',
         '$process.WaitForExit($TimeoutSeconds * 1000)',
         '$process.Kill()',
         '$exitCode = $process.ExitCode')) {

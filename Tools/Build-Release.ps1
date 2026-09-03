@@ -246,6 +246,11 @@ function Invoke-CandidateTest {
             $startParameters.ArgumentList = $ArgumentList
         }
         $process = Start-Process @startParameters
+        # Windows PowerShell 5.1 may discard the native process handle before
+        # ExitCode is materialized when Start-Process redirects both streams.
+        # Force handle acquisition while the process is alive so ExitCode is
+        # always available after WaitForExit.
+        $processHandle = $process.Handle
         $completed = $process.WaitForExit($TimeoutSeconds * 1000)
         if (-not $completed) {
             try {
