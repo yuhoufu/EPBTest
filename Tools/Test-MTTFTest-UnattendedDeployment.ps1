@@ -211,9 +211,11 @@ $formalReleaseText = [IO.File]::ReadAllText(
     (Join-Path $PSScriptRoot 'Build-Release.ps1'),
     [Text.Encoding]::UTF8)
 foreach ($requiredNativeCaptureGuard in @(
-        '$previousErrorActionPreference = $ErrorActionPreference',
-        '$ErrorActionPreference = ''Continue''',
-        '$exitCode = $LASTEXITCODE')) {
+        'RedirectStandardOutput = $stdoutPath',
+        'RedirectStandardError = $stderrPath',
+        '$process.WaitForExit($TimeoutSeconds * 1000)',
+        '$process.Kill()',
+        '$exitCode = $process.ExitCode')) {
     if (-not $formalReleaseText.Contains($requiredNativeCaptureGuard)) {
         throw "正式发布流程缺少 Windows PowerShell 5.1 原生 stderr/退出码兼容门禁：$requiredNativeCaptureGuard"
     }
@@ -354,20 +356,49 @@ try {
     $previousConfirmationProbe = $env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE
     try {
         $env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE = '1'
+        $confirmationCaseIndex = 0
         foreach ($case in @(
                 @('Y', 'True'),
                 @('A', 'True'),
                 @('N', 'False'),
                 @('', 'False'))) {
-            $output = @($case[0] | & powershell.exe -NoProfile `
-                -ExecutionPolicy Bypass -File `
-                (Join-Path $testRoot 'QuickDeploy-Installer.ps1') `
-                -Mode Uninstall -SourceDirectory $testRoot `
-                -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') 2>&1)
+            $confirmationCaseIndex++
+            $confirmationInput = Join-Path $testRoot `
+                "confirmation-$confirmationCaseIndex-input.txt"
+            $confirmationStdOut = Join-Path $testRoot `
+                "confirmation-$confirmationCaseIndex-stdout.txt"
+            $confirmationStdErr = Join-Path $testRoot `
+                "confirmation-$confirmationCaseIndex-stderr.txt"
+            [IO.File]::WriteAllText(
+                $confirmationInput,
+                [string]$case[0] + [Environment]::NewLine,
+                [Text.Encoding]::ASCII)
+            $confirmationInstaller = Join-Path $testRoot 'QuickDeploy-Installer.ps1'
+            $confirmationInstallRoot = Join-Path $env:ProgramFiles 'MTTFTest'
+            $confirmationArguments =
+                "-NoProfile -ExecutionPolicy Bypass -File `"$confirmationInstaller`" " +
+                "-Mode Uninstall -SourceDirectory `"$testRoot`" " +
+                "-InstallRoot `"$confirmationInstallRoot`""
+            $confirmationProcess = Start-Process `
+                -FilePath 'powershell.exe' `
+                -ArgumentList $confirmationArguments `
+                -RedirectStandardInput $confirmationInput `
+                -RedirectStandardOutput $confirmationStdOut `
+                -RedirectStandardError $confirmationStdErr `
+                -WindowStyle Hidden `
+                -Wait `
+                -PassThru
+            $output = @(
+                @([IO.File]::ReadAllLines(
+                    $confirmationStdOut,
+                    [Text.Encoding]::Default)) +
+                @([IO.File]::ReadAllLines(
+                    $confirmationStdErr,
+                    [Text.Encoding]::Default)))
             $expected = "QUICKDEPLOY_CONFIRMATION_PROBE_PASS Confirmed=$($case[1])"
-            if ($LASTEXITCODE -ne 0 -or
-                (@($output | Where-Object { [string]$_ -eq $expected }).Count -ne 1)) {
-                throw "卸载确认输入校验失败：Input='$($case[0])'; Expected=$expected; Exit=$LASTEXITCODE; Output=$($output -join ' | ')"
+            if ($confirmationProcess.ExitCode -ne 0 -or
+                -not (($output -join [Environment]::NewLine).Contains($expected))) {
+                throw "卸载确认输入校验失败：Input='$($case[0])'; Expected=$expected; Exit=$($confirmationProcess.ExitCode); Output=$($output -join ' | ')"
             }
         }
     }

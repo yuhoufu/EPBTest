@@ -216,33 +216,67 @@ function Invoke-CandidateTest {
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
-        [Parameter(Mandatory = $true)][string]$SuccessPattern
+        [Parameter(Mandatory = $true)][string]$SuccessPattern,
+        [ValidateRange(1, 1800)][int]$TimeoutSeconds = 900
     )
 
     Write-Host "[$Label] $FilePath $($ArgumentList -join ' ')"
-    # Windows PowerShell 5.1 wraps every native stderr line as a non-terminating
-    # NativeCommandError.  With the release script's global Stop policy that
-    # would abort a healthy test process before its exit code/summary can be
-    # evaluated (EpbDiskWriterTests writes housekeeping diagnostics to stderr).
-    $previousErrorActionPreference = $ErrorActionPreference
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+    $captureDirectory = [IO.Path]::GetFullPath((Join-Path $tempRoot `
+        ('epb-release-test-' + [Guid]::NewGuid().ToString('N'))))
+    $tempPrefix = $tempRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $captureDirectory.StartsWith(
+            $tempPrefix,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label 测试输出临时目录越界：$captureDirectory"
+    }
+    $stdoutPath = Join-Path $captureDirectory 'stdout.log'
+    $stderrPath = Join-Path $captureDirectory 'stderr.log'
     try {
-        $ErrorActionPreference = 'Continue'
-        $captured = @(& $FilePath @ArgumentList 2>&1)
-        $exitCode = $LASTEXITCODE
+        [void](New-Item -ItemType Directory -Path $captureDirectory)
+        $startParameters = @{
+            FilePath = $FilePath
+            WorkingDirectory = $repo
+            RedirectStandardOutput = $stdoutPath
+            RedirectStandardError = $stderrPath
+            PassThru = $true
+            WindowStyle = 'Hidden'
+        }
+        if (@($ArgumentList).Count -ne 0) {
+            $startParameters.ArgumentList = $ArgumentList
+        }
+        $process = Start-Process @startParameters
+        $completed = $process.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $completed) {
+            try {
+                if (-not $process.HasExited) { $process.Kill() }
+            }
+            catch { }
+        }
+        $process.WaitForExit()
+        $captured = @(
+            @([IO.File]::ReadAllLines($stdoutPath, [Text.Encoding]::Default)) +
+            @([IO.File]::ReadAllLines($stderrPath, [Text.Encoding]::Default)))
+        foreach ($line in $captured) { Write-Host ([string]$line) }
+        if (-not $completed) {
+            throw "$Label 超过 $TimeoutSeconds 秒仍未退出，已终止精确测试进程 PID=$($process.Id)。"
+        }
+        $exitCode = $process.ExitCode
+        if ($exitCode -ne 0) {
+            throw "$Label 失败，ExitCode=$exitCode"
+        }
+        $summary = @($captured | ForEach-Object { [string]$_ } |
+            Where-Object { $_ -match $SuccessPattern } | Select-Object -Last 1)
+        if ($summary.Count -eq 0) {
+            throw "$Label 未输出预期通过摘要：$SuccessPattern"
+        }
+        return $summary[0].Trim()
     }
     finally {
-        $ErrorActionPreference = $previousErrorActionPreference
+        if (Test-Path -LiteralPath $captureDirectory -PathType Container) {
+            Remove-Item -LiteralPath $captureDirectory -Recurse -Force
+        }
     }
-    foreach ($line in $captured) { Write-Host ([string]$line) }
-    if ($exitCode -ne 0) {
-        throw "$Label 失败，ExitCode=$exitCode"
-    }
-    $summary = @($captured | ForEach-Object { [string]$_ } |
-        Where-Object { $_ -match $SuccessPattern } | Select-Object -Last 1)
-    if ($summary.Count -eq 0) {
-        throw "$Label 未输出预期通过摘要：$SuccessPattern"
-    }
-    return $summary[0].Trim()
 }
 
 # 这些安全、持续运行和背压类位于旧式非 SDK 项目中。目录里存在 .cs 并不代表会参与
