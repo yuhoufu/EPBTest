@@ -207,6 +207,19 @@ foreach ($releaseScript in $releaseScripts) {
 }
 Write-Output 'PASS ReleaseBuildNoMandatorySoak 1/1'
 
+$formalReleaseText = [IO.File]::ReadAllText(
+    (Join-Path $PSScriptRoot 'Build-Release.ps1'),
+    [Text.Encoding]::UTF8)
+foreach ($requiredNativeCaptureGuard in @(
+        '$previousErrorActionPreference = $ErrorActionPreference',
+        '$ErrorActionPreference = ''Continue''',
+        '$exitCode = $LASTEXITCODE')) {
+    if (-not $formalReleaseText.Contains($requiredNativeCaptureGuard)) {
+        throw "正式发布流程缺少 Windows PowerShell 5.1 原生 stderr/退出码兼容门禁：$requiredNativeCaptureGuard"
+    }
+}
+Write-Output 'PASS ReleaseNativeStderrExitCodeContract 1/1'
+
 $simplePackageScript = Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'
 $simplePackageText = [IO.File]::ReadAllText($simplePackageScript, [Text.Encoding]::UTF8)
 foreach ($removedComplexStep in @(

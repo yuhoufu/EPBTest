@@ -220,8 +220,19 @@ function Invoke-CandidateTest {
     )
 
     Write-Host "[$Label] $FilePath $($ArgumentList -join ' ')"
-    $captured = @(& $FilePath @ArgumentList 2>&1)
-    $exitCode = $LASTEXITCODE
+    # Windows PowerShell 5.1 wraps every native stderr line as a non-terminating
+    # NativeCommandError.  With the release script's global Stop policy that
+    # would abort a healthy test process before its exit code/summary can be
+    # evaluated (EpbDiskWriterTests writes housekeeping diagnostics to stderr).
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $captured = @(& $FilePath @ArgumentList 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     foreach ($line in $captured) { Write-Host ([string]$line) }
     if ($exitCode -ne 0) {
         throw "$Label 失败，ExitCode=$exitCode"
@@ -497,11 +508,18 @@ $powerSupplyTrxPath = Join-Path $powerSupplyResultsDirectory $powerSupplyTrxName
 $powerSupplySummary = $null
 try {
     [void](New-Item -ItemType Directory -Path $powerSupplyResultsDirectory)
-    $powerSupplyOutput = @(& dotnet test $powerSupplyProject `
-        --configuration Release --no-restore --no-build --verbosity minimal `
-        --results-directory $powerSupplyResultsDirectory `
-        --logger "trx;LogFileName=$powerSupplyTrxName" 2>&1)
-    $powerSupplyExitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $powerSupplyOutput = @(& dotnet test $powerSupplyProject `
+            --configuration Release --no-restore --no-build --verbosity minimal `
+            --results-directory $powerSupplyResultsDirectory `
+            --logger "trx;LogFileName=$powerSupplyTrxName" 2>&1)
+        $powerSupplyExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     foreach ($line in $powerSupplyOutput) { Write-Host ([string]$line) }
     if ($powerSupplyExitCode -ne 0) {
         throw "PowerSupplyDebugger.Tests 失败，ExitCode=$powerSupplyExitCode"
