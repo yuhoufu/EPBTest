@@ -8,11 +8,11 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class SessionAgentProtocol
     {
-        public const int SchemaVersion = 6;
-        public const string PipePrefix = "MTTFTestSessionAgent.Launch.v6.";
+        public const int SchemaVersion = 7;
+        public const string PipePrefix = "MTTFTestSessionAgent.Launch.v7.";
         public const int RegisteredDesktopSessionId = -1;
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes(
-            "MTTFTest.SessionAgent.LaunchCapability.Schema6");
+            "MTTFTest.SessionAgent.LaunchCapability.Schema7");
 
         public const string CapabilityArgument = "--supervisor-launch-capability";
         public const string NonceArgument = "--supervisor-launch-nonce";
@@ -70,6 +70,7 @@ namespace MTTFTest.Watchdog.Protocol
     public sealed class SessionLaunchCapability
     {
         public int SchemaVersion { get; set; } = SessionAgentProtocol.SchemaVersion;
+        public ProcessRole ProcessRole { get; set; } = ProcessRole.UserInterface;
         public string CapabilityId { get; set; } = string.Empty;
         public string SessionId { get; set; } = string.Empty;
         public long PermitGeneration { get; set; }
@@ -90,6 +91,8 @@ namespace MTTFTest.Watchdog.Protocol
         {
             Guid parsed;
             return SchemaVersion == SessionAgentProtocol.SchemaVersion &&
+                   (ProcessRole == ProcessRole.EngineHost ||
+                    ProcessRole == ProcessRole.UserInterface) &&
                    Guid.TryParseExact(CapabilityId ?? string.Empty, "N", out parsed) &&
                    Guid.TryParseExact(SessionId ?? string.Empty, "N", out parsed) &&
                    PermitGeneration > 0 &&
@@ -113,6 +116,7 @@ namespace MTTFTest.Watchdog.Protocol
             return string.Join("\n", new[]
             {
                 SchemaVersion.ToString(),
+                ((int)ProcessRole).ToString(),
                 CapabilityId ?? string.Empty,
                 SessionId ?? string.Empty,
                 PermitGeneration.ToString(),
@@ -132,8 +136,9 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void WriteTo(BinaryWriter writer, byte[] seal)
         {
-            writer.Write("MTTF-SESSION-AGENT-REQUEST-V6");
+            writer.Write("MTTF-SESSION-AGENT-REQUEST-V7");
             writer.Write(SchemaVersion);
+            writer.Write((int)ProcessRole);
             writer.Write(CapabilityId ?? string.Empty);
             writer.Write(SessionId ?? string.Empty);
             writer.Write(PermitGeneration);
@@ -160,12 +165,13 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (!string.Equals(
                     reader.ReadString(),
-                    "MTTF-SESSION-AGENT-REQUEST-V6",
+                    "MTTF-SESSION-AGENT-REQUEST-V7",
                     StringComparison.Ordinal))
                 throw new InvalidDataException("SessionAgentRequestMagicMismatch");
             var result = new SessionLaunchCapability
             {
                 SchemaVersion = reader.ReadInt32(),
+                ProcessRole = (ProcessRole)reader.ReadInt32(),
                 CapabilityId = reader.ReadString(),
                 SessionId = reader.ReadString(),
                 PermitGeneration = reader.ReadInt64(),
@@ -195,6 +201,7 @@ namespace MTTFTest.Watchdog.Protocol
     public sealed class SessionLaunchResponse
     {
         public int SchemaVersion { get; set; } = SessionAgentProtocol.SchemaVersion;
+        public ProcessRole ProcessRole { get; set; } = ProcessRole.Unknown;
         public string CapabilityId { get; set; } = string.Empty;
         public string LaunchNonce { get; set; } = string.Empty;
         public bool Accepted { get; set; }
@@ -205,8 +212,9 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void WriteTo(BinaryWriter writer)
         {
-            writer.Write("MTTF-SESSION-AGENT-RESPONSE-V6");
+            writer.Write("MTTF-SESSION-AGENT-RESPONSE-V7");
             writer.Write(SchemaVersion);
+            writer.Write((int)ProcessRole);
             writer.Write(CapabilityId ?? string.Empty);
             writer.Write(LaunchNonce ?? string.Empty);
             writer.Write(Accepted);
@@ -221,12 +229,13 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (!string.Equals(
                     reader.ReadString(),
-                    "MTTF-SESSION-AGENT-RESPONSE-V6",
+                    "MTTF-SESSION-AGENT-RESPONSE-V7",
                     StringComparison.Ordinal))
                 throw new InvalidDataException("SessionAgentResponseMagicMismatch");
             return new SessionLaunchResponse
             {
                 SchemaVersion = reader.ReadInt32(),
+                ProcessRole = (ProcessRole)reader.ReadInt32(),
                 CapabilityId = reader.ReadString(),
                 LaunchNonce = reader.ReadString(),
                 Accepted = reader.ReadBoolean(),
@@ -241,6 +250,7 @@ namespace MTTFTest.Watchdog.Protocol
     public sealed class SessionLaunchConsumptionRecord
     {
         public int SchemaVersion { get; set; }
+        public ProcessRole ProcessRole { get; set; }
         public string CapabilityId { get; set; }
         public string SessionId { get; set; }
         public long PermitGeneration { get; set; }

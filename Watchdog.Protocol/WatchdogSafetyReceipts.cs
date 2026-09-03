@@ -320,7 +320,7 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class WatchdogSafetyHandoffReceipt
     {
-        public int SchemaVersion { get; set; } = 6;
+        public int SchemaVersion { get; set; } = 7;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -381,7 +381,8 @@ namespace MTTFTest.Watchdog.Protocol
             Guid parsed;
             var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
                           SchemaVersion == 3 || SchemaVersion == 4 ||
-                          SchemaVersion == 5 || SchemaVersion == 6) &&
+                          SchemaVersion == 5 || SchemaVersion == 6 ||
+                          SchemaVersion == 7) &&
                    Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
@@ -631,7 +632,7 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         /// <summary>
-        /// schema 6 唯一允许对终态回执进行的修改：监督服务在精确验证旧 PID、
+        /// schema 7 唯一允许对终态回执进行的修改：监督服务在精确验证旧 PID、
         /// 启动时间及 permit 后，单调补齐退出与资源释放证据。任何安全位、身份、
         /// 配置或 permit 回退都会被拒绝。
         /// </summary>
@@ -642,7 +643,7 @@ namespace MTTFTest.Watchdog.Protocol
             return previous.State == WatchdogSafetyHandoffState.Completed &&
                    current.State == WatchdogSafetyHandoffState.Completed &&
                    current.Stage == previous.Stage &&
-                   current.SchemaVersion == 6 &&
+                   current.SchemaVersion == 7 &&
                    current.SchemaVersion >= previous.SchemaVersion &&
                    HasSameImmutableHandoffIdentity(previous, current) &&
                    previous.MotorsOff == current.MotorsOff &&
@@ -727,10 +728,12 @@ namespace MTTFTest.Watchdog.Protocol
             WatchdogSafetyHandoffReceipt current)
         {
             return (previous.SchemaVersion == 3 || previous.SchemaVersion == 4 ||
-                    previous.SchemaVersion == 5 || previous.SchemaVersion == 6) &&
+                    previous.SchemaVersion == 5 || previous.SchemaVersion == 6 ||
+                    previous.SchemaVersion == 7) &&
                    previous.IsSafetyCompleted &&
                    (current.SchemaVersion == 3 || current.SchemaVersion == 4 ||
-                    current.SchemaVersion == 5 || current.SchemaVersion == 6) &&
+                    current.SchemaVersion == 5 || current.SchemaVersion == 6 ||
+                    current.SchemaVersion == 7) &&
                    current.RelaunchDisposition ==
                        WatchdogRelaunchDisposition.PreserveApprovedPermit &&
                    current.RelaunchPermitGeneration >

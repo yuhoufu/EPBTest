@@ -4253,7 +4253,7 @@ namespace MTTFTest.Watchdog
             _transitionWindow.Show(
                 "设备保持断能，等待安全前置复核",
                 $"首发故障：{outcome}；停止结果：安全回执未放行；" +
-                $"恢复门禁：schema 6 Supervisor 权威证据；当前动作：退避复核；" +
+                $"恢复门禁：schema 7 Supervisor 权威证据；当前动作：退避复核；" +
                 $"安全前置失败计数：{_journal.SafetyPrerequisiteFailureCount}；" +
                 $"下次重试：{DateTime.Now.AddSeconds(delaySeconds):yyyy-MM-dd HH:mm:ss}\r\n" +
                 detail,

@@ -49,6 +49,9 @@
     <Compile Include="WatchdogSafetyConfigSnapshot.cs" />
     <Compile Include="RecoveryBootstrapOutcome.cs" />
     <Compile Include="RecoveryReplacementTransaction.cs" />
+    <Compile Include="RecoveryProtocolV7.cs" />
+    <Compile Include="EngineHostProtocol.cs" />
+    <Compile Include="UserInterfaceProtocol.cs" />
     <Compile Include="DurableJsonFileStore.cs" />
     <Compile Include="DurableRelaunchFileStore.cs" />
     <Compile Include="DurableRelaunchAuthorityV4.cs" />

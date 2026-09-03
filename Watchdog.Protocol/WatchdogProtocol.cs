@@ -121,8 +121,8 @@ namespace MTTFTest.Watchdog.Protocol
         // V4 adds durable pause/closing evidence and bounded safety handoff.
         // Safety messages are exact-version contracts: a peer must not infer
         // missing v4 fields from an older payload.
-        public const int Version = 6;
-        public const int MinimumCompatibleVersion = 4;
+        public const int Version = 7;
+        public const int MinimumCompatibleVersion = 7;
         public static string Serialize(WatchdogMessage message)
         {
             var json = new JavaScriptSerializer();

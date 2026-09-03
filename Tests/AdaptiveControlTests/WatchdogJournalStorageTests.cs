@@ -180,7 +180,7 @@ namespace AdaptiveControlTests
                        error == WatchdogJournalOpenExistingError.SessionMismatch && receipt == null,
                     "错误SessionId未返回SessionMismatch：" + error);
 
-                foreach (var schema in new[] { 0, 1, 7, 999 })
+                foreach (var schema in new[] { 0, 1, 8, 999 })
                 {
                     File.WriteAllText(path,
                         "{\"SchemaVersion\":" + schema.ToString(CultureInfo.InvariantCulture) +

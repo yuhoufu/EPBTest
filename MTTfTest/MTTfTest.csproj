@@ -132,6 +132,10 @@
     <Compile Include="ConfigOperation.cs" />
     <Compile Include="FirstRunBootstrap.cs" />
     <Compile Include="LaunchCapabilityGate.cs" />
+    <Compile Include="V3EngineHostClient.cs" />
+    <Compile Include="V3EngineClientForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FormLoggerAdapter.cs" />
     <Compile Include="FrmAlarmPanelTest.cs">
       <SubType>Form</SubType>
@@ -402,6 +406,18 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <Private>false</Private>
     </ProjectReference>
+    <ProjectReference Include="..\MTTFTest.EngineHost\MTTFTest.EngineHost.csproj">
+      <Project>{EB5BDBB6-90BA-4788-81B8-BE02369563A4}</Project>
+      <Name>MTTFTest.EngineHost</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\Recovery.Kernel\Recovery.Kernel.csproj">
+      <Project>{1BC21569-EF83-4E83-96D4-A3854A2E10D4}</Project>
+      <Name>Recovery.Kernel</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
     <ProjectReference Include="..\MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj">
       <Project>{8F458242-0B7C-42CA-9BAC-5B232024FA14}</Project>
       <Name>MTTFTest.SessionAgent</Name>
@@ -410,6 +426,10 @@
     </ProjectReference>
   </ItemGroup>
   <Target Name="CopyWatchdogSidecar" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.pdb')" />
+    <Copy SourceFiles="$(ProjectDir)..\Recovery.Kernel\bin\$(Configuration)\MTTFTest.Recovery.Kernel.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\Recovery.Kernel\bin\$(Configuration)\MTTFTest.Recovery.Kernel.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\Recovery.Kernel\bin\$(Configuration)\MTTFTest.Recovery.Kernel.pdb')" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb')" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
@@ -433,6 +453,9 @@
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Target Name="V3RecoveryKernelSourceGate" BeforeTargets="CoreCompile">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\Tools\Test-V3RecoveryKernelSourceGate.ps1&quot; -RepositoryRoot &quot;$(ProjectDir)..&quot;" />
+  </Target>
   <Import Project="..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets" Condition="Exists('..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets')" />
   <Target Name="GenerateAuditableBuildMetadata" BeforeTargets="CoreCompile">
     <PropertyGroup>

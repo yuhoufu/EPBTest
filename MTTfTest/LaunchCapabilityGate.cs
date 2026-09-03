@@ -12,7 +12,7 @@ namespace MtEmbTest
     /// <summary>
     /// Production admission gate for MTTFTest.exe.  Only an exact process
     /// identity already recorded by SessionAgent from a Supervisor-issued,
-    /// one-shot schema 6 capability may continue into configuration or UI.
+    /// one-shot schema 7 role capability may continue into configuration or UI.
     /// </summary>
     internal static class LaunchCapabilityGate
     {
@@ -27,8 +27,8 @@ namespace MtEmbTest
             try
             {
                 MessageBox.Show(
-                    "V2.15.0.0 正式版仅允许由 Supervisor 服务启动。\r\n" +
-                    "请使用桌面“MT EPB 试验系统 V2.15”快捷方式。" +
+                    "V3.0.0.0 正式版仅允许由 Supervisor 服务按进程角色启动。\r\n" +
+                    "请使用桌面“MT EPB 试验系统 V3”快捷方式。" +
                     "\r\n\r\n拒绝原因：" + failure,
                     "启动已拒绝",
                     MessageBoxButtons.OK,

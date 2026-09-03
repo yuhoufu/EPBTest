@@ -8,30 +8,34 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class SupervisorProtocol
     {
-        public const int SchemaVersion = 6;
-        public const string PipeName = "MTTFTestSupervisor.Control.v6";
-        public const string RequestMagic = "MTTF-SUPERVISOR-REQUEST-V6";
-        public const string ResponseMagic = "MTTF-SUPERVISOR-RESPONSE-V6";
+        public const int SchemaVersion = 7;
+        public const string PipeName = "MTTFTestSupervisor.Control.v7";
+        public const string RequestMagic = "MTTF-SUPERVISOR-REQUEST-V7";
+        public const string ResponseMagic = "MTTF-SUPERVISOR-RESPONSE-V7";
         public const string MainLaunchRequestMagic =
-            "MTTF-SUPERVISOR-MAIN-LAUNCH-REQUEST-V6";
+            "MTTF-SUPERVISOR-MAIN-LAUNCH-REQUEST-V7";
         public const string MainLaunchResponseMagic =
-            "MTTF-SUPERVISOR-MAIN-LAUNCH-RESPONSE-V6";
+            "MTTF-SUPERVISOR-MAIN-LAUNCH-RESPONSE-V7";
         public const string SafetyHandoffBeginRequestMagic =
-            "MTTF-SUPERVISOR-SAFETY-BEGIN-REQUEST-V6";
+            "MTTF-SUPERVISOR-SAFETY-BEGIN-REQUEST-V7";
         public const string SafetyHandoffBeginResponseMagic =
-            "MTTF-SUPERVISOR-SAFETY-BEGIN-RESPONSE-V6";
+            "MTTF-SUPERVISOR-SAFETY-BEGIN-RESPONSE-V7";
         public const string SafetyAuthorityReadRequestMagic =
-            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-REQUEST-V6";
+            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-REQUEST-V7";
         public const string SafetyAuthorityReadResponseMagic =
-            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-RESPONSE-V6";
+            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-RESPONSE-V7";
         public const string SafetyAgentRequestMagic =
-            "MTTF-SUPERVISOR-SAFETY-REQUEST-V6";
+            "MTTF-SUPERVISOR-SAFETY-REQUEST-V7";
         public const string SafetyAgentResponseMagic =
-            "MTTF-SUPERVISOR-SAFETY-RESPONSE-V6";
+            "MTTF-SUPERVISOR-SAFETY-RESPONSE-V7";
         public const string P0AlarmRequestMagic =
-            "MTTF-SUPERVISOR-P0-ALARM-REQUEST-V6";
+            "MTTF-SUPERVISOR-P0-ALARM-REQUEST-V7";
         public const string P0AlarmResponseMagic =
-            "MTTF-SUPERVISOR-P0-ALARM-RESPONSE-V6";
+            "MTTF-SUPERVISOR-P0-ALARM-RESPONSE-V7";
+        public const string OperatorCommandRequestMagic =
+            "MTTF-SUPERVISOR-OPERATOR-COMMAND-REQUEST-V7";
+        public const string OperatorCommandResponseMagic =
+            "MTTF-SUPERVISOR-OPERATOR-COMMAND-RESPONSE-V7";
         public const int MaximumTextLength = 1024 * 1024;
 
         public static string ComputeSha256(string path)
@@ -64,6 +68,124 @@ namespace MTTFTest.Watchdog.Protocol
         public static string ReadRequestMagic(BinaryReader reader)
         {
             return SupervisorSessionLaunchRequest.ReadBoundedString(reader);
+        }
+    }
+
+    public sealed class SupervisorOperatorCommandRequest
+    {
+        public int SchemaVersion { get; set; } = SupervisorProtocol.SchemaVersion;
+        public string RequestId { get; set; } = string.Empty;
+        public string ChallengeNonce { get; set; } = string.Empty;
+        public int RequesterProcessId { get; set; }
+        public long RequesterProcessStartUtcTicks { get; set; }
+        public OperatorCommand Command { get; set; }
+
+        public bool IsStructurallyValid()
+        {
+            return SchemaVersion == SupervisorProtocol.SchemaVersion &&
+                   RecoveryProtocolV7.IsGuid(RequestId) &&
+                   WatchdogProcessIdentityPolicy.IsValidChallengeNonce(ChallengeNonce) &&
+                   RequesterProcessId > 0 && RequesterProcessStartUtcTicks > 0 &&
+                   Command?.IsStructurallyValid() == true;
+        }
+
+        public void WriteTo(BinaryWriter writer)
+        {
+            writer.Write(SupervisorProtocol.OperatorCommandRequestMagic);
+            writer.Write(SchemaVersion);
+            writer.Write(RequestId ?? string.Empty);
+            writer.Write(ChallengeNonce ?? string.Empty);
+            writer.Write(RequesterProcessId);
+            writer.Write(RequesterProcessStartUtcTicks);
+            writer.Write(Command.SchemaVersion);
+            writer.Write(Command.CommandId ?? string.Empty);
+            writer.Write(Command.SessionId ?? string.Empty);
+            writer.Write(Command.RunId ?? string.Empty);
+            writer.Write(Command.RunEpoch);
+            writer.Write(Command.BaseRevision);
+            writer.Write(Command.PayloadSha256 ?? string.Empty);
+            writer.Write((int)Command.Kind);
+            writer.Write(Command.IssuedUtcTicks);
+            writer.Flush();
+        }
+
+        public static SupervisorOperatorCommandRequest ReadBodyFrom(
+            BinaryReader reader,
+            string magic)
+        {
+            if (!string.Equals(magic,
+                    SupervisorProtocol.OperatorCommandRequestMagic,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException("SupervisorOperatorCommandMagicMismatch");
+            return new SupervisorOperatorCommandRequest
+            {
+                SchemaVersion = reader.ReadInt32(),
+                RequestId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                ChallengeNonce = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                RequesterProcessId = reader.ReadInt32(),
+                RequesterProcessStartUtcTicks = reader.ReadInt64(),
+                Command = new OperatorCommand
+                {
+                    SchemaVersion = reader.ReadInt32(),
+                    CommandId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                    SessionId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                    RunId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                    RunEpoch = reader.ReadInt64(),
+                    BaseRevision = reader.ReadInt64(),
+                    PayloadSha256 = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                    Kind = (OperatorCommandKind)reader.ReadInt32(),
+                    IssuedUtcTicks = reader.ReadInt64()
+                }
+            };
+        }
+    }
+
+    public sealed class SupervisorOperatorCommandResponse
+    {
+        public int SchemaVersion { get; set; } = SupervisorProtocol.SchemaVersion;
+        public string RequestId { get; set; } = string.Empty;
+        public string ChallengeNonce { get; set; } = string.Empty;
+        public bool Accepted { get; set; }
+        public string IncidentId { get; set; } = string.Empty;
+        public string OwnerId { get; set; } = string.Empty;
+        public SystemTerminalState DesiredState { get; set; }
+        public string FailureCode { get; set; } = string.Empty;
+        public string Detail { get; set; } = string.Empty;
+
+        public void WriteTo(BinaryWriter writer)
+        {
+            writer.Write(SupervisorProtocol.OperatorCommandResponseMagic);
+            writer.Write(SchemaVersion);
+            writer.Write(RequestId ?? string.Empty);
+            writer.Write(ChallengeNonce ?? string.Empty);
+            writer.Write(Accepted);
+            writer.Write(IncidentId ?? string.Empty);
+            writer.Write(OwnerId ?? string.Empty);
+            writer.Write((int)DesiredState);
+            writer.Write(FailureCode ?? string.Empty);
+            writer.Write(Detail ?? string.Empty);
+            writer.Flush();
+        }
+
+        public static SupervisorOperatorCommandResponse ReadFrom(BinaryReader reader)
+        {
+            if (!string.Equals(
+                    SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                    SupervisorProtocol.OperatorCommandResponseMagic,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException("SupervisorOperatorResponseMagicMismatch");
+            return new SupervisorOperatorCommandResponse
+            {
+                SchemaVersion = reader.ReadInt32(),
+                RequestId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                ChallengeNonce = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                Accepted = reader.ReadBoolean(),
+                IncidentId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                OwnerId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                DesiredState = (SystemTerminalState)reader.ReadInt32(),
+                FailureCode = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                Detail = SupervisorSessionLaunchRequest.ReadBoundedString(reader)
+            };
         }
     }
 

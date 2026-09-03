@@ -96,7 +96,7 @@ namespace MTEmbTest
     {
         // v6: RemainingFormalCycles 字段名为兼容旧 JSON 保留，值改为剩余机械耐久圈；
         // v5 检查点必须拒绝，防止学习/资格圈被再次当作“不计目标”。
-        private const int CurrentSchemaVersion = 6;
+        private const int CurrentSchemaVersion = 7;
         private static readonly object Sync = new object();
         private static readonly ConcurrentDictionary<string, byte> RevokedRuns =
             new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);

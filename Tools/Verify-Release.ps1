@@ -197,11 +197,18 @@ if ($actualAssemblyName -ne $expectedAssemblyName -or
 if ($identity.platform -ne 'x86') {
     throw "identity 平台不是 x86：$($identity.platform)"
 }
-if ($expectedProductVersion -ne '2.15.0.0') {
-    throw "无人值守正式版必须统一为 2.15.0.0：$expectedProductVersion"
+if ($expectedProductVersion -ne '3.0.0.0') {
+    throw "无人值守正式版必须统一为 3.0.0.0：$expectedProductVersion"
 }
-if ((Get-RequiredJsonProperty $identity 'watchdogSchema' 'identity') -ne 6) {
-    throw "identity.watchdogSchema 不是 6：$($identity.watchdogSchema)"
+if ((Get-RequiredJsonProperty $identity 'watchdogSchema' 'identity') -ne 7) {
+    throw "identity.watchdogSchema 不是 7：$($identity.watchdogSchema)"
+}
+if ((Get-RequiredJsonProperty $identity 'packageSlotSchema' 'identity') -ne 6) {
+    throw "identity.packageSlotSchema 不是 6：$($identity.packageSlotSchema)"
+}
+if ((Get-RequiredJsonProperty $identity 'recoveryArchitectureGeneration' 'identity') -ne
+    'EPB-RecoveryKernel-V3') {
+    throw 'identity.recoveryArchitectureGeneration 不是 EPB-RecoveryKernel-V3。'
 }
 $mainExecutableSha256 = [string](Get-RequiredJsonProperty `
     $identity 'mainExecutableSha256' 'identity')
@@ -213,6 +220,8 @@ if ($mainExecutableSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
 
 $requiredComponentNames = @(
     'MTTFTest.exe',
+    'MTTFTest.EngineHost.exe',
+    'MTTFTest.Recovery.Kernel.dll',
     'Controller.dll',
     'MTTFTest.Watchdog.exe',
     'MTTFTest.Watchdog.Protocol.dll',

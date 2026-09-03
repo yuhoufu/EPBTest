@@ -67,6 +67,7 @@ foreach ($required in @(
         'Read-Utf8JsonFile',
         'New-Object Text.UTF8Encoding($false, $true)',
         'Invoke-LegacyCheckpointSafeRollover',
+        'Ensure-V3BaselineLastKnownGood',
         'legacySchema -notin @(5, 6)',
         'authorizationMigrated = $false',
         'permitMigrated = $false',
@@ -78,6 +79,8 @@ foreach ($required in @(
         'MTTFTest.FirstRun.configured',
         "'Configure'",
         'MTTFTest.exe',
+        'MTTFTest.EngineHost.exe',
+        'MTTFTest.Recovery.Kernel.dll',
         'MTTFTest.Watchdog.exe',
         'MTTFTest.SessionAgent.exe')) {
     if (-not $installerText.Contains($required)) {
@@ -161,8 +164,8 @@ $sessionLaunchClientText = [IO.File]::ReadAllText(
 $supervisorMainLaunchClientText = [IO.File]::ReadAllText(
     (Join-Path $repo 'MTTFTest.Watchdog\SupervisorMainLaunchClient.cs'), [Text.Encoding]::UTF8)
 if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
-    -not $supervisorProtocolText.Contains('public const int SchemaVersion = 6') -or
-    -not $sessionProtocolText.Contains('public const int SchemaVersion = 6') -or
+    -not $supervisorProtocolText.Contains('public const int SchemaVersion = 7') -or
+    -not $sessionProtocolText.Contains('public const int SchemaVersion = 7') -or
     -not $sessionAgentHostText.Contains('LaunchCapabilityAlreadyConsumed') -or
     -not $supervisorHostText.Contains('MainProcessStartUtcTicks') -or
     -not $supervisorHostText.Contains('SupervisorSafetyHandoffOldProcessIdentityMismatch') -or
@@ -173,7 +176,7 @@ if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
     -not $supervisorMainLaunchClientText.Contains('IsRecoveryLaunch = true') -or
     -not $supervisorHostText.Contains('SupervisorMainRecoverySessionMismatch') -or
     -not $supervisorHostText.Contains('SupervisorRecoveryCapabilitySessionAgentLaunch')) {
-    throw 'schema 6 Supervisor 单次 LaunchCapability 生产门禁不完整。'
+    throw 'schema 7 Supervisor 单次角色 LaunchCapability 生产门禁不完整。'
 }
 foreach ($commandName in @(
         '一键安装正式版.cmd', '一键修复.cmd', '一键卸载.cmd', '启动试验.cmd')) {

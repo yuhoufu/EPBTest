@@ -41,7 +41,7 @@ $packageIdentity = Get-Content `
     -LiteralPath (Join-Path $package 'e2e-package-identity.json') `
     -Raw | ConvertFrom-Json
 if (-not $packageIdentity.testOnly -or $packageIdentity.productionRelease -or
-    $packageIdentity.version -ne '2.15.0.0') {
+    $packageIdentity.version -ne '3.0.0.0') {
     throw '拒绝执行未明确标识 testOnly 的 E2E 包。'
 }
 if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
@@ -72,7 +72,7 @@ $createdTask = $false
 $startedUtc = [DateTime]::UtcNow
 $result = [ordered]@{
     schemaVersion = 1
-    version = '2.15.0.0'
+    version = '3.0.0.0'
     startedUtc = $startedUtc.ToString('O')
     account = $identity.Name
     package = $package

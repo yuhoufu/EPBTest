@@ -47,6 +47,8 @@ New-Item -ItemType Directory -Path (Join-Path $output 'Config') -Force | Out-Nul
 $mainOutput = Join-Path $repo 'Tests\UnattendedRecoveryE2E\bin\Release'
 $watchdogOutput = Join-Path $repo 'MTTFTest.Watchdog\bin\Release'
 $sessionOutput = Join-Path $repo 'MTTFTest.SessionAgent\bin\Release'
+$engineOutput = Join-Path $repo 'MTTFTest.EngineHost\bin\Release'
+$kernelOutput = Join-Path $repo 'Recovery.Kernel\bin\Release'
 foreach ($source in @(
         (Join-Path $mainOutput 'MTTFTest.exe'),
         (Join-Path $mainOutput 'MTTFTest.pdb'),
@@ -56,6 +58,10 @@ foreach ($source in @(
         (Join-Path $watchdogOutput 'MTTFTest.Watchdog.pdb'),
         (Join-Path $sessionOutput 'MTTFTest.SessionAgent.exe'),
         (Join-Path $sessionOutput 'MTTFTest.SessionAgent.pdb'),
+        (Join-Path $engineOutput 'MTTFTest.EngineHost.exe'),
+        (Join-Path $engineOutput 'MTTFTest.EngineHost.pdb'),
+        (Join-Path $kernelOutput 'MTTFTest.Recovery.Kernel.dll'),
+        (Join-Path $kernelOutput 'MTTFTest.Recovery.Kernel.pdb'),
         (Join-Path $mainOutput 'MTTFTest.SafetyAgent.exe'),
         (Join-Path $mainOutput 'MTTFTest.SafetyAgent.pdb'))) {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
@@ -80,7 +86,7 @@ $identity = [ordered]@{
     schemaVersion = 1
     testOnly = $true
     productionRelease = $false
-    version = '2.15.0.0'
+    version = '3.0.0.0'
     builtUtc = [DateTime]::UtcNow.ToString('O')
     files = @(
         Get-ChildItem -LiteralPath $output -File -Recurse |

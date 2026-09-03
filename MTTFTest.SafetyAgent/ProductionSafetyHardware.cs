@@ -47,10 +47,20 @@ namespace MTTFTest.SafetyAgent
 
         public bool ConfirmPowerOff()
         {
-            LastPowerOffReport = new SafetyPowerOutputController().ConfirmAllOffDetailed(
-                _configuration.PowerSupplies,
-                _runtime.ReleaseTimeoutMs);
-            return LastPowerOffReport.AllObservedOff;
+            // A single SCPI read timeout is an observation, not proof that the
+            // output is on. Re-issue the idempotent OFF + double read-back up
+            // twice within the SafetyAgent's bounded 30 s stage.
+            // No successful read-back is cached across attempts.
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                LastPowerOffReport = new SafetyPowerOutputController()
+                    .ConfirmAllOffDetailed(
+                        _configuration.PowerSupplies,
+                        Math.Min(_runtime.ReleaseTimeoutMs, 3000));
+                if (LastPowerOffReport.AllObservedOff) return true;
+                if (attempt < 2) Thread.Sleep(100);
+            }
+            return false;
         }
 
         public bool ConfirmPressureSafe()

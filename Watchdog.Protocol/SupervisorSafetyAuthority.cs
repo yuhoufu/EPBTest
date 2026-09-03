@@ -7,7 +7,7 @@ using System.Web.Script.Serialization;
 namespace MTTFTest.Watchdog.Protocol
 {
     /// <summary>
-    /// Supervisor-owned schema 6 safety authority.  This is the only receipt
+    /// Supervisor-owned schema 7 safety authority. This is the only receipt
     /// that can authorize SafetyAgent execution.  Project receipts are
     /// evidence mirrors and are never read by this store.
     /// </summary>
@@ -112,7 +112,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (!Guid.TryParseExact(authorityId ?? string.Empty, "N", out parsed))
                 throw new InvalidDataException("SupervisorSafetyAuthorityIdInvalid");
             var root = Path.GetFullPath(stateDirectory ?? string.Empty);
-            return Path.Combine(root, "safety-authority-" + authorityId + ".v6.json");
+            return Path.Combine(root, "safety-authority-" + authorityId + ".v7.json");
         }
 
         public static string SerializeReceipt(WatchdogSafetyHandoffReceipt receipt)
@@ -164,7 +164,13 @@ namespace MTTFTest.Watchdog.Protocol
                         Quarantine(path + ".bak");
                     }
 
-                    var canonical = ComputeReceiptSha256(receipt);
+                    // JavaScriptSerializer formats large fractional doubles (for
+                    // example StageMonotonicElapsedMs) differently after its first
+                    // round trip.  Hash the exact representation that will be
+                    // persisted, otherwise a perfectly valid SafetyAgent stage can
+                    // write a record that immediately reads back as AuthorityInvalid.
+                    var persistedReceipt = StabilizeReceipt(receipt);
+                    var canonical = ComputeReceiptSha256(persistedReceipt);
                     var record = new SupervisorSafetyAuthorityRecord
                     {
                         AuthorityId = authorityId,
@@ -175,7 +181,7 @@ namespace MTTFTest.Watchdog.Protocol
                         InitialReceiptCanonicalSha256 = canonical,
                         ReceiptRevision = receipt.Revision,
                         ReceiptCanonicalSha256 = canonical,
-                        Receipt = Clone(receipt),
+                        Receipt = persistedReceipt,
                         UpdatedUtcTicks = DateTime.UtcNow.Ticks
                     };
                     Write(path, record);
@@ -239,9 +245,10 @@ namespace MTTFTest.Watchdog.Protocol
                         throw new InvalidDataException(
                             "SupervisorSafetyAuthorityInitialCanonicalHashMismatch");
                     ValidateTransition(current.Receipt, next);
-                    current.Receipt = Clone(next);
-                    current.ReceiptRevision = next.Revision;
-                    current.ReceiptCanonicalSha256 = ComputeReceiptSha256(next);
+                    current.Receipt = StabilizeReceipt(next);
+                    current.ReceiptRevision = current.Receipt.Revision;
+                    current.ReceiptCanonicalSha256 =
+                        ComputeReceiptSha256(current.Receipt);
                     current.UpdatedUtcTicks = DateTime.UtcNow.Ticks;
                     Write(path, current);
                     MirrorEvidence(current);
@@ -342,7 +349,7 @@ namespace MTTFTest.Watchdog.Protocol
                 "SupervisorEvidence");
             var authorityEvidencePath = Path.Combine(
                 evidenceDirectory,
-                "safety-authority-" + record.AuthorityId + ".v6.json");
+                "safety-authority-" + record.AuthorityId + ".v7.json");
             DurableJsonFileStore.WriteAtomicWithBackup(
                 authorityEvidencePath,
                 Utf8.GetBytes(Json.Serialize(record)));
@@ -396,6 +403,24 @@ namespace MTTFTest.Watchdog.Protocol
         {
             return Json.Deserialize<WatchdogSafetyHandoffReceipt>(
                 Json.Serialize(value));
+        }
+
+        private static WatchdogSafetyHandoffReceipt StabilizeReceipt(
+            WatchdogSafetyHandoffReceipt value)
+        {
+            if (value == null) return null;
+            var current = Clone(value);
+            for (var pass = 0; pass < 4; pass++)
+            {
+                var before = Json.Serialize(current);
+                var next = Json.Deserialize<WatchdogSafetyHandoffReceipt>(before);
+                var after = Json.Serialize(next);
+                current = next;
+                if (string.Equals(before, after, StringComparison.Ordinal))
+                    return current;
+            }
+            throw new InvalidDataException(
+                "SupervisorSafetyAuthorityReceiptSerializationUnstable");
         }
     }
 }

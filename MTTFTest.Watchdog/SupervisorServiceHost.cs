@@ -98,9 +98,12 @@ namespace MTTFTest.Watchdog
             _safetyAgents =
                 new ConcurrentDictionary<string, SupervisorOwnedSafetyAgent>(
                     StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, Task> _uiRoleMonitors =
+            new ConcurrentDictionary<string, Task>(StringComparer.OrdinalIgnoreCase);
         private readonly object _mainLaunchGate = new object();
         private Task _acceptLoop;
         private SupervisorP0AlarmHardwareOwner _p0AlarmOwner;
+        private SupervisorRecoveryKernelService _recoveryKernel;
         private int _started;
 
         internal void Start()
@@ -115,7 +118,9 @@ namespace MTTFTest.Watchdog
             _p0AlarmOwner = new SupervisorP0AlarmHardwareOwner(
                 executableDirectory,
                 StateDirectory);
-            RestorePersistedSessions();
+            _recoveryKernel = new SupervisorRecoveryKernelService(WriteAudit);
+            _recoveryKernel.Start();
+            AuditIgnoredLegacySessionRecords();
             _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
             WriteAudit(
                 "SupervisorStarted",
@@ -159,33 +164,19 @@ namespace MTTFTest.Watchdog
             }
         }
 
-        private void RestorePersistedSessions()
+        private void AuditIgnoredLegacySessionRecords()
         {
             foreach (var path in Directory.GetFiles(
                          StateDirectory,
                          "session-*.launch.json",
                          SearchOption.TopDirectoryOnly))
             {
-                try
-                {
-                    var record = Json.Deserialize<SupervisorLaunchRecord>(
-                        File.ReadAllText(path, Encoding.UTF8));
-                    ValidateStoredRecord(record);
-                    var owned = _sessions.GetOrAdd(
-                        record.SessionId,
-                        id => new SupervisorOwnedSession(id));
-                    var identity = owned.Restore(record, StateDirectory);
-                    WriteAudit(
-                        "SessionRestored",
-                        $"Session={record.SessionId};PID={identity.ProcessId};" +
-                        $"StartUtcTicks={identity.ProcessStartUtcTicks}");
-                }
-                catch (Exception ex)
-                {
-                    WriteAudit(
-                        "SessionRestoreRejected",
-                        Path.GetFileName(path) + ":" + ex.GetBaseException().Message);
-                }
+                // Do not delete the V2 evidence during migration, but never
+                // turn it back into executable authority.  A formal V3
+                // package can only launch EngineHost/UI role capabilities.
+                WriteAudit(
+                    "LegacySessionRecordIgnored",
+                    Path.GetFileName(path) + ":LegacySessionHostDisabledInV3");
             }
         }
 
@@ -361,6 +352,33 @@ namespace MTTFTest.Watchdog
                                 ChallengeNonce = request?.ChallengeNonce ?? string.Empty,
                                 Accepted = false,
                                 FailureCode = "SupervisorMainLaunchRejected",
+                                Detail = ex.GetBaseException().Message
+                            };
+                        }
+                        response.WriteTo(writer);
+                        return;
+                    }
+                    if (string.Equals(
+                            magic,
+                            SupervisorProtocol.OperatorCommandRequestMagic,
+                            StringComparison.Ordinal))
+                    {
+                        SupervisorOperatorCommandRequest request = null;
+                        SupervisorOperatorCommandResponse response;
+                        try
+                        {
+                            request = SupervisorOperatorCommandRequest.ReadBodyFrom(
+                                reader, magic);
+                            response = ApplyOperatorCommand(request);
+                        }
+                        catch (Exception ex)
+                        {
+                            response = new SupervisorOperatorCommandResponse
+                            {
+                                RequestId = request?.RequestId ?? string.Empty,
+                                ChallengeNonce = request?.ChallengeNonce ?? string.Empty,
+                                Accepted = false,
+                                FailureCode = "SupervisorOperatorCommandRejected",
                                 Detail = ex.GetBaseException().Message
                             };
                         }
@@ -631,9 +649,33 @@ namespace MTTFTest.Watchdog
                 var permitId = request.IsRecoveryLaunch
                     ? request.RecoveryPermitId
                     : Guid.NewGuid().ToString("N");
+                string engineRunId;
+                const long engineRunEpoch = 1;
+                if (request.IsRecoveryLaunch)
+                {
+                    var engine = EngineHostPipeClient.ReadSnapshot(3000);
+                    if (!string.Equals(engine.SessionId, sessionId,
+                            StringComparison.Ordinal) || engine.RunEpoch <= 0)
+                        throw new InvalidDataException(
+                            "SupervisorUiRecoveryEngineIdentityMismatch");
+                    engineRunId = engine.RunId;
+                }
+                else
+                {
+                    engineRunId = Guid.NewGuid().ToString("N");
+                    LaunchEngineHostThroughSessionAgent(
+                        launcherDirectory,
+                        targetDesktopSessionId,
+                        sessionId,
+                        engineRunId,
+                        engineRunEpoch);
+                }
                 var launchNonce = Guid.NewGuid().ToString("N");
+                var uiBaseArguments = (request.Arguments ?? string.Empty) +
+                                      " --engine-run " + engineRunId +
+                                      " --engine-epoch " + engineRunEpoch;
                 var effectiveArguments = SessionAgentLaunchClient.AppendLaunchProof(
-                    request.Arguments,
+                    uiBaseArguments,
                     capabilityId,
                     launchNonce,
                     sessionId);
@@ -642,6 +684,7 @@ namespace MTTFTest.Watchdog
                 {
                     capability = new SessionLaunchCapability
                     {
+                        ProcessRole = ProcessRole.UserInterface,
                         CapabilityId = capabilityId,
                         SessionId = sessionId,
                         PermitGeneration = permitGeneration,
@@ -676,6 +719,18 @@ namespace MTTFTest.Watchdog
                             : string.Empty) +
                         $"PID={launched.Id};StartUtcTicks={startTicks};" +
                         $"ExecutableSha256={request.ExecutableSha256}");
+                    StartUserInterfaceMonitor(
+                        sessionId,
+                        engineRunId,
+                        engineRunEpoch,
+                        targetDesktopSessionId,
+                        mainExecutable,
+                        request.ExecutableSha256,
+                        uiBaseArguments,
+                        Path.GetFullPath(request.WorkingDirectory),
+                        permitGeneration,
+                        launched.Id,
+                        startTicks);
                     return new SupervisorMainLaunchResponse
                     {
                         RequestId = request.RequestId,
@@ -689,6 +744,278 @@ namespace MTTFTest.Watchdog
                             : "SupervisorCapabilitySessionAgentLaunch"
                     };
                 }
+            }
+        }
+
+        private void StartUserInterfaceMonitor(
+            string sessionId,
+            string runId,
+            long runEpoch,
+            int desktopSessionId,
+            string executablePath,
+            string executableSha256,
+            string baseArguments,
+            string workingDirectory,
+            long permitGeneration,
+            int processId,
+            long processStartUtcTicks)
+        {
+            var task = Task.Run(() => MonitorUserInterfaceAsync(
+                sessionId,
+                runId,
+                runEpoch,
+                desktopSessionId,
+                executablePath,
+                executableSha256,
+                baseArguments,
+                workingDirectory,
+                permitGeneration,
+                processId,
+                processStartUtcTicks,
+                _stop.Token));
+            _uiRoleMonitors.AddOrUpdate(sessionId, task, (key, prior) => task);
+        }
+
+        private async Task MonitorUserInterfaceAsync(
+            string sessionId,
+            string runId,
+            long runEpoch,
+            int desktopSessionId,
+            string executablePath,
+            string executableSha256,
+            string baseArguments,
+            string workingDirectory,
+            long permitGeneration,
+            int processId,
+            long processStartUtcTicks,
+            CancellationToken token)
+        {
+            try
+            {
+                var failures = 0;
+                while (!token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        using (var process = Process.GetProcessById(processId))
+                        {
+                            if (process.StartTime.ToUniversalTime().Ticks != processStartUtcTicks)
+                                throw new InvalidDataException("UiProcessIdentityChanged");
+                            await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
+                        }
+                    }
+                    catch (ArgumentException) { }
+                    if (token.IsCancellationRequested) return;
+                    if (IsApprovedUserInterfaceExit(
+                            sessionId, runId, runEpoch, processId,
+                            processStartUtcTicks))
+                    {
+                        WriteAudit("UserInterfaceApprovedExit",
+                            "Session=" + sessionId + ";PID=" + processId);
+                        return;
+                    }
+                    failures++;
+                    if (failures > 5)
+                    {
+                        WriteAudit("UserInterfaceRestartBudgetExhausted",
+                            "Session=" + sessionId + ";Run=" + runId);
+                        return;
+                    }
+                    var delaySeconds = 1 << (failures - 1);
+                    WriteAudit("UserInterfaceAbnormalExit",
+                        "Session=" + sessionId + ";PID=" + processId +
+                        ";RestartAttempt=" + failures + ";DelaySeconds=" + delaySeconds +
+                        ";EngineContinues=true");
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), token)
+                        .ConfigureAwait(false);
+                    try
+                    {
+                        var launched = LaunchUserInterfaceRole(
+                            sessionId,
+                            desktopSessionId,
+                            executablePath,
+                            executableSha256,
+                            baseArguments,
+                            workingDirectory,
+                            permitGeneration + failures);
+                        processId = launched.Item1;
+                        processStartUtcTicks = launched.Item2;
+                        WriteAudit("UserInterfaceRestarted",
+                            "Session=" + sessionId + ";PID=" + processId +
+                            ";Attempt=" + failures);
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteAudit("UserInterfaceRestartFailed",
+                            "Session=" + sessionId + ";Attempt=" + failures +
+                            ";" + ex.GetBaseException().Message);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                WriteAudit("UserInterfaceMonitorFailed",
+                    "Session=" + sessionId + ";" + ex.GetBaseException().Message);
+            }
+            finally
+            {
+                _uiRoleMonitors.TryRemove(sessionId, out _);
+            }
+        }
+
+        private static bool IsApprovedUserInterfaceExit(
+            string sessionId,
+            string runId,
+            long runEpoch,
+            int processId,
+            long processStartUtcTicks)
+        {
+            if (!UserInterfaceExitReceiptStore.TryReadExact(
+                    sessionId, runId, runEpoch, processId,
+                    processStartUtcTicks, out var receipt))
+                return false;
+            try
+            {
+                var engine = EngineHostPipeClient.ReadSnapshot(3000);
+                return string.Equals(engine.SessionId, sessionId, StringComparison.Ordinal) &&
+                       string.Equals(engine.RunId, runId, StringComparison.Ordinal) &&
+                       engine.RunEpoch == runEpoch &&
+                       (engine.State == SystemTerminalState.SafeIdleAlarmed ||
+                        engine.State == SystemTerminalState.StoppedByOperator) &&
+                       string.IsNullOrEmpty(engine.RecoveryIncidentId) &&
+                       receipt.LastObservedState == engine.State;
+            }
+            catch { return false; }
+        }
+
+        private static Tuple<int, long> LaunchUserInterfaceRole(
+            string sessionId,
+            int desktopSessionId,
+            string executablePath,
+            string executableSha256,
+            string baseArguments,
+            string workingDirectory,
+            long permitGeneration)
+        {
+            var capabilityId = Guid.NewGuid().ToString("N");
+            var nonce = Guid.NewGuid().ToString("N");
+            var arguments = SessionAgentLaunchClient.AppendLaunchProof(
+                baseArguments, capabilityId, nonce, sessionId);
+            SessionLaunchCapability capability;
+            using (var current = Process.GetCurrentProcess())
+                capability = new SessionLaunchCapability
+                {
+                    ProcessRole = ProcessRole.UserInterface,
+                    CapabilityId = capabilityId,
+                    SessionId = sessionId,
+                    PermitGeneration = permitGeneration,
+                    PermitId = Guid.NewGuid().ToString("N"),
+                    DesktopSessionId = desktopSessionId,
+                    ExecutablePath = executablePath,
+                    ExecutableSha256 = executableSha256,
+                    Arguments = arguments,
+                    ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(arguments),
+                    WorkingDirectory = workingDirectory,
+                    LaunchNonce = nonce,
+                    IssuedUtcTicks = DateTime.UtcNow.Ticks,
+                    ExpiresUtcTicks = DateTime.UtcNow.AddSeconds(60).Ticks,
+                    IssuerProcessId = current.Id,
+                    IssuerProcessStartUtcTicks =
+                        current.StartTime.ToUniversalTime().Ticks
+                };
+            using (var process = SessionAgentLaunchClient.Start(capability))
+                return Tuple.Create(
+                    process.Id,
+                    process.StartTime.ToUniversalTime().Ticks);
+        }
+
+        private void LaunchEngineHostThroughSessionAgent(
+            string executableDirectory,
+            int desktopSessionId,
+            string sessionId,
+            string runId,
+            long runEpoch)
+        {
+            var executable = Path.GetFullPath(Path.Combine(
+                executableDirectory, "MTTFTest.EngineHost.exe"));
+            if (!File.Exists(executable))
+                throw new FileNotFoundException(
+                    "SupervisorEngineHostExecutableMissing", executable);
+            var executableSha256 = SupervisorProtocol.ComputeSha256(executable);
+            var capabilityId = Guid.NewGuid().ToString("N");
+            var permitId = Guid.NewGuid().ToString("N");
+            var launchNonce = Guid.NewGuid().ToString("N");
+            var arguments = SessionAgentLaunchClient.AppendLaunchProof(
+                "--session " + sessionId + " --run " + runId +
+                " --epoch " + runEpoch,
+                capabilityId,
+                launchNonce,
+                sessionId);
+            SessionLaunchCapability capability;
+            using (var current = Process.GetCurrentProcess())
+            {
+                capability = new SessionLaunchCapability
+                {
+                    ProcessRole = ProcessRole.EngineHost,
+                    CapabilityId = capabilityId,
+                    SessionId = sessionId,
+                    PermitGeneration = 1,
+                    PermitId = permitId,
+                    DesktopSessionId = desktopSessionId,
+                    ExecutablePath = executable,
+                    ExecutableSha256 = executableSha256,
+                    Arguments = arguments,
+                    ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(arguments),
+                    WorkingDirectory = executableDirectory,
+                    LaunchNonce = launchNonce,
+                    IssuedUtcTicks = DateTime.UtcNow.Ticks,
+                    ExpiresUtcTicks = DateTime.UtcNow.AddSeconds(60).Ticks,
+                    IssuerProcessId = current.Id,
+                    IssuerProcessStartUtcTicks =
+                        current.StartTime.ToUniversalTime().Ticks
+                };
+            }
+            using (var process = SessionAgentLaunchClient.Start(capability))
+            {
+                var processStartUtcTicks = process.StartTime.ToUniversalTime().Ticks;
+                var deadline = DateTime.UtcNow.AddSeconds(30);
+                EngineStateSnapshot snapshot = null;
+                Exception last = null;
+                while (DateTime.UtcNow <= deadline)
+                {
+                    if (process.HasExited)
+                        throw new InvalidOperationException(
+                            "EngineHostExitedDuringSafeIdleAdmission:" + process.ExitCode);
+                    try
+                    {
+                        snapshot = EngineHostPipeClient.ReadSnapshot(1000);
+                        if (snapshot.HardwareInitialized &&
+                            string.Equals(snapshot.SessionId, sessionId,
+                                StringComparison.Ordinal) &&
+                            string.Equals(snapshot.RunId, runId,
+                                StringComparison.Ordinal) &&
+                            snapshot.RunEpoch == runEpoch)
+                            break;
+                    }
+                    catch (Exception ex) { last = ex; }
+                    Thread.Sleep(100);
+                }
+                if (snapshot?.HardwareInitialized != true ||
+                    !string.Equals(snapshot.SessionId, sessionId, StringComparison.Ordinal) ||
+                    !string.Equals(snapshot.RunId, runId, StringComparison.Ordinal) ||
+                    snapshot.RunEpoch != runEpoch)
+                    throw new InvalidOperationException(
+                        "EngineHostSafeIdleAdmissionTimedOut:" +
+                        (last?.GetBaseException().Message ?? snapshot?.State.ToString() ?? "NoSnapshot"));
+                WriteAudit(
+                    "SupervisorEngineHostLaunchCapabilityConsumed",
+                    "Capability=" + capabilityId + ";Session=" + sessionId +
+                    ";Run=" + runId + ";Epoch=" + runEpoch +
+                    ";PID=" + process.Id +
+                    ";StartUtcTicks=" + processStartUtcTicks +
+                    ";ExecutableSha256=" + executableSha256 +
+                    ";SafeIdle=true");
             }
         }
 
@@ -719,6 +1046,75 @@ namespace MTTFTest.Watchdog
                 Accepted = true,
                 Detail = "DurableP0AlarmDemandAccepted"
             };
+        }
+
+        private SupervisorOperatorCommandResponse ApplyOperatorCommand(
+            SupervisorOperatorCommandRequest request)
+        {
+            if (request?.IsStructurallyValid() != true)
+                throw new InvalidDataException("SupervisorOperatorCommandInvalid");
+            if (!IsExactSessionAgentRoleProcess(
+                    request.RequesterProcessId,
+                    request.RequesterProcessStartUtcTicks,
+                    request.Command.SessionId,
+                    ProcessRole.UserInterface))
+                throw new InvalidDataException(
+                    "SupervisorOperatorRequesterNotAuthorizedUi");
+            if (_recoveryKernel == null)
+                throw new InvalidOperationException("RecoveryKernelUnavailable");
+            var decision = _recoveryKernel.SubmitOperatorCommand(request.Command);
+            return new SupervisorOperatorCommandResponse
+            {
+                RequestId = request.RequestId,
+                ChallengeNonce = request.ChallengeNonce,
+                Accepted = true,
+                IncidentId = decision.Intent?.Identity?.IncidentId ?? string.Empty,
+                OwnerId = decision.Intent?.OwnerId ?? string.Empty,
+                DesiredState = decision.DesiredState?.State ??
+                               SystemTerminalState.SafeIdleAlarmed,
+                Detail = decision.Reason
+            };
+        }
+
+        private static bool IsExactSessionAgentRoleProcess(
+            int processId,
+            long processStartUtcTicks,
+            string sessionId,
+            ProcessRole role)
+        {
+            var root = Path.GetDirectoryName(
+                SessionAgentProtocol.ConsumptionPath(Guid.Empty.ToString("N")));
+            if (!Directory.Exists(root)) return false;
+            foreach (var path in Directory.GetFiles(
+                         root, "capability-*.json", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    var record = Json.Deserialize<SessionLaunchConsumptionRecord>(
+                        File.ReadAllText(path, Encoding.UTF8));
+                    if (record == null ||
+                        record.SchemaVersion != SessionAgentProtocol.SchemaVersion ||
+                        record.ProcessRole != role ||
+                        record.ProcessId != processId ||
+                        record.ProcessStartUtcTicks != processStartUtcTicks ||
+                        !string.Equals(record.SessionId, sessionId, StringComparison.Ordinal) ||
+                        !string.Equals(record.State, "Started", StringComparison.Ordinal))
+                        continue;
+                    var canonical = Json.Deserialize<SessionLaunchCapability>(
+                        File.ReadAllText(path + ".capability", Encoding.UTF8));
+                    var seal = Convert.FromBase64String(
+                        record.CapabilitySealBase64 ?? string.Empty);
+                    if (canonical?.ProcessRole != role ||
+                        !SessionAgentProtocol.VerifySeal(canonical, seal))
+                        continue;
+                    using (var process = Process.GetProcessById(processId))
+                        return !process.HasExited &&
+                               process.StartTime.ToUniversalTime().Ticks ==
+                               processStartUtcTicks;
+                }
+                catch { }
+            }
+            return false;
         }
 
         private SupervisorSafetyAgentLaunchResponse RegisterOrGetSafetyAgent(
@@ -995,42 +1391,14 @@ namespace MTTFTest.Watchdog
         private SupervisorSessionLaunchResponse RegisterOrGetSession(
             SupervisorSessionLaunchRequest request)
         {
-            ValidateRequest(
-                request,
-                out var sessionId,
-                out var mainExecutablePath,
-                out var projectDirectory,
-                out var configurationIdentity);
-            var owned = _sessions.GetOrAdd(
-                sessionId,
-                _ => new SupervisorOwnedSession(sessionId));
-            var identity = owned.RegisterOrGet(
-                request,
-                StateDirectory,
-                mainExecutablePath,
-                projectDirectory,
-                configurationIdentity);
+            if (request?.IsStructurallyValid() != true)
+                throw new InvalidDataException("SupervisorRequestInvalid");
             WriteAudit(
-                "SessionRegistered",
-                $"Session={sessionId};PID={identity.ProcessId};" +
-                $"StartUtcTicks={identity.ProcessStartUtcTicks};" +
-                $"RequestId={request.RequestId}");
-            WriteProjectAudit(
-                projectDirectory,
-                "SessionRegistered",
-                $"Session={sessionId};SidecarPID={identity.ProcessId};" +
-                $"StartUtcTicks={identity.ProcessStartUtcTicks};" +
-                $"MainExecutable={mainExecutablePath};" +
-                $"MainSha256={SupervisorProtocol.ComputeSha256(mainExecutablePath)}");
-            return new SupervisorSessionLaunchResponse
-            {
-                RequestId = request.RequestId,
-                ChallengeNonce = request.ChallengeNonce,
-                Accepted = true,
-                ProcessId = identity.ProcessId,
-                ProcessStartUtcTicks = identity.ProcessStartUtcTicks,
-                Detail = "SupervisorOwnedSessionHost"
-            };
+                "LegacySessionRegistrationRejected",
+                "RequestId=" + request.RequestId +
+                ";Reason=LegacySessionHostDisabledInV3");
+            throw new InvalidOperationException(
+                "LegacySessionHostDisabledInV3");
         }
 
         private static void ValidateRequest(
@@ -1341,7 +1709,7 @@ namespace MTTFTest.Watchdog
                     authorityPath,
                     Path.Combine(
                         directory,
-                        "safety-authority-" + authorityId + ".v6.json"),
+                        "safety-authority-" + authorityId + ".v7.json"),
                     true);
             }
             catch { }
@@ -1351,6 +1719,8 @@ namespace MTTFTest.Watchdog
         {
             try { _stop.Cancel(); } catch { }
             try { _acceptLoop?.Wait(3000); } catch { }
+            try { _recoveryKernel?.Dispose(); } catch { }
+            _recoveryKernel = null;
             foreach (var session in _sessions.Values)
                 try { session.Dispose(); } catch { }
             _sessions.Clear();

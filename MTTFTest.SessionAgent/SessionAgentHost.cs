@@ -101,6 +101,7 @@ namespace MTTFTest.SessionAgent
                 {
                     response = new SessionLaunchResponse
                     {
+                        ProcessRole = capability?.ProcessRole ?? ProcessRole.Unknown,
                         CapabilityId = capability?.CapabilityId ?? string.Empty,
                         LaunchNonce = capability?.LaunchNonce ?? string.Empty,
                         Accepted = false,
@@ -126,6 +127,7 @@ namespace MTTFTest.SessionAgent
             if (now < capability.IssuedUtcTicks - TimeSpan.FromSeconds(5).Ticks ||
                 now > capability.ExpiresUtcTicks)
                 throw new InvalidDataException("LaunchCapabilityExpired");
+            EnsureRoleAvailable(capability.ProcessRole);
             using (var issuer = Process.GetProcessById(capability.IssuerProcessId))
             {
                 if (issuer.HasExited || issuer.StartTime.ToUniversalTime().Ticks !=
@@ -151,6 +153,7 @@ namespace MTTFTest.SessionAgent
             var record = new SessionLaunchConsumptionRecord
             {
                 SchemaVersion = SessionAgentProtocol.SchemaVersion,
+                ProcessRole = capability.ProcessRole,
                 CapabilityId = capability.CapabilityId,
                 SessionId = capability.SessionId,
                 PermitGeneration = capability.PermitGeneration,
@@ -183,10 +186,11 @@ namespace MTTFTest.SessionAgent
             Replace(path, Json.Serialize(record));
             WriteAudit(
                 "LaunchCapabilityConsumed",
-                $"Capability={capability.CapabilityId};Session={capability.SessionId};" +
+                $"Role={capability.ProcessRole};Capability={capability.CapabilityId};Session={capability.SessionId};" +
                 $"PermitGeneration={capability.PermitGeneration};PID={process.Id}");
             var response = new SessionLaunchResponse
             {
+                ProcessRole = capability.ProcessRole,
                 CapabilityId = capability.CapabilityId,
                 LaunchNonce = capability.LaunchNonce,
                 Accepted = true,
@@ -196,6 +200,43 @@ namespace MTTFTest.SessionAgent
             };
             process.Dispose();
             return response;
+        }
+
+        private static void EnsureRoleAvailable(ProcessRole role)
+        {
+            var root = Path.GetDirectoryName(
+                SessionAgentProtocol.ConsumptionPath(Guid.Empty.ToString("N")));
+            foreach (var path in Directory.GetFiles(
+                         root,
+                         "capability-*.json",
+                         SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    var record = Json.Deserialize<SessionLaunchConsumptionRecord>(
+                        File.ReadAllText(path, Encoding.UTF8));
+                    if (record == null || record.SchemaVersion != SessionAgentProtocol.SchemaVersion ||
+                        record.ProcessRole != role || record.ProcessId <= 0 ||
+                        record.ProcessStartUtcTicks <= 0 ||
+                        !string.Equals(record.State, "Started", StringComparison.Ordinal))
+                        continue;
+                    using (var process = Process.GetProcessById(record.ProcessId))
+                    {
+                        if (!process.HasExited &&
+                            process.StartTime.ToUniversalTime().Ticks ==
+                            record.ProcessStartUtcTicks)
+                            throw new InvalidOperationException(
+                                "ProcessRoleAlreadyRunning:" + role);
+                    }
+                }
+                catch (ArgumentException) { }
+                catch (InvalidOperationException ex) when (
+                    !ex.Message.StartsWith("ProcessRoleAlreadyRunning:",
+                        StringComparison.Ordinal))
+                { }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
         }
 
         private static void WriteNew(string path, string payload)

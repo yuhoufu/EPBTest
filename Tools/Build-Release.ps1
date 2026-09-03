@@ -342,8 +342,8 @@ $snapshotSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\W
 $receiptSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyReceipts.cs') -Raw
 $programSource = Get-Content -LiteralPath (Join-Path $repo 'MTTfTest\Program.cs') -Raw
 if ($snapshotSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*2' -or
-    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*6') {
-    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 6 支持。'
+    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*7') {
+    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 7 支持。'
 }
 if ($programSource -match 'watchdog-safety-shutdown' -or
     (Test-Path -LiteralPath (Join-Path $repo 'MTTfTest\WatchdogSafetyShutdownWorker.cs'))) {
@@ -461,13 +461,17 @@ $watchdogClientPath = Join-Path $output 'MTTFTest.Watchdog.Client.dll'
 $safetyAgentExePath = Join-Path $output 'MTTFTest.SafetyAgent.exe'
 $safetyHardwarePath = Join-Path $output 'MTTFTest.SafetyHardware.dll'
 $sessionAgentExePath = Join-Path $output 'MTTFTest.SessionAgent.exe'
+$engineHostExePath = Join-Path $output 'MTTFTest.EngineHost.exe'
+$recoveryKernelPath = Join-Path $output 'MTTFTest.Recovery.Kernel.dll'
 foreach ($requiredSidecar in @(
         $watchdogExePath,
         $watchdogProtocolPath,
         $watchdogClientPath,
         $safetyAgentExePath,
         $safetyHardwarePath,
-        $sessionAgentExePath)) {
+        $sessionAgentExePath,
+        $engineHostExePath,
+        $recoveryKernelPath)) {
     if (-not (Test-Path -LiteralPath $requiredSidecar -PathType Leaf)) {
         throw "Release 构建缺少独立看门狗文件：$requiredSidecar"
     }
@@ -487,6 +491,8 @@ $versionedComponents = @(
     $safetyAgentExePath,
     $safetyHardwarePath,
     $sessionAgentExePath,
+    $engineHostExePath,
+    $recoveryKernelPath,
     (Join-Path $output 'Controller.dll')
 )
 foreach ($component in $versionedComponents) {
@@ -518,11 +524,19 @@ Assert-SourceSnapshot -ExpectedCommit $commit `
 # FORMAL_RELEASE；任何一项失败都在复制发布目录之前终止。
 $adaptiveTestExe = Join-Path $repo 'Tests\AdaptiveControlTests\bin\Release\AdaptiveControlTests.exe'
 $diskWriterTestExe = Join-Path $repo 'Tests\EpbDiskWriterTests\bin\Release\EpbDiskWriterTests.exe'
+$recoveryKernelTestExe = Join-Path $repo 'Tests\RecoveryKernelTests\bin\Release\RecoveryKernelTests.exe'
+$engineHostIntegrationTestExe = Join-Path $repo 'Tests\EngineHostIntegrationTests\bin\Release\EngineHostIntegrationTests.exe'
 if (-not (Test-Path -LiteralPath $adaptiveTestExe -PathType Leaf)) {
     throw "AdaptiveControlTests 未生成：$adaptiveTestExe"
 }
 if (-not (Test-Path -LiteralPath $diskWriterTestExe -PathType Leaf)) {
     throw "EpbDiskWriterTests 未生成：$diskWriterTestExe"
+}
+if (-not (Test-Path -LiteralPath $recoveryKernelTestExe -PathType Leaf)) {
+    throw "RecoveryKernelTests 未生成：$recoveryKernelTestExe"
+}
+if (-not (Test-Path -LiteralPath $engineHostIntegrationTestExe -PathType Leaf)) {
+    throw "EngineHostIntegrationTests 未生成：$engineHostIntegrationTestExe"
 }
 
 $adaptiveSummary = Invoke-CandidateTest `
@@ -532,6 +546,14 @@ $adaptiveSummary = Invoke-CandidateTest `
 $diskWriterSummary = Invoke-CandidateTest `
     -Label 'EpbDiskWriterTests' `
     -FilePath $diskWriterTestExe `
+    -SuccessPattern '^PASS\s+\d+/\d+$'
+$recoveryKernelSummary = Invoke-CandidateTest `
+    -Label 'RecoveryKernelTests' `
+    -FilePath $recoveryKernelTestExe `
+    -SuccessPattern '^PASS\s+\d+/\d+$'
+$engineHostIntegrationSummary = Invoke-CandidateTest `
+    -Label 'EngineHostIntegrationTests' `
+    -FilePath $engineHostIntegrationTestExe `
     -SuccessPattern '^PASS\s+\d+/\d+$'
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
 $powerSupplyResultsDirectory = [IO.Path]::GetFullPath((Join-Path `
@@ -670,6 +692,8 @@ $verification = [ordered]@{
     solutionRebuild = 'PASS'
     adaptiveControlTests = $adaptiveSummary
     epbDiskWriterTests = $diskWriterSummary
+    recoveryKernelTests = $recoveryKernelSummary
+    engineHostIntegrationTests = $engineHostIntegrationSummary
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
@@ -762,8 +786,9 @@ $identity = [ordered]@{
     packageContentSha256 = $packageContentSha256
     configSha256 = $configHash
     platform = 'x86'
-    watchdogSchema = 6
-    packageSlotSchema = 5
+    watchdogSchema = 7
+    packageSlotSchema = 6
+    recoveryArchitectureGeneration = 'EPB-RecoveryKernel-V3'
     componentIdentities = $componentIdentities
     verification = $verification
     files = @($manifestFiles)

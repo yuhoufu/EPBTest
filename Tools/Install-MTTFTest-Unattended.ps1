@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
-$shortcutName = 'MT EPB 试验系统 V2.15.lnk'
+$shortcutName = 'MT EPB 试验系统 V3.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
 $runtimeConfigNames = @(
     'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
@@ -61,8 +61,10 @@ function Read-Utf8JsonFile([string]$Path, [string]$Label) {
 
 function Assert-RequiredProgramFiles([string]$Directory) {
     foreach ($name in @(
-            'MTTFTest.exe', 'MTTFTest.Watchdog.exe', 'MTTFTest.SessionAgent.exe',
-            'MTTFTest.SafetyAgent.exe', 'MTTFTest.Watchdog.Protocol.dll')) {
+            'MTTFTest.exe', 'MTTFTest.EngineHost.exe',
+            'MTTFTest.Recovery.Kernel.dll', 'MTTFTest.Watchdog.exe',
+            'MTTFTest.SessionAgent.exe', 'MTTFTest.SafetyAgent.exe',
+            'MTTFTest.Watchdog.Protocol.dll')) {
         $path = Join-Path $Directory $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "缺少组件：$name" }
     }
@@ -183,6 +185,46 @@ function Install-ServiceAndAgent([string]$Root) {
         -Settings $autoStartSettings -Force | Out-Null
     Start-Service -Name $serviceName
     Start-ScheduledTask -TaskName $taskName
+}
+
+function Ensure-V3BaselineLastKnownGood([string]$Root) {
+    $current = Join-Path $Root 'Current'
+    Assert-RequiredProgramFiles $current
+    $lkg = Join-Path $Root 'LastKnownGood'
+    $compatible = $false
+    if (Test-Path -LiteralPath $lkg -PathType Container) {
+        try {
+            Assert-RequiredProgramFiles $lkg
+            $currentVersion = [Reflection.AssemblyName]::GetAssemblyName(
+                (Join-Path $current 'MTTFTest.EngineHost.exe')).Version
+            $lkgVersion = [Reflection.AssemblyName]::GetAssemblyName(
+                (Join-Path $lkg 'MTTFTest.EngineHost.exe')).Version
+            $compatible = $currentVersion.Major -eq 3 -and
+                $lkgVersion.Major -eq 3
+        }
+        catch { $compatible = $false }
+    }
+    if ($compatible) { return }
+
+    $staging = Join-Path $Root ('.lkg-v3-staging-' + [Guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $staging)
+    try {
+        Get-ChildItem -LiteralPath $current -Force |
+            Copy-Item -Destination $staging -Recurse -Force
+        if (Test-Path -LiteralPath $lkg) {
+            $retired = Join-Path $Root (
+                '.lkg-pre-v3-retired-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
+            Move-Item -LiteralPath $lkg -Destination $retired
+        }
+        Move-Item -LiteralPath $staging -Destination $lkg
+        Assert-RequiredProgramFiles $lkg
+        Write-Host '已创建与 Current 同属 V3 架构代际的基线 LastKnownGood。'
+    }
+    finally {
+        if (Test-Path -LiteralPath $staging) {
+            Remove-Item -LiteralPath $staging -Recurse -Force
+        }
+    }
 }
 
 function Stop-InstalledProcess([string]$Root, [string]$FileName) {
@@ -658,9 +700,10 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     else {
         Write-Host '已安装版本不低于来源版本，保留 Current，不创建重复 retired 目录。'
     }
+    Ensure-V3BaselineLastKnownGood $root
     Write-OperationStep 6 9 '配置程序目录和 ProgramData 权限。'
     Set-UnattendedAcl $root
-    Write-OperationStep 7 9 '安装 schema 6 监督服务、登录代理和自启动任务。'
+    Write-OperationStep 7 9 '安装 schema 7 监督服务、登录代理和自启动任务。'
     Install-ServiceAndAgent $root
     Write-OperationStep 8 9 '检查程序文件、服务和任务状态。'
     Assert-Health $root

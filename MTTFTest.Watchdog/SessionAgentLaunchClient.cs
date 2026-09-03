@@ -41,6 +41,7 @@ namespace MTTFTest.Watchdog
                 }
             }
             if (response?.SchemaVersion != SessionAgentProtocol.SchemaVersion || !response.Accepted ||
+                response.ProcessRole != capability.ProcessRole ||
                 !string.Equals(response.CapabilityId, capability.CapabilityId,
                     StringComparison.Ordinal) ||
                 !string.Equals(response.LaunchNonce, capability.LaunchNonce,

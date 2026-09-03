@@ -23,7 +23,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V2.15.0.0 release assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
+            Run("V3.0.0.0 release assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
             Run("strict bootstrap format2", StrictBootstrapFormat2, ref passed);
             Run("approved intent durable", ApprovedToIntent, ref passed);
             Run("approved permit取消后耐久Superseded且重启不可消费", ApprovedPermitRevocationIsDurable, ref passed);
@@ -51,31 +51,31 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(2, 15, 0, 0);
+            var expected = new Version(3, 0, 0, 0);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
-                "Protocol assembly version is not V2.15.0.0");
+                "Protocol assembly version is not V3.0.0.0");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,
-                "Client assembly version is not V2.15.0.0");
+                "Client assembly version is not V3.0.0.0");
             Require(typeof(StrictHostV4AuthorityAdapter).Assembly.GetName().Version == expected,
-                "Host assembly version is not V2.15.0.0");
+                "Host assembly version is not V3.0.0.0");
             Require(typeof(Main_Frm).Assembly.GetName().Version == expected,
-                "Main application assembly version is not V2.15.0.0");
+                "Main application assembly version is not V3.0.0.0");
             Require(typeof(EpbManager).Assembly.GetName().Version == expected,
-                "Controller assembly version is not V2.15.0.0");
+                "Controller assembly version is not V3.0.0.0");
             Require(typeof(MTTFTest.SafetyAgent.SafetyAgentRunner).Assembly
                         .GetName().Version == expected,
-                "SafetyAgent assembly version is not V2.15.0.0");
+                "SafetyAgent assembly version is not V3.0.0.0");
             Require(typeof(MTTFTest.SafetyHardware.SafetyHardwareConfiguration).Assembly
                         .GetName().Version == expected,
-                "SafetyHardware assembly version is not V2.15.0.0");
+                "SafetyHardware assembly version is not V3.0.0.0");
             var sessionAgentPath = Path.Combine(
                 AppDomain.CurrentDomain.BaseDirectory,
                 "MTTFTest.SessionAgent.exe");
             Require(File.Exists(sessionAgentPath) &&
                     System.Reflection.AssemblyName.GetAssemblyName(sessionAgentPath).Version == expected,
-                "SessionAgent assembly version is not V2.15.0.0");
-            Require(WatchdogProtocol.Version == 6 &&
-                    WatchdogJournalPolicy.CurrentSchemaVersion == 6 &&
+                "SessionAgent assembly version is not V3.0.0.0");
+            Require(WatchdogProtocol.Version == 7 &&
+                    WatchdogJournalPolicy.CurrentSchemaVersion == 7 &&
                     DurableRelaunchAuthorityV4Validator.RequiredFormatRevision == 2,
                 "wire/schema/record compatibility tuple changed");
         }

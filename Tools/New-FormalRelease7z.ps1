@@ -164,6 +164,8 @@ try {
 
     $requiredFiles = @(
         'MTTFTest.exe',
+        'MTTFTest.EngineHost.exe',
+        'MTTFTest.Recovery.Kernel.dll',
         'Controller.dll',
         'Config.dll',
         'MTTFTest.Watchdog.exe',

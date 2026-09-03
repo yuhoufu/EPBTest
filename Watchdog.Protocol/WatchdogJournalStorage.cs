@@ -15,7 +15,7 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public sealed class WatchdogJournalPolicy
     {
-        public const int CurrentSchemaVersion = 6;
+        public const int CurrentSchemaVersion = 7;
         public const int DefaultRetentionDays = 90;
         public const int DefaultRetainSessionCount = 32;
         public const long DefaultMaxTotalBytes = 128L * 1024L * 1024L;
