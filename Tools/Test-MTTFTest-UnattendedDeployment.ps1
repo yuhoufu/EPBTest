@@ -22,6 +22,21 @@ if (@($parseErrors).Count -ne 0) {
     throw "无人值守安装脚本无法解析：$(@($parseErrors)[0].Message)"
 }
 
+$unsupportedStopTaskConfirm = @($ast.FindAll({
+    param($node)
+    if ($node -isnot [Management.Automation.Language.CommandAst] -or
+        $node.GetCommandName() -ne 'Stop-ScheduledTask') {
+        return $false
+    }
+    return @($node.CommandElements | Where-Object {
+        $_ -is [Management.Automation.Language.CommandParameterAst] -and
+        $_.ParameterName -eq 'Confirm'
+    }).Count -ne 0
+}, $true))
+if ($unsupportedStopTaskConfirm.Count -ne 0) {
+    throw 'Stop-ScheduledTask 在 Windows PowerShell 5.1 不支持 -Confirm 参数。'
+}
+
 $installerText = [IO.File]::ReadAllText($installer, [Text.Encoding]::UTF8)
 foreach ($removedGate in @(
         'Read-And-VerifyPackage',
@@ -67,6 +82,7 @@ foreach ($required in @(
     }
 }
 Write-Output 'PASS SimpleUnattendedDeploymentContract 1/1'
+Write-Output 'PASS WindowsPowerShell51ScheduledTaskCompatibility 1/1'
 
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $manifestPath = Join-Path $repo 'MTTfTest\app.manifest'

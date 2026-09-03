@@ -260,8 +260,7 @@ function Stop-InstalledRuntimeTasks([string]$Root) {
     foreach ($name in @($autoStartTaskName, $taskName)) {
         $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         if ($null -ne $task) {
-            Stop-ScheduledTask -TaskName $name -Confirm:$false `
-                -ErrorAction SilentlyContinue
+            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         }
     }
     Stop-InstalledSessionAgent $Root
@@ -551,14 +550,12 @@ if ($Mode -eq 'Uninstall') {
         Write-OperationStep 2 6 '停止并删除登录代理和主程序自启动任务。'
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if ($null -ne $task) {
-            Stop-ScheduledTask -TaskName $taskName -Confirm:$false `
-                -ErrorAction SilentlyContinue
+            Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
         }
         $autoStartTask = Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
         if ($null -ne $autoStartTask) {
-            Stop-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false `
-                -ErrorAction SilentlyContinue
+            Stop-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
         }
         Write-OperationStep 3 6 '停止安装目录中的主程序和后台组件。'
