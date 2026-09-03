@@ -21,6 +21,8 @@ $program = Read-Source 'MTTfTest\Program.cs'
 $uiClient = (Read-Source 'MTTfTest\V3EngineHostClient.cs') +
             (Read-Source 'MTTfTest\V3EngineClientForm.cs')
 $engineRuntime = Read-Source 'MTTFTest.EngineHost\EngineHostRuntime.cs'
+$engineProgram = Read-Source 'MTTFTest.EngineHost\Program.cs'
+$engineIntegration = Read-Source 'Tests\EngineHostIntegrationTests\EngineHostIntegrationTests.cs'
 $engineComposition = Read-Source 'MTTFTest.EngineHost\PhysicalEngineRuntime.cs'
 $supervisorKernel = Read-Source 'MTTFTest.Watchdog\SupervisorRecoveryKernelService.cs'
 $safetyProofExecutor = Read-Source 'MTTFTest.Watchdog\V3SafetyProofExecutor.cs'
@@ -50,6 +52,15 @@ if ($engineRuntime.Contains('Process.Start(') -or
 if (-not $engineRuntime.Contains('RecoveryCommandRequiresLocalSystemSupervisor') -or
     -not $engineRuntime.Contains('OperatorCommandRequiresRecoveryKernelGate')) {
     throw 'EngineHost command plane can bypass the LocalSystem Recovery Kernel.'
+}
+if (-not $engineProgram.Contains('MTTFTEST_ENGINEHOST_TEST_INSTANCE') -or
+    -not $engineProgram.Contains('MTTFTEST_ENGINEHOST_TEST_ROOT') -or
+    -not $engineRuntime.Contains('_receiptRootDirectory') -or
+    -not $engineIntegration.Contains('EngineHostProtocol.PipeName + ".test."')) {
+    throw 'EngineHost integration tests are not isolated from installed production state.'
+}
+if (-not $engineRuntime.Contains('try { writer.Dispose(); } catch (IOException)')) {
+    throw 'EngineHost successful pipe responses can still produce a disconnect log storm.'
 }
 if (-not $engineComposition.Contains('FaultObserved?.Invoke') -or
     -not $engineRuntime.Contains('It neither calls StopAll')) {

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using MTTFTest.Watchdog.Protocol;
 
@@ -18,6 +19,29 @@ namespace MTTFTest.EngineHost
                     runEpoch = 1;
                 var simulation = args.Any(value => string.Equals(
                     value, "--simulation", StringComparison.OrdinalIgnoreCase));
+                string pipeName = null;
+                string singletonName = null;
+                string receiptRootDirectory = null;
+                var testInstance = simulation
+                    ? Environment.GetEnvironmentVariable(
+                        "MTTFTEST_ENGINEHOST_TEST_INSTANCE")
+                    : null;
+                if (!string.IsNullOrWhiteSpace(testInstance))
+                {
+                    if (!RecoveryProtocolV7.IsGuid(testInstance))
+                        throw new InvalidDataException(
+                            "EngineHostTestInstanceInvalid");
+                    var testRoot = Environment.GetEnvironmentVariable(
+                        "MTTFTEST_ENGINEHOST_TEST_ROOT");
+                    if (string.IsNullOrWhiteSpace(testRoot))
+                        throw new InvalidDataException(
+                            "EngineHostTestRootMissing");
+                    pipeName = EngineHostProtocol.PipeName + ".test." + testInstance;
+                    singletonName = "Local\\MTTFTest.EngineHost.V3.Test." + testInstance;
+                    receiptRootDirectory = Path.Combine(
+                        Path.GetFullPath(testRoot),
+                        "engine-receipts");
+                }
                 if (!simulation && !EngineLaunchCapabilityGate.Validate(args, out var failure))
                 {
                     EngineHostLog.Error("EngineLaunchCapabilityRejected:" + failure, null);
@@ -30,7 +54,10 @@ namespace MTTFTest.EngineHost
                            simulation
                                ? (IEngineHardwareRuntime)new SimulatedEngineHardwareRuntime()
                                : new PhysicalEngineRuntime(),
-                           simulation))
+                           simulation,
+                           pipeName,
+                           singletonName,
+                           receiptRootDirectory))
                     return runtime.Run();
             }
             catch (Exception ex)

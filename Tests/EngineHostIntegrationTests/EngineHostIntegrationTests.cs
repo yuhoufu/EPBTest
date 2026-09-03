@@ -14,12 +14,23 @@ namespace MTTFTest.EngineHostIntegrationTests
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private static RecoveryCommand _durableCommand;
         private static RecoveryCommandReceipt _durableReceipt;
+        private static string _testInstance;
+        private static string _testRoot;
+        private static string _pipeName;
 
         internal static int RunAll()
         {
+            _testInstance = RecoveryProtocolV7.NewId();
+            _testRoot = Path.Combine(
+                Path.GetTempPath(),
+                "MTTFTest.EngineHostIntegration." + _testInstance);
+            _pipeName = EngineHostProtocol.PipeName + ".test." + _testInstance;
+            Directory.CreateDirectory(_testRoot);
+            var configuration = new DirectoryInfo(
+                AppDomain.CurrentDomain.BaseDirectory).Name;
             var executable = Path.GetFullPath(Path.Combine(
                 AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", "..", "..", "MTTFTest.EngineHost", "bin", "Debug",
+                "..", "..", "..", "..", "MTTFTest.EngineHost", "bin", configuration,
                 "MTTFTest.EngineHost.exe"));
             Assert(File.Exists(executable), "EngineHostExecutableMissing:" + executable);
             var sessionId = RecoveryProtocolV7.NewId();
@@ -58,6 +69,7 @@ namespace MTTFTest.EngineHostIntegrationTests
                     replacement.WaitForExit(5000);
                 }
             }
+            try { Directory.Delete(_testRoot, true); } catch { }
             return passed;
         }
 
@@ -66,7 +78,7 @@ namespace MTTFTest.EngineHostIntegrationTests
             string sessionId,
             string runId)
         {
-            return Process.Start(new ProcessStartInfo
+            var start = new ProcessStartInfo
             {
                 FileName = executable,
                 Arguments = "--simulation --session " + sessionId +
@@ -74,7 +86,12 @@ namespace MTTFTest.EngineHostIntegrationTests
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(executable)
-            });
+            };
+            start.EnvironmentVariables["MTTFTEST_ENGINEHOST_TEST_INSTANCE"] =
+                _testInstance;
+            start.EnvironmentVariables["MTTFTEST_ENGINEHOST_TEST_ROOT"] =
+                _testRoot;
+            return Process.Start(start);
         }
 
         private static int SnapshotCarriesBootstrapIdentity(string sessionId, string runId)
@@ -285,7 +302,7 @@ namespace MTTFTest.EngineHostIntegrationTests
         private static EngineHostResponse Send(EngineHostRequest request)
         {
             using (var pipe = new NamedPipeClientStream(
-                ".", EngineHostProtocol.PipeName, PipeDirection.InOut,
+                ".", _pipeName, PipeDirection.InOut,
                 PipeOptions.None))
             {
                 pipe.Connect(3000);

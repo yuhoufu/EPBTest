@@ -21,6 +21,9 @@ namespace MTTFTest.EngineHost
         private readonly string _engineInstanceId = RecoveryProtocolV7.NewId();
         private readonly IEngineHardwareRuntime _hardware;
         private readonly bool _allowSimulationCommandClient;
+        private readonly string _pipeName;
+        private readonly string _singletonName;
+        private readonly string _receiptRootDirectory;
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
         private readonly ManualResetEventSlim _stopped = new ManualResetEventSlim(false);
         private readonly JavaScriptSerializer _json = new JavaScriptSerializer
@@ -50,7 +53,10 @@ namespace MTTFTest.EngineHost
             string runId,
             long runEpoch,
             IEngineHardwareRuntime hardware,
-            bool allowSimulationCommandClient = false)
+            bool allowSimulationCommandClient = false,
+            string pipeName = null,
+            string singletonName = null,
+            string receiptRootDirectory = null)
         {
             if (!RecoveryProtocolV7.IsGuid(sessionId) ||
                 !RecoveryProtocolV7.IsGuid(runId) || runEpoch <= 0)
@@ -60,6 +66,11 @@ namespace MTTFTest.EngineHost
             _runEpoch = runEpoch;
             _hardware = hardware ?? throw new ArgumentNullException(nameof(hardware));
             _allowSimulationCommandClient = allowSimulationCommandClient;
+            _pipeName = string.IsNullOrWhiteSpace(pipeName)
+                ? EngineHostProtocol.PipeName
+                : pipeName;
+            _singletonName = singletonName;
+            _receiptRootDirectory = receiptRootDirectory;
             _hardware.FaultObserved += OnFaultObserved;
             PublishSnapshot(SystemTerminalState.SafeIdleAlarmed, false,
                 "EngineHostStarting", string.Empty, string.Empty);
@@ -134,6 +145,10 @@ namespace MTTFTest.EngineHost
                     await HandlePipeAsync(pipe, token).ConfigureAwait(false);
                 }
                 catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
+                catch (EndOfStreamException)
+                {
+                    // A readiness probe may connect and close without a request.
+                }
                 catch (IOException ex)
                 {
                     EngineHostLog.Error("EngineHostPipeIoFailure", ex);
@@ -158,38 +173,48 @@ namespace MTTFTest.EngineHost
             CancellationToken token)
         {
             using (var reader = new BinaryReader(pipe, new UTF8Encoding(false), true))
-            using (var writer = new BinaryWriter(pipe, new UTF8Encoding(false), true))
             {
-                var length = reader.ReadInt32();
-                if (length <= 0 || length > EngineHostProtocol.MaximumRequestBytes)
-                    throw new InvalidDataException("EngineHostRequestLengthInvalid");
-                var bytes = reader.ReadBytes(length);
-                if (bytes.Length != length)
-                    throw new EndOfStreamException("EngineHostRequestTruncated");
-                var request = _json.Deserialize<EngineHostRequest>(
-                    Encoding.UTF8.GetString(bytes));
-                EngineHostResponse response;
+                var writer = new BinaryWriter(pipe, new UTF8Encoding(false), true);
                 try
                 {
-                    response = await DispatchAsync(
-                        request,
-                        token,
-                        IsTrustedCommandClient(pipe)).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    response = new EngineHostResponse
+                    var length = reader.ReadInt32();
+                    if (length <= 0 || length > EngineHostProtocol.MaximumRequestBytes)
+                        throw new InvalidDataException("EngineHostRequestLengthInvalid");
+                    var bytes = reader.ReadBytes(length);
+                    if (bytes.Length != length)
+                        throw new EndOfStreamException("EngineHostRequestTruncated");
+                    var request = _json.Deserialize<EngineHostRequest>(
+                        Encoding.UTF8.GetString(bytes));
+                    EngineHostResponse response;
+                    try
                     {
-                        RequestId = request?.RequestId ?? string.Empty,
-                        Accepted = false,
-                        FailureCode = "EngineHostRequestRejected",
-                        Detail = ex.GetBaseException().Message
-                    };
+                        response = await DispatchAsync(
+                            request,
+                            token,
+                            IsTrustedCommandClient(pipe)).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        response = new EngineHostResponse
+                        {
+                            RequestId = request?.RequestId ?? string.Empty,
+                            Accepted = false,
+                            FailureCode = "EngineHostRequestRejected",
+                            Detail = ex.GetBaseException().Message
+                        };
+                    }
+                    var payload = Encoding.UTF8.GetBytes(_json.Serialize(response));
+                    writer.Write(payload.Length);
+                    writer.Write(payload);
+                    writer.Flush();
                 }
-                var payload = Encoding.UTF8.GetBytes(_json.Serialize(response));
-                writer.Write(payload.Length);
-                writer.Write(payload);
-                writer.Flush();
+                finally
+                {
+                    // The client closes immediately after reading the response.
+                    // BinaryWriter.Dispose flushes again and can otherwise turn
+                    // each successful request into a broken-pipe error/log storm.
+                    try { writer.Dispose(); } catch (IOException) { }
+                }
             }
         }
 
@@ -260,7 +285,9 @@ namespace MTTFTest.EngineHost
             if (_receipts.TryGetValue(command.IdempotencyKey, out var existing))
                 return Success(requestId, receipt: existing);
             if (EngineHostCommandReceiptStore.TryRead(
-                    command.IdempotencyKey, out existing))
+                    command.IdempotencyKey,
+                    out existing,
+                    _receiptRootDirectory))
             {
                 _receipts[command.IdempotencyKey] = existing;
                 return Success(requestId, receipt: existing);
@@ -286,7 +313,7 @@ namespace MTTFTest.EngineHost
                 InterruptedCycleCounted = result.InterruptedCycleCounted,
                 CompletedUtcTicks = DateTime.UtcNow.Ticks
             };
-            EngineHostCommandReceiptStore.Write(receipt);
+            EngineHostCommandReceiptStore.Write(receipt, _receiptRootDirectory);
             _receipts[command.IdempotencyKey] = receipt;
             TrimReceipts();
             if (command.Kind == RecoveryCommandKind.StopByOperator && result.Succeeded)
@@ -418,8 +445,10 @@ namespace MTTFTest.EngineHost
             }
         }
 
-        private static Mutex CreateSingletonMutex()
+        private Mutex CreateSingletonMutex()
         {
+            if (!string.IsNullOrWhiteSpace(_singletonName))
+                return new Mutex(false, _singletonName);
             try
             {
                 return new Mutex(false, "Global\\MTTFTest.EngineHost.V3");
@@ -506,7 +535,7 @@ namespace MTTFTest.EngineHost
             };
         }
 
-        private static NamedPipeServerStream CreatePipe()
+        private NamedPipeServerStream CreatePipe()
         {
             var security = new PipeSecurity();
             var user = WindowsIdentity.GetCurrent().User;
@@ -522,7 +551,7 @@ namespace MTTFTest.EngineHost
                 PipeAccessRights.FullControl,
                 AccessControlType.Allow));
             return new NamedPipeServerStream(
-                EngineHostProtocol.PipeName,
+                _pipeName,
                 PipeDirection.InOut,
                 4,
                 PipeTransmissionMode.Byte,
