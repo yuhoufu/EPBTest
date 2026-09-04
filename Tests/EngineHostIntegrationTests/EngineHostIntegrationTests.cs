@@ -75,6 +75,7 @@ namespace MTTFTest.EngineHostIntegrationTests
                         logPage.UiLogPage.Entries.Length <= 10, "UiLogPageMustBeBoundedAndIdentifyEngine");
                     passed += Pass("ProductionEngineHostPagesLogsWithoutControlAccess");
                     passed += StalledUiDoesNotBlockSupervisor(sessionId);
+                    passed += AttachmentSnapshotBypassesStalledControl(engine, sessionId);
                     passed += MaintenanceLeaseUsesIndependentEndpoint(engine);
                     var denied = MTTFTest.Watchdog.EngineHostPipeClient.Send(new EngineHostRequest
                     {
@@ -227,6 +228,24 @@ namespace MTTFTest.EngineHostIntegrationTests
                     "PartialUiFrameBlockedSupervisorPipe");
             }
             return Pass(nameof(StalledUiDoesNotBlockSupervisor));
+        }
+
+        private static int AttachmentSnapshotBypassesStalledControl(Process engine, string sessionId)
+        {
+            using (var stalled = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+            {
+                stalled.Connect(3000);
+                stalled.WriteByte(1);
+                var elapsed = Stopwatch.StartNew();
+                var snapshot = EngineHostPipeClient.ReadBoundSnapshot(sessionId,
+                    (id, started) => id == engine.Id && started == engine.StartTime.ToUniversalTime().Ticks,
+                    out var serverId, out var serverStart, 3000,
+                    _pipeName + EngineHostProtocol.SupervisorReadPipeSuffix);
+                Assert(snapshot.SessionId == sessionId && serverId == engine.Id &&
+                    serverStart == engine.StartTime.ToUniversalTime().Ticks && elapsed.ElapsedMilliseconds < 2000,
+                    "Attachment snapshot must verify the actual engine without waiting for the command pipe");
+            }
+            return Pass(nameof(AttachmentSnapshotBypassesStalledControl));
         }
 
         private static int SafetyAndStateReadBypassStalledControl(string sessionId, string runId)

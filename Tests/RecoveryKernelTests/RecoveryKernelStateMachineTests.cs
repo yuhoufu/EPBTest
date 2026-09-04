@@ -36,6 +36,7 @@ namespace RecoveryKernelTests
             Run("project reset phase deadlines cannot silently return to the old run", () => ProjectSwitchFailureAndDeadlines(true), ref passed);
             Run("initial UI discovery attaches a starting host without reinitialization", FirstEngineEnvironmentDoesNotReinitializeObservedHost, ref passed);
             Run("stopped environment retains session run budgets and isolation", StoppedEnvironmentRetainsDurableRun, ref passed);
+            Run("alarmed environment reopens without clearing safety failure", AlarmedEnvironmentReopensWithoutClearingSafetyFailure, ref passed);
             Run("recovery UI discovery never launches a competing EngineHost", RecoveringEnvironmentDisplaysWithoutLaunching, ref passed);
             Run("foreign process and commands cannot replace durable run identity", ForeignRunCannotOverwriteDurableSession, ref passed);
             Run("start waits for initialization or valid released-host readiness", OperatorStartRequiresFinishedInitialization, ref passed);

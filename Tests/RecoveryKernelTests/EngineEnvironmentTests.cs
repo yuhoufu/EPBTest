@@ -32,6 +32,35 @@ namespace RecoveryKernelTests
             Assert(!EngineEnvironmentSession.Resolve(document, null, false).ShouldLaunchEngine, "UI crossed an external native transfer");
         }
 
+        private static void AlarmedEnvironmentReopensWithoutClearingSafetyFailure()
+        {
+            var document = ParkedEnvironment(out var identity).Snapshot();
+            document.DesiredState.State = SystemTerminalState.SafeIdleAlarmed;
+            document.DesiredState.Reason = "SafetyProofIncomplete";
+            document.Budgets = new[] { new RecoveryBudgetState { ResourceScope = "Channel:4", LocalRebuildAttempts = 2 } };
+            document.IsolatedResources = new[] { "Channel:4" };
+            var revision = document.Revision;
+            var plan = EngineEnvironmentSession.Resolve(document, null, true);
+            Assert(plan.ShouldLaunchEngine && plan.Reason == "ReopenAlarmedDurableSession" &&
+                plan.SessionId == identity.SessionId && plan.RunId == identity.RunId && plan.RunEpoch == identity.RunEpoch,
+                "ownerless alarmed session left UI waiting for a nonexistent recovery");
+            Assert(document.Revision == revision && document.DesiredState.State == SystemTerminalState.SafeIdleAlarmed &&
+                document.DesiredState.Reason == "SafetyProofIncomplete" && document.IsolatedResources.Single() == "Channel:4" &&
+                document.Budgets.Single().LocalRebuildAttempts == 2 && document.PendingCommand == null,
+                "reopening cleared safety failure, recovery history or issued a run command");
+            Assert(!EngineEnvironmentSession.Resolve(document, null, false).ShouldLaunchEngine,
+                "alarmed reopen crossed native ownership fence");
+            Assert(!EngineEnvironmentSession.Resolve(document, EnvironmentEngine(identity), true).ShouldLaunchEngine,
+                "alarmed reopen duplicated an existing engine");
+            var recovering = StartRecoverableIncident(out _).Snapshot();
+            recovering.DesiredState.State = SystemTerminalState.SafeIdleAlarmed;
+            Assert(!EngineEnvironmentSession.Resolve(recovering, null, true).ShouldLaunchEngine,
+                "alarmed reopen competed with active recovery");
+            recovering.ActiveIntents = Array.Empty<RecoveryIntent>();
+            Assert(recovering.PendingCommand != null && !EngineEnvironmentSession.Resolve(recovering, null, true).ShouldLaunchEngine,
+                "alarmed reopen ignored pending command");
+        }
+
         private static void RecoveringEnvironmentDisplaysWithoutLaunching()
         {
             var coordinator = StartRecoverableIncident(out var incident);

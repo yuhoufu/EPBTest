@@ -1138,40 +1138,22 @@ namespace MTTFTest.Watchdog
 
         private SupervisorUiAttachmentResponse ReadUiAttachment(SupervisorUiAttachmentRequest request)
         {
-            var engineRequest = new EngineHostRequest
-            {
-                RequestId = RecoveryProtocolV7.NewId(), Kind = EngineHostRequestKind.ReadLatestSnapshot
-            };
-            var json = new System.Web.Script.Serialization.JavaScriptSerializer
-            { MaxJsonLength = EngineHostProtocol.MaximumRequestBytes };
-            var engineProcessId = 0;
-            long engineStarted = 0;
-            var bytes = BoundedPipeTransport.ExchangeAsync(EngineHostProtocol.PipeName,
-                Encoding.UTF8.GetBytes(json.Serialize(engineRequest)), 3000, EngineHostProtocol.MaximumRequestBytes,
-                CancellationToken.None, peer =>
-                {
-                    engineProcessId = PipePeerIdentity.ServerProcessId(peer);
-                    using (var process = Process.GetProcessById(engineProcessId))
-                        engineStarted = process.StartTime.ToUniversalTime().Ticks;
-                    if (!IsExactSessionAgentRoleProcess(engineProcessId, engineStarted,
-                            request.SessionId, ProcessRole.EngineHost))
-                        throw new InvalidDataException("UiAttachmentEngineNotAuthorized");
-                }).GetAwaiter().GetResult();
-            var result = json.Deserialize<EngineHostResponse>(Encoding.UTF8.GetString(bytes));
-            if (result?.Accepted != true || result.RequestId != engineRequest.RequestId ||
-                result.SchemaVersion != EngineHostProtocol.SchemaVersion ||
-                result.Snapshot?.IsStructurallyValid() != true || result.Snapshot.SessionId != request.SessionId)
-                throw new InvalidDataException("UiAttachmentEngineResponseInvalid");
+            // Attachment must remain available while the command pipe is occupied.
+            // The dedicated read endpoint still validates the actual EngineHost peer.
+            var snapshot = EngineHostPipeClient.ReadBoundSnapshot(request.SessionId,
+                (processId, started) => IsExactSessionAgentRoleProcess(processId, started,
+                    request.SessionId, ProcessRole.EngineHost),
+                out var engineProcessId, out var engineStarted);
             var attachment = new SupervisorUiAttachmentResponse
             {
                 RequestId = request.RequestId, ChallengeNonce = request.ChallengeNonce, Accepted = true,
-                Engine = result.Snapshot, EngineProcessId = engineProcessId,
+                Engine = snapshot, EngineProcessId = engineProcessId,
                 ApprovedDesiredState = _recoveryKernel?.ReadUiState(request.SessionId),
                 EngineProcessStartUtcTicks = engineStarted, Detail = "SupervisorVerifiedEngineAttachment"
             };
             attachment.InitialObservationOnly = attachment.ApprovedDesiredState?.Available != true &&
-                _recoveryKernel?.CanObserveInitialEngine(result.Snapshot) == true;
-            if (!attachment.ApprovesRun(request.SessionId, result.Snapshot.RunId, result.Snapshot.RunEpoch, DateTime.UtcNow.Ticks))
+                _recoveryKernel?.CanObserveInitialEngine(snapshot) == true;
+            if (!attachment.ApprovesRun(request.SessionId, snapshot.RunId, snapshot.RunEpoch, DateTime.UtcNow.Ticks))
                 throw new InvalidDataException("UiAttachmentEngineNotCurrentDurableRun");
             return attachment;
         }

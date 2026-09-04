@@ -38,13 +38,18 @@ namespace MTTFTest.Recovery.Kernel
             {
                 if (!desired.IsStructurallyValid()) throw new InvalidOperationException("DurableSessionInvalid");
                 var same = engine != null && engine.SessionId == desired.SessionId && engine.RunId == desired.RunId && engine.RunEpoch == desired.RunEpoch;
+                // A settled alarm has no recovery owner to launch the missing host.
+                // Reopen only the same safe-idle environment; retain the durable alarm
+                // and require the normal operator/safety gates before any formal run.
                 var launch = nativeTransferAvailable && engine == null && journal.ActiveIntents.Length == 0 && journal.PendingCommand == null &&
-                    desired.State == SystemTerminalState.StoppedByOperator;
+                    (desired.State == SystemTerminalState.StoppedByOperator || desired.State == SystemTerminalState.SafeIdleAlarmed);
                 return new EngineEnvironmentSession
                 {
                     SessionId = desired.SessionId, RunId = desired.RunId, RunEpoch = desired.RunEpoch,
                     ShouldLaunchEngine = launch,
-                    Reason = same ? "ExistingDurableEngine" : launch ? "ReopenStoppedDurableSession" : "DisplayDurableSessionWhileKernelOwnsRecovery"
+                    Reason = same ? "ExistingDurableEngine" : launch
+                        ? desired.State == SystemTerminalState.StoppedByOperator ? "ReopenStoppedDurableSession" : "ReopenAlarmedDurableSession"
+                        : "DisplayDurableSessionWhileKernelOwnsRecovery"
                 };
             }
             if (journal.ActiveIntents.Length != 0 || journal.PendingCommand != null)
