@@ -25,7 +25,55 @@ namespace MTTFTest.EngineHostIntegrationTests
             }, typeof(EndOfStreamException));
             CheckReply("ProductionPipeClientBoundsConnectedSilentPeer", (pipe, request) =>
                 Task.Delay(1500).GetAwaiter().GetResult(), typeof(TimeoutException), 400);
-            return 4;
+            BoundProjectSnapshot(false, false);
+            BoundProjectSnapshot(true, false);
+            BoundProjectSnapshot(false, true);
+            return 7;
+        }
+
+        private static void BoundProjectSnapshot(bool denyPeer, bool foreignRunSession)
+        {
+            var pipeName = "MTTFTest.ProjectPeer." + RecoveryProtocolV7.NewId();
+            var sessionId = RecoveryProtocolV7.NewId(); var sentBytes = false;
+            using (var process = Process.GetCurrentProcess())
+            using (var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+            {
+                var task = Task.Run(async () =>
+                {
+                    await pipe.WaitForConnectionAsync();
+                    using (var reader = new BinaryReader(pipe, Encoding.UTF8, true))
+                    {
+                        if (denyPeer)
+                        {
+                            try { sentBytes = reader.ReadBytes(1).Length != 0; } catch (IOException) { }
+                            return;
+                        }
+                        var json = new JavaScriptSerializer();
+                        var request = json.Deserialize<EngineHostRequest>(Encoding.UTF8.GetString(reader.ReadBytes(reader.ReadInt32())));
+                        sentBytes = true;
+                        var snapshot = new EngineStateSnapshot { SessionId = foreignRunSession ? RecoveryProtocolV7.NewId() : sessionId,
+                            RunId = RecoveryProtocolV7.NewId(), RunEpoch = 1, EngineInstanceId = RecoveryProtocolV7.NewId(), Revision = 1,
+                            PulseSequence = 1, CapturedUtcTicks = DateTime.UtcNow.Ticks, State = SystemTerminalState.SafeIdleAlarmed };
+                        var bytes = Encoding.UTF8.GetBytes(json.Serialize(new EngineHostResponse { Accepted = true, RequestId = request.RequestId, Snapshot = snapshot }));
+                        using (var writer = new BinaryWriter(pipe, Encoding.UTF8, true)) { writer.Write(bytes.Length); writer.Write(bytes); writer.Flush(); }
+                    }
+                });
+                Exception failure = null;
+                try
+                {
+                    var snapshot = EngineHostPipeClient.ReadBoundSnapshot(sessionId,
+                        (id, started) => !denyPeer && id == process.Id && started == process.StartTime.ToUniversalTime().Ticks,
+                        out var serverId, out var serverStart, 3000, pipeName);
+                    if (snapshot.SessionId != sessionId || serverId != process.Id || serverStart != process.StartTime.ToUniversalTime().Ticks)
+                        throw new Exception("Snapshot identity was not tied to actual pipe process");
+                }
+                catch (Exception ex) { failure = ex; }
+                if (!task.Wait(4000)) throw new Exception("Bound project peer did not finish");
+                if (denyPeer && sentBytes || (denyPeer || foreignRunSession) != (failure is InvalidDataException) ||
+                    !denyPeer && !foreignRunSession && failure != null)
+                    throw new Exception("Bound snapshot peer authorization/response fence failed", failure);
+                Console.WriteLine("PASS ProjectSnapshotPeerBinding deny=" + denyPeer + " foreignSession=" + foreignRunSession);
+            }
         }
 
         private static void CheckReply(string name,

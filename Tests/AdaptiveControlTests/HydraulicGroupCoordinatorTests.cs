@@ -13,6 +13,26 @@ namespace AdaptiveControlTests
 {
     internal static class HydraulicGroupCoordinatorTests
     {
+        private static void SingleChannelPausePreservesSharedPower()
+        {
+            var groups = Enumerable.Range(1, 4).Select(id =>
+            {
+                var group = new ElectricalGroup { Id = id };
+                group.Members.AddRange(Enumerable.Range((id - 1) * 3 + 1, 3)); return group;
+            }).ToArray();
+            Assert(EpbManager.SelectPowerGroupsForChannelPause(groups, new[] { 4 }, peer => peer == 5).Length == 0,
+                "暂停4不应切断仍供5运行的电源2");
+            Assert(EpbManager.SelectPowerGroupsForChannelPause(groups, new[] { 4 }, peer => peer == 7).SequenceEqual(new[] { 2 }),
+                "只允许关闭不再使用的电源2，不能关闭健康电源3");
+            Assert(EpbManager.SelectPowerGroupsForChannelPause(groups, new[] { 4, 5, 6 }, peer => true).SequenceEqual(new[] { 2 }),
+                "整组成员暂停不影响其他组");
+            groups[1].Members.Remove(4);
+            var rejected = false;
+            try { EpbManager.SelectPowerGroupsForChannelPause(groups, new[] { 4 }, _ => false); }
+            catch (InvalidOperationException) { rejected = true; }
+            Assert(rejected, "电源映射不明确时不能当作已完成边界");
+        }
+
         public static int RunRecoveryEvidenceRegression()
         {
             var passed = 0;
@@ -37,6 +57,7 @@ namespace AdaptiveControlTests
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
             Run("已完成液压代次不阻碍不同成员重新开始", CompletedGenerationAllowsFreshMembership, ref passed);
             Run("液压通道作用域作废后代次完整归还", ChannelLeaseScopesAlwaysCloseGeneration, ref passed);
+            Run("单通道暂停仅关闭不再共享的目标电源组", SingleChannelPausePreservesSharedPower, ref passed);
             Run("已完成ForceRelease仅按精确原因退役旧租约", ForceReleasedScopeRetirementIsExact, ref passed);
             Run("StopAll强制撤权不等待缺员液压屏障", StopAllForceAbortDoesNotWaitForMissingMember, ref passed);
             Run("液压组重建替换旧Gate并递增Epoch", RebuildGroupRestoresFreshStartHealth, ref passed);

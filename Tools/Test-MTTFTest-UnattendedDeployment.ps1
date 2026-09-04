@@ -278,8 +278,8 @@ if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
     -not $supervisorMainLaunchClientText.Contains('IsRecoveryLaunch = true') -or
     -not $supervisorHostText.Contains('SupervisorMainRecoverySessionMismatch') -or
     -not $supervisorHostText.Contains('SupervisorRecoveryCapabilitySessionAgentLaunch') -or
-    -not $supervisorHostText.Contains('TryBindExistingEngineHostForUserInterface') -or
-    -not $supervisorHostText.Contains('SupervisorInitialUiReusedEngineHost')) {
+    -not $supervisorHostText.Contains('ResolveUserInterfaceEnvironment') -or
+    -not $supervisorHostText.Contains('SupervisorUiRecoveryDurableSessionMismatch')) {
     throw 'schema 7 Supervisor 单次角色 LaunchCapability 生产门禁不完整。'
 }
 foreach ($commandName in @(
@@ -403,13 +403,26 @@ foreach ($requiredV3PackageContract in @(
         'installedCrashMatrixPassed',
         'hardwareMatrixPassed',
         'soak168HoursPassed',
-        'QUICKDEPLOY_R25',
+        'QUICKDEPLOY_R26',
         'archiveSha256')) {
     if (-not $v3InstallerText.Contains($requiredV3PackageContract)) {
         throw "V3 一键安装包脚本缺少契约：$requiredV3PackageContract"
     }
 }
 Write-Output 'PASS V3OperatorPackageBuilderContract 1/1'
+
+$uiReleaseGateText = [IO.File]::ReadAllText(
+    (Join-Path $PSScriptRoot 'Test-V3OriginalUiReleaseGate.ps1'),
+    [Text.Encoding]::UTF8)
+if (-not $formalReleaseText.Contains('if ($FieldValidationCandidate)') -or
+    -not $formalReleaseText.Contains('$uiGateParameters.AllowInstalledUiValidationPending = $true') -or
+    -not $v3InstallerText.Contains('if (-not $FormalRelease)') -or
+    -not $v3InstallerText.Contains('$uiGateParameters.AllowInstalledUiValidationPending = $true') -or
+    -not $uiReleaseGateText.Contains('PENDING_FIELD_VALIDATION') -or
+    -not $uiReleaseGateText.Contains('禁止生成正式包')) {
+    throw '现场候选与正式包未使用分级原界面门禁。'
+}
+Write-Output 'PASS V3CandidateBootstrapCannotBypassFormalUiGate 1/1'
 
 foreach ($windowsPowerShellEntry in @(
         (Join-Path $PSScriptRoot 'Build-V3Installer.ps1'),

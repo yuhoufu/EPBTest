@@ -45,7 +45,19 @@ namespace MTTFTest.Watchdog.Protocol
         StableObservation = 9,
         Completed = 10,
         SafeIdleAlarmed = 11,
-        StoppedByOperator = 12
+        StoppedByOperator = 12,
+        OperatorPausePending = 13,
+        OperatorPaused = 14,
+        OperatorResumeChecking = 15,
+        OperatorChannelsHeld = 16,
+        ProjectSwitchPreparing = 17,
+        ProjectSwitchActivating = 18,
+        ProjectSwitchAborting = 19,
+        ProjectSwitchStopping = 20,
+        PressureMaintenancePreparing = 21,
+        PressureMaintenanceReady = 22,
+        PressureMaintenanceExecuting = 23,
+        PressureMaintenanceStopping = 24
     }
 
     public enum RecoveryCommandKind
@@ -62,7 +74,18 @@ namespace MTTFTest.Watchdog.Protocol
         IsolateResource = 9,
         EnterSafeIdle = 10,
         StopByOperator = 11,
-        EnsureUserInterface = 12
+        EnsureUserInterface = 12,
+        CommitTestConfiguration = 13,
+        PauseBatchGracefully = 14,
+        ResumePausedBatch = 15,
+        PauseChannelGracefully = 16,
+        ResumePausedChannel = 17,
+        PrepareProjectSwitch = 18,
+        ActivateProjectSwitch = 19,
+        AbortProjectSwitch = 20,
+        PreparePressureMaintenance = 21,
+        SetMaintenancePressure = 22,
+        StopMaintenanceOutput = 23
     }
 
     public enum FaultSeverity
@@ -96,7 +119,16 @@ namespace MTTFTest.Watchdog.Protocol
         Resume = 4,
         RetryQualification = 5,
         ShowUserInterface = 6,
-        CommitConfiguration = 7
+        CommitConfiguration = 7,
+        AcknowledgeAlarms = 8,
+        SetBuzzerEnabled = 9,
+        PauseChannel = 10,
+        ResumeChannel = 11,
+        SwitchProject = 12,
+        BeginPressureMaintenance = 13,
+        SetMaintenancePressure = 14,
+        StopMaintenanceOutput = 15,
+        EndPressureMaintenance = 16
     }
 
     public static class RecoveryProtocolV7
@@ -238,6 +270,18 @@ namespace MTTFTest.Watchdog.Protocol
         public int ActiveQualificationAttempts { get; set; }
         public bool IsOperatorStart { get; set; }
         public bool RequiresEngineReplacement { get; set; }
+        // A timed-out executor must cross a new safety boundary before the
+        // already-budgeted successor can run. None means no automatic successor.
+        public RecoveryCommandKind CommandAfterSafetyProof { get; set; }
+        public string ManualBatchEngineInstanceId { get; set; } = string.Empty;
+        public int ManualPausedChannelsMask { get; set; }
+        public int ManualRunningChannelsMask { get; set; }
+        public OperatorCommand OperatorTransaction { get; set; }
+        public ProjectSwitchPlan ProjectSwitch { get; set; }
+        public string ProjectSwitchPreparedSha256 { get; set; } = string.Empty;
+        public string ProjectSwitchFailure { get; set; } = string.Empty;
+        public bool ProjectSwitchStopRequested { get; set; }
+        public PressureMaintenanceLease PressureMaintenance { get; set; }
         public long CreatedUtcTicks { get; set; }
         public long UpdatedUtcTicks { get; set; }
 
@@ -247,11 +291,30 @@ namespace MTTFTest.Watchdog.Protocol
                    Identity?.IsStructurallyValid() == true &&
                    RecoveryProtocolV7.IsGuid(OwnerId) &&
                    Stage != RecoveryStage.None &&
+                   (PressureMaintenance == null || PressureMaintenance.Binds(Identity, OwnerId) && ProjectSwitch == null &&
+                       !IsOperatorStart && !RequiresEngineReplacement && string.IsNullOrEmpty(ManualBatchEngineInstanceId) &&
+                       CommandAfterSafetyProof == RecoveryCommandKind.None &&
+                       (PressureMaintenance.Revoked ? Stage == RecoveryStage.PressureMaintenanceStopping :
+                           Stage == RecoveryStage.AwaitingSafetyProof || Stage == RecoveryStage.PressureMaintenancePreparing ||
+                           Stage == RecoveryStage.PressureMaintenanceReady || Stage == RecoveryStage.PressureMaintenanceExecuting)) &&
+                   (ProjectSwitch == null ? string.IsNullOrEmpty(ProjectSwitchPreparedSha256) &&
+                       string.IsNullOrEmpty(ProjectSwitchFailure) && !ProjectSwitchStopRequested :
+                       ProjectSwitch.Binds(Identity, OwnerId, OperatorTransaction) &&
+                       (string.IsNullOrEmpty(ProjectSwitchPreparedSha256) || ProjectSwitchPlan.IsSha256(ProjectSwitchPreparedSha256)) &&
+                       (Stage != RecoveryStage.ProjectSwitchActivating || ProjectSwitchPlan.IsSha256(ProjectSwitchPreparedSha256))) &&
+                   (string.IsNullOrEmpty(ManualBatchEngineInstanceId) || RecoveryProtocolV7.IsGuid(ManualBatchEngineInstanceId)) &&
+                   ManualPausedChannelsMask >= 0 && ManualPausedChannelsMask <= 4095 &&
+                   ManualRunningChannelsMask >= 0 && ManualRunningChannelsMask <= 4095 &&
                    DesiredTerminalState != SystemTerminalState.Unknown &&
                    LocalRebuildAttempts >= 0 &&
                    CurrentEngineReplacementAttempts >= 0 &&
                    LastKnownGoodAttempts >= 0 &&
                    ActiveQualificationAttempts >= 0 &&
+                   (CommandAfterSafetyProof == RecoveryCommandKind.None ||
+                    CommandAfterSafetyProof == RecoveryCommandKind.RebuildResource ||
+                    CommandAfterSafetyProof == RecoveryCommandKind.ReplaceEngineHost ||
+                    CommandAfterSafetyProof == RecoveryCommandKind.ActivateLastKnownGood ||
+                    CommandAfterSafetyProof == RecoveryCommandKind.IsolateResource) &&
                    CreatedUtcTicks > 0 && UpdatedUtcTicks >= CreatedUtcTicks;
         }
     }
@@ -267,6 +330,20 @@ namespace MTTFTest.Watchdog.Protocol
         public RecoveryCommandKind Kind { get; set; }
         public string TargetResource { get; set; } = string.Empty;
         public long DeadlineUtcTicks { get; set; }
+        public OperatorCommand OperatorTransaction { get; set; }
+        public ProjectSwitchPlan ProjectSwitch { get; set; }
+        public string ProjectSwitchPreparedSha256 { get; set; } = string.Empty;
+
+        public PressureMaintenanceLease PressureMaintenance { get; set; }
+
+        public string ExpectedIdempotencyKey()
+        {
+            var key = RecoveryProtocolV7.ComputeIdempotencyKey(Identity, Kind, CommandSequence);
+            key = OperatorTransaction == null ? key : SupervisorProtocol.ComputeTextSha256(key + "\n" + OperatorCommandAdmission.GetFingerprint(OperatorTransaction));
+            key = ProjectSwitch == null ? key : SupervisorProtocol.ComputeTextSha256(key + "\n" +
+                ProjectSwitch.ComputeSha256() + "\n" + ProjectSwitchPreparedSha256);
+            return PressureMaintenance == null ? key : SupervisorProtocol.ComputeTextSha256(key + "\n" + PressureMaintenance.ComputeSha256());
+        }
 
         public bool IsStructurallyValid()
         {
@@ -277,12 +354,42 @@ namespace MTTFTest.Watchdog.Protocol
                    CommandSequence > 0 &&
                    string.Equals(
                        IdempotencyKey,
-                       RecoveryProtocolV7.ComputeIdempotencyKey(
-                           Identity, Kind, CommandSequence),
+                       ExpectedIdempotencyKey(),
                        StringComparison.Ordinal) &&
                    Kind != RecoveryCommandKind.None &&
                    RecoveryProtocolV7.HasText(TargetResource) &&
-                   DeadlineUtcTicks > DateTime.MinValue.Ticks;
+                   DeadlineUtcTicks > DateTime.MinValue.Ticks &&
+                   (PressureMaintenance == null ? !PressureMaintenanceProtocol.IsExecution(Kind) &&
+                       !PressureMaintenanceProtocol.IsOperation(OperatorTransaction?.Kind ?? OperatorCommandKind.None) :
+                       PressureMaintenance.Binds(Identity, OwnerId) && ProjectSwitch == null &&
+                       (OperatorTransaction == null || OperatorTransaction.Kind == OperatorCommandKind.Stop ||
+                           OperatorTransaction.PressureMaintenance?.Binds(PressureMaintenance, OperatorTransaction.Kind) == true) &&
+                       (Kind == RecoveryCommandKind.DisableOutputs || !PressureMaintenance.Revoked &&
+                           (Kind == RecoveryCommandKind.PreparePressureMaintenance && OperatorTransaction?.Kind == OperatorCommandKind.BeginPressureMaintenance ||
+                            Kind == RecoveryCommandKind.SetMaintenancePressure && OperatorTransaction?.Kind == OperatorCommandKind.SetMaintenancePressure ||
+                            Kind == RecoveryCommandKind.StopMaintenanceOutput && OperatorTransaction?.Kind == OperatorCommandKind.StopMaintenanceOutput))) &&
+                   (ProjectSwitch == null ? string.IsNullOrEmpty(ProjectSwitchPreparedSha256) &&
+                       OperatorTransaction?.Kind != OperatorCommandKind.SwitchProject :
+                       ProjectSwitch.Binds(Identity, OwnerId, OperatorTransaction) &&
+                       (string.IsNullOrEmpty(ProjectSwitchPreparedSha256) || ProjectSwitchPlan.IsSha256(ProjectSwitchPreparedSha256))) &&
+                   (OperatorTransaction == null || OperatorTransaction.IsStructurallyValid() &&
+                       (ProjectSwitch != null || OperatorTransaction.SessionId == Identity.SessionId && OperatorTransaction.RunId == Identity.RunId &&
+                       OperatorTransaction.RunEpoch == Identity.RunEpoch) &&
+                       TargetResource == (ManualBatchCommand.IsChannelOperation(OperatorTransaction.Kind)
+                           ? "Channel:" + OperatorTransaction.ManualBatch.Channel.ToString(CultureInfo.InvariantCulture) : "System")) &&
+                   (Kind != RecoveryCommandKind.CommitTestConfiguration ||
+                       OperatorTransaction?.Kind == OperatorCommandKind.CommitConfiguration && OperatorTransaction.IsStructurallyValid()) &&
+                   (Kind != RecoveryCommandKind.PauseBatchGracefully || OperatorTransaction?.Kind == OperatorCommandKind.Pause) &&
+                   (Kind != RecoveryCommandKind.ResumePausedBatch || OperatorTransaction?.Kind == OperatorCommandKind.Resume) &&
+                   (Kind != RecoveryCommandKind.PauseChannelGracefully || OperatorTransaction?.Kind == OperatorCommandKind.PauseChannel) &&
+                   (Kind != RecoveryCommandKind.ResumePausedChannel || OperatorTransaction?.Kind == OperatorCommandKind.ResumeChannel) &&
+                   (Kind != RecoveryCommandKind.PrepareProjectSwitch && Kind != RecoveryCommandKind.AbortProjectSwitch ||
+                       ProjectSwitch != null && ProjectSwitch.MatchesSource(Identity)) &&
+                   (Kind != RecoveryCommandKind.ActivateProjectSwitch || ProjectSwitch != null &&
+                       ProjectSwitch.MatchesDestination(Identity) && ProjectSwitchPlan.IsSha256(ProjectSwitchPreparedSha256)) &&
+                   (ProjectSwitch == null || Kind == RecoveryCommandKind.DisableOutputs || Kind == RecoveryCommandKind.StopByOperator ||
+                       Kind == RecoveryCommandKind.PrepareProjectSwitch || Kind == RecoveryCommandKind.ActivateProjectSwitch ||
+                       Kind == RecoveryCommandKind.AbortProjectSwitch);
         }
     }
 
@@ -389,6 +496,7 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class EngineStateSnapshot
     {
+        public EngineProjectActivation ProjectActivation { get; set; }
         public int SchemaVersion { get; set; } = RecoveryProtocolV7.SchemaVersion;
         public string EngineInstanceId { get; set; } = string.Empty;
         public string SessionId { get; set; } = string.Empty;
@@ -400,7 +508,12 @@ namespace MTTFTest.Watchdog.Protocol
         public string RecoveryIncidentId { get; set; } = string.Empty;
         public string RecoveryOwnerId { get; set; } = string.Empty;
         public bool HardwareInitialized { get; set; }
+        // A stopped, released host may be configured/recomposed, but cannot run
+        // hardware commands until Supervisor's independent proof and preflight.
+        public bool HardwareRecompositionReady { get; set; }
         public bool OutputsEnergized { get; set; }
+        public int ChannelPauseMask { get; set; }
+        public int ChannelResumeMask { get; set; }
         public int QualificationCyclesCompleted { get; set; }
         public int FormalCyclesSinceRecovery { get; set; }
         public long StableSinceUtcTicks { get; set; }
@@ -415,12 +528,19 @@ namespace MTTFTest.Watchdog.Protocol
                    RecoveryProtocolV7.IsGuid(RunId) && RunEpoch > 0 &&
                    Revision > 0 && PulseSequence > 0 &&
                    State != SystemTerminalState.Unknown && CapturedUtcTicks > 0 &&
+                   !(HardwareInitialized && HardwareRecompositionReady) &&
+                   (ProjectActivation == null || ProjectActivation.IsStructurallyValid()) &&
                    QualificationCyclesCompleted >= 0 &&
                    FormalCyclesSinceRecovery >= 0 &&
+                   ChannelPauseMask >= 0 && ChannelPauseMask <= 4095 && ChannelResumeMask >= 0 && ChannelResumeMask <= 4095 &&
+                   (ChannelPauseMask & ChannelResumeMask) == 0 &&
                    (string.IsNullOrEmpty(RecoveryIncidentId) ||
                     RecoveryProtocolV7.IsGuid(RecoveryIncidentId)) &&
-                   (string.IsNullOrEmpty(RecoveryOwnerId) ||
-                    RecoveryProtocolV7.IsGuid(RecoveryOwnerId));
+                    (string.IsNullOrEmpty(RecoveryOwnerId) ||
+                     RecoveryProtocolV7.IsGuid(RecoveryOwnerId)) &&
+                    IsolatedResources != null && IsolatedResources.Length <= 64 &&
+                    IsolatedResources.All(value => RecoveryProtocolV7.HasText(value) && value.Length <= 128) &&
+                    IsolatedResources.Distinct(StringComparer.OrdinalIgnoreCase).Count() == IsolatedResources.Length;
         }
     }
 
@@ -435,6 +555,22 @@ namespace MTTFTest.Watchdog.Protocol
         public string PayloadSha256 { get; set; } = string.Empty;
         public OperatorCommandKind Kind { get; set; }
         public long IssuedUtcTicks { get; set; }
+        public TestConfigurationCommit TestConfiguration { get; set; }
+        public AlarmPanelCommand AlarmPanel { get; set; }
+        public ManualBatchCommand ManualBatch { get; set; }
+        public ProjectSwitchRequest ProjectSwitch { get; set; }
+        public PressureMaintenanceCommand PressureMaintenance { get; set; }
+
+        public OperatorCommand Clone()
+        {
+            var copy = (OperatorCommand)MemberwiseClone();
+            copy.TestConfiguration = TestConfiguration?.Clone();
+            copy.AlarmPanel = AlarmPanel?.Clone();
+            copy.ManualBatch = ManualBatch?.Clone();
+            copy.ProjectSwitch = ProjectSwitch?.Clone();
+            copy.PressureMaintenance = PressureMaintenance?.Clone();
+            return copy;
+        }
 
         public bool IsStructurallyValid()
         {
@@ -443,7 +579,22 @@ namespace MTTFTest.Watchdog.Protocol
                    RecoveryProtocolV7.IsGuid(SessionId) &&
                    RecoveryProtocolV7.IsGuid(RunId) && RunEpoch > 0 &&
                    BaseRevision >= 0 && RecoveryFailureReceipt.IsSha256(PayloadSha256) &&
-                   Kind != OperatorCommandKind.None && IssuedUtcTicks > 0;
+                   Kind != OperatorCommandKind.None && Enum.IsDefined(typeof(OperatorCommandKind), Kind) &&
+                   IssuedUtcTicks > 0 && IssuedUtcTicks <= DateTime.MaxValue.Ticks &&
+                   (PressureMaintenanceProtocol.IsOperation(Kind) ? PressureMaintenance?.IsStructurallyValid(Kind) == true &&
+                       PayloadSha256 == PressureMaintenance.ComputeSha256() : PressureMaintenance == null) &&
+                   (Kind == OperatorCommandKind.CommitConfiguration
+                       ? TestConfiguration?.IsStructurallyValid() == true && PayloadSha256 == TestConfiguration.ComputeSha256()
+                       : TestConfiguration == null) &&
+                   (AlarmPanelCommand.IsPanelOperation(Kind)
+                       ? AlarmPanel?.IsStructurallyValid() == true && PayloadSha256 == AlarmPanel.ComputeSha256()
+                       : AlarmPanel == null) &&
+                   (ManualBatchCommand.IsOperation(Kind)
+                       ? ManualBatch?.IsStructurallyValid(Kind) == true && PayloadSha256 == ManualBatch.ComputeSha256()
+                       : ManualBatch == null) &&
+                   (Kind == OperatorCommandKind.SwitchProject
+                       ? ProjectSwitch?.IsStructurallyValid() == true && PayloadSha256 == ProjectSwitch.ComputeSha256()
+                       : ProjectSwitch == null);
         }
     }
 }

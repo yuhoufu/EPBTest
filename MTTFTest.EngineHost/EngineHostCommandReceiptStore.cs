@@ -9,8 +9,6 @@ namespace MTTFTest.EngineHost
 {
     internal static class EngineHostCommandReceiptStore
     {
-        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
-
         internal static bool TryRead(
             string idempotencyKey,
             out RecoveryCommandReceipt receipt,
@@ -21,7 +19,7 @@ namespace MTTFTest.EngineHost
             {
                 var path = PathFor(idempotencyKey, rootDirectory);
                 if (!File.Exists(path)) return false;
-                var value = Json.Deserialize<RecoveryCommandReceipt>(
+                var value = new JavaScriptSerializer().Deserialize<RecoveryCommandReceipt>(
                     File.ReadAllText(path, Encoding.UTF8));
                 if (value == null ||
                     value.SchemaVersion != EngineHostProtocol.SchemaVersion ||
@@ -54,7 +52,7 @@ namespace MTTFTest.EngineHost
                            temporary, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
                 using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
                 {
-                    writer.Write(Json.Serialize(receipt));
+                    writer.Write(new JavaScriptSerializer().Serialize(receipt));
                     writer.Flush();
                     stream.Flush(true);
                 }

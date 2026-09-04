@@ -593,7 +593,10 @@ namespace AdaptiveControlTests
                 {
                     try
                     {
-                        return File.Exists(runPath) &&
+                        // File visibility is not a completion barrier: Flush publishes bytes
+                        // before ExecuteFlush increments its audit counter. Wait for both
+                        // observations within the existing deadline, without relaxing counts.
+                        return ProjectLogHub.SoftFlushExecutionCount > softBefore && File.Exists(runPath) &&
                                ReadSharedText(runPath)
                                    .Contains("periodic-soft-flush");
                     }

@@ -6,9 +6,11 @@
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{B921A6BD-A621-4FD4-9A47-840865FC82C9}</ProjectGuid>
-    <OutputType>WinExe</OutputType>
+    <OutputType Condition="'$(LegacyUiRegressionFixture)' != 'true'">WinExe</OutputType>
+    <OutputType Condition="'$(LegacyUiRegressionFixture)' == 'true'">Library</OutputType>
     <RootNamespace>MTEmbTest</RootNamespace>
-    <AssemblyName>MTTFTest</AssemblyName>
+    <AssemblyName Condition="'$(LegacyUiRegressionFixture)' != 'true'">MTTFTest</AssemblyName>
+    <AssemblyName Condition="'$(LegacyUiRegressionFixture)' == 'true'">MTTFTest.LegacyUiRegression</AssemblyName>
     <ApplicationIcon>..\image\epb-icon-candidates\epb-icon-08.ico</ApplicationIcon>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
@@ -133,6 +135,7 @@
     <Compile Include="FirstRunBootstrap.cs" />
     <Compile Include="LaunchCapabilityGate.cs" />
     <Compile Include="V3EngineHostClient.cs" />
+    <Compile Include="V3EngineHostClient.Maintenance.cs" />
     <Compile Include="V3EngineClientForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -179,6 +182,11 @@
     <Compile Include="FrmPlayBack.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Playback\HistoryFileReader.cs" />
+    <Compile Include="Playback\HistoryRawLayout.cs" />
+    <Compile Include="Playback\HistoryDirectoryReader.cs" />
+    <Compile Include="FrmPlayBack.HistoryClient.cs" />
+    <Compile Include="FrmRawPlayBack.HistoryClient.cs" />
     <Compile Include="FrmPlayBack.Designer.cs">
       <DependentUpon>FrmPlayBack.cs</DependentUpon>
     </Compile>
@@ -191,6 +199,7 @@
     <Compile Include="FrmTestSetting.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="FrmTestSetting.PressureCalibration.Layout.cs" />
     <Compile Include="FrmTestSetting.PressureCalibration.cs">
       <DependentUpon>FrmTestSetting.cs</DependentUpon>
       <SubType>Form</SubType>
@@ -425,7 +434,7 @@
       <Private>false</Private>
     </ProjectReference>
   </ItemGroup>
-  <Target Name="CopyWatchdogSidecar" AfterTargets="Build">
+  <Target Name="CopyWatchdogSidecar" AfterTargets="Build" Condition="'$(LegacyUiRegressionFixture)' != 'true'">
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.pdb')" />
     <Copy SourceFiles="$(ProjectDir)..\Recovery.Kernel\bin\$(Configuration)\MTTFTest.Recovery.Kernel.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
@@ -451,10 +460,29 @@
       <Install>false</Install>
     </BootstrapperPackage>
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <!-- V2 forms remain as source history/test fixtures only; they must not own hardware in V3. -->
+    <Compile Remove="Main_Frm.cs;Main_Frm.UnattendedRecovery.cs;Main_Frm.WatchdogUi.cs;MainWatchdogUiLifecycleAdapter.cs;FrmEpbMainMonitor.cs;FrmEpbMainMonitor.BatchGuard.cs;FrmEpbMainMonitor.CloseOverlay.cs;FrmEpbMainMonitor.PauseResume.cs;FrmEpbMainMonitor.UnattendedRecovery.cs;FrmEpbMainMonitor.WatchdogUi.cs;FrmEpbMainMonitor.PowerSupply.cs;FrmTestSetting.cs;FrmTestSetting.PressureCalibration.cs;PressureCalibrationHardware.cs;FrmDAQCalibrate.cs;FrmDAQCalibrate.Designer.cs;FrmAlarmPanelTest.cs;WatchdogRuntime*.cs;WinFormsWatchdog*.cs;UnattendedRecovery.cs;ShutdownRetention.cs;EpbMonitorShutdownOwnership.cs;V3EngineClientForm.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\V3MonitorSession.cs" />
+    <Compile Include="V3\PressureMaintenanceUiSession.cs" />
+    <Compile Remove="FirstRunBootstrap.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\Main_Frm.Client.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\FrmEpbMainMonitor.Client.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\OriginalMonitorLayout.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\OriginalMonitorPreferences.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\OriginalSettingsDraft.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\OriginalProjectBrowser.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\FrmTestSetting.Client.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\FrmTestSetting.DaqClient.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+    <Compile Include="V3\FrmTestSetting.PressureClient.cs" Condition="'$(LegacyUiRegressionFixture)' != 'true'" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(LegacyUiRegressionFixture)' == 'true'">
+    <OutputPath>bin\LegacyUiRegression\$(Configuration)\</OutputPath>
+  </PropertyGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <Target Name="V3RecoveryKernelSourceGate" BeforeTargets="CoreCompile">
-    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\Tools\Test-V3RecoveryKernelSourceGate.ps1&quot; -RepositoryRoot &quot;$(ProjectDir)..&quot;" />
+  <Target Name="V3RecoveryKernelSourceGate" BeforeTargets="CoreCompile" Condition="'$(LegacyUiRegressionFixture)' != 'true'">
+    <WriteLinesToFile File="$(IntermediateOutputPath)V3ProductionUiSources.txt" Lines="@(Compile->'%(FullPath)')" Overwrite="true" />
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\Tools\Test-V3RecoveryKernelSourceGate.ps1&quot; -RepositoryRoot &quot;$(ProjectDir)..&quot; -CompiledSourcesPath &quot;$(IntermediateOutputPath)V3ProductionUiSources.txt&quot;" />
   </Target>
   <Import Project="..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets" Condition="Exists('..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets')" />
   <Target Name="GenerateAuditableBuildMetadata" BeforeTargets="CoreCompile">

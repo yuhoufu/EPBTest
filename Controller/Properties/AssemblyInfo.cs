@@ -30,4 +30,6 @@ using System.Runtime.InteropServices;
 //      修订号
 //
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]
+[assembly: InternalsVisibleTo("MTTFTest.EngineHost")]
 [assembly: InternalsVisibleTo("MTTFTest")]
+[assembly: InternalsVisibleTo("MTTFTest.LegacyUiRegression")]

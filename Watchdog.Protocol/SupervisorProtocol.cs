@@ -36,6 +36,7 @@ namespace MTTFTest.Watchdog.Protocol
             "MTTF-SUPERVISOR-OPERATOR-COMMAND-REQUEST-V7";
         public const string OperatorCommandResponseMagic =
             "MTTF-SUPERVISOR-OPERATOR-COMMAND-RESPONSE-V7";
+        public const string OperatorCommandQueryMagic = "MTTF-SUPERVISOR-OPERATOR-QUERY-V7-UI1";
         public const int MaximumTextLength = 1024 * 1024;
 
         public static string ComputeSha256(string path)
@@ -79,6 +80,7 @@ namespace MTTFTest.Watchdog.Protocol
         public int RequesterProcessId { get; set; }
         public long RequesterProcessStartUtcTicks { get; set; }
         public OperatorCommand Command { get; set; }
+        public bool QueryOnly { get; set; }
 
         public bool IsStructurallyValid()
         {
@@ -91,7 +93,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void WriteTo(BinaryWriter writer)
         {
-            writer.Write(SupervisorProtocol.OperatorCommandRequestMagic);
+            writer.Write(QueryOnly ? SupervisorProtocol.OperatorCommandQueryMagic : SupervisorProtocol.OperatorCommandRequestMagic);
             writer.Write(SchemaVersion);
             writer.Write(RequestId ?? string.Empty);
             writer.Write(ChallengeNonce ?? string.Empty);
@@ -105,7 +107,18 @@ namespace MTTFTest.Watchdog.Protocol
             writer.Write(Command.BaseRevision);
             writer.Write(Command.PayloadSha256 ?? string.Empty);
             writer.Write((int)Command.Kind);
-            writer.Write(Command.IssuedUtcTicks);
+              writer.Write(Command.IssuedUtcTicks);
+              if (Command.Kind == OperatorCommandKind.CommitConfiguration || AlarmPanelCommand.IsPanelOperation(Command.Kind) ||
+                  ManualBatchCommand.IsOperation(Command.Kind) || PressureMaintenanceProtocol.IsOperation(Command.Kind))
+              {
+                  var bytes = Encoding.UTF8.GetBytes(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(
+                      Command.Kind == OperatorCommandKind.CommitConfiguration ? (object)Command.TestConfiguration :
+                          PressureMaintenanceProtocol.IsOperation(Command.Kind) ? Command.PressureMaintenance :
+                          ManualBatchCommand.IsOperation(Command.Kind) ? Command.ManualBatch : (object)Command.AlarmPanel));
+                  if (bytes.Length > 65536) throw new InvalidDataException("ConfigurationPayloadTooLong");
+                  writer.Write(bytes.Length);
+                  writer.Write(bytes);
+              }
             writer.Flush();
         }
 
@@ -115,10 +128,11 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (!string.Equals(magic,
                     SupervisorProtocol.OperatorCommandRequestMagic,
-                    StringComparison.Ordinal))
+                    StringComparison.Ordinal) && magic != SupervisorProtocol.OperatorCommandQueryMagic)
                 throw new InvalidDataException("SupervisorOperatorCommandMagicMismatch");
-            return new SupervisorOperatorCommandRequest
+            var request = new SupervisorOperatorCommandRequest
             {
+                QueryOnly = magic == SupervisorProtocol.OperatorCommandQueryMagic,
                 SchemaVersion = reader.ReadInt32(),
                 RequestId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
                 ChallengeNonce = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
@@ -137,6 +151,22 @@ namespace MTTFTest.Watchdog.Protocol
                     IssuedUtcTicks = reader.ReadInt64()
                 }
             };
+            if (request.Command.Kind == OperatorCommandKind.CommitConfiguration || AlarmPanelCommand.IsPanelOperation(request.Command.Kind) ||
+                ManualBatchCommand.IsOperation(request.Command.Kind) || PressureMaintenanceProtocol.IsOperation(request.Command.Kind))
+            {
+                var length = reader.ReadInt32();
+                if (length <= 0 || length > 65536) throw new InvalidDataException("ConfigurationPayloadLengthInvalid");
+                var bytes = reader.ReadBytes(length);
+                if (bytes.Length != length) throw new EndOfStreamException("ConfigurationPayloadTruncated");
+                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = 65536 };
+                if (request.Command.Kind == OperatorCommandKind.CommitConfiguration)
+                    request.Command.TestConfiguration = serializer.Deserialize<TestConfigurationCommit>(Encoding.UTF8.GetString(bytes));
+                else if (PressureMaintenanceProtocol.IsOperation(request.Command.Kind))
+                    request.Command.PressureMaintenance = serializer.Deserialize<PressureMaintenanceCommand>(Encoding.UTF8.GetString(bytes));
+                else if (ManualBatchCommand.IsOperation(request.Command.Kind)) request.Command.ManualBatch = serializer.Deserialize<ManualBatchCommand>(Encoding.UTF8.GetString(bytes));
+                else request.Command.AlarmPanel = serializer.Deserialize<AlarmPanelCommand>(Encoding.UTF8.GetString(bytes));
+            }
+            return request;
         }
     }
 
@@ -151,20 +181,33 @@ namespace MTTFTest.Watchdog.Protocol
         public SystemTerminalState DesiredState { get; set; }
         public string FailureCode { get; set; } = string.Empty;
         public string Detail { get; set; } = string.Empty;
+        public bool ExecutionCompleted { get; set; }
+        public bool ExecutionSucceeded { get; set; }
 
-        public void WriteTo(BinaryWriter writer)
+        public void WriteTo(BinaryWriter destination)
         {
-            writer.Write(SupervisorProtocol.OperatorCommandResponseMagic);
-            writer.Write(SchemaVersion);
-            writer.Write(RequestId ?? string.Empty);
-            writer.Write(ChallengeNonce ?? string.Empty);
-            writer.Write(Accepted);
-            writer.Write(IncidentId ?? string.Empty);
-            writer.Write(OwnerId ?? string.Empty);
-            writer.Write((int)DesiredState);
-            writer.Write(FailureCode ?? string.Empty);
-            writer.Write(Detail ?? string.Empty);
-            writer.Flush();
+            // Encode first: BinaryWriter.Write("") writes a length byte then a zero-byte
+            // pipe write. A peer that already read that last length can close before the
+            // zero-byte write and incorrectly fail a fully delivered response.
+            using (var buffer = new MemoryStream())
+            using (var writer = new BinaryWriter(buffer, Encoding.UTF8, true))
+            {
+                writer.Write(SupervisorProtocol.OperatorCommandResponseMagic);
+                writer.Write(SchemaVersion);
+                writer.Write(RequestId ?? string.Empty);
+                writer.Write(ChallengeNonce ?? string.Empty);
+                writer.Write(Accepted);
+                writer.Write(IncidentId ?? string.Empty);
+                writer.Write(OwnerId ?? string.Empty);
+                writer.Write((int)DesiredState);
+                writer.Write(FailureCode ?? string.Empty);
+                writer.Write(Detail ?? string.Empty);
+                writer.Write(ExecutionCompleted);
+                writer.Write(ExecutionSucceeded);
+                writer.Flush();
+                destination.Write(buffer.ToArray());
+                destination.Flush();
+            }
         }
 
         public static SupervisorOperatorCommandResponse ReadFrom(BinaryReader reader)
@@ -184,7 +227,9 @@ namespace MTTFTest.Watchdog.Protocol
                 OwnerId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
                 DesiredState = (SystemTerminalState)reader.ReadInt32(),
                 FailureCode = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
-                Detail = SupervisorSessionLaunchRequest.ReadBoundedString(reader)
+                Detail = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                ExecutionCompleted = reader.ReadBoolean(),
+                ExecutionSucceeded = reader.ReadBoolean()
             };
         }
     }

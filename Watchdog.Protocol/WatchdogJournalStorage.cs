@@ -748,6 +748,7 @@ namespace MTTFTest.Watchdog.Protocol
         private string _snapshot;
         private long _snapshotRevision;
         private long _lastSynchronousSnapshotRevision;
+        private string _lastSynchronousSnapshotFailure;
         private bool _leasePending = true;
         private string _revocationReason;
         private PendingTerminal _terminal;
@@ -815,6 +816,8 @@ namespace MTTFTest.Watchdog.Protocol
 
         public long DroppedEventCount => Interlocked.Read(ref _droppedEvents);
 
+        public string LastSynchronousSnapshotFailure => Volatile.Read(ref _lastSynchronousSnapshotFailure);
+
         public WatchdogJournalStoreMode Mode => _mode;
 
         private bool IsClientAuditOnly => _mode == WatchdogJournalStoreMode.ClientAuditOnly;
@@ -876,10 +879,14 @@ namespace MTTFTest.Watchdog.Protocol
                     }
                     _snapshot = null;
                     _idle.Set();
+                    Volatile.Write(ref _lastSynchronousSnapshotFailure, null);
                     return true;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Volatile.Write(ref _lastSynchronousSnapshotFailure,
+                        Truncate(ex.GetType().FullName + " HResult=0x" +
+                            ex.HResult.ToString("X8", CultureInfo.InvariantCulture) + ": " + ex.Message, 1024));
                     // Keep the emergency spool attempt for later replay, but
                     // report false so the caller cannot treat this as durable.
                     TrySpoolAtomic("session.snapshot.pending.json", json);
@@ -1499,7 +1506,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (leaseFile == null) return false;
             try
             {
-                var lease = Json.Deserialize<WatchdogJournalLease>(File.ReadAllText(leaseFile.FullName, Encoding.UTF8));
+                var lease = Json.Deserialize<WatchdogJournalLease>(ReadRetentionMetadata(leaseFile.FullName));
                 if (lease == null ||
                     (lease.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion &&
                      lease.SchemaVersion != 4 && lease.SchemaVersion != 3 &&
@@ -1516,7 +1523,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (file == null || !file.Exists || file.Length > 4L * 1024L * 1024L) return false;
             try
             {
-                var text = File.ReadAllText(file.FullName, Encoding.UTF8);
+                var text = ReadRetentionMetadata(file.FullName);
                 // V2/V3 journals remain recognizable for retention/migration,
                 // but all new leases/snapshots are stamped with CurrentSchemaVersion.
                 return text.IndexOf("\"SchemaVersion\":4", StringComparison.Ordinal) >= 0 ||
@@ -1524,6 +1531,45 @@ namespace MTTFTest.Watchdog.Protocol
                        text.IndexOf("\"SchemaVersion\":2", StringComparison.Ordinal) >= 0;
             }
             catch { return false; }
+        }
+
+        internal static FileStream OpenRetentionMetadataRead(string path)
+        {
+            // Housekeeping must not veto the safety writer's atomic replace.
+            // An open handle continues reading the complete old inode/file;
+            // subsequent readers see the replacement. Bound the opened file,
+            // not a FileInfo measured before the handle was obtained.
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan);
+            try
+            {
+                if (stream.Length > 4L * 1024L * 1024L)
+                    throw new InvalidDataException("WatchdogRetentionMetadataOversize");
+                return stream;
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+        }
+
+        private static string ReadRetentionMetadata(string path)
+        {
+            using (var stream = OpenRetentionMetadataRead(path))
+            {
+                var bytes = new byte[(int)stream.Length];
+                var offset = 0;
+                while (offset < bytes.Length)
+                {
+                    var count = stream.Read(bytes, offset, bytes.Length - offset);
+                    if (count == 0) throw new EndOfStreamException("WatchdogRetentionMetadataTruncated");
+                    offset += count;
+                }
+                if (stream.ReadByte() != -1)
+                    throw new InvalidDataException("WatchdogRetentionMetadataChanged");
+                return new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF');
+            }
         }
 
         private void EnforceCurrentSessionBudget()

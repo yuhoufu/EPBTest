@@ -83,6 +83,7 @@
     <Compile Include="DoController.cs" />
     <Compile Include="HighResolutionSampleClock.cs" />
     <Compile Include="HostRuntimeProbe.cs" />
+    <Compile Include="HardwareReleaseEvidence.cs" />
     <Compile Include="IAppLogger.cs" />
     <Compile Include="PeakCaptureWatermark.cs" />
     <Compile Include="PreallocatedSpscRing.cs" />

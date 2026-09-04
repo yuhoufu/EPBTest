@@ -11883,6 +11883,7 @@ namespace Controller
 
         private void InstallStopPreemptionFence(StopContext context)
         {
+            _supervisedFormal.Invalidate();
             // This is the synchronous linearization point for every StopAll
             // caller.  It runs before the shared stop-task lock and before any
             // stage worker can wait on a recovery/channel gate.  Existing
@@ -11938,6 +11939,13 @@ namespace Controller
                 .OrderBy(channel => channel)
                 .ToArray();
         }
+
+        /// <summary>
+        /// Host must stop/dispose acquisition first. A false result means the
+        /// old writer must remain owned; do not reopen it in this process.
+        /// </summary>
+        public Task<bool> ReleasePersistenceForHostAsync(int timeoutMs)
+            => _persistence.DisposeAfterDrainAsync(Math.Max(1, Math.Min(10000, timeoutMs)));
 
         public void ReleaseHardwareForRestart()
         {

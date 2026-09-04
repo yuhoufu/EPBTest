@@ -101,6 +101,14 @@ namespace AdaptiveControlTests
                     fixture.Manager.HardwareReleaseExecutionCount);
                 Assert(fixture.Ao.IsDisposed && fixture.Ao.ResetAllExecutionCount == 1,
                     "EpbManager没有在Dispose前唯一执行一次AO归零");
+                // 夹具特意登记了 4/10 两路 Energized。释放方法返回不能替代它们的
+                // OFF 观察边界；先验证拒绝，再补入夹具的已结束边沿（不代表实物证明）。
+                Assert(!fixture.Manager.CaptureHardwareReleaseForHost().FullyReleased,
+                    "仍有 Energized 逻辑边界时伪报了整个宿主退出");
+                fixture.Manager.ObserveEnergizationEdge(4, false);
+                fixture.Manager.ObserveEnergizationEdge(10, false);
+                Assert(SpinWait.SpinUntil(() => fixture.Manager.CaptureHardwareReleaseForHost().FullyReleased, 10000),
+                    "NI/逻辑边界均结束后未汇总旧宿主退出事实");
 
                 fixture.Manager.ReleaseHardwareForRestart();
                 Assert(fixture.Manager.HardwareReleaseExecutionCount == 1 &&
@@ -246,8 +254,23 @@ namespace AdaptiveControlTests
 
         private static void AoDisposedOperationsDoNotReportColdStartFailure()
         {
+            var settings = new AoConfig { MinVoltage = 0, MaxVoltage = 10, MinPressure = 0, MaxPressure = 200 };
+            foreach (var offset in new[] { -5.0, 0.0, 5.0 })
+            {
+                var device = new AoDevice { ScaleK = 20, Offset = offset };
+                Assert(AoController.TryResolveSupervisedPressure(settings, device, 0, out var off) && off == 0,
+                    "V3零压力必须写物理0V，不得按截距生成残余电压或负电压");
+                Assert(AoController.TryResolveSupervisedPressure(settings, device, 70, out var active) && active == (70 - offset) / 20,
+                    "V3非零压力必须继续使用实测标定公式");
+                Assert(!AoController.TryResolveSupervisedPressure(settings, device, 201, out _) &&
+                    !AoController.TryResolveSupervisedPressure(settings, device, -1, out _) &&
+                    !AoController.TryResolveSupervisedPressure(settings, device, double.NaN, out _), "V3不得对越界或无效压力限幅后伪报成功");
+            }
+            Assert(!AoController.TryResolveSupervisedPressure(settings, new AoDevice { ScaleK = 20, Offset = 5 }, 1, out _),
+                "不可表示的正压力必须拒绝，不能写负电压");
             var logger = new RecordingAoLogger();
             var ao = new AoController(new AoConfig(), logger);
+            Assert(!ao.TryWriteZeroVoltageAll(), "没有实际AO通道时安全零电压写入不能返回成功");
             Assert(!ao.TryResetAll() && logger.Errors.Any(message =>
                        message.IndexOf("冷启动安全基线写零失败", StringComparison.Ordinal) >= 0),
                 "Dispose前真实AO基线不完整没有保留ERROR");
@@ -256,6 +279,7 @@ namespace AdaptiveControlTests
             ao.Dispose();
             ao.Dispose();
             Assert(!ao.TryResetAll(), "Dispose后的AO归零错误返回成功");
+            Assert(!ao.TryWriteZeroVoltageAll(), "Dispose后的AO安全零电压写入错误返回成功");
             Assert(!ao.WritePressureDetailed("missing", 0).Success,
                 "Dispose后的AO写入错误返回成功");
             Assert(ao.IsDisposed && ao.ResetAllExecutionCount == 1,

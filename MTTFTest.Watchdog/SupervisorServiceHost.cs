@@ -102,6 +102,7 @@ namespace MTTFTest.Watchdog
             new ConcurrentDictionary<string, Task>(StringComparer.OrdinalIgnoreCase);
         private readonly object _mainLaunchGate = new object();
         private Task _acceptLoop;
+        private Task _maintenanceHeartbeatLoop;
         private SupervisorP0AlarmHardwareOwner _p0AlarmOwner;
         private SupervisorRecoveryKernelService _recoveryKernel;
         private int _started;
@@ -118,8 +119,14 @@ namespace MTTFTest.Watchdog
             _p0AlarmOwner = new SupervisorP0AlarmHardwareOwner(
                 executableDirectory,
                 StateDirectory);
-            _recoveryKernel = new SupervisorRecoveryKernelService(WriteAudit);
+            _recoveryKernel = new SupervisorRecoveryKernelService(WriteAudit,
+                (pid, started, session) => IsExactSessionAgentRoleProcess(pid, started, session, ProcessRole.UserInterface),
+                (pid, started, session) => IsExactSessionAgentRoleProcess(pid, started, session, ProcessRole.EngineHost));
             _recoveryKernel.Start();
+            var maintenanceServer = new PressureMaintenanceHeartbeatServer(
+                (pid, started, session) => IsExactSessionAgentRoleProcess(pid, started, session, ProcessRole.UserInterface),
+                heartbeat => _recoveryKernel.RenewPressureMaintenance(heartbeat));
+            _maintenanceHeartbeatLoop = Task.Run(() => maintenanceServer.RunAsync(_stop.Token));
             AuditIgnoredLegacySessionRecords();
             _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
             WriteAudit(
@@ -330,6 +337,56 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     var magic = SupervisorProtocol.ReadRequestMagic(reader);
+                    if (magic == SupervisorUiAttachmentRequest.StateRequestMagic)
+                    {
+                        SupervisorUiAttachmentRequest request = null;
+                        SupervisorUiStateResponse response;
+                        try
+                        {
+                            request = SupervisorUiAttachmentRequest.ReadBodyFrom(reader);
+                            if (!request.IsStructurallyValid() || PipePeerIdentity.ClientProcessId(pipe) != request.RequesterProcessId ||
+                                !IsExactSessionAgentRoleProcess(request.RequesterProcessId, request.RequesterProcessStartUtcTicks,
+                                    request.SessionId, ProcessRole.UserInterface))
+                                throw new InvalidDataException("UiStateRequesterNotAuthorized");
+                            response = new SupervisorUiStateResponse
+                            {
+                                RequestId = request.RequestId, ChallengeNonce = request.ChallengeNonce,
+                                Accepted = true, State = _recoveryKernel?.ReadUiState(request.SessionId) ?? new EngineUiKernelState()
+                            };
+                        }
+                        catch (Exception ex)
+                        {
+                            response = new SupervisorUiStateResponse
+                            { RequestId = request?.RequestId ?? string.Empty, ChallengeNonce = request?.ChallengeNonce ?? string.Empty, Detail = ex.GetBaseException().Message };
+                        }
+                        response.WriteTo(writer); return;
+                    }
+                    if (string.Equals(magic, SupervisorUiAttachmentRequest.Magic, StringComparison.Ordinal))
+                    {
+                        SupervisorUiAttachmentRequest request = null;
+                        SupervisorUiAttachmentResponse response;
+                        try
+                        {
+                            request = SupervisorUiAttachmentRequest.ReadBodyFrom(reader);
+                            if (request?.IsStructurallyValid() != true ||
+                                PipePeerIdentity.ClientProcessId(pipe) != request.RequesterProcessId ||
+                                !IsExactSessionAgentRoleProcess(request.RequesterProcessId,
+                                    request.RequesterProcessStartUtcTicks, request.SessionId, ProcessRole.UserInterface))
+                                throw new InvalidDataException("UiAttachmentRequesterNotAuthorized");
+                            response = ReadUiAttachment(request);
+                        }
+                        catch (Exception ex)
+                        {
+                            response = new SupervisorUiAttachmentResponse
+                            {
+                                RequestId = request?.RequestId ?? string.Empty,
+                                ChallengeNonce = request?.ChallengeNonce ?? string.Empty,
+                                Detail = ex.GetBaseException().Message
+                            };
+                        }
+                        response.WriteTo(writer);
+                        return;
+                    }
                     if (string.Equals(
                             magic,
                             SupervisorProtocol.MainLaunchRequestMagic,
@@ -361,7 +418,7 @@ namespace MTTFTest.Watchdog
                     if (string.Equals(
                             magic,
                             SupervisorProtocol.OperatorCommandRequestMagic,
-                            StringComparison.Ordinal))
+                            StringComparison.Ordinal) || magic == SupervisorProtocol.OperatorCommandQueryMagic)
                     {
                         SupervisorOperatorCommandRequest request = null;
                         SupervisorOperatorCommandResponse response;
@@ -369,6 +426,8 @@ namespace MTTFTest.Watchdog
                         {
                             request = SupervisorOperatorCommandRequest.ReadBodyFrom(
                                 reader, magic);
+                            if (PipePeerIdentity.ClientProcessId(pipe) != request.RequesterProcessId)
+                                throw new InvalidDataException("OperatorCommandPipePeerMismatch");
                             response = ApplyOperatorCommand(request);
                         }
                         catch (Exception ex)
@@ -649,77 +708,15 @@ namespace MTTFTest.Watchdog
                 var permitId = request.IsRecoveryLaunch
                     ? request.RecoveryPermitId
                     : Guid.NewGuid().ToString("N");
-                string engineRunId;
-                long engineRunEpoch;
-                if (request.IsRecoveryLaunch)
-                {
-                    var engine = EngineHostPipeClient.ReadSnapshot(3000);
-                    if (!string.Equals(engine.SessionId, sessionId,
-                            StringComparison.Ordinal) || engine.RunEpoch <= 0)
-                        throw new InvalidDataException(
-                            "SupervisorUiRecoveryEngineIdentityMismatch");
-                    engineRunId = engine.RunId;
-                    engineRunEpoch = engine.RunEpoch;
-                }
-                else
-                {
-                    EngineStateSnapshot existingEngine = null;
-                    try
-                    {
-                        existingEngine = EngineHostPipeClient.ReadSnapshot(3000);
-                    }
-                    catch (Exception ex)
-                    {
-                        WriteAudit(
-                            "SupervisorInitialUiEngineProbeUnavailable",
-                            ex.GetBaseException().Message);
-                    }
-                    if (TryBindExistingEngineHostForUserInterface(
-                            existingEngine,
-                            out sessionId,
-                            out engineRunId,
-                            out engineRunEpoch))
-                    {
-                        WriteAudit(
-                            "SupervisorInitialUiReusedEngineHost",
-                            $"Session={sessionId};Run={engineRunId};" +
-                            $"Epoch={engineRunEpoch};" +
-                            $"State={existingEngine.State};" +
-                            $"HardwareInitialized={existingEngine.HardwareInitialized}");
-                    }
-                    else
-                    {
-                        sessionId = Guid.NewGuid().ToString("N");
-                        engineRunId = Guid.NewGuid().ToString("N");
-                        engineRunEpoch = 1;
-                        try
-                        {
-                            LaunchEngineHostThroughSessionAgent(
-                                launcherDirectory,
-                                targetDesktopSessionId,
-                                sessionId,
-                                engineRunId,
-                                engineRunEpoch);
-                        }
-                        catch (InvalidOperationException ex) when (
-                            ex.Message.IndexOf(
-                                "ProcessRoleAlreadyRunning:EngineHost",
-                                StringComparison.Ordinal) >= 0)
-                        {
-                            existingEngine = WaitForExistingEngineHostForUserInterface(5000);
-                            if (!TryBindExistingEngineHostForUserInterface(
-                                    existingEngine,
-                                    out sessionId,
-                                    out engineRunId,
-                                    out engineRunEpoch))
-                                throw;
-                            WriteAudit(
-                                "SupervisorInitialUiReusedRacingEngineHost",
-                                $"Session={sessionId};Run={engineRunId};" +
-                                $"Epoch={engineRunEpoch};State={existingEngine.State}");
-                        }
-                    }
-                }
+                if (_recoveryKernel == null) throw new InvalidOperationException("RecoveryKernelUnavailable");
+                var environment = _recoveryKernel.ResolveUserInterfaceEnvironment(plan =>
+                    LaunchEngineHostThroughSessionAgent(launcherDirectory, targetDesktopSessionId,
+                        plan.SessionId, plan.RunId, plan.RunEpoch), request.IsRecoveryLaunch ? sessionId : null);
+                if (request.IsRecoveryLaunch && environment.SessionId != sessionId)
+                    throw new InvalidDataException("SupervisorUiRecoveryDurableSessionMismatch");
+                sessionId = environment.SessionId;
+                var engineRunId = environment.RunId;
+                var engineRunEpoch = environment.RunEpoch;
                 var launchNonce = Guid.NewGuid().ToString("N");
                 var uiBaseArguments = (request.Arguments ?? string.Empty) +
                                       " --engine-run " + engineRunId +
@@ -1139,6 +1136,46 @@ namespace MTTFTest.Watchdog
             };
         }
 
+        private SupervisorUiAttachmentResponse ReadUiAttachment(SupervisorUiAttachmentRequest request)
+        {
+            var engineRequest = new EngineHostRequest
+            {
+                RequestId = RecoveryProtocolV7.NewId(), Kind = EngineHostRequestKind.ReadLatestSnapshot
+            };
+            var json = new System.Web.Script.Serialization.JavaScriptSerializer
+            { MaxJsonLength = EngineHostProtocol.MaximumRequestBytes };
+            var engineProcessId = 0;
+            long engineStarted = 0;
+            var bytes = BoundedPipeTransport.ExchangeAsync(EngineHostProtocol.PipeName,
+                Encoding.UTF8.GetBytes(json.Serialize(engineRequest)), 3000, EngineHostProtocol.MaximumRequestBytes,
+                CancellationToken.None, peer =>
+                {
+                    engineProcessId = PipePeerIdentity.ServerProcessId(peer);
+                    using (var process = Process.GetProcessById(engineProcessId))
+                        engineStarted = process.StartTime.ToUniversalTime().Ticks;
+                    if (!IsExactSessionAgentRoleProcess(engineProcessId, engineStarted,
+                            request.SessionId, ProcessRole.EngineHost))
+                        throw new InvalidDataException("UiAttachmentEngineNotAuthorized");
+                }).GetAwaiter().GetResult();
+            var result = json.Deserialize<EngineHostResponse>(Encoding.UTF8.GetString(bytes));
+            if (result?.Accepted != true || result.RequestId != engineRequest.RequestId ||
+                result.SchemaVersion != EngineHostProtocol.SchemaVersion ||
+                result.Snapshot?.IsStructurallyValid() != true || result.Snapshot.SessionId != request.SessionId)
+                throw new InvalidDataException("UiAttachmentEngineResponseInvalid");
+            var attachment = new SupervisorUiAttachmentResponse
+            {
+                RequestId = request.RequestId, ChallengeNonce = request.ChallengeNonce, Accepted = true,
+                Engine = result.Snapshot, EngineProcessId = engineProcessId,
+                ApprovedDesiredState = _recoveryKernel?.ReadUiState(request.SessionId),
+                EngineProcessStartUtcTicks = engineStarted, Detail = "SupervisorVerifiedEngineAttachment"
+            };
+            attachment.InitialObservationOnly = attachment.ApprovedDesiredState?.Available != true &&
+                _recoveryKernel?.CanObserveInitialEngine(result.Snapshot) == true;
+            if (!attachment.ApprovesRun(request.SessionId, result.Snapshot.RunId, result.Snapshot.RunEpoch, DateTime.UtcNow.Ticks))
+                throw new InvalidDataException("UiAttachmentEngineNotCurrentDurableRun");
+            return attachment;
+        }
+
         private SupervisorOperatorCommandResponse ApplyOperatorCommand(
             SupervisorOperatorCommandRequest request)
         {
@@ -1153,21 +1190,28 @@ namespace MTTFTest.Watchdog
                     "SupervisorOperatorRequesterNotAuthorizedUi");
             if (_recoveryKernel == null)
                 throw new InvalidOperationException("RecoveryKernelUnavailable");
-            var decision = _recoveryKernel.SubmitOperatorCommand(request.Command);
+            if (request.Command.PressureMaintenance != null &&
+                (request.Command.PressureMaintenance.UiProcessId != request.RequesterProcessId ||
+                 request.Command.PressureMaintenance.UiProcessStartUtcTicks != request.RequesterProcessStartUtcTicks))
+                throw new InvalidDataException("MaintenanceCommandUiBindingMismatch");
+            var decision = _recoveryKernel.SubmitOperatorCommand(request.Command, request.QueryOnly);
             return new SupervisorOperatorCommandResponse
             {
                 RequestId = request.RequestId,
                 ChallengeNonce = request.ChallengeNonce,
-                Accepted = true,
-                IncidentId = decision.Intent?.Identity?.IncidentId ?? string.Empty,
-                OwnerId = decision.Intent?.OwnerId ?? string.Empty,
-                DesiredState = decision.DesiredState?.State ??
+                Accepted = decision?.Accepted == true,
+                IncidentId = decision?.IncidentId ?? string.Empty,
+                OwnerId = decision?.OwnerId ?? string.Empty,
+                DesiredState = decision?.DesiredState ??
                                SystemTerminalState.SafeIdleAlarmed,
-                Detail = decision.Reason
+                FailureCode = decision?.FailureCode ?? "OperatorCommandNotFound",
+                ExecutionCompleted = decision?.ExecutionCompleted == true,
+                ExecutionSucceeded = decision?.ExecutionSucceeded == true,
+                Detail = decision?.Detail ?? "原命令尚未登记；只允许查询或使用原 ID 重试。"
             };
         }
 
-        private static bool IsExactSessionAgentRoleProcess(
+        internal static bool IsExactSessionAgentRoleProcess(
             int processId,
             long processStartUtcTicks,
             string sessionId,
@@ -1810,6 +1854,7 @@ namespace MTTFTest.Watchdog
         {
             try { _stop.Cancel(); } catch { }
             try { _acceptLoop?.Wait(3000); } catch { }
+            try { _maintenanceHeartbeatLoop?.Wait(3000); } catch { }
             try { _recoveryKernel?.Dispose(); } catch { }
             _recoveryKernel = null;
             foreach (var session in _sessions.Values)

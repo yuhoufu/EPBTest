@@ -23,7 +23,6 @@ namespace MTEmbTest
     public partial class FrmRawPlayBack : Form
     {
         private const int canRawLogRecordLens = 76;
-        private static int daqRawLogRecordLens = 76;
 
         private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale = new();
         private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceOffset = new();
@@ -91,6 +90,7 @@ namespace MTEmbTest
         private string SafeFile = "";
         private string selectedPath = "";
         private TestConfig testConfig;
+        private string _loadedSourcePath;
         private double XAxisMax;
 
         private double XAxisMin;
@@ -99,6 +99,7 @@ namespace MTEmbTest
         public FrmRawPlayBack()
         {
             InitializeComponent();
+            InitializeHistoryClient();
             // 创建自定义标题栏
             var titleBar = new Panel
             {
@@ -290,31 +291,18 @@ namespace MTEmbTest
         private void FrmPlayBack_Load(object sender, EventArgs e)
         {
             InitializeCurve();
-
-            // 方向和接收帧ID关系  如RL-1536
-            MakeDirectionMapping();
-
-            EpbName = CmbEpbNo.Text; // 默认EPB1
-
-
+            EpbName = CmbEpbNo.Text;
+            int.TryParse(EpbName.Replace("EPB", string.Empty), out EpbNo);
             bgwA = new BackgroundWorker();
             bgwA.WorkerReportsProgress = true;
             bgwA.DoWork += bgwA_DoWork;
             bgwA.RunWorkerCompleted += bgwA_Completed;
+            UpdateHistoryAvailability();
         }
 
         private void bgwA_DoWork(object sender, DoWorkEventArgs e)
         {
-            try
-            {
-                var bgworker = sender as BackgroundWorker;
-                var FileName = e.Argument.ToString();
-                ReadData(FileName);
-            }
-
-            catch (Exception ex)
-            {
-            }
+            ReadRawHistory((string)e.Argument);
         }
 
 
@@ -394,60 +382,7 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
         {
-            // 检查DAQ数据是否有效
-            if (DaqCurrent is { Length: > 0 })
-            {
-                // 对DAQ电流数据进行中值滤波
-                filterCurrent = ClsDataFilter.MakeMedianFilterReducePoint(ref DaqCurrent, ClsGlobal.MedianLens);
-
-                // 计算滤波后的数据长度和时间间隔
-                var daqspan = 1.0 / ClsGlobal.DaqFrequency * ClsGlobal.MedianLens;
-                var DaqDataLens = DaqCurrent.Length / ClsGlobal.MedianLens;
-
-                // 初始化滤波后的时间相关数组
-                FilterDaqRelTime = new double[DaqDataLens];
-                FilterDaqBrakeNo = new int[DaqDataLens];
-                FilterDaqTime = new DateTime[DaqDataLens];
-
-                // 填充滤波后的时间数据
-                for (var i = 0; i < DaqDataLens; i++)
-                {
-                    FilterDaqTime[i] = DaqSourceTime[i * ClsGlobal.MedianLens];
-                    FilterDaqRelTime[i] =
-                        DaqSourceTime[i * ClsGlobal.MedianLens].Subtract(DaqSourceTime[0]).TotalSeconds;
-                    FilterDaqBrakeNo[i] = DaqBrakeNo[i * ClsGlobal.MedianLens];
-                }
-
-                // 将滤波后的数据添加到图表列表
-                for (var i = 0; i < DaqDataLens; i++) listDaqCurrent.Add(FilterDaqRelTime[i], filterCurrent[i]);
-
-                // 更新UI显示 -- 有bug，暂时注释
-                /*RtbTestInfo.Clear();
-                RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
-                RtbTestInfo.AppendText("试验环境: " + testConfig.TestEnvir + "\n");
-                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
-                RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");*/
-
-                // 隐藏进度条并处理UI事件
-                ProgressShow.Visible = false;
-                Application.DoEvents();
-
-                // 设置图表X轴范围
-                zedGraphControlHistory.GraphPane.XAxis.Scale.Max = FilterDaqRelTime[FilterDaqRelTime.Length - 1];
-                zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
-
-                // 更新全局变量
-                XAxisMin = 0.0;
-                XAxisMax = FilterDaqRelTime[FilterDaqRelTime.Length - 1];
-
-                // 刷新图表
-                zedGraphControlHistory.AxisChange();
-                zedGraphControlHistory.Invalidate();
-            }
-            else
-            {
-                MessageBox.Show("DAQ记录数据为空！");
-            }
+            CompleteRawHistory(e);
         }
 
         /// <summary>
@@ -530,48 +465,7 @@ namespace MTEmbTest
 
         private void ReadData(string FileName)
         {
-            try
-            {
-                var daqFile = FileName;
-
-                using (var fs = new FileStream(daqFile, FileMode.Open))
-                {
-                    var sr = new BinaryReader(fs);
-                    var FileLens = (int)fs.Length;
-
-                    daqRawLogRecordLens = EpbNo <= 8 ? 76 : 68; // 1~8 归属 Dev1， 9~12 归属Dev2 后续还要修改
-
-                    var Frames = FileLens / daqRawLogRecordLens;
-
-
-                    DaqCurrent = new double[Frames];
-                    DaqSourceTime = new DateTime[Frames];
-                    DaqBrakeNo = new int[Frames];
-
-                    // 根据EPB的编号来得到数据在数采卡的存储序号
-                    var idx = EpbNo <= 8 ? EpbNo : EpbNo - 8; // 1~8 归属 Dev1， 9~12 归属Dev2 后续还要修改
-
-                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
-                    {
-                        DaqBrakeNo[i] = sr.ReadInt32();
-                        DaqSourceTime[i] = DateTime.FromFileTime(sr.ReadInt64());
-
-                        var Data = sr.ReadBytes(daqRawLogRecordLens - 12);
-
-                        var currentRaw = BitConverter.ToDouble(Data, (idx - 1) * 8);
-
-                        DaqCurrent[i] = (currentRaw - ParaNameToZeroValue[EpbName]) * ParaNameToScale[EpbName] +
-                                        ParaNameToOffset[EpbName];
-                    }
-
-                    sr.Close();
-                    fs.Close();
-                }
-            }
-            catch (Exception ex)
-            {
-                // ex.Message;
-            }
+            ReadRawHistory(FileName);
         }
 
 
@@ -662,99 +556,9 @@ namespace MTEmbTest
         ///     并将DAQ数据导出到用户选择的CSV文件中。
         ///     所有CAN总线相关数据处理逻辑已被移除，仅保留DAQ数据导出功能。
         /// </remarks>
-        private void BtnExportFile_Click(object sender, EventArgs e)
+        private async void BtnExportFile_Click(object sender, EventArgs e)
         {
-            // 检查数据是否可用
-            if (FilterDaqTime == null || FilterDaqTime.Length == 0)
-            {
-                MessageBox.Show(
-                    @"数据集为空，无法导出！",
-                    @"导出失败",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning
-                );
-                return;
-            }
-
-            // 创建并配置保存文件对话框
-            using (var saveFileDialog = new SaveFileDialog())
-            {
-                saveFileDialog.Filter = @"CSV files (*.csv)|*.csv|All files (*.*)|*.*";
-                saveFileDialog.Title = @"导出DAQ数据到CSV";
-                saveFileDialog.FileName = ExportFile;
-                saveFileDialog.OverwritePrompt = true; // 覆盖确认提示
-                saveFileDialog.AddExtension = true; // 自动添加扩展名
-
-                // 显示对话框并处理用户选择
-                if (saveFileDialog.ShowDialog() == DialogResult.OK)
-                {
-                    try
-                    {
-                        // 显示进度指示器
-                        ProgressShow.Visible = true;
-                        ProgressShow.BringToFront(); // 确保在最上层
-                        Application.DoEvents(); // 允许UI更新
-
-                        // 调用仅处理DAQ数据的导出方法
-                        ExportDaqData(
-                            FilterDaqTime,
-                            FilterDaqRelTime,
-                            FilterDaqBrakeNo,
-                            filterCurrent,
-                            // DaqCurrent, // 如果需要导出原始数据启用
-                            saveFileDialog.FileName
-                        );
-
-                        // 隐藏进度指示器
-                        ProgressShow.Visible = false;
-                        Application.DoEvents(); // 允许UI更新
-
-                        // 显示成功消息
-                        MessageBox.Show(
-                            @"数据导出完成！",
-                            @"导出成功",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information
-                        );
-                    }
-                    catch (IOException ioEx)
-                    {
-                        // 处理文件IO相关异常
-                        ProgressShow.Visible = false;
-                        MessageBox.Show(
-                            $"文件写入失败: {ioEx.Message}\n\n请检查文件路径和权限。",
-                            @"导出错误",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error
-                        );
-                    }
-                    catch (ArgumentException argEx)
-                    {
-                        // 处理参数错误异常
-                        ProgressShow.Visible = false;
-                        MessageBox.Show(
-                            $"数据格式错误: {argEx.Message}\n\n请确保数据完整性。",
-                            @"导出错误",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error
-                        );
-                    }
-                    catch (Exception ex)
-                    {
-                        // 处理其他未知异常
-                        ProgressShow.Visible = false;
-                        MessageBox.Show(
-                            $"导出过程中发生未知错误: {ex.Message}",
-                            @"导出错误",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error
-                        );
-
-                        // 可选：记录详细错误信息到日志
-                        Debug.WriteLine($"导出错误: {ex}");
-                    }
-                }
-            }
+            await ChooseHistoryExportAsync();
         }
 
 
@@ -884,78 +688,9 @@ namespace MTEmbTest
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private void BtnChoiceFolder_Click(object sender, EventArgs e)
+        private async void BtnChoiceFolder_Click(object sender, EventArgs e)
         {
-            using (var folderDialog = new FolderBrowserDialog())
-            {
-                folderDialog.Description = @"选择文件夹";
-                folderDialog.ShowNewFolderButton = false;
-                folderDialog.SelectedPath = @"D:\Github\wanxiang\EPBTest\MTTfTest\bin\Debug\DataStore\"; // 默认选中的路径
-
-                if (folderDialog.ShowDialog() == DialogResult.OK)
-                {
-                    selectedPath = folderDialog.SelectedPath;
-
-                    try
-                    {
-                        EpbNo = int.Parse(CmbEpbNo.Text.Replace("EPB", ""));
-                        EpbName = CmbEpbNo.Text;
-                        var dev = EpbNo <= 8 ? "Dev1" : "Dev2"; // 1~8 归属 Dev1， 9~12 归属Dev2 后续还要修改
-
-                        // 获取文件夹中所有文件
-                        allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
-                        // var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" + EpbNo + "_Raw", "bin")) // 暂时注释
-                        var SelectPart = allFiles
-                            .Where(file => FilterCondition(file, $"DAQ_{dev}_Raw", "bin")) // 指定显示Dev1的记录文件
-                            .OrderBy(file => file.CreationTime) // 按创建时间升序
-                            .ToArray();
-
-                        // 提取纯文件名（不含路径）
-                        var fileNames = SelectPart
-                            .Select(file => file.Name)
-                            .ToArray();
-
-                        LbFileList.Items.Clear();
-                        LbFileList.Items.AddRange(fileNames);
-
-                        var xmlPath = Path.Combine(selectedPath, @"TestConfig.xml");
-                        // LoadTestConfigFromXml(xmlPath); // 暂时注释
-
-                        xmlPath = Path.Combine(selectedPath, @"EMBControl.XML");
-                        //LoadEMBHandlerAndFrameNo(xmlPath); // 暂时注释
-
-
-                        // LoadCanDbc();
-
-                        var currentDev = EpbNo <= 8 ? "Dev1" : "Dev2";
-
-
-                        var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", currentDev,
-                            out ParaNameToScale);
-                        if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
-                        {
-                            MessageBox.Show(ReadMsg);
-                            return;
-                        }
-
-                        ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", currentDev,
-                            out ParaNameToOffset);
-                        if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
-                        {
-                            MessageBox.Show(ReadMsg);
-                            return;
-                        }
-
-                        ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", currentDev,
-                            out ParaNameToZeroValue);
-                        if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0) MessageBox.Show(ReadMsg);
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($@"错误: {ex.Message}");
-                    }
-                }
-            }
+            await ChooseHistoryDirectoryAsync();
         }
 
 
@@ -985,48 +720,8 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void LbFileList_DoubleClick(object sender, EventArgs e)
         {
-            try
-            {
-                SafeFile = LbFileList.SelectedItem.ToString();
-                var CurFileName = selectedPath + "\\" + SafeFile;
-                ExportFile = CurFileName.Replace(".bin", ".csv");
-
-
-                CanForce = null;
-                CanCurrent = null;
-                CanBrakeNo = null;
-                CanSourceTime = null;
-                DaqBrakeNo = null;
-                DaqSourceTime = null;
-                DaqCurrent = null;
-                filterCurrent = null;
-                CanRelTime = null;
-                FilterDaqRelTime = null;
-                FilterDaqBrakeNo = null;
-                FilterDaqTime = null;
-
-                listForce.Clear();
-                listDaqCurrent.Clear();
-                listCanCurrent.Clear();
-                zedGraphControlHistory.AxisChange();
-                zedGraphControlHistory.Invalidate();
-
-                ProgressShow.Location = new Point(
-                    zedGraphControlHistory.Left + (zedGraphControlHistory.Width - ProgressShow.Width) / 2,
-                    zedGraphControlHistory.Top + (zedGraphControlHistory.Height - ProgressShow.Height) / 2
-                );
-
-                ProgressShow.Visible = true;
-                ProgressShow.BringToFront(); // 确保在最上层
-                Application.DoEvents();
-
-
-                bgwA.RunWorkerAsync(CurFileName);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
+            if (LbFileList.SelectedItem == null) return;
+            OpenHistoryFile(Path.Combine(selectedPath, LbFileList.SelectedItem.ToString()));
         }
 
         public void LoadTestConfigFromXml(string xmlPath)
@@ -1080,54 +775,9 @@ namespace MTEmbTest
             }
         }
 
-        private void CmbEmbNo_SelectedIndexChanged(object sender, EventArgs e)
+        private async void CmbEmbNo_SelectedIndexChanged(object sender, EventArgs e)
         {
-            EpbNo = int.Parse(CmbEpbNo.Text.Replace("EPB", ""));
-            EpbName = CmbEpbNo.Text;
-
-            if (selectedPath.Length < 1) return;
-
-
-            // DAQ_Dev2_Raw_1
-
-            var currentDev = EpbNo <= 8 ? "Dev1" : "Dev2";
-
-
-            // 获取文件夹中所有文件
-            allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
-            var SelectPart = allFiles.Where(file => FilterCondition(file, $"DAQ_{currentDev}_Raw", "bin"))
-                .OrderBy(file => file.CreationTime) // 按创建时间升序
-                .ToArray();
-
-            // 更新ParaNameToScale、 ParaNameToOffset、ParaNameToZeroValue
-            var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", currentDev,
-                out ParaNameToScale);
-            if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
-            {
-                MessageBox.Show(ReadMsg);
-                return;
-            }
-
-            ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", currentDev,
-                out ParaNameToOffset);
-            if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
-            {
-                MessageBox.Show(ReadMsg);
-                return;
-            }
-
-            ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", currentDev,
-                out ParaNameToZeroValue);
-            if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0) MessageBox.Show(ReadMsg);
-
-
-            // 提取纯文件名（不含路径）
-            var fileNames = SelectPart
-                .Select(file => file.Name)
-                .ToArray();
-
-            LbFileList.Items.Clear();
-            LbFileList.Items.AddRange(fileNames);
+            await ChangeHistoryChannelAsync();
         }
 
 
@@ -1283,67 +933,8 @@ namespace MTEmbTest
             double[] filterCurrent,
             string ExportFileName)
         {
-            // 验证输入参数有效性
-            if (FilterDaqTime == null)
-                throw new ArgumentNullException(nameof(FilterDaqTime), "FilterDaqTime数组不能为null");
-            if (FilterDaqRelTime == null)
-                throw new ArgumentNullException(nameof(FilterDaqRelTime), "FilterDaqRelTime数组不能为null");
-            if (FilterDaqBrakeNo == null)
-                throw new ArgumentNullException(nameof(FilterDaqBrakeNo), "FilterDaqBrakeNo数组不能为null");
-            if (filterCurrent == null)
-                throw new ArgumentNullException(nameof(filterCurrent), "filterCurrent数组不能为null");
-            if (string.IsNullOrWhiteSpace(ExportFileName))
-                throw new ArgumentException("导出文件名不能为空或空白", nameof(ExportFileName));
-
-            // 验证数组长度一致性
-            var baseLength = FilterDaqBrakeNo.Length;
-            if (FilterDaqTime.Length != baseLength ||
-                FilterDaqRelTime.Length != baseLength ||
-                filterCurrent.Length != baseLength)
-            {
-                throw new ArgumentException(
-                    "所有输入数组必须具有相同的长度: " +
-                    $"FilterDaqTime({FilterDaqTime.Length}), " +
-                    $"FilterDaqRelTime({FilterDaqRelTime.Length}), " +
-                    $"FilterDaqBrakeNo({FilterDaqBrakeNo.Length}), " +
-                    $"filterCurrent({filterCurrent.Length})");
-            }
-
-            // 确保输出目录存在
-            var directory = Path.GetDirectoryName(ExportFileName);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            try
-            {
-                // 使用UTF-8编码写入CSV文件，确保兼容中文等特殊字符
-                using (var writer = new StreamWriter(ExportFileName, false, Encoding.UTF8))
-                {
-                    // 写入CSV文件标题行
-                    writer.WriteLine("TimeStamp,RelTime,DAQBrakeNo,DAQCurrent");
-
-                    // 写入所有数据行
-                    for (var i = 0; i < baseLength; i++)
-                    {
-                        // 格式化并写入数据行
-                        writer.WriteLine(
-                            $"{FilterDaqTime[i]:yyyy-MM-dd HH:mm:ss.fff}," + // 时间戳格式化为标准格式
-                            $"{FilterDaqRelTime[i]:F3}," + // 相对时间保留3位小数
-                            $"{FilterDaqBrakeNo[i]}," + // 刹车编号
-                            $"{filterCurrent[i]:F3}"); // 电流值保留3位小数
-                    }
-                }
-
-                // 可选：记录导出成功信息
-                Console.WriteLine($"DAQ数据已成功导出到: {ExportFileName}");
-            }
-            catch (Exception ex)
-            {
-                // 包装并重新抛出异常，保留原始异常信息
-                throw new IOException($"导出数据到文件 '{ExportFileName}' 失败", ex);
-            }
+            if (_historyResult == null) throw new InvalidOperationException("尚未读取历史源文件。");
+            Playback.HistoryFileReader.Export(_historyResult, ExportFileName, true, _historyStop.Token);
         }
 
 
@@ -1381,6 +972,7 @@ namespace MTEmbTest
             // 刷新图表
             zedGraphControlHistory.AxisChange();
             zedGraphControlHistory.Invalidate();
+            RequestRawDetail();
         }
     }
 }

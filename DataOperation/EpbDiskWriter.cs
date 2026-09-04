@@ -70,6 +70,9 @@ public sealed class DataRetentionPolicy
     /// <summary>SQLite 索引文件名（默认 "index.db"）。</summary>
     public string IndexDbFile { get; set; } = "index.db";
 
+    /// <summary>V3正式提交要求SQLite FULL同步；旧宿主保留既有默认行为。</summary>
+    public bool RequireDurableCommits { get; set; }
+
     /// <summary>活动圈最大样本数；0表示不单独限制。</summary>
     public int MaxActiveCycleRecords { get; set; }
 
@@ -140,7 +143,7 @@ public enum StopTrigger
 ///     EpbDiskWriter：12 路 EPB 的内存映射数据写入 + SQLite 圈级索引 + 最新 N 圈保留/落盘。<br />
 ///     —— 已改为“分块视图（窗口化映射）”，避免整文件映射导致“内存资源不足”。 ——
 /// </summary>
-public sealed class EpbDiskWriter : IDisposable
+public sealed partial class EpbDiskWriter : IDisposable
 {
     private const string CSV_HEADER =
         "Timestamp,RelativeTimeSeconds,Cycle,SampleIndex,EpbCurrent,GroupPressure";
@@ -326,7 +329,9 @@ public sealed class EpbDiskWriter : IDisposable
         // SQLite 连接：index.db 放在 _indexDir 下
         var dbPath = Path.Combine(_indexDir, _policy.IndexDbFile ?? "index.db");
         _conn = new SQLiteConnection(
-            $"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous=Normal");
+            $"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous={(_policy.RequireDurableCommits ? "Full" : "Normal")}");
+        try
+        {
         _conn.Open();
         RecoverAndValidateSqliteWal();
         InitSchema();
@@ -357,6 +362,14 @@ public sealed class EpbDiskWriter : IDisposable
             _states[ch].TotalWritten = RestoreNextWritePosition(
                 ch,
                 _states[ch].CapacityRecords);
+        }
+        }
+        catch
+        {
+            // A failed constructor must not retain an index/MMF handle and prevent
+            // a later, Supervisor-owned replacement from reopening this project.
+            Dispose();
+            throw;
         }
     }
 
@@ -460,6 +473,7 @@ public sealed class EpbDiskWriter : IDisposable
         for (var ch = 1; ch <= EPB_COUNT; ch++)
         {
             var state = _states[ch];
+            if (state == null) continue; // Partially failed construction.
             lock (state.Gate)
             {
                 try
@@ -3129,10 +3143,7 @@ public sealed class EpbDiskWriter : IDisposable
         {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
-SELECT COALESCE(MAX(cycle_number), 0)
-  FROM {TABLE_CYCLES}
- WHERE epb_id=@e
-   AND cycle_number > 0";
+SELECT last_formal_number FROM cycle_progress WHERE epb_id=@e";
         cmd.Parameters.AddWithValue("@e", epbId);
         var obj = cmd.ExecuteScalar();
         return Convert.ToInt32(obj);
@@ -3446,6 +3457,7 @@ CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number
         EnsureCycleColumn("recovery_transaction_id", "TEXT");
         BackfillCycleTerminationReasons();
         BackfillCertainMechanicalCompletionFacts();
+        InitializeDurableProgress();
         }
     }
 
@@ -3530,8 +3542,7 @@ UPDATE {TABLE_CYCLES}
         {
             using var cmd = _conn.CreateCommand();
             cmd.CommandText = $@"
-SELECT COUNT(*) FROM {TABLE_CYCLES}
- WHERE epb_id=@e AND mechanical_completed=1";
+SELECT mechanical_completed FROM cycle_progress WHERE epb_id=@e";
             cmd.Parameters.AddWithValue("@e", epbId);
             return Math.Max(0L, Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture));
         }
@@ -4319,7 +4330,7 @@ public interface IMechanicalCycleRecorder
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ISequencedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ISequencedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder, IFormalCycleProgressRecorder
 {
     private readonly EpbDiskWriter _writer;
 
@@ -4487,6 +4498,9 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ISequencedEpb
 
     public long GetMechanicalCycleCompletedCount(int epbId)
         => _writer.GetMechanicalCycleCompletedCount(epbId);
+
+    public int GetCompletedFormalCycleCount(int epbId)
+        => _writer.GetCompletedFormalCycleCount(epbId);
 
     public DateTime? GetLastMechanicalCycleCompletedUtc(int epbId)
         => _writer.GetLastMechanicalCycleCompletedUtc(epbId);

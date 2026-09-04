@@ -332,6 +332,7 @@ namespace IO.NI
             private readonly object _admissionStopGate = new object();
             private readonly string _workerName;
             private readonly bool _combineDistinctChannels;
+            private readonly HardwareReleaseEvidence _releaseEvidence;
 
             private volatile bool _stopping;
             private int _pendingWorkItems;
@@ -346,8 +347,10 @@ namespace IO.NI
             // 仅供并发回归在“索引登记后、物理环入队前”建立确定性交叉点。
             internal Action AdmissionIndexedTestHook { get; set; }
 
-            internal HighPriorityDoWorker(string workerName, bool combineDistinctChannels = true)
+            internal HighPriorityDoWorker(string workerName, bool combineDistinctChannels = true,
+                HardwareReleaseEvidence releaseEvidence = null)
             {
+                _releaseEvidence = releaseEvidence;
                 _workerName = string.IsNullOrWhiteSpace(workerName) ? "Unknown" : workerName.Trim();
                 _combineDistinctChannels = combineDistinctChannels;
                 for (var slotIndex = 0; slotIndex < _workItems.Length; slotIndex++)
@@ -363,7 +366,13 @@ namespace IO.NI
                 lock (_startGate)
                 {
                     if (_thread != null || _stopping) return;
-                    var t = new Thread(Loop)
+                    var workerLease = _releaseEvidence?.RegisterCallback();
+                    var completionLease = _releaseEvidence?.RegisterCallback();
+                    var t = new Thread(() =>
+                    {
+                        try { Loop(); }
+                        finally { workerLease?.Dispose(); }
+                    })
                     {
                         IsBackground = true,
                         Name = "DO-HP-" + _workerName,
@@ -372,14 +381,26 @@ namespace IO.NI
 
                     _thread = t;
                     Interlocked.Increment(ref _completionProducerCount);
-                    _completionThread = new Thread(CompletionLoop)
+                    _completionThread = new Thread(() =>
+                    {
+                        try { CompletionLoop(); }
+                        finally { completionLease?.Dispose(); }
+                    })
                     {
                         IsBackground = true,
                         Name = "DO-Completion-" + _workerName,
                         Priority = ThreadPriority.Normal
                     };
-                    _completionThread.Start();
-                    t.Start();
+                    try
+                    {
+                        _completionThread.Start();
+                        t.Start();
+                    }
+                    catch (Exception ex)
+                    {
+                        _releaseEvidence?.RecordFailure("DO worker start", ex);
+                        throw;
+                    }
                 }
             }
 
@@ -821,8 +842,10 @@ namespace IO.NI
 
             public void Dispose()
             {
-                lock (_admissionStopGate)
-                    _stopping = true;
+                // 不允许 Dispose 检查到 null 线程后，StartIfNeeded 才启动它。
+                lock (_startGate)
+                    lock (_admissionStopGate)
+                        _stopping = true;
                 try { _signal.Set(); } catch { /* ignore */ }
                 try { _completionSignal.Set(); } catch { /* ignore */ }
                 var thread = _thread;
@@ -874,10 +897,10 @@ namespace IO.NI
         /// <summary>每个 NI 设备的上下文。</summary>
         private sealed class DoDevice
         {
-            public DoDevice(string name)
+            public DoDevice(string name, HardwareReleaseEvidence releaseEvidence)
             {
                 Name = name;
-                HighPriorityWorker = new HighPriorityDoWorker(name);
+                HighPriorityWorker = new HighPriorityDoWorker(name, releaseEvidence: releaseEvidence);
             }
 
             public string Name;
@@ -896,6 +919,9 @@ namespace IO.NI
 
         private readonly object _doTaskLock = new object();
         private int _disposed;
+        private readonly HardwareReleaseEvidence _releaseEvidence = new HardwareReleaseEvidence();
+
+        public HardwareReleaseSnapshot CaptureReleaseEvidence() => _releaseEvidence.Capture();
 
         // 设备名 -> 设备上下文
         private readonly ConcurrentDictionary<string, DoDevice> _devices =
@@ -915,8 +941,7 @@ namespace IO.NI
         private readonly ILogger _log;
 
         // ★新增：高优先级 DO worker（用于“触发后断电”等关键写入）
-        private readonly HighPriorityDoWorker _uninitializedHiWorker =
-            new HighPriorityDoWorker("Uninitialized", combineDistinctChannels: false);
+        private readonly HighPriorityDoWorker _uninitializedHiWorker;
 
         internal const int HighPriorityOffTimeoutMs = 100;
         private const double HighPriorityOffSlowLogThresholdMs = 20.0;
@@ -935,6 +960,8 @@ namespace IO.NI
         /// <param name="logger">可选日志器。</param>
         public DoController(DoConfig cfgDo, ILogger logger = null)
         {
+            _uninitializedHiWorker = new HighPriorityDoWorker("Uninitialized",
+                combineDistinctChannels: false, releaseEvidence: _releaseEvidence);
             _cfg = cfgDo ?? throw new ArgumentNullException(nameof(cfgDo));
             _log = logger ?? NLogger.Instance;
         }
@@ -1633,7 +1660,7 @@ namespace IO.NI
         {
             if (!_devices.TryGetValue(deviceName, out var dev))
             {
-                dev = new DoDevice(deviceName)
+                dev = new DoDevice(deviceName, _releaseEvidence)
                 {
                     Task = new NIDaqTask("DO_" + deviceName)
                 };
@@ -1677,7 +1704,8 @@ namespace IO.NI
             {
                 lock (dev.WriteGate)
                 {
-                    try { dev.Task?.Dispose(); } catch { /* ignore */ }
+                    try { dev.Task?.Dispose(); }
+                    catch (Exception ex) { _releaseEvidence.RecordFailure("DO Task.Dispose", ex); }
                     dev.Task = null;
                     dev.Writer = null;
                     dev.Lines.Clear();
@@ -1686,7 +1714,8 @@ namespace IO.NI
                 }
                 if (clearMaps)
                 {
-                    try { dev.HighPriorityWorker.Dispose(); } catch { /* ignore */ }
+                    try { dev.HighPriorityWorker.Dispose(); }
+                    catch (Exception ex) { _releaseEvidence.RecordFailure("DO worker Dispose", ex); }
                 }
             }
             if (clearMaps)
@@ -1714,13 +1743,17 @@ namespace IO.NI
         /// </remarks>
         public void Dispose()
         {
+            _releaseEvidence.RequestRelease();
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            try { _uninitializedHiWorker.Dispose(); } catch { /* ignore */ }
+            try { _uninitializedHiWorker.Dispose(); }
+            catch (Exception ex) { _releaseEvidence.RecordFailure("DO uninitialized worker Dispose", ex); }
 
             lock (_doTaskLock)
             {
                 try { ResetAllDevices(clearMaps: true); }
-                catch { /* ignore */ }
+                catch (Exception ex) { _releaseEvidence.RecordFailure("DO reset tasks", ex); }
+                _releaseEvidence.CompleteNativeRelease();
+                _releaseEvidence.CloseCallbackAdmission();
             }
 
             GC.SuppressFinalize(this);

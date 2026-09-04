@@ -39,14 +39,32 @@
     <Reference Include="System.Core" />
     <Reference Include="System.Security" />
     <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="EngineHostRuntime.cs" />
+    <Compile Include="EngineRecoveryExecutionGate.cs" />
+    <Compile Include="EngineManualBatchContinuation.cs" />
     <Compile Include="EngineLaunchCapabilityGate.cs" />
     <Compile Include="EngineHostCommandReceiptStore.cs" />
     <Compile Include="EngineRunCheckpointStore.cs" />
+    <Compile Include="EngineTestConfigurationStore.cs" />
+    <Compile Include="EngineDaqConfigurationStore.cs" />
+    <Compile Include="EngineAoConfigurationStore.cs" />
+    <Compile Include="EngineProjectSelectionStore.cs" />
+    <Compile Include="EngineProjectCreation.cs" />
+    <Compile Include="EngineProjectReset.cs" />
+    <Compile Include="EngineProjectSwitchExecutor.cs" />
+    <Compile Include="EngineProjectIsolation.cs" />
+    <Compile Include="EngineProjectPersistence.cs" />
+    <Compile Include="EnginePersistenceBoundary.cs" />
+    <Compile Include="EngineProgressPublisher.cs" />
+    <Compile Include="EngineRawPersistence.cs" />
     <Compile Include="PhysicalEngineRuntime.cs" />
+    <Compile Include="PhysicalEngineRuntime.Ui.cs" />
+    <Compile Include="PhysicalEngineRuntime.Progress.cs" />
+    <Compile Include="PhysicalEngineRuntime.SafetyHandoff.cs" />
     <Compile Include="EngineHostLog.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
@@ -54,6 +72,7 @@
     <ProjectReference Include="..\Config\Config.csproj">
       <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project><Name>Config</Name>
     </ProjectReference>
+    <ProjectReference Include="..\PowerSupply.Core\PowerSupply.Core.csproj"><Name>PowerSupply.Core</Name></ProjectReference>
     <ProjectReference Include="..\Controller\Controller.csproj">
       <Project>{3788ACA5-1B32-414C-8678-637D8CAD9B18}</Project><Name>Controller</Name>
     </ProjectReference>
@@ -71,4 +90,8 @@
     <None Include="..\MTTfTest\App.config"><Link>App.config</Link></None>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <ItemGroup><Compile Include="EnginePressureMaintenanceLeaseFence.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="EnginePressureMaintenanceExecutor.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="PhysicalEngineRuntime.PressureMaintenance.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="SimulatedEngineRuntime.PressureMaintenance.cs" /></ItemGroup>
 </Project>

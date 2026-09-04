@@ -69,6 +69,7 @@
     <Compile Include="Adaptive\FastPathTripClassifier.cs" />
     <Compile Include="Adaptive\EpbProgramSafetySettings.cs" />
     <Compile Include="Alarm\AlarmManager.cs" />
+    <Compile Include="Alarm\AlarmManager.PanelCommands.cs" />
     <Compile Include="Alarm\AlarmSnapshotFileEvidence.cs" />
     <Compile Include="Alarm\ChannelAlarmStopLatch.cs" />
     <Compile Include="Alarm\AlarmMessageLocalizer.cs" />
@@ -106,6 +107,10 @@
     <Compile Include="TaskSupervisor.cs" />
     <Compile Include="RecoveryTaskRegistry.cs" />
     <Compile Include="BatchStartLifecycleGate.cs" />
+    <Compile Include="SupervisedFormalContinuation.cs" />
+    <Compile Include="SupervisedFormalDaqProbe.cs" />
+    <Compile Include="EpbManager.SupervisedQualification.cs" />
+    <Compile Include="EpbManager.HardwareRetirement.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="GlobalHydraulicSlotCoordinator.cs" />
     <Compile Include="EmergencyPowerGroupLatch.cs" />
@@ -135,6 +140,7 @@
     <Compile Include="UiCurveContinuityPolicy.cs" />
     <Compile Include="UiLogDisplayPolicy.cs" />
     <Compile Include="PowerSupplyCoordinator.cs" />
+    <Compile Include="PowerSupplyCoordinator.Retirement.cs" />
     <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
     <Compile Include="DataHousekeepingService.cs" />
     <Compile Include="PressureCalibrationCoordinator.cs" />

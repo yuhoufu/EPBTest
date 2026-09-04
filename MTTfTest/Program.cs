@@ -37,9 +37,10 @@ namespace MtEmbTest
         [STAThread]
         static void Main(string[] args)
         {
-            if (FirstRunBootstrap.TryRunElevatedWorker(args)) return;
             if (!LaunchCapabilityGate.ValidateOrReject(args)) return;
-            if (!FirstRunBootstrap.PrepareOrExit(args)) return;
+            // Installation/configuration belongs to the installer and EngineHost. An
+            // admitted display process must still open when project configuration is
+            // unavailable, and opening the UI must never launch a configuration writer.
             try
             {
                 var identity = V3EngineIdentity.Parse(args);
@@ -66,7 +67,7 @@ namespace MtEmbTest
                 };
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new V3EngineClientForm(identity));
+                Application.Run(new Main_Frm(identity));
             }
             catch (Exception ex)
             {

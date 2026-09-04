@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
@@ -40,7 +41,95 @@ namespace AdaptiveControlTests
             Run("单组断线不误报关闭且不阻塞其他组", SafetyDisableIsStructuredAndIsolated, ref passed);
             Run("电源关闭仅把真实通讯不可用归类为可跳过", SafetyDisableFailureClassificationIsExact, ref passed);
             Run("电源故障只联动对应组且新预检自动清旧锁存", FaultIsScopedAndFreshPreflightClearsLatch, ref passed);
+            Run("电源退出保留迟到传输证据且不重复释放客户端", RetirementRetainsLateTransport, ref passed);
+            Run("电源退出不能丢弃尚未返回的监控回调", RetirementRetainsMonitorCallback, ref passed);
+            Run("电源退出后禁止创建客户端及重新授予供电许可", RetirementRejectsNewWork, ref passed);
+            Run("旧电源超时不能丢弃未退出客户端或退休新操作", RetiredOwnerCannotRetireReplacement, ref passed);
             return passed;
+        }
+
+        private static void RetirementRetainsLateTransport()
+        {
+            var config = NewConfig(); var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult();
+                clients[1].HoldRetirementEvidence = true;
+                coordinator.Dispose(); coordinator.Dispose();
+                Assert(!coordinator.CaptureHardwareRelease().FullyReleased,
+                    "仍有迟到传输的客户端被清表后伪报退出");
+                Assert(!coordinator.HasEnergizationPermit(1, out _), "退出后仍有供电许可");
+                clients[1].HoldRetirementEvidence = false;
+                Assert(SpinWait.SpinUntil(() => coordinator.CaptureHardwareRelease().FullyReleased, 5000),
+                    "迟到传输退出后没有闭合原实例证据");
+                Assert(clients[1].DisposeCount == 1, "轮询/重复退出重新释放了客户端");
+            }
+        }
+
+        private static void RetirementRetainsMonitorCallback()
+        {
+            var config = NewConfig(); var clients = NewClients(config);
+            using (var entered = new ManualResetEventSlim())
+            using (var release = new ManualResetEventSlim())
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                try
+                {
+                    coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult();
+                    coordinator.TelemetryUpdated += value => { entered.Set(); release.Wait(); };
+                    Assert(entered.Wait(5000), "监控回调未进入测试边界");
+                    coordinator.Dispose();
+                    var snapshot = coordinator.CaptureHardwareRelease();
+                    Assert(snapshot.NativeResourcesReleased && !snapshot.CallbacksIsolated && snapshot.PendingCallbacks > 0,
+                        "从监控字典移除任务后丢失了仍在执行的回调");
+                    release.Set();
+                    Assert(SpinWait.SpinUntil(() => coordinator.CaptureHardwareRelease().FullyReleased, 5000),
+                        "真实监控回调返回后仍未完成退出");
+                }
+                finally { release.Set(); }
+            }
+        }
+
+        private static void RetirementRejectsNewWork()
+        {
+            var config = NewConfig(); var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.Dispose();
+                Assert(coordinator.CaptureHardwareRelease().FullyReleased, "无资源实例不能闭合退出");
+                var rejected = false;
+                try { coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (ObjectDisposedException) { rejected = true; }
+                Assert(rejected && clients.Values.All(client => !client.IsConnected && client.OutputOnCount == 0),
+                    "退出后创建新客户端或执行了上电");
+            }
+        }
+
+        private static void RetiredOwnerCannotRetireReplacement()
+        {
+            var config = NewConfig(); var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult();
+                coordinator.DisableGroupAsync(1, "TestRetirementBoundary", CancellationToken.None).GetAwaiter().GetResult();
+                var operationMethod = typeof(PowerSupplyCoordinator).GetMethod("Operation", BindingFlags.Instance | BindingFlags.NonPublic);
+                var retireMethod = typeof(PowerSupplyCoordinator).GetMethod("RetirePowerDisableOwner", BindingFlags.Instance | BindingFlags.NonPublic);
+                var previousOperation = operationMethod.Invoke(coordinator, new object[] { 1 });
+                var previousClient = clients[1]; previousClient.HoldRetirementEvidence = true;
+                retireMethod.Invoke(coordinator, new[] { (object)1, previousOperation, "SyntheticTimeout" });
+                var rejected = false;
+                try { coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (InvalidOperationException) { rejected = true; }
+                Assert(rejected && previousClient.DisposeCount == 1,
+                    "旧客户端退出未证实时仍允许新建或重复使用连接");
+
+                previousClient.HoldRetirementEvidence = false;
+                clients[1] = new FakePswClient(1);
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult();
+                retireMethod.Invoke(coordinator, new[] { (object)1, previousOperation, "LateOldTimeout" });
+                Assert(clients[1].DisposeCount == 0 && coordinator.HasEnergizationPermit(1, out _),
+                    "旧超时退休了新操作/新客户端");
+            }
         }
 
         private static void SafetyDisableIsStructuredAndIsolated()
@@ -826,8 +915,14 @@ namespace AdaptiveControlTests
             throw new InvalidOperationException("预期异常未抛出：" + typeof(T).Name);
         }
 
-        private sealed class FakePswClient : IPswClient
+        private sealed class FakePswClient : IPswClient, IPswClientRetirementEvidence
         {
+            private int _disposed;
+            public int DisposeCount => Volatile.Read(ref _disposed);
+            public volatile bool HoldRetirementEvidence;
+            public PswClientRetirementSnapshot CaptureRetirement() => new PswClientRetirementSnapshot(
+                DisposeCount != 0, DisposeCount != 0 && !HoldRetirementEvidence,
+                DisposeCount != 0, 0, HoldRetirementEvidence ? 1 : 0);
             public FakePswClient(int id)
             {
                 Endpoint = new PswEndpoint { Id = id, DisplayName = "PSU" + id, Host = "127.0.0.1" };
@@ -1019,6 +1114,7 @@ namespace AdaptiveControlTests
 
             public void Dispose()
             {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
                 AllowSnapshotRead.Set();
                 AllowOutputOff.Set();
                 SnapshotReadStarted.Dispose();

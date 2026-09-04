@@ -1,0 +1,9 @@
+{
+  "contractVersion": 1,
+  "monitorVerified": true,
+  "configurationTransactionsVerified": true,
+  "maintenanceCalibrationVerified": true,
+  "alarmAndChannelCommandsVerified": true,
+  "playbackVerified": true,
+  "installedUiRecoveryVerified": false
+}

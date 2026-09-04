@@ -28,6 +28,9 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Security" />
     <Reference Include="System.Data" />
     <Reference Include="System.Data.SQLite, Version=1.0.119.0, Culture=neutral, PublicKeyToken=db937bc2d44ff139, processorArchitecture=MSIL">
       <HintPath>..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\lib\net46\System.Data.SQLite.dll</HintPath>
@@ -35,6 +38,15 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="EnginePersistenceCompositionTests.cs" />
+    <Compile Include="EngineProgressTests.cs" />
+    <Compile Include="EngineRawPersistenceTests.cs" />
+    <Compile Include="..\..\MTTFTest.EngineHost\EngineRawPersistence.cs"><Link>Production\EngineRawPersistence.cs</Link></Compile>
+    <Compile Include="..\..\MTTFTest.EngineHost\EngineProgressPublisher.cs"><Link>Production\EngineProgressPublisher.cs</Link></Compile>
+    <Compile Include="..\..\MTTFTest.EngineHost\EngineTestConfigurationStore.cs"><Link>Production\EngineTestConfigurationStore.cs</Link></Compile>
+    <Compile Include="..\..\MTTFTest.EngineHost\EngineRunCheckpointStore.cs"><Link>Production\EngineRunCheckpointStore.cs</Link></Compile>
+    <Compile Include="..\..\MTTFTest.EngineHost\EngineProjectPersistence.cs"><Link>Production\EngineProjectPersistence.cs</Link></Compile>
+    <Compile Include="..\..\MTTFTest.EngineHost\EnginePersistenceBoundary.cs"><Link>Production\EnginePersistenceBoundary.cs</Link></Compile>
     <None Include="..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\x86\SQLite.Interop.dll">
       <Link>x86\SQLite.Interop.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -45,6 +57,7 @@
       <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
       <Name>Config</Name>
     </ProjectReference>
+    <ProjectReference Include="..\..\Watchdog.Protocol\Watchdog.Protocol.csproj"><Name>Watchdog.Protocol</Name></ProjectReference>
     <ProjectReference Include="..\..\DataOperation\DataOperation.csproj">
       <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>
       <Name>DataOperation</Name>

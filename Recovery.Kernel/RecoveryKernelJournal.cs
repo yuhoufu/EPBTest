@@ -39,6 +39,8 @@ namespace MTTFTest.Recovery.Kernel
         public string[] CompletedIdempotencyKeys { get; set; } = Array.Empty<string>();
         public string[] IsolatedResources { get; set; } = Array.Empty<string>();
         public long UpdatedUtcTicks { get; set; }
+        public OperatorCommandAdmission[] OperatorAdmissions { get; set; } = Array.Empty<OperatorCommandAdmission>();
+        public long OperatorReplayFloorUtcTicks { get; set; }
 
         public RecoveryKernelJournalDocument Clone()
         {
@@ -68,7 +70,9 @@ namespace MTTFTest.Recovery.Kernel
                 CompletedIdempotencyKeys =
                     (CompletedIdempotencyKeys ?? Array.Empty<string>()).ToArray(),
                 IsolatedResources = (IsolatedResources ?? Array.Empty<string>()).ToArray(),
-                UpdatedUtcTicks = UpdatedUtcTicks
+                UpdatedUtcTicks = UpdatedUtcTicks,
+                OperatorAdmissions = (OperatorAdmissions ?? Array.Empty<OperatorCommandAdmission>()).Select(value => value.Clone()).ToArray(),
+                OperatorReplayFloorUtcTicks = OperatorReplayFloorUtcTicks
             };
         }
 
@@ -90,6 +94,16 @@ namespace MTTFTest.Recovery.Kernel
                 ActiveQualificationAttempts = value.ActiveQualificationAttempts,
                 IsOperatorStart = value.IsOperatorStart,
                 RequiresEngineReplacement = value.RequiresEngineReplacement,
+                CommandAfterSafetyProof = value.CommandAfterSafetyProof,
+                ManualBatchEngineInstanceId = value.ManualBatchEngineInstanceId,
+                ManualPausedChannelsMask = value.ManualPausedChannelsMask,
+                ManualRunningChannelsMask = value.ManualRunningChannelsMask,
+                OperatorTransaction = value.OperatorTransaction?.Clone(),
+                ProjectSwitch = value.ProjectSwitch?.Clone(),
+                ProjectSwitchPreparedSha256 = value.ProjectSwitchPreparedSha256,
+                ProjectSwitchFailure = value.ProjectSwitchFailure,
+                ProjectSwitchStopRequested = value.ProjectSwitchStopRequested,
+                PressureMaintenance = value.PressureMaintenance?.Clone(),
                 CreatedUtcTicks = value.CreatedUtcTicks,
                 UpdatedUtcTicks = value.UpdatedUtcTicks
             };
@@ -108,7 +122,11 @@ namespace MTTFTest.Recovery.Kernel
                 IdempotencyKey = value.IdempotencyKey,
                 Kind = value.Kind,
                 TargetResource = value.TargetResource,
-                DeadlineUtcTicks = value.DeadlineUtcTicks
+                OperatorTransaction = value.OperatorTransaction?.Clone(),
+                ProjectSwitch = value.ProjectSwitch?.Clone(),
+                ProjectSwitchPreparedSha256 = value.ProjectSwitchPreparedSha256,
+                DeadlineUtcTicks = value.DeadlineUtcTicks,
+                PressureMaintenance = value.PressureMaintenance?.Clone()
             };
         }
     }
@@ -296,6 +314,56 @@ namespace MTTFTest.Recovery.Kernel
                 throw new InvalidDataException("RecoveryJournalPendingCommandInvalid");
             if (document.DesiredState?.IsStructurallyValid() == false)
                 throw new InvalidDataException("RecoveryJournalDesiredStateInvalid");
+            var project = intents.FirstOrDefault(value => value.ProjectSwitch != null);
+            if (project != null)
+            {
+                var command = document.PendingCommand;
+                var desired = document.DesiredState;
+                if (intents.Length != 1 || command?.ProjectSwitch == null || command.OwnerId != project.OwnerId ||
+                    command.ProjectSwitch.ComputeSha256() != project.ProjectSwitch.ComputeSha256() ||
+                    command.ProjectSwitchPreparedSha256 != project.ProjectSwitchPreparedSha256 ||
+                    command.Identity.SessionId != project.Identity.SessionId || command.Identity.RunId != project.Identity.RunId ||
+                    command.Identity.RunEpoch != project.Identity.RunEpoch || command.Identity.IncidentId != project.Identity.IncidentId ||
+                    command.Identity.Generation != project.Identity.Generation || desired == null ||
+                    desired.SessionId != project.Identity.SessionId || desired.RunId != project.Identity.RunId || desired.RunEpoch != project.Identity.RunEpoch ||
+                    !(document.OperatorAdmissions ?? Array.Empty<OperatorCommandAdmission>()).Any(a => a.ProjectTransaction != null &&
+                        !a.ExecutionCompleted && a.OwnerId == project.OwnerId && a.IncidentId == project.Identity.IncidentId && a.Matches(project.OperatorTransaction)))
+                    throw new InvalidDataException("RecoveryJournalProjectTransactionBindingInvalid");
+            }
+            else if (document.PendingCommand?.ProjectSwitch != null)
+                throw new InvalidDataException("RecoveryJournalProjectOwnerMissing");
+            var admissions = document.OperatorAdmissions ?? Array.Empty<OperatorCommandAdmission>();
+            var maintenance = intents.FirstOrDefault(i => i.PressureMaintenance != null);
+            if (maintenance != null)
+            {
+                var pending = document.PendingCommand;
+                if (intents.Length != 1 ||
+                    (maintenance.Stage == RecoveryStage.PressureMaintenanceReady ? pending != null || maintenance.OperatorTransaction != null :
+                        pending?.PressureMaintenance == null || pending.OwnerId != maintenance.OwnerId ||
+                        !pending.PressureMaintenance.SameSession(maintenance.PressureMaintenance) ||
+                        pending.PressureMaintenance.Revision > maintenance.PressureMaintenance.Revision ||
+                        pending.PressureMaintenance.ExpiresUtcTicks > maintenance.PressureMaintenance.ExpiresUtcTicks))
+                    throw new InvalidDataException("RecoveryJournalMaintenanceOwnerBindingInvalid");
+            }
+            else if (document.PendingCommand?.PressureMaintenance != null)
+                throw new InvalidDataException("RecoveryJournalMaintenanceOwnerMissing");
+            foreach (var operation in admissions.Where(a => a?.MaintenanceTransaction != null && !a.ExecutionCompleted))
+                if (maintenance == null || operation.OwnerId != maintenance.OwnerId || operation.IncidentId != maintenance.Identity.IncidentId ||
+                    (!operation.Matches(maintenance.OperatorTransaction) &&
+                     !(maintenance.PressureMaintenance.Revoked && operation.MaintenanceTransaction.Kind == OperatorCommandKind.EndPressureMaintenance &&
+                       operation.SessionId == maintenance.Identity.SessionId && operation.RunId == maintenance.Identity.RunId &&
+                       operation.RunEpoch == maintenance.Identity.RunEpoch && operation.MaintenanceTransaction.PressureMaintenance?.Binds(
+                           maintenance.PressureMaintenance, OperatorCommandKind.EndPressureMaintenance) == true)))
+                    throw new InvalidDataException("RecoveryJournalMaintenanceOperationOrphaned");
+            foreach (var configuration in admissions.Where(value => value?.ConfigurationTransaction != null && !value.ExecutionCompleted))
+                if (!intents.Any(intent => intent.OwnerId == configuration.OwnerId && intent.Identity.IncidentId == configuration.IncidentId &&
+                    configuration.Matches(intent.OperatorTransaction)))
+                    throw new InvalidDataException("RecoveryJournalConfigurationOwnerMissing");
+            if (admissions.Length > 1024 || document.OperatorReplayFloorUtcTicks < 0 ||
+                admissions.Any(value => value?.IsStructurallyValid() != true) ||
+                admissions.Count(value => value.PanelTransaction != null && !value.ExecutionCompleted) > 16 ||
+                admissions.Select(value => value.CommandId).Distinct().Count() != admissions.Length)
+                throw new InvalidDataException("RecoveryJournalOperatorAdmissionsInvalid");
         }
 
         private static void Enter(Mutex mutex)

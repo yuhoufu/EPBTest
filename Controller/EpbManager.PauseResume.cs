@@ -948,7 +948,19 @@ namespace Controller
 
             if (_powerSupply == null)
                 throw new InvalidOperationException("暂停安全边界缺少程控电源协调器。");
-            await _powerSupply.DisableAllAsync("GracefulPause", token).ConfigureAwait(false);
+            if (forceHydraulicGroups)
+                await _powerSupply.DisableAllAsync("GracefulPause", token).ConfigureAwait(false);
+            else
+            {
+                // The manual gate serializes pause/resume. A paused channel can
+                // retain a timer, while a live peer must retain its shared supply.
+                var idleGroups = SelectPowerGroupsForChannelPause(_cfg.Test.Groups, selected, channel =>
+                    IsHydraulicParticipant(channel) ||
+                    (Interlocked.Read(ref _energizedChannelsMask) & (1L << channel)) != 0 ||
+                    (!_channelPausedUtc.ContainsKey(channel) && (_timers.ContainsKey(channel) || _runners.ContainsKey(channel))));
+                await Task.WhenAll(idleGroups.Select(group =>
+                    _powerSupply.DisableGroupAsync(group, "ChannelGracefulPause", token))).ConfigureAwait(false);
+            }
 
             if (CurrentBatchPauseState == BatchPauseState.PausePending)
             {
@@ -1020,6 +1032,20 @@ namespace Controller
                     ex);
                 throw new InvalidOperationException("暂停时最近10圈证据导出失败。", ex);
             }
+        }
+
+        internal static int[] SelectPowerGroupsForChannelPause(IEnumerable<ElectricalGroup> groups,
+            IEnumerable<int> channels, Func<int, bool> peerMayExecute)
+        {
+            var selected = new HashSet<int>(channels ?? Array.Empty<int>());
+            var topology = (groups ?? Enumerable.Empty<ElectricalGroup>()).ToArray();
+            if (peerMayExecute == null || selected.Count == 0 || topology.Any(group => group == null || group.Id < 1 || group.Id > 4) ||
+                topology.Select(group => group.Id).Distinct().Count() != topology.Length || selected.Any(channel => channel < 1 || channel > 12 ||
+                topology.Count(group => group.Id > 0 && group.Members.Contains(channel)) != 1))
+                throw new InvalidOperationException("ChannelPausePowerTopologyUnproven");
+            return topology.Where(group => group.Members.Any(selected.Contains) &&
+                    !group.Members.Any(channel => !selected.Contains(channel) && peerMayExecute(channel)))
+                .Select(group => group.Id).Distinct().OrderBy(group => group).ToArray();
         }
 
         private bool TryGetPermanentDataContinuityGap(out string detail)

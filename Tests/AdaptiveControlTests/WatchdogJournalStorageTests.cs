@@ -25,6 +25,7 @@ namespace AdaptiveControlTests
             Run("Watchdog项目Journal包含快照事件错误与终态manifest", DirectProjectJournalIsAuditable, ref passed);
             Run("Watchdog并发异步与安全关键同步快照保持持久化顺序",
                 ConcurrentSnapshotWritesStayDurable, ref passed);
+            RunRetentionSnapshotRegression(ref passed);
             Run("Watchdog恢复ClientAuditOnly不接管快照租约终态或pending spool",
                 ClientAuditOnlyCannotMutateAuthorityArtifacts, ref passed);
             Run("Watchdog ClientAuditOnly使用隔离有界audit spool并可恢复回放",
@@ -56,6 +57,31 @@ namespace AdaptiveControlTests
             Run("Watchdog ClientAuditOnly使用隔离有界audit spool并可恢复回放",
                 ClientAuditSpoolIsIndependentAndBounded, ref passed);
             return passed;
+        }
+
+        internal static int RunConcurrentSnapshotRegression()
+        {
+            var passed = 0;
+            Run("Watchdog并发异步与安全关键同步快照保持持久化顺序",
+                ConcurrentSnapshotWritesStayDurable, ref passed);
+            return passed;
+        }
+
+        internal static int RunRetentionSnapshotRegression()
+        {
+            var passed = 0;
+            RunRetentionSnapshotRegression(ref passed);
+            return passed;
+        }
+
+        private static void RunRetentionSnapshotRegression(ref int passed)
+        {
+            Run("Watchdog保留读取不阻塞安全关键快照原子替换",
+                RetentionReaderDoesNotBlockSynchronousSnapshot, ref passed);
+            Run("Watchdog真实共享冲突仍拒绝恢复且记录失败原因",
+                ConflictingReaderStillFailsClosed, ref passed);
+            Run("Watchdog保留读取拒绝超限并释放句柄",
+                RetentionReaderRejectsOversize, ref passed);
         }
 
         private static void RunOpenExistingRegression(ref int passed)
@@ -630,24 +656,29 @@ namespace AdaptiveControlTests
                                TimeSpan.FromSeconds(5)),
                         "Asynchronous snapshot publisher did not start.");
                     var synchronousFailures = 0;
+                    string firstFailure = null;
                     for (var index = 0; index < 100; index++)
                     {
                         if (!store.TryPublishSnapshotSynchronously(
                                 "{\"kind\":\"synchronous\",\"sequence\":" +
                                 index.ToString(CultureInfo.InvariantCulture) + "}"))
+                        {
                             synchronousFailures++;
+                            if (firstFailure == null) firstFailure = store.LastSynchronousSnapshotFailure;
+                        }
                     }
 
                     stopPublishing.Cancel();
                     Assert(publisher.Wait(TimeSpan.FromSeconds(10)),
                         "Asynchronous snapshot publisher did not stop.");
                     Assert(synchronousFailures == 0,
-                        "Safety-critical synchronous snapshot reported a false persistence failure.");
+                        "Safety-critical synchronous snapshot reported a persistence failure. Count=" +
+                        synchronousFailures + "; FirstFailure=" + firstFailure);
 
                     const string finalSnapshot =
                         "{\"kind\":\"final-synchronous\",\"sequence\":101}";
                     Assert(store.TryPublishSnapshotSynchronously(finalSnapshot),
-                        "Final safety-critical snapshot was not persisted.");
+                        "Final safety-critical snapshot was not persisted. " + store.LastSynchronousSnapshotFailure);
                     Thread.Sleep(250);
                     Assert(string.Equals(
                                File.ReadAllText(
@@ -657,6 +688,75 @@ namespace AdaptiveControlTests
                                StringComparison.Ordinal),
                         "An older asynchronous snapshot overwrote the synchronous commit.");
                 }
+            });
+        }
+
+        private static void RetentionReaderDoesNotBlockSynchronousSnapshot()
+        {
+            WithTempRoot("RetentionSnapshotRead", root =>
+            {
+                var session = Guid.NewGuid().ToString("N");
+                using (var process = Process.GetCurrentProcess())
+                using (var store = new WatchdogJournalStore(root, session, "sidecar",
+                    new WatchdogJournalPolicy(), process.Id, process.StartTime.ToUniversalTime().Ticks))
+                {
+                    const string before = "{\"SchemaVersion\":4,\"State\":\"Running\"}";
+                    const string after = "{\"SchemaVersion\":4,\"State\":\"RecoveryBlocked\"}";
+                    Assert(store.TryPublishSnapshotSynchronously(before), "Initial snapshot write failed.");
+                    using (var stream = WatchdogJournalStore.OpenRetentionMetadataRead(
+                        SessionSnapshotPath(root, session)))
+                    {
+                        Assert(store.TryPublishSnapshotSynchronously(after),
+                            "Retention reader blocked the safety snapshot: " + store.LastSynchronousSnapshotFailure);
+                        using (var reader = new StreamReader(stream, Encoding.UTF8))
+                            Assert(reader.ReadToEnd() == before,
+                                "An already-open retention handle must observe the complete old snapshot.");
+                    }
+                    Assert(File.ReadAllText(SessionSnapshotPath(root, session), Encoding.UTF8) == after,
+                        "New readers did not observe the committed safety snapshot.");
+                }
+            });
+        }
+
+        private static void ConflictingReaderStillFailsClosed()
+        {
+            WithTempRoot("ConflictingSnapshotRead", root =>
+            {
+                var session = Guid.NewGuid().ToString("N");
+                using (var process = Process.GetCurrentProcess())
+                using (var store = new WatchdogJournalStore(root, session, "sidecar",
+                    new WatchdogJournalPolicy(), process.Id, process.StartTime.ToUniversalTime().Ticks))
+                {
+                    Assert(store.TryPublishSnapshotSynchronously("{\"old\":true}"), "Initial write failed.");
+                    using (var blocker = new FileStream(SessionSnapshotPath(root, session),
+                        FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        Assert(!store.TryPublishSnapshotSynchronously("{\"blocked\":true}"),
+                            "A real filesystem conflict must not authorize recovery.");
+                        Assert(store.LastSynchronousSnapshotFailure != null &&
+                            store.LastSynchronousSnapshotFailure.Contains("HResult=0x"),
+                            "Persistence failure omitted the diagnostic exception and HRESULT.");
+                    }
+                    Assert(store.TryPublishSnapshotSynchronously("{\"final\":true}"),
+                        "Writer did not recover after the conflicting handle was released.");
+                    Assert(store.LastSynchronousSnapshotFailure == null,
+                        "Successful synchronous commit retained an obsolete failure diagnostic.");
+                }
+            });
+        }
+
+        private static void RetentionReaderRejectsOversize()
+        {
+            WithTempRoot("RetentionOversize", root =>
+            {
+                var path = Path.Combine(root, "oversize.json");
+                using (var writer = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    writer.SetLength(4L * 1024L * 1024L + 1);
+                var rejected = false;
+                try { using (WatchdogJournalStore.OpenRetentionMetadataRead(path)) { } }
+                catch (InvalidDataException) { rejected = true; }
+                Assert(rejected, "Retention reader accepted oversized metadata.");
+                using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
             });
         }
 

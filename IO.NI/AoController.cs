@@ -35,19 +35,28 @@ namespace IO.NI
     {
         private readonly AoConfig _cfg;
         private readonly Logger _log;
+        private readonly bool _initializeWithZeroVoltage;
         private readonly object _lifecycleGate = new object();
         private int _disposed;
         private int _postDisposeWarningLogged;
         private int _resetAllExecutionCount;
+        private readonly HardwareReleaseEvidence _releaseEvidence = new HardwareReleaseEvidence();
+
+        public HardwareReleaseSnapshot CaptureReleaseEvidence() => _releaseEvidence.Capture();
 
         // 每个设备名 -> 物理通道信息
         private readonly Dictionary<string, AnalogSingleChannelWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, NationalInstruments.DAQmx.Task> _tasks = new(StringComparer.OrdinalIgnoreCase);
 
-        public AoController(AoConfig cfg, Logger log = null)
+        public AoController(AoConfig cfg, Logger log = null) : this(cfg, log, false)
+        {
+        }
+
+        public AoController(AoConfig cfg, Logger log, bool initializeWithZeroVoltage)
         {
             _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
             _log = log ?? NLogger.Instance;
+            _initializeWithZeroVoltage = initializeWithZeroVoltage;
 
             Initialize();
         }
@@ -60,9 +69,10 @@ namespace IO.NI
             foreach (var kv in _cfg.Devices)
             {
                 var dev = kv.Value;
+                NationalInstruments.DAQmx.Task task = null;
                 try
                 {
-                    var task = new NationalInstruments.DAQmx.Task($"AO_{dev.Name}");
+                    task = new NationalInstruments.DAQmx.Task($"AO_{dev.Name}");
                     task.AOChannels.CreateVoltageChannel(
                         dev.PhysicalChannel, "",
                         _cfg.MinVoltage, _cfg.MaxVoltage,
@@ -74,10 +84,19 @@ namespace IO.NI
                     _writers[dev.Name] = writer;
 
                     // 初始化为 0%
-                    WritePressure(dev.Name, 0);
+                    if (_initializeWithZeroVoltage) WriteZeroVoltage(dev.Name);
+                    else WritePressure(dev.Name, 0);
                 }
                 catch (Exception ex)
                 {
+                    // 构造通道/Writer 失败也必须释放已经创建的 NI Task。
+                    // 未存入字典不表示没有占用原生设备。
+                    if (task != null && !_tasks.ContainsKey(dev.Name))
+                    {
+                        try { task.Dispose(); }
+                        catch (Exception releaseError)
+                        { _releaseEvidence.RecordFailure("AO initialization cleanup", releaseError); }
+                    }
                     _log.Error($"AO[{dev.Name}] 初始化失败：{ex.Message}", "AO", ex);
                 }
             }
@@ -135,11 +154,20 @@ namespace IO.NI
                 if (!_cfg.Devices.TryGetValue(deviceName, out var dev))
                     return new AoWriteResult(false, deviceName, pressure, double.NaN);
 
-                // 限幅
-                pressure = Math.Min(Math.Max(pressure, _cfg.MinPressure), _cfg.MaxPressure);
-
-                // 恢复原线性换算；校正页通过多点拟合更新 ScaleK/Offset。
-                var v = (pressure - dev.Offset) / dev.ScaleK;
+                double v;
+                if (_initializeWithZeroVoltage)
+                {
+                    // V3: every OFF path (including Controller's historical zero
+                    // pressure calls) means physical zero volts. Active requests
+                    // must be representable exactly, never silently clamped.
+                    if (!TryResolveSupervisedPressure(_cfg, dev, pressure, out v))
+                        return new AoWriteResult(false, deviceName, pressure, double.NaN);
+                }
+                else
+                {
+                    pressure = Math.Min(Math.Max(pressure, _cfg.MinPressure), _cfg.MaxPressure);
+                    v = (pressure - dev.Offset) / dev.ScaleK;
+                }
 
                 try
                 {
@@ -199,17 +227,65 @@ namespace IO.NI
             }
         }
 
+        internal static bool TryResolveSupervisedPressure(AoConfig config, AoDevice device, double pressure, out double voltage)
+        {
+            voltage = double.NaN;
+            if (config == null || device == null || !Finite(pressure) || pressure < 0 ||
+                !Finite(config.MinVoltage) || !Finite(config.MaxVoltage) || config.MinVoltage < -10 || config.MinVoltage > 0 ||
+                config.MaxVoltage <= 0 || config.MaxVoltage > 10) return false;
+            if (pressure == 0) { voltage = 0; return true; }
+            if (!Finite(config.MinPressure) || !Finite(config.MaxPressure) || pressure < config.MinPressure || pressure > config.MaxPressure ||
+                !Finite(device.ScaleK) || device.ScaleK <= 1e-9 || !Finite(device.Offset)) return false;
+            voltage = (pressure - device.Offset) / device.ScaleK;
+            return Finite(voltage) && voltage >= config.MinVoltage && voltage <= config.MaxVoltage;
+        }
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        // V3 OFF matches the independent SafetyAgent's physical 0 V,
+        // not (0 bar - calibration offset) / scale. A positive fitted offset
+        // must not make safe shutdown request an out-of-range negative voltage.
+        public bool TryWriteZeroVoltageAll()
+        {
+            lock (_lifecycleGate)
+            {
+                if (RejectDisposedOperation(nameof(TryWriteZeroVoltageAll))) return false;
+                var success = _cfg.Devices.Count > 0 && _writers.Count == _cfg.Devices.Count;
+                foreach (var name in _cfg.Devices.Keys)
+                    if (!WriteZeroVoltage(name)) success = false;
+                return success;
+            }
+        }
+
+        private bool WriteZeroVoltage(string deviceName)
+        {
+            lock (_lifecycleGate)
+            {
+                if (RejectDisposedOperation(nameof(WriteZeroVoltage)) || double.IsNaN(_cfg.MinVoltage) || double.IsInfinity(_cfg.MinVoltage) ||
+                    double.IsNaN(_cfg.MaxVoltage) || double.IsInfinity(_cfg.MaxVoltage) || _cfg.MinVoltage > 0 || _cfg.MaxVoltage < 0 ||
+                    !_writers.TryGetValue(deviceName, out var writer)) return false;
+                try { writer.WriteSingleSample(true, 0.0); return true; }
+                catch (Exception ex) { _log.Error($"AO[{deviceName}] 安全零电压写入失败：{ex.Message}", "AO", ex); return false; }
+            }
+        }
+
         public void Dispose()
         {
+            _releaseEvidence.RequestRelease();
             lock (_lifecycleGate)
             {
                 if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
                 foreach (var t in _tasks.Values)
                 {
-                    try { t?.Dispose(); } catch { }
+                    try { t?.Dispose(); }
+                    catch (Exception ex) { _releaseEvidence.RecordFailure("AO Task.Dispose", ex); }
                 }
                 _tasks.Clear();
                 _writers.Clear();
+                _releaseEvidence.CompleteNativeRelease();
+                // 所有写入与 Dispose 共用 lifecycle gate；等待中的写入看到 disposed
+                // 后只能拒绝，不能再调用 NI。此处不是输出电压为零的证明。
+                _releaseEvidence.CloseCallbackAdmission();
             }
             GC.SuppressFinalize(this);
         }

@@ -949,6 +949,9 @@ namespace IO.NI
         private int _disposed;
         private int _disposeFinalizerStarted;
         private Thread _disposeFinalizerThread;
+        private readonly HardwareReleaseEvidence _releaseEvidence = new HardwareReleaseEvidence();
+
+        public HardwareReleaseSnapshot CaptureReleaseEvidence() => _releaseEvidence.Capture();
 
         private sealed class UiPublication
         {
@@ -982,6 +985,7 @@ namespace IO.NI
                 new WallClockStepDetector();
             public long UtcEpochId = 1;
             public Thread ReadThread { get; set; }
+            public IDisposable ReadLease { get; set; }
             public int ReadFaulted;
         }
 
@@ -1823,7 +1827,7 @@ namespace IO.NI
                 ParseDoubleOrDefault(SafeGetAppSetting("DaqInputBufferSeconds"), 10));
             _medianLens = Math.Max(1, medianLens);
             _log = log ?? NLogger.Instance;
-            _backgroundTasks = new CoalescingTaskSupervisor(_log);
+            _backgroundTasks = new CoalescingTaskSupervisor(_log, _releaseEvidence);
             _gcPauseMonitor = SharedGcPauseMonitor.Value;
             var evidenceCapacity = Math.Max(
                 64,
@@ -1918,11 +1922,14 @@ namespace IO.NI
                 _controlQueueCapacity,
                 Math.Max(1, _dev2Records.Length));
 
-            _dev1MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev1Channels.Length, _medianHalfWidth,
-                MedianSelectPointsMode.OnlyPrevious, _samplesPerChannel); // 控制用因果滤波
-                
-            _dev2MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev2Channels.Length, _medianHalfWidth,
-                MedianSelectPointsMode.OnlyPrevious, _samplesPerChannel); // 控制用因果滤波
+            // 单 DAQ 项目没有另一设备的通道，不为它构造零通道滤波器。
+            // 未配置设备不产生采集批次；不能增加虚假通道来绕过构造校验。
+            if (_dev1Channels.Length > 0)
+                _dev1MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev1Channels.Length, _medianHalfWidth,
+                    MedianSelectPointsMode.OnlyPrevious, _samplesPerChannel);
+            if (_dev2Channels.Length > 0)
+                _dev2MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev2Channels.Length, _medianHalfWidth,
+                    MedianSelectPointsMode.OnlyPrevious, _samplesPerChannel);
 
             // 工程处理和 Raw 移交是采集耐久链的一部分，不能把唯一消费者寄托在
             // ThreadPool 调度上。LongRunning + 同步等待确保每条关键队列拥有独立线程；
@@ -1987,9 +1994,17 @@ namespace IO.NI
         /// </remarks>
         public void Dispose()
         {
+            _releaseEvidence.RequestRelease();
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            Stop();
-            _cts.Cancel();
+            _backgroundTasks?.StopAccepting();
+            try
+            {
+                Stop();
+                _releaseEvidence.CompleteNativeRelease();
+            }
+            catch (Exception ex) { _releaseEvidence.RecordFailure("AI stop tasks", ex); }
+            try { _cts.Cancel(); }
+            catch (Exception ex) { _releaseEvidence.RecordFailure("AI cancel workers", ex); }
             TrySignal(_queueSignalDev1);
             TrySignal(_queueSignalDev2);
             TrySignal(_rawPublicationSignalDev1);
@@ -2069,14 +2084,20 @@ namespace IO.NI
                     }
                 }
 
-                try { _controlThreadDev1?.Join(); } catch { }
-                try { _controlThreadDev2?.Join(); } catch { }
+                try { _controlThreadDev1?.Join(); }
+                catch (Exception ex) { _releaseEvidence.RecordFailure("AI control Dev1 exit", ex); }
+                try { _controlThreadDev2?.Join(); }
+                catch (Exception ex) { _releaseEvidence.RecordFailure("AI control Dev2 exit", ex); }
                 // HostRuntime 的 PDH/DriveInfo 调用由低优先级线程隔离；若操作系统探针
                 // 本身卡住，退出流程不得再次被它无限阻塞。它是后台任务，返回后会观察
                 // 已取消的 _cts 并退出。
                 try { _runtimeProbeWorker?.Wait(100); } catch { }
                 _backgroundTasks?.Dispose();
+                // 旧代次的 ReadLease 和尚未退出的受监督后台任务仍保持登记。
+                // Finalizer 的有界 Join 返回绝不冒充这些回调已经退出。
+                _releaseEvidence.CloseCallbackAdmission();
             }
+            catch (Exception ex) { _releaseEvidence.RecordFailure("AI finalizer", ex); }
             finally
             {
                 try { _queueSignalDev1.Dispose(); } catch { }
@@ -5237,17 +5258,26 @@ namespace IO.NI
             AITerminalConfiguration term)
         {
             var task = new NIDaqTask(name);
-            foreach (var ch in channels)
-                task.AIChannels.CreateVoltageChannel(ch, "", term, aiMin, aiMax, AIVoltageUnits.Volts);
+            try
+            {
+                foreach (var ch in channels)
+                    task.AIChannels.CreateVoltageChannel(ch, "", term, aiMin, aiMax, AIVoltageUnits.Volts);
 
-            task.Timing.ConfigureSampleClock("", _sampleRate, SampleClockActiveEdge.Rising,
-                SampleQuantityMode.ContinuousSamples, _samplesPerChannel);
-            // 输入缓冲只扩大驱动侧的抗调度抖动窗口，不改变每次读取点数和10ms控制节拍。
-            // 必须在 Verify 前配置；现场 -200279 即为应用线程约3秒未及时取数后覆盖旧样本。
-            task.Stream.ConfigureInputBuffer(_inputBufferSamplesPerChannel);
+                task.Timing.ConfigureSampleClock("", _sampleRate, SampleClockActiveEdge.Rising,
+                    SampleQuantityMode.ContinuousSamples, _samplesPerChannel);
+                // 输入缓冲只扩大驱动侧的抗调度抖动窗口，不改变每次读取点数和10ms控制节拍。
+                // 必须在 Verify 前配置；现场 -200279 即为应用线程约3秒未及时取数后覆盖旧样本。
+                task.Stream.ConfigureInputBuffer(_inputBufferSamplesPerChannel);
 
-            task.Control(TaskAction.Verify);
-            return task;
+                task.Control(TaskAction.Verify);
+                return task;
+            }
+            catch
+            {
+                try { task.Dispose(); }
+                catch (Exception ex) { _releaseEvidence.RecordFailure("AI creation cleanup", ex); }
+                throw;
+            }
         }
 
         internal static int SelectInputBufferSamplesPerChannel(
@@ -5636,6 +5666,7 @@ namespace IO.NI
                 ResetFreshness(device);
                 var taskName = $"{device}_AI_g{generation}";
                 NIDaqTask task = null;
+                DeviceReadState state = null;
                 try
                 {
                     task = CreateAiTask(
@@ -5660,7 +5691,7 @@ namespace IO.NI
                     {
                         SynchronizeCallbacks = false
                     };
-                    var state = new DeviceReadState(_clockDisciplineOptions)
+                    state = new DeviceReadState(_clockDisciplineOptions)
                     {
                         Device = device,
                         Generation = generation,
@@ -5692,6 +5723,7 @@ namespace IO.NI
                         _reader2 = reader;
                         _readState2 = state;
                     }
+                    state.ReadLease = _releaseEvidence.RegisterCallback();
                     state.ReadThread = new Thread(() => ReadDeviceLoop(state))
                     {
                         IsBackground = true,
@@ -5704,7 +5736,9 @@ namespace IO.NI
                 {
                     if (isDev1) { _task1 = null; _reader1 = null; _readState1 = null; }
                     else { _task2 = null; _reader2 = null; _readState2 = null; }
-                    try { task?.Dispose(); } catch { }
+                    state?.ReadLease?.Dispose();
+                    try { task?.Dispose(); }
+                    catch (Exception ex) { _releaseEvidence.RecordFailure("AI start cleanup", ex); }
                     throw;
                 }
             }
@@ -5744,7 +5778,11 @@ namespace IO.NI
             try { task.Stop(); }
             catch (Exception ex) { _log.Warn($"停止 {device} DAQ任务异常：{ex.Message}", "AI"); }
             try { task.Dispose(); }
-            catch (Exception ex) { _log.Warn($"释放 {device} DAQ任务异常：{ex.Message}", "AI"); }
+            catch (Exception ex)
+            {
+                _releaseEvidence.RecordFailure("AI " + device + " Task.Dispose", ex);
+                _log.Warn($"释放 {device} DAQ任务异常：{ex.Message}", "AI");
+            }
             if (state != null && !state.Quiesced.Wait(500))
                 _log.Warn($"{device} 旧DAQ读取线程在500ms内未退出；新任务将使用独立代次和唯一名称。", "AI");
         }
@@ -5787,6 +5825,7 @@ namespace IO.NI
             finally
             {
                 state.Quiesced.Set();
+                state.ReadLease?.Dispose();
             }
         }
 

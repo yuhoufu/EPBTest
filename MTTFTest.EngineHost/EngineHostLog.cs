@@ -2,17 +2,34 @@ using System;
 using System.IO;
 using System.Text;
 using Config;
+using System.Collections.Generic;
+using System.Linq;
+using MTTFTest.Watchdog.Protocol;
 
 namespace MTTFTest.EngineHost
 {
     internal sealed class EngineHostLog : IAppLogger
     {
         private static readonly object Gate = new object();
-        private static readonly string PathName = Path.Combine(
+        private static readonly EngineUiLogBuffer UiEntries = new EngineUiLogBuffer();
+
+        internal static EngineUiLogEntry[] ReadUiEntries(out bool truncated)
+        {
+            var page = UiEntries.Read(new EngineUiLogQuery { PageSize = EngineUiContract.MaximumLogs });
+            truncated = page.RetentionTruncated || page.HasEarlier || page.DroppedEntries > 0;
+            return page.Entries;
+        }
+        internal static EngineUiLogPage ReadUiPage(EngineUiLogQuery query) => UiEntries.Read(query);
+        private static string PathName = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "MTTFTest",
             "EngineHost",
             "engine-host.log");
+
+        internal static void UseTestRoot(string root)
+        {
+            PathName = Path.Combine(Path.GetFullPath(root), "engine-host.log");
+        }
 
         public void Info(string message, string category = null) =>
             Write("INFO", category, message, null);
@@ -35,6 +52,7 @@ namespace MTTFTest.EngineHost
             string message,
             Exception exception)
         {
+            UiEntries.TryAppend(level, category, message, DateTime.UtcNow.Ticks);
             try
             {
                 lock (Gate)

@@ -43,13 +43,15 @@ namespace MTTFTest.Watchdog
                 Identity = command.Identity.Clone(),
                 ProofId = RecoveryProtocolV7.NewId(),
                 SafetyAgentInstanceId = RecoveryProtocolV7.NewId(),
-                DataBoundaryClosed = engineReceipt?.DataBoundaryClosed == true,
-                OldProcessIsolated = engineReceipt?.ExecutionAuthorizationRevoked == true,
                 CapturedUtcTicks = captured,
                 ValidUntilUtcTicks = captured + TimeSpan.FromSeconds(30).Ticks
             };
             try
             {
+                var boundary = V3SafetyHandoffBoundary.Capture(command, engineReceipt,
+                    engineReceipt?.HardwareHandoff == null && V3EngineProcessReplacer.ProveNoLiveEngineHost());
+                proof.DataBoundaryClosed = boundary.DataBoundaryClosed;
+                proof.OldProcessIsolated = boundary.OldExecutionIsolated;
                 var baseDirectory = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory);
                 var configDirectory = Path.Combine(baseDirectory, "Config");
                 var mainExecutable = Path.Combine(baseDirectory, "MTTFTest.EngineHost.exe");
@@ -99,13 +101,12 @@ namespace MTTFTest.Watchdog
                     Revision = 1,
                     State = WatchdogSafetyHandoffState.Accepted,
                     Stage = WatchdogSafetyStage.None,
-                    PersistenceDrained = engineReceipt?.DataBoundaryClosed == true,
-                    LogicalQuiescent = engineReceipt?.ExecutionAuthorizationRevoked == true,
-                    HardwareResourcesReleased = engineReceipt?.ExecutionAuthorizationRevoked == true,
-                    ExecutionAuthorizationRevoked =
-                        engineReceipt?.ExecutionAuthorizationRevoked == true,
-                    CallbacksIsolated = engineReceipt?.ExecutionAuthorizationRevoked == true,
-                    DataAuditState = engineReceipt?.DataBoundaryClosed == true
+                    PersistenceDrained = boundary.DataBoundaryClosed,
+                    LogicalQuiescent = boundary.LogicalQuiescent,
+                    HardwareResourcesReleased = boundary.HardwareResourcesReleased,
+                    ExecutionAuthorizationRevoked = boundary.ExecutionAuthorizationRevoked,
+                    CallbacksIsolated = boundary.CallbacksIsolated,
+                    DataAuditState = boundary.DataBoundaryClosed
                         ? WatchdogDataAuditState.Drained
                         : WatchdogDataAuditState.DataIncomplete,
                     ProjectDirectory = incidentDirectory,
@@ -166,6 +167,14 @@ namespace MTTFTest.Watchdog
                         try { if (!process.HasExited) process.Kill(); } catch { }
                         throw new TimeoutException(
                             "SafetyAgentProofTimeout:" + failure);
+                    }
+                    // The terminal record can precede finally/DAQ disposal. Do
+                    // not let a new EngineHost acquire the agent's live handles.
+                    var remaining = (int)Math.Max(0, Math.Min(int.MaxValue, (deadline - DateTime.UtcNow).TotalMilliseconds));
+                    if (!process.WaitForExit(remaining) || process.ExitCode != 0)
+                    {
+                        try { if (!process.HasExited) process.Kill(); } catch { }
+                        throw new InvalidOperationException("SafetyAgentDidNotExitCleanlyAfterProof");
                     }
                     proof.OutputsOff = current.Receipt.MotorsOff &&
                                        current.Receipt.PowerOff;

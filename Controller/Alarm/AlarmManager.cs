@@ -9,7 +9,7 @@ using Config;
 
 namespace Controller.Alarm
 {
-    public sealed class AlarmManager : IDisposable
+    public sealed partial class AlarmManager : IDisposable
     {
         private readonly AlarmConfig _cfg;
         private readonly IAppLogger _log;
@@ -19,7 +19,7 @@ namespace Controller.Alarm
         private readonly Dictionary<(int deviceId, int line), AlarmSingleCoilCommand> _singleCoil;
         private readonly Dictionary<int, AlarmEpbMapping> _epbMap;
 
-        private readonly M7055dSerialClient _client;
+        private readonly IAlarmPanelTransport _client;
 
         private readonly HashSet<int> _active = new();
         private volatile bool _buzzerEnabled;
@@ -27,6 +27,11 @@ namespace Controller.Alarm
         private CancellationTokenSource _buzzerDebounceCts;
 
         public AlarmManager(AlarmConfig cfg, IAppLogger log = null)
+            : this(cfg, log, null)
+        {
+        }
+
+        internal AlarmManager(AlarmConfig cfg, IAppLogger log, IAlarmPanelTransport transport)
         {
             _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
             _log = log ?? NullLogger.Instance;
@@ -44,7 +49,7 @@ namespace Controller.Alarm
                 .GroupBy(x => x.Channel)
                 .ToDictionary(g => g.Key, g => g.First());
 
-            _client = new M7055dSerialClient(
+            _client = transport ?? new M7055dSerialClient(
                 _cfg.Serial.Port,
                 _cfg.Serial.Baud,
                 _cfg.Serial.DataBits,
@@ -72,7 +77,7 @@ namespace Controller.Alarm
 
         public void SetBuzzerEnabled(bool enabled)
         {
-            _buzzerEnabled = enabled;
+            lock (_active) { _buzzerEnabled = enabled; _panelRevision++; }
             _tasks.Observe(RefreshBuzzerAsync(), "AlarmRefreshBuzzer", Guid.Empty);
         }
 
@@ -131,6 +136,12 @@ namespace Controller.Alarm
                     changed = _active.Add(epbId);
                 else
                     changed = _active.Remove(epbId);
+                if (active || changed)
+                {
+                    _panelRevision++;
+                    if (active) _activeVersions[epbId] = _panelRevision;
+                    else _activeVersions.Remove(epbId);
+                }
             }
 
             NonCriticalObserver.Invoke(
@@ -158,6 +169,8 @@ namespace Controller.Alarm
             await _ioGate.WaitAsync(token).ConfigureAwait(false);
             try
             {
+                long observedRevision;
+                lock (_active) observedRevision = _panelRevision;
                 _cooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(0, _cfg.Behavior.RearmDelayMs));
 
                 // 发送 AllOff
@@ -167,7 +180,7 @@ namespace Controller.Alarm
                     await SendHexNoGateAsync(cmd.Hex, cmd.ExpectResponse, token).ConfigureAwait(false);
                 }
 
-                lock (_active) _active.Clear();
+                RemoveObservedAlarms(observedRevision);
 
                 // 取消蜂鸣器去抖任务
                 try
@@ -272,7 +285,8 @@ namespace Controller.Alarm
                     map.Line,
                     on,
                     token,
-                    $"Channel={epbId}")
+                    $"Channel={epbId}",
+                    () => { lock (_active) return _active.Contains(epbId); })
                 .ConfigureAwait(false);
         }
 
@@ -286,14 +300,14 @@ namespace Controller.Alarm
             var now = DateTime.UtcNow;
             if (now < _cooldownUntilUtc)
             {
-                await SetSingleCoilAsync(buz.DeviceId, buz.Line, false, CancellationToken.None, "Output=Buzzer").ConfigureAwait(false);
+                await SetSingleCoilAsync(buz.DeviceId, buz.Line, false, CancellationToken.None, "Output=Buzzer", CurrentBuzzerOutput).ConfigureAwait(false);
                 return;
             }
 
             var any = IsAnyAlarmActive();
             if (!_buzzerEnabled || !any)
             {
-                await SetSingleCoilAsync(buz.DeviceId, buz.Line, false, CancellationToken.None, "Output=Buzzer").ConfigureAwait(false);
+                await SetSingleCoilAsync(buz.DeviceId, buz.Line, false, CancellationToken.None, "Output=Buzzer", CurrentBuzzerOutput).ConfigureAwait(false);
                 return;
             }
 
@@ -301,7 +315,7 @@ namespace Controller.Alarm
             var debounce = Math.Max(0, _cfg.Behavior.BuzzerDebounceMs);
             if (debounce <= 0)
             {
-                await SetSingleCoilAsync(buz.DeviceId, buz.Line, true, CancellationToken.None, "Output=Buzzer").ConfigureAwait(false);
+                await SetSingleCoilAsync(buz.DeviceId, buz.Line, true, CancellationToken.None, "Output=Buzzer", CurrentBuzzerOutput).ConfigureAwait(false);
                 return;
             }
 
@@ -327,7 +341,7 @@ namespace Controller.Alarm
                     if (!IsAnyAlarmActive()) return;
                     if (DateTime.UtcNow < _cooldownUntilUtc) return;
 
-                    await SetSingleCoilAsync(buz.DeviceId, buz.Line, true, CancellationToken.None, "Output=Buzzer").ConfigureAwait(false);
+                    await SetSingleCoilAsync(buz.DeviceId, buz.Line, true, CancellationToken.None, "Output=Buzzer", CurrentBuzzerOutput).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -341,7 +355,8 @@ namespace Controller.Alarm
             int line,
             bool on,
             CancellationToken token,
-            string identity = null)
+            string identity = null,
+            Func<bool> currentState = null)
         {
             if (!_singleCoil.TryGetValue((deviceId, line), out var cmd))
             {
@@ -366,13 +381,14 @@ namespace Controller.Alarm
                 $"AlarmOutputRequested {identity ?? "Output=Unknown"} " +
                 $"Device={deviceId} Line={line} State={(on ? "On" : "Off")}",
                 "报警");
-            var result = await SendHexAsync(hex, expectResponse: true, token).ConfigureAwait(false);
+            var result = await SendHexAsync(hex, expectResponse: true, token,
+                currentState == null ? (Func<string>)null : () => currentState() ? cmd.OnHex : cmd.OffHex).ConfigureAwait(false);
             if (result.Succeeded)
                 _log.Info(
-                    $"AlarmOutputAcked {identity ?? "Output=Unknown"} " +
+                    $"AlarmOutputSent {identity ?? "Output=Unknown"} " +
                     $"Device={deviceId} Line={line} State={(on ? "On" : "Off")} " +
                     $"Attempt={result.Attempts} LatencyMs={result.ElapsedMilliseconds:F1} " +
-                    "Confirmation=SerialResponse",
+                    "Confirmation=SerialWriteOnly;PhysicalOutputUnverified",
                     "报警");
             else
                 _log.Warn(
@@ -394,7 +410,8 @@ namespace Controller.Alarm
         private async Task<AlarmSendResult> SendHexAsync(
             string hex,
             bool expectResponse,
-            CancellationToken token)
+            CancellationToken token,
+            Func<string> currentFrame = null)
         {
             var frame = HexToBytes(hex);
             var clock = Stopwatch.StartNew();
@@ -407,7 +424,7 @@ namespace Controller.Alarm
                 await _ioGate.WaitAsync(token).ConfigureAwait(false);
                 try
                 {
-                    _client.Send(frame, expectResponse);
+                    _client.Send(currentFrame == null ? frame : HexToBytes(currentFrame()), expectResponse);
                     return new AlarmSendResult
                     {
                         Succeeded = true,

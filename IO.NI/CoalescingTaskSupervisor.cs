@@ -17,6 +17,7 @@ namespace IO.NI
     internal sealed class CoalescingTaskSupervisor : IDisposable
     {
         private readonly ILogger _log;
+        private readonly HardwareReleaseEvidence _releaseEvidence;
         private readonly ConcurrentDictionary<long, Task> _active =
             new ConcurrentDictionary<long, Task>();
         private readonly ConcurrentDictionary<string, long> _activeKeys =
@@ -26,9 +27,10 @@ namespace IO.NI
         private long _coalesced;
         private int _accepting = 1;
 
-        internal CoalescingTaskSupervisor(ILogger log)
+        internal CoalescingTaskSupervisor(ILogger log, HardwareReleaseEvidence releaseEvidence = null)
         {
             _log = log ?? NLogger.Instance;
+            _releaseEvidence = releaseEvidence;
         }
 
         internal int ActiveCount
@@ -63,18 +65,25 @@ namespace IO.NI
                     return false;
                 }
 
-                var task = new Task(
-                    () => Execute(id, key, action),
-                    CancellationToken.None,
-                    TaskCreationOptions.DenyChildAttach);
-                _active[id] = task;
+                IDisposable callbackLease = null;
                 try
                 {
+                    callbackLease = _releaseEvidence?.RegisterCallback();
+                    var task = new Task(
+                        () =>
+                        {
+                            try { Execute(id, key, action); }
+                            finally { callbackLease?.Dispose(); }
+                        },
+                        CancellationToken.None,
+                        TaskCreationOptions.DenyChildAttach);
+                    _active[id] = task;
                     task.Start(TaskScheduler.Default);
                     return true;
                 }
                 catch
                 {
+                    callbackLease?.Dispose();
                     RemoveKey(key, id);
                     _active.TryRemove(id, out _);
                     throw;
@@ -156,6 +165,11 @@ namespace IO.NI
                     return false;
                 }
             }
+        }
+
+        internal void StopAccepting()
+        {
+            lock (_lifecycleGate) Interlocked.Exchange(ref _accepting, 0);
         }
 
         private void Execute(long id, string key, Action action)

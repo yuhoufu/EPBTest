@@ -50,6 +50,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="SupervisedFormalContinuationTests.cs" />
+    <Compile Include="HardwareReleaseEvidenceTests.cs" />
     <Compile Include="CalibrationMathTests.cs" />
     <Compile Include="CycleAttemptLifecycleTests.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />
@@ -95,6 +97,7 @@
     <Compile Include="WatchdogSafetyClosureV39Tests.cs" />
     <Compile Include="V213043RecoveryTests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
+    <Compile Include="AlarmPanelCommandTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Fixtures\20260730_reverse_release_curves.csv">
@@ -163,9 +166,9 @@
       <Name>MTTFTest.SafetyHardware</Name>
       <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
     </ProjectReference>
-    <ProjectReference Include="..\..\MTTfTest\MTTfTest.csproj">
-      <Project>{B921A6BD-A621-4FD4-9A47-840865FC82C9}</Project>
-      <Name>MTTFTest</Name>
+    <ProjectReference Include="..\..\MTTfTest\MTTfTest.LegacyUiRegression.csproj">
+      <Project>{6A9A0B47-18F7-4774-A69F-F1318A10A3B6}</Project>
+      <Name>MTTFTest.LegacyUiRegression</Name>
       <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>
@@ -183,7 +186,7 @@
   -->
   <Target Name="CopyMttfTestRuntimeClosure" AfterTargets="Build">
     <ItemGroup>
-      <MttfTestRuntimeFiles Include="$(ProjectDir)..\..\MTTfTest\bin\$(Configuration)\**\*.*" />
+      <MttfTestRuntimeFiles Include="$(ProjectDir)..\..\MTTfTest\bin\LegacyUiRegression\$(Configuration)\**\*.*" />
     </ItemGroup>
     <Copy
       SourceFiles="@(MttfTestRuntimeFiles)"

@@ -1,6 +1,5 @@
 ﻿using DataOperation;
 using MtEmbTest;
-using NationalInstruments.DataInfrastructure;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -54,11 +53,13 @@ namespace MTEmbTest
         private int[] BrakeNo;
         private DateTime[] SourceTime;
         private double[] RelTime;
+        private string _loadedSourcePath;
 
 
         public FrmPlayBack()
         {
             InitializeComponent();
+            InitializeHistoryClient();
             // 创建自定义标题栏
             Panel titleBar = new Panel
             {
@@ -285,125 +286,26 @@ namespace MTEmbTest
         private void FrmPlayBack_Load(object sender, EventArgs e)
         {
             InitializeCurve();
-
             bgwA = new BackgroundWorker();
             bgwA.WorkerReportsProgress = true;
             bgwA.DoWork += bgwA_DoWork;
-
             bgwA.RunWorkerCompleted += bgwA_Completed;
-
-
+            UpdateHistoryAvailability();
         }
 
         private void bgwA_DoWork(object sender, DoWorkEventArgs e)
         {
-
-            try
-            {
-                var bgworker = sender as BackgroundWorker;
-                string FileName = e.Argument.ToString();
-                ReadData(FileName);
-            }
-
-            catch (Exception ex)
-            {
-
-            }
-
+            ReadFeatureHistory((string)e.Argument);
         }
 
 
         private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
         {
-            if (CanForce != null)
-            {
-
-                for (int i = 0; i < CanForce.Length; i++)
-                {
-                    listForce.Add(BrakeNo[i], CanForce[i]);
-                    listCanCurrent.Add(BrakeNo[i], CanCurrent[i]);
-                    listDaqTorque.Add(BrakeNo[i], DaqTorque[i]);
-                    listDaqCurrent.Add(BrakeNo[i], DaqCurrent[i]);
-
-                    RelTime[i] = SourceTime[i].Subtract(SourceTime[0]).TotalSeconds;
-
-
-
-                }
-
-                zedGraphControlHistory.AxisChange();
-                zedGraphControlHistory.Invalidate();
-
-
-                RtbTestInfo.Clear();
-                RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
-                // RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
-                // RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
-                RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
-       
-                RtbTestInfo.AppendText("当前范围: <" + BrakeNo[0].ToString() + "," + BrakeNo[BrakeNo.Length - 1].ToString() + ">\n");
-
-                ProgressShow.Visible = false;
-                Application.DoEvents();
-
-
-
-            }
-
-            else
-            {
-                MessageBox.Show("记录数据为空！");
-                return;
-            }
-
-
-
-
-
-
+            CompleteFeatureHistory(e);
         }
         private void ReadData(string FileName)
         {
-            try
-            {
-                using (FileStream fs = new FileStream(FileName, FileMode.Open))
-                {
-                    BinaryReader sr = new BinaryReader(fs);
-                    int FileLens = (int)fs.Length;
-                    int Frames = FileLens / StatLogRecordLens;
-
-                    CanForce = new double[Frames];
-                    SourceTime = new DateTime[Frames];
-                    BrakeNo = new int[Frames];
-                    CanCurrent = new double[Frames];
-                    DaqTorque = new double[Frames];
-                    DaqCurrent = new double[Frames];
-                    RelTime = new double[Frames];
-
-                    for (int i = 0; i < Frames; i++)   //测试了一整，还是这个最快
-                    {
-                        BrakeNo[i] = sr.ReadInt32();
-                        SourceTime[i] = DateTime.FromFileTime(sr.ReadInt64());
-                        CanForce[i] = sr.ReadDouble();
-                        CanCurrent[i] = sr.ReadDouble();
-                        DaqTorque[i] = sr.ReadDouble();
-                        DaqCurrent[i] = sr.ReadDouble();
-
-                        sr.ReadBytes(StatLogRecordLens - 44);     //都剩余的字节
-
-                       
-                    }
-
-                    sr.Close();
-                    fs.Close();
-                }
-
-
-            }
-            catch (Exception ex)
-            {
-                // ex.Message;
-            }
+            ReadFeatureHistory(FileName);
         }
 
         private bool FilterCondition(FileInfo file, string nameFilter, string extensionFilter)
@@ -481,48 +383,9 @@ namespace MTEmbTest
 
 
 
-        private void BtnFindFile_Click(object sender, EventArgs e)
+        private async void BtnFindFile_Click(object sender, EventArgs e)
         {
-            
-            using (FolderBrowserDialog folderDialog = new FolderBrowserDialog())
-            {
-                folderDialog.Description = "选择文件夹";
-                folderDialog.ShowNewFolderButton = false;
-
-                if (folderDialog.ShowDialog() == DialogResult.OK)
-                {
-                    selectedPath = folderDialog.SelectedPath;
-
-                    try
-                    {
-
-                        // 获取文件夹中所有文件
-                        allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
-                        FileInfo[] SelectPart = allFiles.Where(file => FilterCondition(file, "Stat", "bin"))
-                            .OrderBy(file => file.CreationTime) // 按创建时间升序
-                            .ToArray();
-
-                        // 提取纯文件名（不含路径）
-                        string[] fileNames = SelectPart
-                            .Select(file => file.Name)
-                            .ToArray();
-
-                        LbFileList.Items.Clear();
-                        LbFileList.Items.AddRange(fileNames);
-
-                        string xmlPath = Path.Combine(selectedPath, @"TestConfig.xml");
-                        LoadTestConfigFromXml(xmlPath);
-
-
-
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"错误: {ex.Message}");
-                    }
-                }
-            }
-
+            await ChooseHistoryDirectoryAsync();
         }
 
 
@@ -567,81 +430,15 @@ namespace MTEmbTest
             ShowOrHideCurve();
         }
 
-        private void BtnExportFile_Click(object sender, EventArgs e)
+        private async void BtnExportFile_Click(object sender, EventArgs e)
         {
-            if (SourceTime == null)
-            {
-                MessageBox.Show("数据集为空，无法导出！");
-                return;
-            }
-
-
-
-            SaveFileDialog saveFileDialog = new SaveFileDialog();
-            saveFileDialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*";
-            saveFileDialog.Title = "Export to CSV";
-
-            saveFileDialog.FileName = ExportFile;
-
-            if (saveFileDialog.ShowDialog() == DialogResult.OK)
-            {
-                try
-                {
-                    ProgressShow.Visible = true;
-                    ProgressShow.BringToFront();  // 确保在最上层
-                    Application.DoEvents();
-
-
-                    ExportData(SourceTime, RelTime, BrakeNo, CanForce, CanCurrent, DaqCurrent, DaqTorque, saveFileDialog.FileName);
-
-                    ProgressShow.Visible = false;
-
-                    Application.DoEvents();
-
-                    MessageBox.Show("导出完成！");
-
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(ex.Message);
-                }
-            }
+            await ChooseHistoryExportAsync();
         }
 
         private void LbFileList_DoubleClick(object sender, EventArgs e)
         {
-            try
-            {
-                string SafeFile = LbFileList.SelectedItem.ToString();
-                string CurFileName = selectedPath + "\\" + SafeFile;
-                ExportFile = CurFileName.Replace(".bin", ".csv");
-
-                CanForce = null;
-                CanCurrent = null;
-                DaqTorque = null;
-                DaqCurrent = null;
-                SourceTime = null;
-                BrakeNo = null;
-                RelTime = null;
-
-
-
-
-
-
-                listForce.Clear();
-                listDaqCurrent.Clear();
-                listDaqTorque.Clear();
-                listCanCurrent.Clear();
-                zedGraphControlHistory.AxisChange();
-                zedGraphControlHistory.Invalidate();
-
-                bgwA.RunWorkerAsync(CurFileName);
-            }
-            catch(Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
+            if (LbFileList.SelectedItem == null) return;
+            OpenHistoryFile(Path.Combine(selectedPath, LbFileList.SelectedItem.ToString()));
         }
 
    private void ExportData(
@@ -654,27 +451,8 @@ namespace MTEmbTest
    double[] DAQTorque,
    string ExportFileName)
         {
-
-            int Len = BrakeNo.Length;
-            // 写入CSV文件
-            using (StreamWriter writer = new StreamWriter(ExportFileName, false, Encoding.UTF8))
-            {
-                // 写入标题行
-                writer.WriteLine("TimeStamp,RelTime,BrakeNo,CanForce,CanCurrent,DAQCurrent,DAQTorque");
-
-                // 写入数据行
-                for (int i = 0; i < Len; i++)
-                {
-                    writer.WriteLine(
-                        $"{DaqTime[i]:yyyy-MM-dd HH:mm:ss.fff}," +
-                        $"{RelTime[i]:0.000}," +
-                        $"{BrakeNo[i]}," +
-                        $"{CanForce[i]:0.000}," +
-                        $"{CanCurrent[i]:0.000}," +
-                        $"{DAQCurrent[i]:0.000}," +
-                        $"{DAQTorque[i]:0.000}");
-                }
-            }
+            if (_historyResult == null) throw new InvalidOperationException("尚未读取历史源文件。");
+            Playback.HistoryFileReader.Export(_historyResult, ExportFileName, true, _historyStop.Token);
         }
 
 

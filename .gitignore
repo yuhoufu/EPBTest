@@ -402,6 +402,10 @@ DataStore/
 /tmp/
 # Field-operation screenshots are retained locally and must not enter commits.
 **/截图/
+# One synthetic, hardware-free UI test render accompanies its implementation note.
+!docs/02_Issues/截图/
+docs/02_Issues/截图/*
+!docs/02_Issues/截图/2026-09-04_V3原界面_隔离模拟_1440x900.png
 *.csv
 !Tests/AdaptiveControlTests/Fixtures/field_v20_epb10_cycle_-002094.csv
 !Tests/AdaptiveControlTests/Fixtures/field_v15_epb10_cycle_084529.csv

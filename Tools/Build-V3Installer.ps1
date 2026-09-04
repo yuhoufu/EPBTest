@@ -11,6 +11,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
+$uiGateParameters = @{ RepositoryRoot = $repo }
+if (-not $FormalRelease) {
+    $uiGateParameters.AllowInstalledUiValidationPending = $true
+}
+& (Join-Path $PSScriptRoot 'Test-V3OriginalUiReleaseGate.ps1') @uiGateParameters
 
 function Resolve-ExistingExecutable(
     [string]$RequestedPath,
@@ -155,7 +160,7 @@ if (-not $FormalRelease) {
 
 $shortCommit = ([string]$identity.gitCommit).Substring(0, 12)
 $bundleKind = if ($FormalRelease) { '操作员包' } else { '现场验证包' }
-$bundleName = "V${version}_${bundleKind}_${shortCommit}_QUICKDEPLOY_R25"
+$bundleName = "V${version}_${bundleKind}_${shortCommit}_QUICKDEPLOY_R26"
 $bundleDirectory = Join-Path $outputRootFull $bundleName
 $archive = $bundleDirectory + '.7z'
 $archiveHashPath = $archive + '.sha256'

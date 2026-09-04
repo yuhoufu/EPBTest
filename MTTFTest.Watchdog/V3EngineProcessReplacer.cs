@@ -28,10 +28,12 @@ namespace MTTFTest.Watchdog
         private static readonly JavaScriptSerializer Json =
             new JavaScriptSerializer();
         private readonly Action<string, string> _audit;
+        private readonly Func<RecoveryCommand, bool> _isCurrent;
 
-        internal V3EngineProcessReplacer(Action<string, string> audit)
+        internal V3EngineProcessReplacer(Action<string, string> audit, Func<RecoveryCommand, bool> isCurrent = null)
         {
             _audit = audit ?? ((eventType, detail) => { });
+            _isCurrent = isCurrent;
         }
 
         internal RecoveryCommandReceipt Replace(
@@ -48,10 +50,24 @@ namespace MTTFTest.Watchdog
             {
                 if (command?.IsStructurallyValid() != true)
                     throw new InvalidDataException("EngineReplacementCommandInvalid");
+                var projectSwitch = command.Kind == RecoveryCommandKind.ActivateProjectSwitch;
+                if (projectSwitch && activateLastKnownGood) throw new InvalidOperationException("ProjectSwitchCannotImplicitlyChangePackage");
+                EnsureCurrent(command);
                 EngineStateSnapshot snapshot = null;
-                try { snapshot = EngineHostPipeClient.ReadSnapshot(3000); }
-                catch { }
-                if (snapshot != null &&
+                var observedProcessId = 0; long observedStart = 0;
+                if (projectSwitch)
+                {
+                    try { snapshot = ReadProjectSnapshot(command, out observedProcessId, out observedStart); }
+                    catch { if (!ProveNoLiveEngineHost()) throw; }
+                    if (snapshot != null && !ProjectEngineHandoffPolicy.IsSource(command, snapshot) && !ProjectEngineHandoffPolicy.IsDestination(command, snapshot))
+                        throw new InvalidDataException("ProjectReplacementSourceOrDestinationInvalid");
+                }
+                else
+                {
+                    try { snapshot = EngineHostPipeClient.ReadSnapshot(3000); }
+                    catch { }
+                }
+                if (!projectSwitch && snapshot != null &&
                     (!string.Equals(snapshot.SessionId,
                          command.Identity.SessionId, StringComparison.Ordinal) ||
                      !string.Equals(snapshot.RunId,
@@ -65,6 +81,14 @@ namespace MTTFTest.Watchdog
                     var oldProcess = launchBase.LiveProcess;
                     var oldProcessId = launchBase.OldProcessId;
                     var oldStartTicks = launchBase.OldProcessStartUtcTicks;
+                    if (projectSwitch && oldProcess != null &&
+                        (snapshot == null || oldProcessId != observedProcessId || oldStartTicks != observedStart))
+                        throw new InvalidDataException("ProjectReplacementExactProcessMismatch");
+                    if (projectSwitch && ProjectEngineHandoffPolicy.IsDestination(command, snapshot))
+                    {
+                        EnsureCurrent(command);
+                        return ProjectEngineHandoffPolicy.DestinationReceipt(command, snapshot);
+                    }
                     var desktopSessionId = launchBase.DesktopSessionId;
                     var currentExecutable = launchBase.ExecutablePath;
                     var executable = currentExecutable;
@@ -79,6 +103,7 @@ namespace MTTFTest.Watchdog
 
                     if (oldProcess != null)
                     {
+                        EnsureCurrent(command);
                         oldProcess.Kill();
                         if (!oldProcess.WaitForExit(30000))
                             throw new TimeoutException("OldEngineHostExitTimeout");
@@ -98,6 +123,7 @@ namespace MTTFTest.Watchdog
                     var baseArguments = "--session " + command.Identity.SessionId +
                                         " --run " + command.Identity.RunId +
                                         " --epoch " + command.Identity.RunEpoch;
+                    if (projectSwitch) baseArguments += EngineProjectActivation.FromCommand(command).ToArguments();
                     var arguments = SessionAgentLaunchClient.AppendLaunchProof(
                         baseArguments, capabilityId, nonce,
                         command.Identity.SessionId);
@@ -123,25 +149,37 @@ namespace MTTFTest.Watchdog
                                                Environment.CurrentDirectory,
                             LaunchNonce = nonce,
                             IssuedUtcTicks = DateTime.UtcNow.Ticks,
-                            ExpiresUtcTicks = DateTime.UtcNow.AddSeconds(60).Ticks,
+                            ExpiresUtcTicks = Math.Min(DateTime.UtcNow.AddSeconds(60).Ticks, command.DeadlineUtcTicks),
                             IssuerProcessId = supervisor.Id,
                             IssuerProcessStartUtcTicks =
                                 supervisor.StartTime.ToUniversalTime().Ticks
                         };
                     }
+                    EnsureCurrent(command);
                     using (var replacement = SessionAgentLaunchClient.Start(capability))
                     {
-                        var deadline = DateTime.UtcNow.AddSeconds(30);
+                        var deadline = new DateTime(Math.Min(command.DeadlineUtcTicks,
+                            DateTime.UtcNow.AddSeconds(projectSwitch ? 180 : 30).Ticks), DateTimeKind.Utc);
                         Exception last = null;
                         EngineStateSnapshot admitted = null;
                         while (DateTime.UtcNow <= deadline)
                         {
+                            EnsureCurrent(command);
                             if (replacement.HasExited)
                                 throw new InvalidOperationException(
                                     "ReplacementEngineHostExited:" +
                                     replacement.ExitCode);
                             try
                             {
+                                if (projectSwitch)
+                                {
+                                    admitted = ReadProjectSnapshot(command, out var replacementId, out var replacementStarted);
+                                    if (replacementId == replacement.Id && replacementStarted == replacement.StartTime.ToUniversalTime().Ticks &&
+                                        ProjectEngineHandoffPolicy.IsDestination(command, admitted)) break;
+                                    admitted = null;
+                                    Thread.Sleep(100);
+                                    continue;
+                                }
                                 admitted = EngineHostPipeClient.ReadSnapshot(1000);
                                 if (admitted.HardwareInitialized &&
                                     (snapshot == null ||
@@ -160,6 +198,13 @@ namespace MTTFTest.Watchdog
                             }
                             catch (Exception ex) { last = ex; }
                             Thread.Sleep(100);
+                        }
+                        if (projectSwitch)
+                        {
+                            EnsureCurrent(command);
+                            receipt = ProjectEngineHandoffPolicy.DestinationReceipt(command, admitted);
+                            _audit("ProjectEngineHostActivated", "Command=" + command.ProjectSwitch.OperatorCommandId + ";PID=" + replacement.Id);
+                            return receipt;
                         }
                         if (admitted?.HardwareInitialized != true ||
                             (snapshot != null &&
@@ -199,6 +244,18 @@ namespace MTTFTest.Watchdog
             receipt.CompletedUtcTicks = DateTime.UtcNow.Ticks;
             return receipt;
         }
+
+        private void EnsureCurrent(RecoveryCommand command)
+        {
+            if (command.Kind == RecoveryCommandKind.ActivateProjectSwitch && _isCurrent == null ||
+                _isCurrent != null && !_isCurrent(command) || command.DeadlineUtcTicks <= DateTime.UtcNow.Ticks)
+                throw new InvalidOperationException("EngineReplacementCommandSupersededOrExpired");
+        }
+
+        private static EngineStateSnapshot ReadProjectSnapshot(RecoveryCommand command, out int processId, out long startTicks) =>
+            EngineHostPipeClient.ReadBoundSnapshot(command.Identity.SessionId,
+                (id, start) => SupervisorServiceRuntime.IsExactSessionAgentRoleProcess(id, start, command.Identity.SessionId, ProcessRole.EngineHost),
+                out processId, out startTicks);
 
         internal static bool ProveNoLiveEngineHost()
         {

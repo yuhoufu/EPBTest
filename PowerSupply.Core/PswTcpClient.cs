@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 
 namespace PowerSupply.Core
 {
-    public sealed class PswTcpClient : IPswClient
+    public sealed partial class PswTcpClient : IPswClient
     {
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private readonly IPswLog _log;
@@ -41,21 +41,34 @@ namespace PowerSupply.Core
         }
 
         public PswEndpoint Endpoint { get; }
-        public bool IsConnected => _client != null && _client.Connected && _stream != null && _writer != null;
+        public bool IsConnected
+        {
+            get
+            {
+                lock (_lifecycleGate)
+                    return !_retired && _client != null && _client.Connected && _stream != null && _writer != null;
+            }
+        }
         public string Identity { get; private set; } = string.Empty;
         public bool IsVerifiedPsw { get; private set; }
         public PswCapabilities Capabilities { get; private set; } = new PswCapabilities();
 
         public async Task<PswSnapshot> ConnectAsync(CancellationToken token)
         {
+            using var operation = RegisterOperation();
             await _gate.WaitAsync(token).ConfigureAwait(false);
             var sessionStarted = Stopwatch.GetTimestamp();
-            LogPowerPhase("ConnectSession", "Started", 0, Endpoint.Id.ToString());
             try
             {
+                LogPowerPhase("ConnectSession", "Started", 0, Endpoint.Id.ToString());
                 DisposeTransport();
-                var client = new TcpClient { NoDelay = true };
-                _client = client;
+                TcpClient client;
+                lock (_lifecycleGate)
+                {
+                    RequirePreviousTransportExited();
+                    client = new TcpClient { NoDelay = true };
+                    _client = client;
+                }
                 IPAddress address;
                 if (!IPAddress.TryParse(Endpoint.Host, out address))
                 {
@@ -113,13 +126,17 @@ namespace PowerSupply.Core
                         FailureDetail(address + ":" + Endpoint.Port, ex));
                     throw;
                 }
-                var stream = client.GetStream();
-                _stream = stream;
-                _writer = new StreamWriter(stream, Encoding.ASCII, 1024, true)
+                lock (_lifecycleGate)
                 {
-                    AutoFlush = true,
-                    NewLine = Endpoint.ResolveTerminator()
-                };
+                    ThrowIfRetired();
+                    var stream = client.GetStream();
+                    _stream = stream;
+                    _writer = new StreamWriter(stream, Encoding.ASCII, 1024, true)
+                    {
+                        AutoFlush = true,
+                        NewLine = Endpoint.ResolveTerminator()
+                    };
+                }
                 Log(PswLogDirection.Information, $"已连接 {Endpoint.Host}:{Endpoint.Port}");
                 Identity = await QueryCoreAsync("*IDN?", token).ConfigureAwait(false);
                 IsVerifiedPsw = PswProtocol.IsVerifiedIdentity(Identity);
@@ -152,6 +169,7 @@ namespace PowerSupply.Core
 
         public async Task DisconnectAsync(CancellationToken token)
         {
+            using var operation = RegisterOperation();
             await _gate.WaitAsync(token).ConfigureAwait(false);
             try { DisposeTransport(); }
             finally { _gate.Release(); }
@@ -420,14 +438,19 @@ namespace PowerSupply.Core
 
         private async Task WriteCoreAsync(string command, CancellationToken token)
         {
-            EnsureConnected();
+            StreamWriter writer;
+            lock (_lifecycleGate)
+            {
+                EnsureConnected();
+                writer = _writer;
+            }
             token.ThrowIfCancellationRequested();
             var started = Stopwatch.GetTimestamp();
             LogPowerPhase("ScpiWrite", "Started", 0, command);
             try
             {
-                await AwaitWithTimeout(_writer.WriteLineAsync(command), _commandTimeoutMs, token, command).ConfigureAwait(false);
-                await AwaitWithTimeout(_writer.FlushAsync(), _commandTimeoutMs, token, command).ConfigureAwait(false);
+                await AwaitWithTimeout(writer.WriteLineAsync(command), _commandTimeoutMs, token, command).ConfigureAwait(false);
+                await AwaitWithTimeout(writer.FlushAsync(), _commandTimeoutMs, token, command).ConfigureAwait(false);
                 LogPowerPhase("ScpiWrite", "Completed", ElapsedMs(started), command);
             }
             catch (Exception ex)
@@ -443,7 +466,12 @@ namespace PowerSupply.Core
 
         private async Task<string> ReadResponseLineCoreAsync(string command, CancellationToken token)
         {
-            EnsureConnected();
+            NetworkStream stream;
+            lock (_lifecycleGate)
+            {
+                EnsureConnected();
+                stream = _stream;
+            }
             var started = Stopwatch.GetTimestamp();
             var firstByteLogged = false;
             var bytes = new List<byte>(128);
@@ -457,7 +485,7 @@ namespace PowerSupply.Core
                         throw new TimeoutException($"{command} 响应超时（{_commandTimeoutMs} ms）。");
                     var one = new byte[1];
                     var read = await AwaitWithTimeout(
-                            _stream.ReadAsync(one, 0, 1),
+                            stream.ReadAsync(one, 0, 1),
                             remaining,
                             token,
                             command + " response")
@@ -502,9 +530,11 @@ namespace PowerSupply.Core
 
         private async Task<T> ExecuteLockedAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken token)
         {
+            using var operation = RegisterOperation();
             await _gate.WaitAsync(token).ConfigureAwait(false);
             try
             {
+                ThrowIfRetired();
                 // StreamReader.ReadLineAsync 在 netstandard2.0 中无法真正取消。若把调用方的
                 // CancellationToken 传入超时包装，取消只会让包装任务提前退出，底层读取仍
                 // 占用 StreamReader；下一条命令随后会触发“流正在由其上的前一操作使用”，
@@ -523,8 +553,11 @@ namespace PowerSupply.Core
             finally { _gate.Release(); }
         }
 
-        private static async Task<T> AwaitWithTimeout<T>(Task<T> task, int timeoutMs, CancellationToken token, string operation)
+        private async Task<T> AwaitWithTimeout<T>(Task<T> task, int timeoutMs, CancellationToken token, string operation)
         {
+            // 已完成的 I/O 没有迟到执行器，不为每个缓冲字节再创建超时 Timer/退出登记。
+            if (task.IsCompleted) return await task.ConfigureAwait(false);
+            TrackTransportTask(task);
             var timeout = Task.Delay(timeoutMs, token);
             var completed = await Task.WhenAny(task, timeout).ConfigureAwait(false);
             if (completed != task)
@@ -536,8 +569,10 @@ namespace PowerSupply.Core
             return await task.ConfigureAwait(false);
         }
 
-        private static async Task AwaitWithTimeout(Task task, int timeoutMs, CancellationToken token, string operation)
+        private async Task AwaitWithTimeout(Task task, int timeoutMs, CancellationToken token, string operation)
         {
+            if (task.IsCompleted) { await task.ConfigureAwait(false); return; }
+            TrackTransportTask(task);
             var timeout = Task.Delay(timeoutMs, token);
             var completed = await Task.WhenAny(task, timeout).ConfigureAwait(false);
             if (completed != task)
@@ -571,6 +606,7 @@ namespace PowerSupply.Core
 
         private void EnsureConnected()
         {
+            ThrowIfRetired();
             if (!IsConnected) throw new InvalidOperationException("设备尚未连接。");
         }
 
@@ -650,19 +686,19 @@ namespace PowerSupply.Core
 
         private void DisposeTransport()
         {
-            try { _writer?.Dispose(); } catch { }
-            try { _stream?.Dispose(); } catch { }
-            try { _client?.Close(); } catch { }
-            _writer = null;
-            _stream = null;
-            _client = null;
-            _lastProtectionSetpointReadUtc = DateTime.MinValue;
+            lock (_lifecycleGate) CloseTransportLocked();
         }
 
         public void Dispose()
         {
-            DisposeTransport();
-            _gate.Dispose();
+            lock (_lifecycleGate)
+            {
+                if (_retired) return;
+                _retired = true;
+                CloseTransportLocked();
+                // 已登记的等待者仍需退出 finally；不能提前 Dispose 它们的信号量。
+                DisposeGateWhenQuiescent();
+            }
         }
     }
 }

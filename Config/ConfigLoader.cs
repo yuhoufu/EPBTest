@@ -490,18 +490,25 @@ public static class ConfigLoader
     /// <param name="configDir">配置目录（包含 AOConfig.xml/DOConfig.xml/TestConfig.xml）</param>
     /// <param name="log">日志器</param>
     public static GlobalConfig LoadAll(string configDir, IAppLogger log = null)
+        => LoadAllCore(configDir, log, null, true);
+
+    /// <summary>V3 EngineHost 读取已绑定的项目，不读取旧 UI 的用户级项目选择或改写默认模板。</summary>
+    public static GlobalConfig LoadAllForEngine(string configDir, string projectConfigurationPath, IAppLogger log = null)
+        => LoadAllCore(configDir, log, projectConfigurationPath, false);
+
+    private static GlobalConfig LoadAllCore(string configDir, IAppLogger log, string projectConfigurationPath, bool restoreLegacySelection)
     {
         log ??= NullLogger.Instance;
         var ao = LoadAO(Path.Combine(configDir, "AOConfig.xml"), log);
         var dO = LoadDO(Path.Combine(configDir, "DOConfig.xml"), log);
-        var test = LoadTest(Path.Combine(configDir, "TestConfig.xml"), log);
+        var test = LoadTest(projectConfigurationPath ?? Path.Combine(configDir, "TestConfig.xml"), log);
 
 
         var uiPath = Path.Combine(configDir, "UiConfig.xml");
         var ui = LoadUI(uiPath, log);
         var global = new GlobalConfig { AO = ao, DO = dO, Test = test, UI = ui };
         // 仅主程序自动恢复；测试程序和配置工具不会读取当前 Windows 用户的项目状态。
-        if (string.Equals(
+        if (restoreLegacySelection && string.Equals(
                 Path.GetFileNameWithoutExtension(AppDomain.CurrentDomain.FriendlyName),
                 "MTTFTest",
                 StringComparison.OrdinalIgnoreCase))
@@ -511,6 +518,7 @@ public static class ConfigLoader
                 ConfigurationManager.AppSettings["InitialProjectPath"],
                 log);
         }
+        if (!restoreLegacySelection) CurrentProjectRootDir = GetProjectRootDir(test.StoreDir, test.TestName);
         return global;
     }
 
@@ -1066,6 +1074,15 @@ public static class ConfigLoader
         var fileLock = TestFileLocks.GetOrAdd(path, _ => new object());
         lock (fileLock)
             SaveTestCore(path, cfg);
+    }
+
+    /// <summary>One project-file transaction shared by settings, progress and isolation writers.</summary>
+    public static T WithTestFileLock<T>(string path, Func<T> operation)
+    {
+        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
+        if (operation == null) throw new ArgumentNullException(nameof(operation));
+        var fileLock = TestFileLocks.GetOrAdd(Path.GetFullPath(path), _ => new object());
+        lock (fileLock) return operation();
     }
 
     private static void SaveTestCore(string path, TestConfig cfg)

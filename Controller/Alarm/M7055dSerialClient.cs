@@ -3,7 +3,14 @@ using System.IO.Ports;
 
 namespace Controller.Alarm
 {
-    internal sealed class M7055dSerialClient : IDisposable
+    internal interface IAlarmPanelTransport : IDisposable
+    {
+        bool IsOpen { get; }
+        void Open();
+        void Send(byte[] frame, bool expectResponse);
+    }
+
+    internal sealed class M7055dSerialClient : IAlarmPanelTransport
     {
         private readonly SerialPort _port;
 
@@ -15,8 +22,8 @@ namespace Controller.Alarm
 
             _port = new SerialPort(portName, baud, parity, dataBits, stopBits)
             {
-                ReadTimeout = Math.Max(50, timeoutMs),
-                WriteTimeout = Math.Max(50, timeoutMs)
+                ReadTimeout = Math.Max(50, Math.Min(1000, timeoutMs)),
+                WriteTimeout = Math.Max(50, Math.Min(1000, timeoutMs))
             };
         }
 

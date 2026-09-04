@@ -11,6 +11,7 @@ using Config.Models;
 using DataOperation;
 using IO.NI;
 using Timing;
+using MTTFTest.Watchdog.Protocol;
 
 namespace Controller
 {
@@ -35,17 +36,20 @@ namespace Controller
             Guid testRunId,
             int[] startedChannels,
             ChannelStartFault[] faults,
-            int[] completedDuringStartChannels = null)
+            int[] completedDuringStartChannels = null,
+            int[] qualifiedChannels = null)
         {
             TestRunId = testRunId;
             StartedChannels = startedChannels ?? Array.Empty<int>();
             Faults = faults ?? Array.Empty<ChannelStartFault>();
             CompletedDuringStartChannels = completedDuringStartChannels ?? Array.Empty<int>();
+            QualifiedChannels = qualifiedChannels ?? Array.Empty<int>();
         }
         public Guid TestRunId { get; }
         public int[] StartedChannels { get; }
         public ChannelStartFault[] Faults { get; }
         public int[] CompletedDuringStartChannels { get; }
+        public int[] QualifiedChannels { get; }
         public int[] QuarantinedChannels => Faults.Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
     }
 
@@ -887,7 +891,9 @@ namespace Controller
                 throw new ArgumentOutOfRangeException(nameof(channel));
             var recorder = _recorder ?? throw new InvalidOperationException(
                 "正式圈记录器不可用，拒绝在缺少耐久进度证据时自动恢复。");
-            return Math.Max(0, recorder.GetLastCycleNumber(channel));
+            return Math.Max(0, recorder is IFormalCycleProgressRecorder progress
+                ? progress.GetCompletedFormalCycleCount(channel)
+                : recorder.GetLastCycleNumber(channel));
         }
 
         internal long GetDurableMechanicalCycleCount(int channel)
@@ -1591,7 +1597,8 @@ namespace Controller
             bool reuseStableProfiles,
             CancellationToken token,
             RunChainIdentity chainIdentity = null,
-            bool operatorFullRelearningAuthorized = false)
+            bool operatorFullRelearningAuthorized = false,
+            RecoveryCommand supervisedQualification = null)
         {
             return await _batchLifecycleGate.RunAsync(
                     () => StartBatchCoreUnderLifecycleGateAsync(
@@ -1601,6 +1608,7 @@ namespace Controller
                         reuseStableProfiles,
                         chainIdentity,
                         operatorFullRelearningAuthorized,
+                        supervisedQualification,
                         token),
                     token)
                 .ConfigureAwait(false);
@@ -1613,6 +1621,7 @@ namespace Controller
             bool reuseStableProfiles,
             RunChainIdentity chainIdentity,
             bool operatorFullRelearningAuthorized,
+            RecoveryCommand supervisedQualification,
             CancellationToken token)
         {
             ThrowIfProcessRestartRequired();
@@ -1663,6 +1672,8 @@ namespace Controller
             try
             {
                 _activeBatchId = Guid.NewGuid();
+                var qualificationVersion = supervisedQualification == null ? 0 :
+                    _supervisedFormal.BeginQualification(supervisedQualification);
                 InitializeRunChainIdentity(chainIdentity, _activeBatchId);
                 _daqLivenessLogTransitions.BeginSession(
                     _activeBatchId,
@@ -1964,7 +1975,7 @@ namespace Controller
                     }
                 }
 
-                if (reuseStableProfiles)
+                if (qualificationCycles > 0)
                 {
                     activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
                     foreach (var channel in activeChannels)
@@ -2125,6 +2136,24 @@ namespace Controller
                         Array.Empty<int>(),
                         startFaults.ToArray(),
                         completedDuringStart.ToArray());
+                }
+
+                if (supervisedQualification != null)
+                {
+                    if (startFaults.Count != 0)
+                        throw new InvalidOperationException("SupervisedQualificationContainsFaults");
+                    await CompletePauseSafetyBoundaryAsync(activeChannels, true, sessionToken).ConfigureAwait(false);
+                    sessionToken.ThrowIfCancellationRequested();
+                    if (supervisedQualification.DeadlineUtcTicks <= DateTime.UtcNow.Ticks)
+                        throw new TimeoutException("SupervisedQualificationDeadlineExpired");
+                    PrepareSupervisedFormalContinuation(qualificationVersion, activeChannels, staggerPlan,
+                        Guid.Parse(supervisedQualification.Identity.IncidentId));
+                    foreach (var channel in activeChannels)
+                        PublishChannelRuntimeState(channel, ChannelRuntimeState.Paused, "QualifiedAwaitingSupervisor",
+                            "两圈资格复核及断能数据边界已完成，等待 Supervisor 正式运行授权",
+                            affectedChannels: activeChannels, correlationId: Guid.Parse(supervisedQualification.Identity.IncidentId));
+                    return new BatchStartResult(resultRunId, Array.Empty<int>(), startFaults.ToArray(),
+                        completedDuringStart.ToArray(), activeChannels);
                 }
 
                 foreach (var channel in activeChannels)
@@ -3166,6 +3195,7 @@ namespace Controller
         private void EndBatchSession(bool cancel, bool publishIdleState = true,
             string terminalStatus = null, string terminalReason = null)
         {
+            _supervisedFormal.Invalidate();
             // Learning terminal state is published immediately before formal
             // timers are armed.  Do not rewrite it when a later formal run stops.
             var cts = Interlocked.Exchange(ref _batchSessionCts, null);

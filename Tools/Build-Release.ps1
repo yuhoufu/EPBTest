@@ -8,6 +8,12 @@
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
+$uiGateParameters = @{ RepositoryRoot = $repo }
+if ($FieldValidationCandidate) {
+    $uiGateParameters.AllowInstalledUiValidationPending = $true
+}
+& (Join-Path $repo 'Tools\Test-V3OriginalUiReleaseGate.ps1') @uiGateParameters
+& (Join-Path $repo 'Tools\Test-V3ReleaseVerificationEvidence.ps1')
 
 $versionPropsPath = Join-Path $repo 'Build\UnattendedVersion.props'
 if (-not (Test-Path -LiteralPath $versionPropsPath -PathType Leaf)) {
@@ -415,14 +421,12 @@ if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
 
 $solutionPath = Join-Path $repo 'TfTest.sln'
 $powerSupplyProject = Join-Path $repo 'Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj'
-# SDK 项目按配置使用不同 RID；首次在干净机器构建时仅执行 solution restore
-# 不会同时生成两套 assets。显式还原两套资产，避免 Release Rebuild 被
-# project.assets.json 中缺少 win-x64/win-x86 target 阻断。
-foreach ($runtimeIdentifier in @('win-x64', 'win-x86')) {
-    & dotnet restore $powerSupplyProject --runtime $runtimeIdentifier
-    if ($LASTEXITCODE -ne 0) {
-        throw "PowerSupplyDebugger $runtimeIdentifier 资产还原失败：$LASTEXITCODE"
-    }
+# SDK 项目通过 RuntimeIdentifiers 在同一个 assets 文件中声明两套 RID。
+# 逐次 --runtime 还原会覆盖上一次结果，并不能累积两个配置的依赖图。
+# 发布时按实际 Release 配置还原测试及其项目引用。
+& dotnet restore $powerSupplyProject -p:Configuration=Release
+if ($LASTEXITCODE -ne 0) {
+    throw "PowerSupplyDebugger Release 资产还原失败：$LASTEXITCODE"
 }
 & $MsBuild $solutionPath /t:Restore /m:1 `
     /p:Configuration=Release '/p:Platform=Any CPU' `
@@ -527,6 +531,7 @@ $adaptiveTestExe = Join-Path $repo 'Tests\AdaptiveControlTests\bin\Release\Adapt
 $diskWriterTestExe = Join-Path $repo 'Tests\EpbDiskWriterTests\bin\Release\EpbDiskWriterTests.exe'
 $recoveryKernelTestExe = Join-Path $repo 'Tests\RecoveryKernelTests\bin\Release\RecoveryKernelTests.exe'
 $engineHostIntegrationTestExe = Join-Path $repo 'Tests\EngineHostIntegrationTests\bin\Release\EngineHostIntegrationTests.exe'
+$originalUiTestExe = Join-Path $repo 'Tests\OriginalUiTests\bin\Release\OriginalUiTests.exe'
 if (-not (Test-Path -LiteralPath $adaptiveTestExe -PathType Leaf)) {
     throw "AdaptiveControlTests 未生成：$adaptiveTestExe"
 }
@@ -538,6 +543,9 @@ if (-not (Test-Path -LiteralPath $recoveryKernelTestExe -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $engineHostIntegrationTestExe -PathType Leaf)) {
     throw "EngineHostIntegrationTests 未生成：$engineHostIntegrationTestExe"
+}
+if (-not (Test-Path -LiteralPath $originalUiTestExe -PathType Leaf)) {
+    throw "OriginalUiTests 未生成：$originalUiTestExe"
 }
 
 $adaptiveSummary = Invoke-CandidateTest `
@@ -556,6 +564,14 @@ $engineHostIntegrationSummary = Invoke-CandidateTest `
     -Label 'EngineHostIntegrationTests' `
     -FilePath $engineHostIntegrationTestExe `
     -SuccessPattern '^PASS\s+\d+/\d+$'
+$originalUiOutput = Invoke-CandidateTest `
+    -Label 'OriginalUiTests' `
+    -FilePath $originalUiTestExe `
+    -SuccessPattern '^OriginalUiTests: ([1-9]\d*) passed, 0 failed$'
+if ($originalUiOutput -notmatch '^OriginalUiTests: ([1-9]\d*) passed, 0 failed$') {
+    throw "OriginalUiTests 未全通过：$originalUiOutput"
+}
+$originalUiSummary = "PASS $($Matches[1])/$($Matches[1])"
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
 $powerSupplyResultsDirectory = [IO.Path]::GetFullPath((Join-Path `
     $tempRoot ('epb-release-power-' + [Guid]::NewGuid().ToString('N'))))
@@ -695,6 +711,7 @@ $verification = [ordered]@{
     epbDiskWriterTests = $diskWriterSummary
     recoveryKernelTests = $recoveryKernelSummary
     engineHostIntegrationTests = $engineHostIntegrationSummary
+    originalUiTests = $originalUiSummary
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()

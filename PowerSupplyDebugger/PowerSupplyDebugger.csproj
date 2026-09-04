@@ -9,6 +9,9 @@
     <AssemblyName>PowerSupplyDebugger</AssemblyName>
     <RootNamespace>PowerSupplyDebugger</RootNamespace>
     <Platforms>AnyCPU;x86</Platforms>
+    <!-- Both solution configurations share obj/project.assets.json. Keep both
+         RID graphs restored so changing configuration cannot discard the other. -->
+    <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
     <PlatformTarget Condition="'$(Configuration)' == 'Release'">x86</PlatformTarget>
     <RuntimeIdentifier Condition="'$(Configuration)' == 'Release'">win-x86</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(Configuration)' != 'Release'">win-x64</RuntimeIdentifier>

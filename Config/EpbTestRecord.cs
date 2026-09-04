@@ -67,7 +67,12 @@ namespace Config
         /// 以及控制已完整结束但随后证据提交失败的正式圈；RunCount 仍保留
         /// “正式圈且证据已提交”的质量口径。
         /// </summary>
-        public long MechanicalCycleCount { get; set; }
+        private long _mechanicalCycleCount;
+        public long MechanicalCycleCount
+        {
+            get => System.Threading.Interlocked.Read(ref _mechanicalCycleCount);
+            set => System.Threading.Interlocked.Exchange(ref _mechanicalCycleCount, value);
+        }
 
         /// <summary>
         /// 耐久目标的权威完成口径。旧项目没有 MechanicalCycleCount 时仍以

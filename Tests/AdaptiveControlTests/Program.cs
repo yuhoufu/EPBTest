@@ -37,6 +37,24 @@ namespace AdaptiveControlTests
                 }
                 if (args.Length == 2 && args[0].Equals("--replay", StringComparison.OrdinalIgnoreCase))
                     return ReplayCsv(args[1]);
+                if (args.Length == 1 && args[0] == "--alarm-panel")
+                {
+                    _passed += AlarmPanelCommandTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--supervised-formal")
+                {
+                    _passed += SupervisedFormalContinuationTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--hardware-release")
+                {
+                    _passed += HardwareReleaseEvidenceTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 1 &&
                     args[0].Equals("--recovery-coordination", StringComparison.OrdinalIgnoreCase))
                 {
@@ -193,6 +211,20 @@ namespace AdaptiveControlTests
                     args[0].Equals("--watchdog-client-recovery-policy", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += WatchdogClientTransportProductionTests.RunPublicRecoveryPolicyOnly();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-journal-retention-read", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogJournalStorageTests.RunRetentionSnapshotRegression();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-journal-concurrent", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogJournalStorageTests.RunConcurrentSnapshotRegression();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -480,6 +512,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--project-log", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += ProjectLogStoreTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--incident-10358-029", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryCoordinationTests.RunAll();
@@ -626,6 +665,9 @@ namespace AdaptiveControlTests
                 Run("正式圈必须控制与落盘均成功才计数", FormalCycleRequiresPersistenceCommitToCount);
                 Run("正向低平台连续8圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
                 _passed += NonRecoverableAlarmPolicyTests.RunAll();
+                _passed += HardwareReleaseEvidenceTests.RunAll();
+                _passed += SupervisedFormalContinuationTests.RunAll();
+                _passed += AlarmPanelCommandTests.RunAll();
                 Run("旧控制策略模型留档失效并按版本6重新学习", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
@@ -6574,6 +6616,11 @@ namespace AdaptiveControlTests
 
         private static void Run(string name, Action test)
         {
+            // A WinForms fixture can auto-install a message-loop context on this
+            // console thread. There is no message pump here: Task.Yield in a later
+            // synchronous test would otherwise wait forever on the disposed UI.
+            if (SynchronizationContext.Current is System.Windows.Forms.WindowsFormsSynchronizationContext)
+                SynchronizationContext.SetSynchronizationContext(null);
             test();
             _passed++;
             Console.WriteLine("PASS " + name);

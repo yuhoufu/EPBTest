@@ -485,6 +485,8 @@ namespace Controller
             return _tasks.DrainAsync(timeoutMs);
         }
 
+        internal int PendingBackgroundTaskCount => _tasks.Snapshot().Length;
+
         public HydraulicGroupCoordinator(TestConfig test,
             DoConfig dO,
             DoController doController,

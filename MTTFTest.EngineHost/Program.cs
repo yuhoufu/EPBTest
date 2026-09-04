@@ -19,6 +19,8 @@ namespace MTTFTest.EngineHost
                     runEpoch = 1;
                 var simulation = args.Any(value => string.Equals(
                     value, "--simulation", StringComparison.OrdinalIgnoreCase));
+                if (simulation)
+                    EngineHostLog.UseTestRoot(Path.Combine(Path.GetTempPath(), "MTTFTest.RejectedSimulation"));
                 string pipeName = null;
                 string singletonName = null;
                 string receiptRootDirectory = null;
@@ -26,6 +28,8 @@ namespace MTTFTest.EngineHost
                     ? Environment.GetEnvironmentVariable(
                         "MTTFTEST_ENGINEHOST_TEST_INSTANCE")
                     : null;
+                if (simulation && string.IsNullOrWhiteSpace(testInstance))
+                    throw new InvalidDataException("SimulationRequiresIsolatedTestInstance");
                 if (!string.IsNullOrWhiteSpace(testInstance))
                 {
                     if (!RecoveryProtocolV7.IsGuid(testInstance))
@@ -36,6 +40,7 @@ namespace MTTFTest.EngineHost
                     if (string.IsNullOrWhiteSpace(testRoot))
                         throw new InvalidDataException(
                             "EngineHostTestRootMissing");
+                    EngineHostLog.UseTestRoot(testRoot);
                     pipeName = EngineHostProtocol.PipeName + ".test." + testInstance;
                     singletonName = "Local\\MTTFTest.EngineHost.V3.Test." + testInstance;
                     receiptRootDirectory = Path.Combine(
@@ -47,13 +52,15 @@ namespace MTTFTest.EngineHost
                     EngineHostLog.Error("EngineLaunchCapabilityRejected:" + failure, null);
                     return 4;
                 }
+                var projectActivation = EngineProjectActivation.ParseArguments(args);
+                if (simulation && projectActivation != null) throw new InvalidDataException("SimulationCannotActivateProductionProject");
                 using (var runtime = new EngineHostRuntime(
                            sessionId,
                            runId,
                            runEpoch,
                            simulation
                                ? (IEngineHardwareRuntime)new SimulatedEngineHardwareRuntime()
-                               : new PhysicalEngineRuntime(),
+                               : new PhysicalEngineRuntime(projectActivation),
                            simulation,
                            pipeName,
                            singletonName,

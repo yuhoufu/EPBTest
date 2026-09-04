@@ -32,6 +32,12 @@
     <Compile Include="RecoveryKernelJournal.cs" />
     <Compile Include="RecoveryResourceGraph.cs" />
     <Compile Include="RecoveryCoordinator.cs" />
+    <Compile Include="RecoveryCoordinator.OperatorCommands.cs" />
+    <Compile Include="RecoveryCoordinator.PressureMaintenance.cs" />
+    <Compile Include="RecoveryCoordinator.ProjectSwitch.cs" />
+    <Compile Include="AlarmPanelCommandDispatcher.cs" />
+    <Compile Include="RecoveryCommandDispatchPump.cs" />
+    <Compile Include="EngineEnvironmentSession.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">

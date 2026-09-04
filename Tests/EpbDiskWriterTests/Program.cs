@@ -24,6 +24,24 @@ namespace EpbDiskWriterTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--engine-raw")
+                {
+                    var count = EngineRawPersistenceTests.RunAll();
+                    Console.WriteLine($"PASS {count}/{count}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--engine-progress")
+                {
+                    var count = EngineProgressTests.RunAll();
+                    Console.WriteLine($"PASS {count}/{count}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--engine-persistence")
+                {
+                    var count = EnginePersistenceCompositionTests.RunAll();
+                    Console.WriteLine($"PASS {count}/{count}");
+                    return 0;
+                }
                 if (args.Length == 4 &&
                     args[0].Equals("--recover", StringComparison.OrdinalIgnoreCase))
                     return RecoverCycles(args[1], int.Parse(args[2], CultureInfo.InvariantCulture), args[3]);
@@ -104,6 +122,9 @@ namespace EpbDiskWriterTests
                 Run("Housekeeping实际删除收敛且保护未知/当前/临时", HousekeepingProcessConvergesAndProtects);
                 Run("Unlimited重启后4+4学习链仍全部保留", UnlimitedRetentionNeverDeletesAfterRestart);
                 Run("旧staging对应Root重新激活后不得删除", ReactivatedRootPreservesOwnedStaging);
+                _passed += EnginePersistenceCompositionTests.RunAll();
+                _passed += EngineProgressTests.RunAll();
+                _passed += EngineRawPersistenceTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }

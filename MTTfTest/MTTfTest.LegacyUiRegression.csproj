@@ -1,0 +1,15 @@
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Test-only assembly. No entry point, no deployment slot and no shortcut. -->
+  <PropertyGroup>
+    <LegacyUiRegressionFixture>true</LegacyUiRegressionFixture>
+    <BaseIntermediateOutputPath>obj\LegacyUiRegression\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+  <Import Project="MTTfTest.csproj" />
+  <PropertyGroup>
+    <ProjectGuid>{6A9A0B47-18F7-4774-A69F-F1318A10A3B6}</ProjectGuid>
+    <AssemblyName>MTTFTest.LegacyUiRegression</AssemblyName>
+    <OutputType>Library</OutputType>
+    <OutputPath>bin\LegacyUiRegression\$(Configuration)\</OutputPath>
+  </PropertyGroup>
+  <ItemGroup><Compile Remove="Program.cs" /></ItemGroup>
+</Project>

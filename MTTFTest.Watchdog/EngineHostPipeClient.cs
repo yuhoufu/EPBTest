@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
@@ -12,6 +13,49 @@ namespace MTTFTest.Watchdog
 {
     internal static class EngineHostPipeClient
     {
+        internal static async Task<PressureMaintenanceLease> SendMaintenanceLeaseAsync(PressureMaintenanceLease lease,
+            Func<int, long, bool> authorizeEngine, CancellationToken token, string pipeName = null)
+        {
+            if (lease?.IsStructurallyValid() != true || authorizeEngine == null)
+                throw new InvalidDataException("MaintenanceLeasePublicationInvalid");
+            var request = new EngineHostRequest { RequestId = RecoveryProtocolV7.NewId(),
+                Kind = EngineHostRequestKind.UpdateMaintenanceLease, MaintenanceLease = lease.Clone() };
+            var bytes = await BoundedPipeTransport.ExchangeAsync(pipeName ?? EngineHostProtocol.MaintenanceLeasePipeName,
+                PressureMaintenanceTransport.Encode(request), 1000, PressureMaintenanceTransport.MaximumBytes, token, peer =>
+                {
+                    var pid = PipePeerIdentity.ServerProcessId(peer);
+                    using (var process = Process.GetProcessById(pid))
+                        if (!authorizeEngine(pid, process.StartTime.ToUniversalTime().Ticks))
+                            throw new InvalidDataException("MaintenanceLeaseEnginePeerNotAuthorized");
+                }).ConfigureAwait(false);
+            var response = PressureMaintenanceTransport.Decode<EngineHostResponse>(bytes);
+            if (response?.Accepted != true || response.SchemaVersion != EngineHostProtocol.SchemaVersion || response.RequestId != request.RequestId ||
+                response.MaintenanceLease?.IsStructurallyValid() != true || response.MaintenanceLease.ComputeSha256() != lease.ComputeSha256())
+                throw new InvalidDataException("MaintenanceLeaseEngineResponseInvalid");
+            return response.MaintenanceLease;
+        }
+
+        internal static EngineStateSnapshot ReadBoundSnapshot(string sessionId, Func<int, long, bool> authorize,
+            out int processId, out long startTicks, int timeoutMilliseconds = 3000, string pipeName = null)
+        {
+            var observedId = 0; long observedStart = 0;
+            var request = new EngineHostRequest { RequestId = RecoveryProtocolV7.NewId(), Kind = EngineHostRequestKind.ReadLatestSnapshot };
+            var json = new JavaScriptSerializer { MaxJsonLength = EngineHostProtocol.MaximumRequestBytes };
+            var bytes = BoundedPipeTransport.ExchangeAsync(pipeName ?? EngineHostProtocol.SupervisorReadPipeName,
+                Encoding.UTF8.GetBytes(json.Serialize(request)), timeoutMilliseconds, EngineHostProtocol.MaximumRequestBytes,
+                CancellationToken.None, peer =>
+                {
+                    observedId = PipePeerIdentity.ServerProcessId(peer);
+                    using (var process = Process.GetProcessById(observedId)) observedStart = process.StartTime.ToUniversalTime().Ticks;
+                    if (authorize == null || !authorize(observedId, observedStart)) throw new InvalidDataException("EngineSnapshotPeerNotAuthorized");
+                }).GetAwaiter().GetResult();
+            var response = json.Deserialize<EngineHostResponse>(Encoding.UTF8.GetString(bytes));
+            if (response?.Accepted != true || response.SchemaVersion != EngineHostProtocol.SchemaVersion || response.RequestId != request.RequestId ||
+                response.Snapshot?.IsStructurallyValid() != true || response.Snapshot.SessionId != sessionId)
+                throw new InvalidDataException("EngineSnapshotPeerResponseInvalid");
+            processId = observedId; startTicks = observedStart;
+            return response.Snapshot;
+        }
         internal static EngineHostResponse Send(
             EngineHostRequest request,
             int timeoutMilliseconds = 3000,
@@ -95,7 +139,7 @@ namespace MTTFTest.Watchdog
             {
                 RequestId = RecoveryProtocolV7.NewId(),
                 Kind = EngineHostRequestKind.ReadLatestSnapshot
-            }, timeoutMilliseconds);
+            }, timeoutMilliseconds, EngineHostProtocol.SupervisorReadPipeName);
             if (!response.Accepted || response.Snapshot?.IsStructurallyValid() != true)
                 throw new InvalidDataException(
                     "EngineHostSnapshotRejected:" + response.FailureCode + ":" + response.Detail);
@@ -108,11 +152,32 @@ namespace MTTFTest.Watchdog
             {
                 RequestId = RecoveryProtocolV7.NewId(),
                 Kind = EngineHostRequestKind.ReadLatestFault
-            }, timeoutMilliseconds);
+            }, timeoutMilliseconds, EngineHostProtocol.SupervisorReadPipeName);
             if (!response.Accepted)
                 throw new InvalidDataException(
                     "EngineHostFaultReadRejected:" + response.FailureCode);
             return response.FaultObservation;
+        }
+
+        internal static EngineStateSnapshot ReadPanelSnapshot(int timeoutMilliseconds = 1000)
+        {
+            var response = Send(new EngineHostRequest { RequestId = RecoveryProtocolV7.NewId(),
+                Kind = EngineHostRequestKind.ReadLatestSnapshot }, timeoutMilliseconds, EngineHostProtocol.PanelPipeName);
+            if (!response.Accepted || response.Snapshot?.IsStructurallyValid() != true)
+                throw new InvalidDataException("AlarmPanelEngineSnapshotRejected");
+            return response.Snapshot;
+        }
+
+        internal static OperatorExecutionReceipt ExecutePanel(OperatorCommand command, int timeoutMilliseconds = 11000, string pipeName = null)
+        {
+            var response = Send(new EngineHostRequest { RequestId = RecoveryProtocolV7.NewId(),
+                Kind = EngineHostRequestKind.ExecutePanelCommand, OperatorCommand = command },
+                timeoutMilliseconds, pipeName ?? EngineHostProtocol.PanelPipeName);
+            if (!response.Accepted || response.OperatorReceipt?.Matches(command) != true ||
+                response.Snapshot?.IsStructurallyValid() != true || response.Snapshot.SessionId != command.SessionId ||
+                response.Snapshot.RunId != command.RunId || response.Snapshot.RunEpoch != command.RunEpoch)
+                throw new InvalidDataException("AlarmPanelExecutionReceiptInvalid:" + response.Detail);
+            return response.OperatorReceipt;
         }
 
         internal static RecoveryCommandReceipt Execute(
@@ -124,10 +189,17 @@ namespace MTTFTest.Watchdog
                 RequestId = RecoveryProtocolV7.NewId(),
                 Kind = EngineHostRequestKind.ExecuteRecoveryCommand,
                 RecoveryCommand = command
-            }, timeoutMilliseconds);
-            if (!response.Accepted || response.RecoveryReceipt == null)
+            }, timeoutMilliseconds, EngineHostProtocol.IsPrioritySafetyCommand(command.Kind)
+                ? EngineHostProtocol.SafetyPipeName : EngineHostProtocol.PipeName);
+            if (!response.Accepted || response.RecoveryReceipt == null || response.RecoveryReceipt.CommandId != command.CommandId ||
+                response.RecoveryReceipt.IdempotencyKey != command.IdempotencyKey ||
+                !EngineUiContract.IsUtcTicks(response.RecoveryReceipt.CompletedUtcTicks))
                 throw new InvalidDataException(
                     "EngineHostCommandRejected:" + response.FailureCode + ":" + response.Detail);
+            if (EngineHostProtocol.RequiresIndependentSafetyHandoff(command.Kind) &&
+                (response.Snapshot?.IsStructurallyValid() != true ||
+                 response.RecoveryReceipt.HardwareHandoff?.Matches(command, response.Snapshot.EngineInstanceId) != true))
+                throw new InvalidDataException("EngineHostHardwareHandoffBindingInvalid");
             return response.RecoveryReceipt;
         }
     }

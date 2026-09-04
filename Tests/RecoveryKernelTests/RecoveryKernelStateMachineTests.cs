@@ -1,16 +1,45 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Threading.Tasks;
+using System.Threading;
 using MTTFTest.Recovery.Kernel;
 using MTTFTest.Watchdog.Protocol;
 
 namespace RecoveryKernelTests
 {
-    internal static class RecoveryKernelStateMachineTests
+    internal static partial class RecoveryKernelStateMachineTests
     {
         internal static int RunAll()
         {
             var passed = 0;
+            Run("pressure maintenance holds one owner and stops without counting formal work", () => MaintenanceRoundTrip(false), ref passed);
+            Run("pressure maintenance persists owner and final results through DPAPI journal reload", () => MaintenanceRoundTrip(true), ref passed);
+            Run("pressure maintenance requires stopped state independent proof and typed receipts", MaintenanceRequiresStopAndProof, ref passed);
+            Run("pressure page end joins revoked owner and finalizes every durable alias", () => MaintenancePageClosure(true), ref passed);
+            Run("pressure page end fails every alias when independent safety is unproven", () => MaintenancePageClosure(false), ref passed);
+            Run("pressure maintenance heartbeat cannot renew duplicates expired or absolute lifetime", MaintenanceHeartbeatLimits, ref passed);
+            Run("pressure maintenance interruptions converge without reenergizing or changing owner", MaintenanceInterruptions, ref passed);
+            Run("pressure maintenance wire and journal reject foreign and orphaned authority", MaintenanceProtocolAndJournalBinding, ref passed);
+            Run("project switch commits destination and same owner only after preparation", ProjectSwitchRoundTrip, ref passed);
+            Run("project switch requires stopped engine and typed immutable request", ProjectSwitchAdmissionFences, ref passed);
+            Run("project switch rejects stale forged and incomplete preparation receipts", ProjectSwitchReceiptFences, ref passed);
+            Run("operator stop joins in-flight project switch without a second owner", ProjectSwitchStopJoinsOwner, ref passed);
+            Run("project switch deadlines converge without silent source fallback", ProjectSwitchFailureAndDeadlines, ref passed);
+            Run("unknown project handoff faults cannot renew owner or deadline", ProjectSwitchFaultKeepsOwnerAndDeadline, ref passed);
+            Run("project switch destination and result survive durable journal reload", ProjectSwitchDurableReload, ref passed);
+            Run("new project retains one owner and rejects changed creation payload", () => ProjectSwitchRoundTrip(true), ref passed);
+            Run("new project metadata survives DPAPI journal and stops after activation", () => ProjectSwitchDurableReload(true), ref passed);
+            Run("project reset retains one owner and rejects changed reset payload", () => ProjectSwitchRoundTrip(false, true), ref passed);
+            Run("project reset metadata survives DPAPI journal and final stop", () => ProjectSwitchDurableReload(false, true), ref passed);
+            Run("project reset phase deadlines cannot silently return to the old run", () => ProjectSwitchFailureAndDeadlines(true), ref passed);
+            Run("initial UI discovery attaches a starting host without reinitialization", FirstEngineEnvironmentDoesNotReinitializeObservedHost, ref passed);
+            Run("stopped environment retains session run budgets and isolation", StoppedEnvironmentRetainsDurableRun, ref passed);
+            Run("recovery UI discovery never launches a competing EngineHost", RecoveringEnvironmentDisplaysWithoutLaunching, ref passed);
+            Run("foreign process and commands cannot replace durable run identity", ForeignRunCannotOverwriteDurableSession, ref passed);
+            Run("start waits for initialization or valid released-host readiness", OperatorStartRequiresFinishedInitialization, ref passed);
+            Run("external native process ownership is exclusive and bounded", ExternalNativeOwnershipIsExclusiveAndBounded, ref passed);
             Run("schema7 contracts bind complete transaction identity", ProtocolContracts, ref passed);
             Run("intent and owner commit before command", IntentBeforeCommand, ref passed);
             Run("unknown scope expands to system", UnknownScopeExpandsToSystem, ref passed);
@@ -26,7 +55,488 @@ namespace RecoveryKernelTests
             Run("EngineHost exit bypasses local rebuild and replaces process", EngineHostExitSchedulesReplacement, ref passed);
             Run("recovery budget resets only after stable formal work", StableRunResetsBudget, ref passed);
             Run("10000 generated unknown faults converge", GeneratedUnknownFaultsConverge, ref passed);
+            Run("operator receipts commit atomically and deduplicate concurrent submissions", OperatorAdmissionDeduplicates, ref passed);
+            Run("rejected command query is durable and payload reuse is rejected", OperatorRejectionIsDurable, ref passed);
+            Run("operator receipt survives journal process replacement", OperatorAdmissionSurvivesReload, ref passed);
+            Run("operator receipt cache is bounded and retired requests cannot execute", OperatorAdmissionRetirement, ref passed);
+            Run("configuration is stopped-only owned and never resumes formal work", ConfigurationTransaction, ref passed);
+            Run("DAQ configuration uses the same stopped-only owner and independent safety proof", () => ConfigurationTransaction(true), ref passed);
+            Run("DAQ configuration DPAPI journal persists final and interrupted execution receipts", ConfigurationDurableReceipt, ref passed);
+            Run("AO calibration uses stopped-only owner and independent safety proof", () => ConfigurationTransaction(false, ao: true), ref passed);
+            Run("AO calibration DPAPI journal persists final and interrupted receipts", () => ConfigurationDurableReceipt(true), ref passed);
+            Run("alarm panel admission preserves recovery owner scope budgets and isolation", PanelDoesNotChangeRecovery, ref passed);
+            Run("alarm panel receipt survives reload and duplicate completion", PanelDurableCompletion, ref passed);
+            Run("alarm panel pending queue is bounded", PanelQueueBounded, ref passed);
+            Run("alarm dispatcher survives lost receipt and bounds expired work", PanelDispatcherReplayAndDeadline, ref passed);
+            Run("recovery dispatch permits stop beside blocked normal work without unbounded retries", RecoveryDispatchIsBounded, ref passed);
+            Run("operator stop tolerates older display revision but not another run", StopUsesRunFence, ref passed);
+            Run("expanded fault rejects stale scoped safety proof", ExpandedFaultRejectsOldProof, ref passed);
+            Run("all recovery proofs reject expired and future evidence", RecoveryProofRequiresFreshness, ref passed);
+            Run("timed-out normal executor requires a durable safety barrier before budgeted retry", ExpiredNormalRequiresSafetyBarrier, ref passed);
+            Run("late qualification cannot bypass expanded-scope safety command", LateQualificationCannotResume, ref passed);
+            Run("failed active qualification and formal admission cross a new OFF proof", FormalAdmissionFailureRequiresSafety, ref passed);
+            Run("manual pause and continue retain one durable owner across Supervisor reload", ManualBatchDurableRoundTrip, ref passed);
+            Run("manual continuation rejects replacement engine and wrong owner", ManualBatchIdentityFence, ref passed);
+            Run("fault during manual pause requires safety and forbids continuation", ManualBatchFaultInvalidation, ref passed);
+            Run("manual pause timeout and operator stop cannot leave reusable continuation", ManualBatchStopAndDeadline, ref passed);
+            Run("channel controls share one durable owner and preserve healthy peers", ManualChannelsShareOwner, ref passed);
+            Run("channel controls reject ineligible targets and retire on fault", ManualChannelsRejectUnsafeContinuation, ref passed);
+            Run("isolated channel retry uses one owner proof qualification and reintegration", QualificationRetryRoundTrip, ref passed);
+            Run("failed isolated channel retry consumes its only budget and reasserts isolation", QualificationRetryFailureIsPermanent, ref passed);
+            Run("qualification retry rejects shared scope foreign host and exhausted budget", QualificationRetryAdmissionFences, ref passed);
             return passed;
+        }
+
+        private static void RecoveryDispatchIsBounded()
+        {
+            var coordinator = StartRecoverableIncident(out _);
+            var normal = coordinator.Snapshot().PendingCommand;
+            var safety = coordinator.StopByOperator(normal.Identity.SessionId, normal.Identity.RunId, normal.Identity.RunEpoch, "test stop").Command;
+            using (var entered = new ManualResetEventSlim())
+            using (var release = new ManualResetEventSlim())
+            using (var stopped = new ManualResetEventSlim())
+            {
+                var failures = 0;
+                var calls = 0;
+                var pump = new RecoveryCommandDispatchPump(command =>
+                {
+                    Interlocked.Increment(ref calls);
+                    if (command.CommandId == normal.CommandId) { entered.Set(); release.Wait(5000); throw new IOException("lost receipt"); }
+                    stopped.Set();
+                }, (_, __) => Interlocked.Increment(ref failures));
+                try
+                {
+                    Assert(pump.TryDispatch(normal) && entered.Wait(3000), "normal dispatch did not start");
+                    for (var index = 0; index < 1000; index++) Assert(!pump.TryDispatch(normal), "normal retry storm");
+                    Assert(pump.TryDispatch(safety) && stopped.Wait(3000), "stop waited for normal command");
+                    for (var index = 0; index < 1000; index++) Assert(!pump.TryDispatch(safety), "stop retry storm");
+                    Assert(!pump.StopAsync(20).GetAwaiter().GetResult(), "timeout released actual worker ownership");
+                    release.Set();
+                    Assert(pump.StopAsync(3000).GetAwaiter().GetResult() && calls == 2 && failures == 1, "workers were not bounded");
+                    Assert(!pump.TryDispatch(normal), "stopped pump accepted new work");
+                }
+                finally { release.Set(); pump.StopAsync(3000).GetAwaiter().GetResult(); }
+            }
+        }
+
+        private static void StopUsesRunFence()
+        {
+            var coordinator = new RecoveryCoordinator(new MemoryJournal());
+            var stop = Operator(out var engine, OperatorCommandKind.Stop); engine.Revision = 20;
+            Assert(coordinator.AdmitOperatorCommand(stop, engine).Accepted, "stop rejected because display lagged");
+            var wrongRun = stop.Clone(); wrongRun.CommandId = RecoveryProtocolV7.NewId(); wrongRun.RunId = RecoveryProtocolV7.NewId();
+            Assert(!coordinator.AdmitOperatorCommand(wrongRun, engine).Accepted, "stop crossed run fence");
+            var future = stop.Clone(); future.CommandId = RecoveryProtocolV7.NewId(); future.BaseRevision = 21;
+            Assert(!coordinator.AdmitOperatorCommand(future, engine).Accepted, "future revision accepted");
+            var start = stop.Clone(); start.CommandId = RecoveryProtocolV7.NewId(); start.Kind = OperatorCommandKind.Start;
+            Assert(!coordinator.AdmitOperatorCommand(start, engine).Accepted, "start lost exact revision gate");
+        }
+
+        private static void ExpandedFaultRejectsOldProof()
+        {
+            var coordinator = new RecoveryCoordinator(new MemoryJournal());
+            var identity = Identity("Channel:4");
+            var first = coordinator.Observe(Observation(identity, ResourceKind.Channel, "Channel:4", true));
+            var oldProof = Proof(first.Command.Identity.Clone());
+            var other = identity.Clone(); other.IncidentId = RecoveryProtocolV7.NewId(); other.ResourceScope = "Channel:9";
+            coordinator.Observe(Observation(other, ResourceKind.Channel, "Channel:9", true));
+            var pending = coordinator.Snapshot().PendingCommand;
+            Assert(pending.TargetResource == "System", "fault did not expand");
+            RejectProof(coordinator, oldProof);
+            Assert(coordinator.Snapshot().PendingCommand.CommandId == pending.CommandId, "stale proof mutated expanded intent");
+            coordinator.AcceptSafetyProof(Proof(pending.Identity.Clone()));
+            AssertKind(coordinator, RecoveryCommandKind.RebuildResource);
+        }
+
+        private static void RecoveryProofRequiresFreshness()
+        {
+            var coordinator = new RecoveryCoordinator(new MemoryJournal());
+            var first = coordinator.Observe(Observation(Identity("System"), ResourceKind.System, "System", false));
+            var expired = Proof(first.Command.Identity.Clone());
+            expired.CapturedUtcTicks = DateTime.UtcNow.AddMinutes(-2).Ticks; expired.ValidUntilUtcTicks = DateTime.UtcNow.AddMinutes(-1).Ticks;
+            RejectProof(coordinator, expired);
+            var future = Proof(first.Command.Identity.Clone());
+            future.CapturedUtcTicks = DateTime.UtcNow.AddMinutes(1).Ticks; future.ValidUntilUtcTicks = DateTime.UtcNow.AddMinutes(2).Ticks;
+            RejectProof(coordinator, future);
+            Assert(coordinator.Snapshot().PendingCommand.CommandId == first.Command.CommandId, "invalid proof advanced command");
+        }
+
+        private static void RejectProof(RecoveryCoordinator coordinator, SafetyProof proof)
+        {
+            try { coordinator.AcceptSafetyProof(proof); }
+            catch (InvalidOperationException ex) { Assert(ex.Message == "SafetyProofBindingInvalid", "unexpected proof rejection: " + ex.Message); return; }
+            throw new InvalidOperationException("stale safety proof accepted");
+        }
+
+        private static void ExpiredNormalRequiresSafetyBarrier()
+        {
+            var journal = new MemoryJournal(); var coordinator = new RecoveryCoordinator(journal);
+            var first = coordinator.Observe(Observation(Identity("Channel:4"), ResourceKind.Channel, "Channel:4", true));
+            coordinator.AcceptSafetyProof(Proof(first.Command.Identity));
+            var normal = coordinator.Snapshot().PendingCommand;
+            coordinator.ReconcileExpiredCommand(normal.DeadlineUtcTicks + 1);
+            coordinator = new RecoveryCoordinator(journal);
+            var barrier = coordinator.Snapshot();
+            Assert(barrier.PendingCommand.Kind == RecoveryCommandKind.DisableOutputs && barrier.ActiveIntents.Single().OwnerId == normal.OwnerId &&
+                barrier.PendingCommand.Identity.Generation > normal.Identity.Generation && barrier.PendingCommand.CommandSequence > normal.CommandSequence,
+                "timeout released ownership or failed to retire old executor");
+            Assert(barrier.Budgets.Single().LocalRebuildAttempts == 1 &&
+                barrier.ActiveIntents.Single().CommandAfterSafetyProof == RecoveryCommandKind.RebuildResource,
+                "timeout bypassed retry budget or lost durable continuation");
+            coordinator.AcknowledgeCommand(normal.Identity.IncidentId, normal.CommandId, true, "late success");
+            Assert(coordinator.Snapshot().PendingCommand.CommandId == barrier.PendingCommand.CommandId, "late success replaced safety barrier");
+            coordinator.AcceptSafetyProof(Proof(barrier.PendingCommand.Identity));
+            AssertKind(coordinator, RecoveryCommandKind.RebuildResource);
+            Assert(coordinator.Snapshot().ActiveIntents.Single().CommandAfterSafetyProof == RecoveryCommandKind.None, "continuation was not consumed");
+            // The second timeout still spends the second local attempt; after proof
+            // the ladder advances to replacement, never back to local attempt one.
+            normal = coordinator.Snapshot().PendingCommand;
+            coordinator.ReconcileExpiredCommand(normal.DeadlineUtcTicks + 1);
+            coordinator.AcceptSafetyProof(Proof(coordinator.Snapshot().PendingCommand.Identity));
+            AssertKind(coordinator, RecoveryCommandKind.ReplaceEngineHost);
+            Assert(coordinator.Snapshot().Budgets.Single().LocalRebuildAttempts == 2, "safety barrier reset budget");
+        }
+
+        private static void LateQualificationCannotResume()
+        {
+            var coordinator = new RecoveryCoordinator(new MemoryJournal());
+            var identity = Identity("Channel:4");
+            var first = coordinator.Observe(Observation(identity, ResourceKind.Channel, "Channel:4", true));
+            coordinator.AcceptSafetyProof(Proof(first.Command.Identity));
+            for (var index = 0; index < 2; index++)
+            {
+                var command = coordinator.Snapshot().PendingCommand;
+                coordinator.AcknowledgeCommand(identity.IncidentId, command.CommandId, true, "ready");
+            }
+            var qualification = coordinator.Snapshot().PendingCommand;
+            Assert(qualification.Kind == RecoveryCommandKind.RunQualificationCycle, "fixture did not reach qualification");
+            var other = identity.Clone(); other.IncidentId = RecoveryProtocolV7.NewId(); other.ResourceScope = "Channel:9";
+            coordinator.Observe(Observation(other, ResourceKind.Channel, "Channel:9", true));
+            var barrier = coordinator.Snapshot().PendingCommand;
+            var rejected = false;
+            try { coordinator.AcceptQualification(new QualificationReceipt { Identity = qualification.Identity,
+                ReceiptId = RecoveryProtocolV7.NewId(), QualificationCyclesCompleted = 2, CapturedUtcTicks = DateTime.UtcNow.Ticks }); }
+            catch (InvalidOperationException ex) { rejected = ex.Message == "QualificationReceiptBindingInvalid"; }
+            Assert(rejected && coordinator.Snapshot().PendingCommand.CommandId == barrier.CommandId, "late qualification bypassed safety proof");
+        }
+
+        private static OperatorCommand PanelCommand(OperatorCommand source)
+        {
+            var command = source.Clone(); command.CommandId = RecoveryProtocolV7.NewId();
+            command.Kind = OperatorCommandKind.AcknowledgeAlarms;
+            command.AlarmPanel = new AlarmPanelCommand { PanelInstanceId = RecoveryProtocolV7.NewId(), BaseRevision = 1 };
+            command.PayloadSha256 = command.AlarmPanel.ComputeSha256();
+            return command;
+        }
+
+        private static void FormalAdmissionFailureRequiresSafety()
+        {
+            foreach (var failureKind in new[] { RecoveryCommandKind.RunQualificationCycle, RecoveryCommandKind.ResumeFormalRun })
+            {
+                var coordinator = StartRecoverableIncident(out var incident);
+                while (coordinator.Snapshot().PendingCommand.Kind != RecoveryCommandKind.RunQualificationCycle)
+                {
+                    var current = coordinator.Snapshot().PendingCommand;
+                    coordinator.AcknowledgeCommand(incident, current.CommandId, true, "ready");
+                }
+                if (failureKind == RecoveryCommandKind.ResumeFormalRun)
+                    coordinator.AcceptQualification(new QualificationReceipt
+                    {
+                        Identity = coordinator.Snapshot().PendingCommand.Identity, ReceiptId = RecoveryProtocolV7.NewId(),
+                        QualificationCyclesCompleted = 2, CapturedUtcTicks = DateTime.UtcNow.Ticks
+                    });
+                var failed = coordinator.Snapshot().PendingCommand;
+                coordinator.AcknowledgeCommand(incident, failed.CommandId, false, "unknown executor failure after potential energization");
+                var fence = coordinator.Snapshot();
+                Assert(fence.PendingCommand?.Kind == RecoveryCommandKind.DisableOutputs && fence.ActiveIntents.Length == 1 &&
+                    fence.PendingCommand.OwnerId == failed.OwnerId && fence.PendingCommand.Identity.Generation > failed.Identity.Generation,
+                    "failed executor discarded owner or skipped new safety proof");
+                coordinator.AcceptSafetyProof(Proof(fence.PendingCommand.Identity));
+                if (failureKind == RecoveryCommandKind.RunQualificationCycle)
+                    AssertKind(coordinator, RecoveryCommandKind.ReplaceEngineHost);
+                else
+                    Assert(coordinator.Snapshot().PendingCommand == null && coordinator.Snapshot().ActiveIntents.Length == 0 &&
+                        coordinator.Snapshot().DesiredState.State == SystemTerminalState.SafeIdleAlarmed, "formal failure did not converge after OFF proof");
+            }
+        }
+
+        private static void PanelDoesNotChangeRecovery()
+        {
+            var journal = new MemoryJournal(); var coordinator = new RecoveryCoordinator(journal);
+            var start = Operator(out var engine, OperatorCommandKind.Start);
+            coordinator.AdmitOperatorCommand(start, engine);
+            var before = coordinator.Snapshot();
+            before.IsolatedResources = new[] { "Channel:6" };
+            before.Budgets = new[] { new RecoveryBudgetState { ResourceScope = "System", LocalRebuildAttempts = 2 } };
+            journal.CompareExchange(before.Revision, before);
+            var command = PanelCommand(start);
+            var admission = coordinator.AdmitOperatorCommand(command, engine);
+            var after = coordinator.Snapshot();
+            Assert(admission.Accepted && admission.IsStructurallyValid() && admission.OwnerId == "" && admission.IncidentId == "", "panel created recovery owner");
+            Assert(after.ActiveIntents.Single().OwnerId == before.ActiveIntents.Single().OwnerId &&
+                after.PendingCommand.CommandId == before.PendingCommand.CommandId && after.DesiredState.State == before.DesiredState.State &&
+                after.Budgets.Single().LocalRebuildAttempts == 2 && after.IsolatedResources.SequenceEqual(before.IsolatedResources), "annunciation changed recovery authority");
+            command.AlarmPanel.BuzzerEnabled = true;
+            Assert(!command.IsStructurallyValid(), "panel payload tampering accepted");
+        }
+
+        private static void PanelDurableCompletion()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "MTTFTest.PanelJournal." + RecoveryProtocolV7.NewId());
+            try
+            {
+                var coordinator = new RecoveryCoordinator(new FileRecoveryKernelJournal(root, false));
+                var stop = Operator(out var engine, OperatorCommandKind.Stop); coordinator.AdmitOperatorCommand(stop, engine);
+                var command = PanelCommand(stop); coordinator.AdmitOperatorCommand(command, engine);
+                coordinator = new RecoveryCoordinator(new FileRecoveryKernelJournal(root, false));
+                Assert(coordinator.QueryOperatorCommand(command).PanelTransaction.IsStructurallyValid(), "panel payload not durable");
+                var receipt = new OperatorExecutionReceipt { CommandId = command.CommandId, Fingerprint = OperatorCommandAdmission.GetFingerprint(command),
+                    Succeeded = true, CompletedUtcTicks = DateTime.UtcNow.Ticks, Detail = "serial write only" };
+                coordinator.CompletePanelCommand(command, receipt);
+                var revision = coordinator.Snapshot().Revision;
+                coordinator.CompletePanelCommand(command, receipt);
+                var restored = new RecoveryCoordinator(new FileRecoveryKernelJournal(root, false)).QueryOperatorCommand(command);
+                Assert(restored.ExecutionCompleted && restored.ExecutionSucceeded && coordinator.Snapshot().Revision == revision, "completion replay changed outcome");
+            }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+
+        private static void PanelQueueBounded()
+        {
+            var coordinator = new RecoveryCoordinator(new MemoryJournal());
+            var stop = Operator(out var engine, OperatorCommandKind.Stop); coordinator.AdmitOperatorCommand(stop, engine);
+            for (var index = 0; index < 16; index++) Assert(coordinator.AdmitOperatorCommand(PanelCommand(stop), engine).Accepted, "queue capacity too small");
+            Assert(!coordinator.AdmitOperatorCommand(PanelCommand(stop), engine).Accepted &&
+                coordinator.Snapshot().OperatorAdmissions.Count(a => a.PanelTransaction != null && !a.ExecutionCompleted) == 16, "unbounded panel queue");
+        }
+
+        private static void PanelDispatcherReplayAndDeadline()
+        {
+            var journal = new MemoryJournal(); var coordinator = new RecoveryCoordinator(journal);
+            var stop = Operator(out var engine, OperatorCommandKind.Stop); coordinator.AdmitOperatorCommand(stop, engine);
+            var command = PanelCommand(stop); coordinator.AdmitOperatorCommand(command, engine);
+            var dispatcher = new AlarmPanelCommandDispatcher(coordinator);
+            var calls = 0;
+            try { dispatcher.ExecuteNext(DateTime.UtcNow.Ticks, pending => { calls++; throw new IOException("lost response"); }); }
+            catch (IOException) { }
+            Assert(!coordinator.QueryOperatorCommand(command).ExecutionCompleted, "lost receipt dropped durable work");
+            dispatcher = new AlarmPanelCommandDispatcher(new RecoveryCoordinator(journal));
+            var result = dispatcher.ExecuteNext(DateTime.UtcNow.Ticks, pending =>
+            {
+                calls++; Assert(pending.CommandId == command.CommandId && pending.PayloadSha256 == command.PayloadSha256, "replay changed identity");
+                return new OperatorExecutionReceipt { CommandId = pending.CommandId, Fingerprint = OperatorCommandAdmission.GetFingerprint(pending),
+                    Succeeded = true, CompletedUtcTicks = DateTime.UtcNow.Ticks };
+            });
+            Assert(result.ExecutionSucceeded && calls == 2, "reloaded dispatcher failed");
+            Assert(dispatcher.ExecuteNext(DateTime.UtcNow.Ticks, _ => throw new Exception("duplicate execution")) == null, "completed command replayed");
+            var expired = PanelCommand(stop); coordinator.AdmitOperatorCommand(expired, engine);
+            result = dispatcher.ExecuteNext(expired.IssuedUtcTicks + TimeSpan.FromSeconds(36).Ticks,
+                _ => throw new Exception("expired command dispatched"));
+            Assert(result.ExecutionCompleted && !result.ExecutionSucceeded && result.CommandId == expired.CommandId,
+                "expired alarm command remained indefinitely pending");
+        }
+
+        private static void OperatorAdmissionDeduplicates()
+        {
+            var journal = new MemoryJournal();
+            var coordinator = new RecoveryCoordinator(journal);
+            var command = Operator(out var snapshot, OperatorCommandKind.Start);
+            var results = Enumerable.Range(0, 16).Select(_ => Task.Run(() => coordinator.AdmitOperatorCommand(command, snapshot))).ToArray();
+            Task.WaitAll(results);
+            var accepted = results[0].Result;
+            Assert(results.All(task => task.Result.Accepted && task.Result.OwnerId == accepted.OwnerId), "concurrent duplicate created a new owner");
+            Assert(journal.Load().Revision == 1 && journal.Load().OperatorAdmissions.Length == 1, "receipt and intent were not one CAS");
+            Assert(journal.Load().ActiveIntents.Single().OwnerId == accepted.OwnerId, "receipt owner not in journal");
+            var replay = new RecoveryCoordinator(journal).AdmitOperatorCommand(command, null);
+            Assert(replay.Accepted && replay.OwnerId == accepted.OwnerId && journal.Load().Revision == 1, "replay mutated recovered journal");
+            var stop = Operator(out snapshot, OperatorCommandKind.Stop);
+            stop.SessionId = command.SessionId; stop.RunId = command.RunId;
+            snapshot.SessionId = command.SessionId; snapshot.RunId = command.RunId;
+            var stopped = coordinator.AdmitOperatorCommand(stop, snapshot);
+            var revision = journal.Load().Revision;
+            Assert(stopped.Accepted && stopped.OwnerId != accepted.OwnerId, "explicit stop did not replace start owner");
+            Assert(coordinator.AdmitOperatorCommand(command, snapshot).OwnerId == accepted.OwnerId && journal.Load().Revision == revision,
+                "late repeated start revived superseded owner");
+        }
+
+        private static void OperatorRejectionIsDurable()
+        {
+            var coordinator = new RecoveryCoordinator(new MemoryJournal());
+            var command = Operator(out var snapshot, OperatorCommandKind.Start);
+            snapshot.Revision++;
+            var rejected = coordinator.AdmitOperatorCommand(command, snapshot);
+            Assert(!rejected.Accepted && rejected.FailureCode == "OperatorCommandEngineRevisionConflict", "stale revision accepted");
+            snapshot.Revision--;
+            Assert(!coordinator.AdmitOperatorCommand(command, snapshot).Accepted, "rejected command acquired a new meaning");
+            Assert(!coordinator.QueryOperatorCommand(command).Accepted, "query changed rejected receipt");
+            command.Kind = OperatorCommandKind.Stop;
+            var conflict = false;
+            try { coordinator.QueryOperatorCommand(command); } catch (InvalidOperationException ex) { conflict = ex.Message == "OperatorCommandIdPayloadConflict"; }
+            Assert(conflict, "same ID with different payload was accepted");
+        }
+
+        private static void OperatorAdmissionSurvivesReload()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "MTTFTest.OperatorJournalTests." + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var command = Operator(out var snapshot, OperatorCommandKind.Stop);
+                var accepted = new RecoveryCoordinator(new FileRecoveryKernelJournal(root, false)).AdmitOperatorCommand(command, snapshot);
+                var restored = new RecoveryCoordinator(new FileRecoveryKernelJournal(root, false));
+                Assert(restored.QueryOperatorCommand(command).OwnerId == accepted.OwnerId, "durable receipt lost on reload");
+                Assert(restored.Snapshot().ActiveIntents.Single().OwnerId == accepted.OwnerId, "durable intent diverged from receipt");
+            }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+
+        private static void OperatorAdmissionRetirement()
+        {
+            var journal = new MemoryJournal();
+            var coordinator = new RecoveryCoordinator(journal);
+            var retired = Operator(out var engine, OperatorCommandKind.Stop);
+            coordinator.AdmitOperatorCommand(retired, engine);
+            for (var index = 0; index < 1024; index++)
+            {
+                var next = Operator(out var nextEngine, OperatorCommandKind.Stop);
+                coordinator.AdmitOperatorCommand(next, nextEngine);
+            }
+            Assert(journal.Load().OperatorAdmissions.Length == 1024, "operator ledger unbounded");
+            var owner = journal.Load().ActiveIntents.Single().OwnerId;
+            Assert(!coordinator.AdmitOperatorCommand(retired, engine).Accepted, "retired command executed again");
+            Assert(journal.Load().ActiveIntents.Single().OwnerId == owner, "retired replay replaced active owner");
+        }
+
+        private static OperatorCommand Operator(out EngineStateSnapshot snapshot, OperatorCommandKind kind)
+        {
+            snapshot = new EngineStateSnapshot
+            {
+                EngineInstanceId = RecoveryProtocolV7.NewId(), SessionId = RecoveryProtocolV7.NewId(), RunId = RecoveryProtocolV7.NewId(),
+                RunEpoch = 1, Revision = 1, PulseSequence = 1, State = SystemTerminalState.StoppedByOperator, HardwareInitialized = true,
+                CapturedUtcTicks = DateTime.UtcNow.Ticks
+            };
+            return new OperatorCommand
+            {
+                CommandId = RecoveryProtocolV7.NewId(), SessionId = snapshot.SessionId, RunId = snapshot.RunId, RunEpoch = 1,
+                BaseRevision = 1, Kind = kind, PayloadSha256 = SupervisorProtocol.ComputeTextSha256(kind.ToString()), IssuedUtcTicks = DateTime.UtcNow.Ticks
+            };
+        }
+
+        private static void ConfigurationTransaction() => ConfigurationTransaction(false);
+
+        private static void ConfigurationDurableReceipt() => ConfigurationDurableReceipt(false);
+
+        private static void ConfigurationDurableReceipt(bool ao)
+        {
+            var root = Path.Combine(Path.GetTempPath(), "MTTFTest.DaqJournal." + Guid.NewGuid().ToString("N"));
+            try { ConfigurationTransaction(!ao, new FileRecoveryKernelJournal(root), ao); }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+
+        private static void ConfigurationTransaction(bool daq, IRecoveryKernelJournal journal = null, bool ao = false)
+        {
+            journal = journal ?? new MemoryJournal(); var coordinator = new RecoveryCoordinator(journal);
+            var stop = Operator(out var engine, OperatorCommandKind.Stop); engine.HardwareInitialized = true;
+            var stopped = coordinator.AdmitOperatorCommand(stop, engine);
+            var pending = coordinator.Snapshot().PendingCommand;
+            coordinator.AcknowledgeCommand(stopped.IncidentId, pending.CommandId, true, "independent stop proof complete");
+            var settings = new EngineTestConfiguration
+            {
+                TestName = "synthetic", StoreDir = "D:\\Synthetic", TestPeriod = 15, TestTarget = 200000,
+                Channels = Enumerable.Range(1, 12).Select(c => new EngineRunnerConfiguration { Channel = c }).ToArray(),
+                Hydraulics = new[] { new EngineHydraulicSetting { Id = 1 }, new EngineHydraulicSetting { Id = 2 } }
+            };
+            var command = stop.Clone(); command.CommandId = RecoveryProtocolV7.NewId(); command.Kind = OperatorCommandKind.CommitConfiguration;
+            command.TestConfiguration = new TestConfigurationCommit { Configuration = settings, BaseConfigurationSha256 = settings.ComputeSha256() };
+            if (daq)
+            {
+                var ai = new EngineDaqConfiguration { Channels = new[] { new EngineDaqChannelConfiguration
+                { Sequence = 1, PhysicalChannel = "Dev1/ai0", ParameterName = "EPB1_current", Unit = "A", Slope = 10, ParameterType = "电流", Enabled = true } } };
+                command.TestConfiguration = new TestConfigurationCommit { DaqConfiguration = ai, BaseConfigurationRevision = 3, BaseConfigurationSha256 = ai.ComputeSha256() };
+            }
+            if (ao)
+            {
+                var calibration = new AoCalibrationCommit { DeviceName = "Cylinder1", Points = new[]
+                { new EngineAoCalibrationPoint { Voltage = 1, Pressure = 25 }, new EngineAoCalibrationPoint { Voltage = 4, Pressure = 85 } } };
+                command.TestConfiguration = new TestConfigurationCommit { AoCalibration = calibration, BaseConfigurationRevision = 5,
+                    BaseConfigurationSha256 = SupervisorProtocol.ComputeTextSha256("independent AO baseline") };
+            }
+            command.PayloadSha256 = command.TestConfiguration.ComputeSha256();
+            engine.HardwareInitialized = false;
+            Assert(!coordinator.AdmitOperatorCommand(command, engine).Accepted, "unavailable hardware/configuration accepted");
+            engine.HardwareRecompositionReady = true;
+            Assert(!coordinator.AdmitOperatorCommand(command, engine).Accepted, "durable rejection changed on replay");
+            // This is a new operator attempt after a definitive rejection, not
+            // a timeout retry (which must keep the original command ID).
+            command = command.Clone(); command.CommandId = RecoveryProtocolV7.NewId();
+            var accepted = coordinator.AdmitOperatorCommand(command, engine);
+            Assert(accepted.Accepted, "released stopped configuration rejected");
+            pending = coordinator.Snapshot().PendingCommand;
+            Assert(pending.Kind == RecoveryCommandKind.DisableOutputs && pending.OperatorTransaction.CommandId == command.CommandId,
+                "configuration not owned before safety request");
+            var wrongProof = Proof(pending.Identity.Clone()); wrongProof.Identity.Generation++;
+            var rejected = false;
+            try { coordinator.AcceptSafetyProof(wrongProof); } catch (InvalidOperationException) { rejected = true; }
+            Assert(rejected, "foreign safety proof allowed configuration");
+            coordinator.AcceptSafetyProof(Proof(pending.Identity));
+            pending = new RecoveryCoordinator(journal).Snapshot().PendingCommand;
+            Assert(pending.Kind == RecoveryCommandKind.CommitTestConfiguration && pending.IsStructurallyValid(), "configuration payload not durable");
+            if (ao) pending.OperatorTransaction.TestConfiguration.AoCalibration.Points[0].Pressure++;
+            else if (daq) pending.OperatorTransaction.TestConfiguration.DaqConfiguration.Channels[0].Intercept++;
+            else pending.OperatorTransaction.TestConfiguration.Configuration.TestTarget++;
+            Assert(!pending.IsStructurallyValid(), "payload not bound to command key");
+            pending = coordinator.Snapshot().PendingCommand;
+            coordinator.AcknowledgeCommand(accepted.IncidentId, pending.CommandId, true, "committed");
+            Assert(coordinator.Snapshot().DesiredState.State == SystemTerminalState.StoppedByOperator &&
+                coordinator.Snapshot().PendingCommand == null && coordinator.Snapshot().ActiveIntents.Length == 0, "configuration auto-started work");
+            var duplicate = coordinator.AdmitOperatorCommand(command, null);
+            Assert(duplicate.OwnerId == accepted.OwnerId, "config replay generated new owner");
+            Assert(duplicate.ExecutionCompleted && duplicate.ExecutionSucceeded && duplicate.IsStructurallyValid(), "configuration final receipt missing");
+            command = command.Clone(); command.CommandId = RecoveryProtocolV7.NewId();
+            engine.State = SystemTerminalState.Running;
+            Assert(!coordinator.AdmitOperatorCommand(command, engine).Accepted, "running configuration accepted");
+            engine.State = SystemTerminalState.StoppedByOperator;
+            command.CommandId = RecoveryProtocolV7.NewId();
+            var active = coordinator.AdmitOperatorCommand(command, engine);
+            Assert(active.Accepted, "second stopped configuration rejected");
+            var observation = Observation(coordinator.Snapshot().PendingCommand.Identity.Clone(), ResourceKind.System, "System", false);
+            observation.Identity.IncidentId = RecoveryProtocolV7.NewId();
+            var cancelled = coordinator.Observe(observation);
+            Assert(cancelled.Reason == "ConfigurationInterruptedByFault" && cancelled.Command.OperatorTransaction == null,
+                "fault retained configuration mutation");
+            var failed = new RecoveryCoordinator(journal).QueryOperatorCommand(command);
+            Assert(failed.ExecutionCompleted && !failed.ExecutionSucceeded && failed.IsStructurallyValid(), "configuration interruption receipt missing");
+            coordinator.AcceptSafetyProof(Proof(cancelled.Command.Identity));
+            Assert(coordinator.Snapshot().DesiredState.State == SystemTerminalState.SafeIdleAlarmed && coordinator.Snapshot().PendingCommand == null,
+                "interrupted configuration retried or resumed");
+            foreach (var interruption in new[] { "stop", "safety-timeout", "commit-timeout" })
+            {
+                var resetStop = stop.Clone(); resetStop.CommandId = RecoveryProtocolV7.NewId();
+                var stopAdmission = coordinator.AdmitOperatorCommand(resetStop, engine);
+                pending = coordinator.Snapshot().PendingCommand;
+                coordinator.AcknowledgeCommand(stopAdmission.IncidentId, pending.CommandId, true, "isolated stop proof");
+                command = command.Clone(); command.CommandId = RecoveryProtocolV7.NewId();
+                Assert(coordinator.AdmitOperatorCommand(command, engine).Accepted, "stopped config retry rejected");
+                pending = coordinator.Snapshot().PendingCommand;
+                if (interruption == "stop")
+                {
+                    resetStop.CommandId = RecoveryProtocolV7.NewId(); coordinator.AdmitOperatorCommand(resetStop, engine);
+                }
+                else
+                {
+                    if (interruption == "commit-timeout")
+                    { coordinator.AcceptSafetyProof(Proof(pending.Identity)); pending = coordinator.Snapshot().PendingCommand; }
+                    coordinator.ReconcileExpiredCommand(pending.DeadlineUtcTicks + 1);
+                }
+                failed = new RecoveryCoordinator(journal).QueryOperatorCommand(command);
+                Assert(failed.ExecutionCompleted && !failed.ExecutionSucceeded && failed.IsStructurallyValid(), "missing configuration failure receipt:" + interruption);
+                pending = coordinator.Snapshot().PendingCommand;
+                if (pending != null)
+                {
+                    if (pending.Kind == RecoveryCommandKind.StopByOperator)
+                        coordinator.AcknowledgeCommand(pending.Identity.IncidentId, pending.CommandId, true, "stop complete");
+                    else coordinator.AcceptSafetyProof(Proof(pending.Identity));
+                }
+            }
         }
 
         private static void ProtocolContracts()
@@ -142,8 +652,29 @@ namespace RecoveryKernelTests
                 "Channel:4 permanently isolated");
             var snapshot = coordinator.Snapshot();
             Assert(snapshot.IsolatedResources.Contains("Channel:4"), "hardware scope not isolated");
-            Assert(snapshot.DesiredState.State == SystemTerminalState.RunningDegraded,
-                "independent channels were not allowed to continue");
+            Assert(snapshot.PendingCommand?.Kind == RecoveryCommandKind.RunPassivePreflight &&
+                snapshot.DesiredState.State == SystemTerminalState.SafeIdleAlarmed && snapshot.ActiveIntents.Length == 1,
+                "isolation pretended healthy domains were already running");
+            var owner = snapshot.ActiveIntents[0].OwnerId;
+            coordinator = new RecoveryCoordinator(journal); // Resume the actual durable state, not a new Owner.
+            command = coordinator.Snapshot().PendingCommand;
+            Assert(command.OwnerId == owner, "isolation continuation lost owner after reload");
+            coordinator.AcknowledgeCommand(identity.IncidentId, command.CommandId, true, "healthy passive preflight");
+            AssertKind(coordinator, RecoveryCommandKind.RunQualificationCycle);
+            coordinator.AcceptQualification(new QualificationReceipt
+            {
+                Identity = coordinator.Snapshot().PendingCommand.Identity,
+                ReceiptId = RecoveryProtocolV7.NewId(), QualificationCyclesCompleted = 2,
+                CapturedUtcTicks = DateTime.UtcNow.Ticks
+            });
+            AssertKind(coordinator, RecoveryCommandKind.ResumeFormalRun);
+            command = coordinator.Snapshot().PendingCommand;
+            Assert(command.OwnerId == owner && coordinator.Snapshot().ActiveIntents.Length == 1,
+                "healthy formal start has no original Owner");
+            coordinator.AcknowledgeCommand(identity.IncidentId, command.CommandId, true, "healthy domains now running");
+            snapshot = coordinator.Snapshot();
+            Assert(snapshot.DesiredState.State == SystemTerminalState.RunningDegraded && snapshot.ActiveIntents.Length == 0 &&
+                snapshot.IsolatedResources.Contains("Channel:4"), "healthy restart cleared isolation or leaked owner");
         }
 
         private static void UiExitIsIndependent()
@@ -200,7 +731,7 @@ namespace RecoveryKernelTests
                 "qualification was skipped");
             coordinator.AcceptQualification(new QualificationReceipt
             {
-                Identity = identity,
+                Identity = qualification.Identity,
                 ReceiptId = RecoveryProtocolV7.NewId(),
                 QualificationCyclesCompleted = 2,
                 FormalCyclesCompleted = 0,
@@ -241,7 +772,9 @@ namespace RecoveryKernelTests
             var first = coordinator.Observe(Observation(
                 firstIdentity, ResourceKind.Channel, "Channel:4", true));
             var firstCommandId = first.Command.CommandId;
-            var secondIdentity = Identity("DAQ:Dev2");
+            var secondIdentity = firstIdentity.Clone();
+            secondIdentity.IncidentId = RecoveryProtocolV7.NewId();
+            secondIdentity.ResourceScope = "DAQ:Dev2";
             var second = coordinator.Observe(Observation(
                 secondIdentity, ResourceKind.DaqDevice, "DAQ:Dev2", true));
             Assert(second.Duplicate, "concurrent fault created a second owner");
@@ -280,29 +813,17 @@ namespace RecoveryKernelTests
                 while (coordinator.Snapshot().ActiveIntents.Length > 0 && steps++ < 16)
                 {
                     var snapshot = coordinator.Snapshot();
-                    if (snapshot.PendingCommand == null)
-                    {
-                        var active = snapshot.ActiveIntents[0];
-                        if (active.Stage == RecoveryStage.Qualification)
-                            coordinator.AcceptQualification(new QualificationReceipt
-                            {
-                                Identity = active.Identity,
-                                ReceiptId = RecoveryProtocolV7.NewId(),
-                                QualificationCyclesCompleted = 2,
-                                FormalCyclesCompleted = 0,
-                                CapturedUtcTicks = DateTime.UtcNow.Ticks
-                            });
-                        else break;
-                        continue;
-                    }
+                    Assert(snapshot.PendingCommand != null, "generated sequence retained an owner without work");
                     var command = snapshot.PendingCommand;
                     var succeed = command.Kind == RecoveryCommandKind.RunPassivePreflight ||
                                   command.Kind == RecoveryCommandKind.RunQualificationCycle ||
                                   command.Kind == RecoveryCommandKind.ResumeFormalRun
                         ? random.Next(0, 2) == 0
                         : false;
-                    coordinator.AcknowledgeCommand(
-                        identity.IncidentId, command.CommandId, succeed, "generated");
+                    if (command.Kind == RecoveryCommandKind.RunQualificationCycle && succeed)
+                        coordinator.AcceptQualification(new QualificationReceipt { Identity = command.Identity,
+                            ReceiptId = RecoveryProtocolV7.NewId(), QualificationCyclesCompleted = 2, CapturedUtcTicks = DateTime.UtcNow.Ticks });
+                    else coordinator.AcknowledgeCommand(identity.IncidentId, command.CommandId, succeed, "generated");
                 }
                 var terminal = coordinator.Snapshot();
                 Assert(terminal.ActiveIntents.Length == 0,
@@ -363,7 +884,7 @@ namespace RecoveryKernelTests
             AssertKind(coordinator, RecoveryCommandKind.RunQualificationCycle);
             coordinator.AcceptQualification(new QualificationReceipt
             {
-                Identity = decision.Intent.Identity,
+                Identity = coordinator.Snapshot().PendingCommand.Identity,
                 ReceiptId = RecoveryProtocolV7.NewId(),
                 QualificationCyclesCompleted = 2,
                 FormalCyclesCompleted = 0,
@@ -417,7 +938,7 @@ namespace RecoveryKernelTests
             var identity = coordinator.Snapshot().ActiveIntents[0].Identity;
             coordinator.AcceptQualification(new QualificationReceipt
             {
-                Identity = identity,
+                Identity = coordinator.Snapshot().PendingCommand.Identity,
                 ReceiptId = RecoveryProtocolV7.NewId(),
                 QualificationCyclesCompleted = 2,
                 FormalCyclesCompleted = 0,

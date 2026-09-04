@@ -127,6 +127,10 @@ function Assert-VerificationEvidence {
         Get-RequiredJsonProperty $Verification 'adaptiveControlTests' 'identity.verification')
     Assert-CompletePassSummary 'epbDiskWriterTests' (
         Get-RequiredJsonProperty $Verification 'epbDiskWriterTests' 'identity.verification')
+    foreach ($v3Test in @('recoveryKernelTests', 'engineHostIntegrationTests', 'originalUiTests')) {
+        Assert-CompletePassSummary $v3Test (
+            Get-RequiredJsonProperty $Verification $v3Test 'identity.verification')
+    }
 
     Assert-CompletePassSummary 'powerSupplyDebuggerTests' (
         Get-RequiredJsonProperty $Verification 'powerSupplyDebuggerTests' 'identity.verification')

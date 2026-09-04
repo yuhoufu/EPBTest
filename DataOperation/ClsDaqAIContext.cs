@@ -40,6 +40,10 @@ public readonly struct DaqAIData
 
 public class DaqAIContext
 {
+    private readonly ConcurrentDictionary<Task, byte> _pendingIo = new();
+    private int _rawAdmissionClosed;
+    private Exception _rawRollbackFailure;
+    private Exception _statRollbackFailure;
     internal const int RawAdmissionTimeoutMs = 100;
     internal const int DefaultFlushTimeoutMs = 10000;
     public string DaqCardName { get; }
@@ -169,6 +173,7 @@ public class DaqAIContext
 
     private void EnqueueRawCore(DaqAIData data)
     {
+        if (Volatile.Read(ref _rawAdmissionClosed) != 0) throw new ObjectDisposedException(nameof(DaqAIContext));
         var slotAcquired = false;
         var gateAcquired = false;
         if (!rawQueueSlots.Wait(0))
@@ -194,6 +199,7 @@ public class DaqAIContext
                 throw new TimeoutException(
                     $"{DaqCardName} Raw末端准入门在{RawAdmissionTimeoutMs}ms内未释放。");
             gateAcquired = true;
+            if (Volatile.Read(ref _rawAdmissionClosed) != 0) throw new ObjectDisposedException(nameof(DaqAIContext));
             // Owned 批次只有在容量槽与准入门都已取得、即将真实转移所有权时才累计统计。
             // 若在队列满时先累计再抛超时，上游对同一批原序重试会把派生统计重复累计
             // 数十至数百次。统计异常不能撤销 Raw 的权威所有权转移。
@@ -365,6 +371,8 @@ public class DaqAIContext
 
     private async Task FlushRawToDiskCoreAsync(CancellationToken token)
     {
+        if (Volatile.Read(ref _rawRollbackFailure) != null)
+            throw new IOException("RawRollbackUnproven", _rawRollbackFailure);
         var fileLockAcquired = false;
         var queueGateAcquired = false;
         var pending = new List<DaqAIData>();
@@ -493,7 +501,10 @@ public class DaqAIContext
             catch { }
 
             if (rollbackError != null)
+            {
+                Volatile.Write(ref _rawRollbackFailure, rollbackError);
                 throw new AggregateException("Raw写入失败且文件长度回滚失败；保留内存批次并禁止静默继续。", ex, rollbackError);
+            }
             throw;
         }
         finally
@@ -518,15 +529,19 @@ public class DaqAIContext
 
     private async Task FlushStatToDiskCoreAsync(CancellationToken token)
     {
+        if (Volatile.Read(ref _statRollbackFailure) != null)
+            throw new IOException("StatRollbackUnproven", _statRollbackFailure);
         var fileLockAcquired = false;
         FileStream fs = null;
+        double[] minimum = null;
+        double[] maximum = null;
+        DateTime firstUtc = default;
+        long originalLength = -1;
+        var committed = false;
         try
         {
             await statFileLock.WaitAsync(token).ConfigureAwait(false);
             fileLockAcquired = true;
-            double[] minimum;
-            double[] maximum;
-            DateTime firstUtc;
             lock (statAggregateLock)
             {
                 if (!statHasData) return;
@@ -538,10 +553,10 @@ public class DaqAIContext
                 statFirstUtc = DateTime.UtcNow;
                 statHasData = false;
             }
-            SaveStatCounter++;
+            var nextCounter = checked(SaveStatCounter + 1);
             var buffer = new byte[12 + maximum.Length * 16];
             var offset = 0;
-            Buffer.BlockCopy(BitConverter.GetBytes(SaveStatCounter), 0, buffer, offset, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(nextCounter), 0, buffer, offset, 4);
             offset += 4;
             Buffer.BlockCopy(BitConverter.GetBytes(firstUtc.ToLocalTime().ToFileTime()), 0, buffer, offset, 8);
             offset += 8;
@@ -553,18 +568,18 @@ public class DaqAIContext
                 offset += 8;
             }
             fs = new FileStream(currentStatFileName,
-                FileMode.Append,
+                FileMode.OpenOrCreate,
                 FileAccess.Write,
                 FileShare.Read,
                 8192,
                 FileOptions.WriteThrough | FileOptions.Asynchronous);
+            originalLength = fs.Length;
+            fs.Position = originalLength;
 
             await fs.WriteAsync(buffer, 0, offset, token).ConfigureAwait(false);
             await fs.FlushAsync(token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
+            SaveStatCounter = nextCounter;
+            committed = true;
         }
         catch (Exception ex)
         {
@@ -579,16 +594,76 @@ public class DaqAIContext
                 }
             }
             catch { }
+            if (fs != null && originalLength >= 0)
+            {
+                try { fs.SetLength(originalLength); await fs.FlushAsync().ConfigureAwait(false); }
+                catch (Exception rollback)
+                {
+                    Volatile.Write(ref _statRollbackFailure, rollback);
+                    throw new AggregateException("StatWriteRollbackFailed", ex, rollback);
+                }
+            }
+            throw;
         }
         finally
         {
-            if (fileLockAcquired) statFileLock.Release();
-
-            if (fs != null) fs.Dispose();
+            if (!committed && minimum != null)
+            {
+                lock (statAggregateLock)
+                {
+                    for (var i = 0; i < minimum.Length; i++)
+                    {
+                        statMinimum[i] = Math.Min(statMinimum[i], minimum[i]);
+                        statMaximum[i] = Math.Max(statMaximum[i], maximum[i]);
+                    }
+                    if (!statHasData || firstUtc < statFirstUtc) statFirstUtc = firstUtc;
+                    statHasData = true;
+                }
+            }
+            // The next writer must not enter until the previous handle has actually
+            // closed, including slow Dispose/Flush paths.
+            try { fs?.Dispose(); }
+            finally { if (fileLockAcquired) statFileLock.Release(); }
         }
     }
 
-    private static async Task RunWithDeadlineAsync(
+    /// <summary>Wait for real I/O, including operations which outlived the caller's deadline.</summary>
+    public async Task<bool> WaitForIoQuiescenceAsync(int timeoutMs)
+    {
+        var pending = _pendingIo.Keys.ToArray();
+        if (pending.Length == 0) return true;
+        var all = Task.WhenAll(pending);
+        if (await Task.WhenAny(all, Task.Delay(Math.Max(1, timeoutMs))).ConfigureAwait(false) != all)
+        {
+            _ = all.ContinueWith(task => { var observed = task.Exception; }, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+            return false;
+        }
+        _ = all.Exception; // Completion, not success: the caller already owns the failure receipt.
+        return true;
+    }
+
+    /// <summary>
+    /// Host-only teardown after acquisition has stopped and ALL I/O has completed.
+    /// Discarding an aborted host's pending buffers is never a durable-boundary proof.
+    /// </summary>
+    public int ReleasePendingRawAfterShutdown()
+    {
+        Interlocked.Exchange(ref _rawAdmissionClosed, 1);
+        if (_pendingIo.Keys.Any(task => !task.IsCompleted) || !rawQueueGate.Wait(0))
+            throw new InvalidOperationException("RawIoStillOwnsBuffers");
+        try
+        {
+            var released = 0;
+            while (DaqRawData.TryDequeue(out var item))
+            {
+                item.DisposeOwned(); rawQueueSlots.Release(); Interlocked.Decrement(ref rawQueueCount); released++;
+            }
+            return released;
+        }
+        finally { rawQueueGate.Release(); }
+    }
+
+    private async Task RunWithDeadlineAsync(
         Func<CancellationToken, Task> operation,
         int timeoutMs,
         CancellationToken token,
@@ -599,6 +674,9 @@ public class DaqAIContext
         // 隔离 FileStream 构造、Length/SetLength/Dispose 等同步内核调用，确保 UI/恢复
         // 调用方能执行下面的deadline竞争；同一上下文的文件锁仍保证最多一个真实I/O。
         var operationTask = Task.Run(() => operation(linked.Token), CancellationToken.None);
+        _pendingIo.TryAdd(operationTask, 0);
+        _ = operationTask.ContinueWith(task => _pendingIo.TryRemove(task, out _), CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         var delayTask = Task.Delay(Math.Max(1, timeoutMs), token);
         var completed = await Task.WhenAny(operationTask, delayTask).ConfigureAwait(false);
         if (ReferenceEquals(completed, operationTask) || operationTask.IsCompleted)
