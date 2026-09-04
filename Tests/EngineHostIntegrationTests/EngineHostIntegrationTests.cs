@@ -43,6 +43,16 @@ namespace MTTFTest.EngineHostIntegrationTests
                 {
                     WaitUntilReady(engine);
                     passed += SnapshotCarriesBootstrapIdentity(sessionId, runId);
+                    var productionSnapshot = MTTFTest.Watchdog.EngineHostPipeClient.Send(
+                        new EngineHostRequest
+                        {
+                            RequestId = RecoveryProtocolV7.NewId(),
+                            Kind = EngineHostRequestKind.ReadLatestSnapshot
+                        }, 3000, _pipeName);
+                    Assert(productionSnapshot.Accepted &&
+                        productionSnapshot.Snapshot.SessionId == sessionId,
+                        "ProductionSupervisorCannotReadEngineHost");
+                    passed += Pass("ProductionSupervisorReadsEngineHostSnapshot");
                     passed += PulseAndLatestOnlyTelemetryAdvance();
                     passed += RecoveryCommandIsIdempotent(sessionId, runId);
                     passed += RecoveryCommandStartSequenceRuns(sessionId, runId);
@@ -111,7 +121,14 @@ namespace MTTFTest.EngineHostIntegrationTests
 
         private static int PulseAndLatestOnlyTelemetryAdvance()
         {
-            var first = Send(EngineHostRequestKind.ReadLatestTelemetry).Telemetry;
+            EngineTelemetryFrame first = null;
+            var readyDeadline = Stopwatch.StartNew();
+            while (first == null && readyDeadline.Elapsed < TimeSpan.FromSeconds(3))
+            {
+                first = Send(EngineHostRequestKind.ReadLatestTelemetry).Telemetry;
+                if (first == null) Thread.Sleep(25);
+            }
+            Assert(first != null, "FirstTelemetryDeadlineExceeded");
             Thread.Sleep(650);
             var second = Send(EngineHostRequestKind.ReadLatestTelemetry).Telemetry;
             Assert(first != null && second != null, "TelemetryMissing");

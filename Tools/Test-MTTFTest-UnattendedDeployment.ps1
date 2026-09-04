@@ -38,6 +38,7 @@ if ($unsupportedStopTaskConfirm.Count -ne 0) {
 }
 
 $installerText = [IO.File]::ReadAllText($installer, [Text.Encoding]::UTF8)
+& (Join-Path $PSScriptRoot 'Test-V3InstallerIdentity.ps1') -InstallerPath $installer
 foreach ($removedGate in @(
         'Read-And-VerifyPackage',
         'Protect-MachineJson',
@@ -402,7 +403,7 @@ foreach ($requiredV3PackageContract in @(
         'installedCrashMatrixPassed',
         'hardwareMatrixPassed',
         'soak168HoursPassed',
-        'QUICKDEPLOY_R24',
+        'QUICKDEPLOY_R25',
         'archiveSha256')) {
     if (-not $v3InstallerText.Contains($requiredV3PackageContract)) {
         throw "V3 一键安装包脚本缺少契约：$requiredV3PackageContract"
@@ -569,9 +570,15 @@ try {
     if (-not $uninstallCommandText.Contains('-ForceUninstall -Confirm:$false')) {
         throw '非交互卸载入口缺少明确的免确认参数。'
     }
-    if ([regex]::Matches($installerText, 'Read-Host').Count -ne 1 -or
+    $uninstallPrompt = @($ast.FindAll({ param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Request-UninstallConfirmation'
+    }, $true))
+    if ($uninstallPrompt.Count -ne 1 -or
+        [regex]::Matches($uninstallPrompt[0].Extent.Text, 'Read-Host').Count -ne 1 -or
+        [regex]::Matches($installerText, 'Read-Host').Count -ne 2 -or
         $installerText.Contains('PromptForChoice')) {
-        throw '安装器必须且只能包含一次交互式卸载确认。'
+        throw '卸载只允许一次确认；另一次 Read-Host 必须用于安装维护隔离确认。'
     }
     Write-Output 'PASS QuickDeploySingleUninstallPrompt 1/1'
 

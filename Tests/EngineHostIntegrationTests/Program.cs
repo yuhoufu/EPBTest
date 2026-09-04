@@ -8,7 +8,7 @@ namespace MTTFTest.EngineHostIntegrationTests
         {
             try
             {
-                var passed = EngineHostTests.RunAll();
+                var passed = ProductionPipeClientTests.RunAll() + EngineHostTests.RunAll();
                 Console.WriteLine("PASS " + passed + "/" + passed);
                 return 0;
             }

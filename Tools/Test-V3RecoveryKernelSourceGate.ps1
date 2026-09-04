@@ -30,6 +30,13 @@ $engineReplacer = Read-Source 'MTTFTest.Watchdog\V3EngineProcessReplacer.cs'
 $watchdogProgram = Read-Source 'MTTFTest.Watchdog\Program.cs'
 $legacyTestHost = Read-Source 'MTTFTest.Watchdog\LegacyWatchdogTestHost.cs'
 $supervisorHost = Read-Source 'MTTFTest.Watchdog\SupervisorServiceHost.cs'
+$enginePipeClient = Read-Source 'MTTFTest.Watchdog\EngineHostPipeClient.cs'
+if ($enginePipeClient -match 'pipe\.(ReadTimeout|WriteTimeout)\s*=' -or
+    -not $enginePipeClient.Contains('CancellationTokenSource(timeoutMilliseconds)') -or
+    -not $enginePipeClient.Contains('PipeOptions.Asynchronous') -or
+    -not $engineIntegration.Contains('ProductionSupervisorReadsEngineHostSnapshot')) {
+    throw 'Supervisor EngineHost pipe must use a tested bounded asynchronous transport.'
+}
 
 foreach ($forbidden in @(
         'new Main_Frm', 'new FrmEpbMainMonitor',

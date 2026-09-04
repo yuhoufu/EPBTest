@@ -5,7 +5,8 @@ param(
     [string]$SourceDirectory = (Split-Path -Parent $PSScriptRoot),
     [string]$InstallRoot = '',
     [string]$SoakEvidencePath,
-    [switch]$ForceUninstall
+    [switch]$ForceUninstall,
+    [switch]$PhysicalIsolationConfirmed
 )
 
 $ErrorActionPreference = 'Stop'
@@ -199,8 +200,14 @@ function Ensure-V3BaselineLastKnownGood([string]$Root) {
                 (Join-Path $current 'MTTFTest.EngineHost.exe')).Version
             $lkgVersion = [Reflection.AssemblyName]::GetAssemblyName(
                 (Join-Path $lkg 'MTTFTest.EngineHost.exe')).Version
+            $currentIdentity = Get-VerifiedDeploymentIdentity $current
+            $lkgIdentity = Get-VerifiedDeploymentIdentity $lkg
             $compatible = $currentVersion.Major -eq 3 -and
-                $lkgVersion.Major -eq 3
+                $lkgVersion.Major -eq 3 -and
+                $currentIdentity.RecoveryArchitectureGeneration -eq $lkgIdentity.RecoveryArchitectureGeneration -and
+                $currentIdentity.WatchdogSchema -eq $lkgIdentity.WatchdogSchema -and
+                ($lkgIdentity.DeploymentApproved -or
+                    $currentIdentity.IdentitySha256 -eq $lkgIdentity.IdentitySha256)
         }
         catch { $compatible = $false }
     }
@@ -218,7 +225,7 @@ function Ensure-V3BaselineLastKnownGood([string]$Root) {
         }
         Move-Item -LiteralPath $staging -Destination $lkg
         Assert-RequiredProgramFiles $lkg
-        Write-Host '已创建与 Current 同属 V3 架构代际的基线 LastKnownGood。'
+        Write-Host '已创建与 Current 同属 V3 架构代际的基线 LastKnownGood；未正式批准的旧候选基线不会被误当作已验证回滚包。'
     }
     finally {
         if (Test-Path -LiteralPath $staging) {
@@ -254,24 +261,124 @@ function Remove-InstalledProgramFiles([string]$Root) {
 }
 
 function Test-CurrentSlotReplacementRequired([string]$Source, [string]$Root) {
+    $sourceIdentity = Get-VerifiedDeploymentIdentity $Source
     $current = Join-Path $Root 'Current'
+    $sourceVersion = [Reflection.AssemblyName]::GetAssemblyName(
+        (Join-Path $Source 'MTTFTest.exe')).Version
     try {
-        Assert-RequiredProgramFiles $current
+        $currentVersion = [Reflection.AssemblyName]::GetAssemblyName(
+            (Join-Path $current 'MTTFTest.exe')).Version
     }
-    catch {
-        return $true
+    catch { return $true }
+    if ($sourceVersion.CompareTo($currentVersion) -lt 0) {
+        throw "拒绝静默降级：来源=$sourceVersion，已安装=$currentVersion。"
     }
+    try { $currentIdentity = Get-VerifiedDeploymentIdentity $current }
+    catch { return $true }
+    # 产品版本不区分同版修复包。只有完整身份和清单文件都相同才允许跳过。
+    return $sourceIdentity.IdentitySha256 -ne $currentIdentity.IdentitySha256
+}
 
-    try {
-        $sourceExecutable = Join-Path $Source 'MTTFTest.exe'
-        $currentExecutable = Join-Path $current 'MTTFTest.exe'
-        $sourceVersion = [Reflection.AssemblyName]::GetAssemblyName($sourceExecutable).Version
-        $currentVersion = [Reflection.AssemblyName]::GetAssemblyName($currentExecutable).Version
-        return $sourceVersion.CompareTo($currentVersion) -gt 0
+function Get-VerifiedDeploymentIdentity([string]$Directory) {
+    Assert-RequiredProgramFiles $Directory
+    $directoryFull = Resolve-SafeDirectory $Directory 'PackageDirectory'
+    $identityPath = Join-Path $directoryFull 'build-identity.json'
+    $identity = Read-Utf8JsonFile $identityPath '安装包身份'
+    if ([string]$identity.gitCommit -notmatch '^[0-9a-fA-F]{40}$' -or
+        [string]$identity.packageContentSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+        @($identity.files).Count -eq 0) {
+        throw "安装包身份不完整：$directoryFull"
     }
-    catch {
-        # 无法可靠比较版本时采用保守升级，避免留下不完整程序槽。
-        return $true
+    $prefix = $directoryFull.TrimEnd('\', '/') + '\'
+    foreach ($file in @($identity.files)) {
+        $relative = [string]$file.name
+        if ([string]::IsNullOrWhiteSpace($relative) -or
+            [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+            throw "安装包清单路径无效：$relative"
+        }
+        $path = [IO.Path]::GetFullPath((Join-Path $directoryFull $relative))
+        if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-Path -LiteralPath $path -PathType Leaf) -or
+            [string]$file.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne [string]$file.sha256) {
+            throw "安装包文件缺失或哈希不一致：$path"
+        }
+    }
+    return [pscustomobject]@{
+        GitCommit = [string]$identity.gitCommit
+        PackageContentSha256 = [string]$identity.packageContentSha256
+        IdentitySha256 = (Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash
+        DeploymentApproved = [bool]$identity.deploymentApproved
+        RecoveryArchitectureGeneration = [string]$identity.recoveryArchitectureGeneration
+        WatchdogSchema = [int]$identity.watchdogSchema
+    }
+}
+
+function Assert-InstalledPackageMatchesSource([string]$Source, [string]$Root) {
+    $expected = Get-VerifiedDeploymentIdentity $Source
+    $installed = Get-VerifiedDeploymentIdentity (Join-Path $Root 'Current')
+    if ($expected.IdentitySha256 -ne $installed.IdentitySha256) {
+        throw "安装未完成：Current 身份不等于来源包；Expected=$($expected.GitCommit)，Actual=$($installed.GitCommit)。禁止报告 PASS。"
+    }
+    return $installed
+}
+
+function Get-InstalledEngineHosts([string]$Root) {
+    $prefix = (Resolve-SafeDirectory $Root 'InstallRoot').TrimEnd('\', '/') + '\'
+    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='MTTFTest.EngineHost.exe'" -ErrorAction Stop)) {
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath) -or
+            -not ([IO.Path]::GetFullPath([string]$process.ExecutablePath)).StartsWith(
+                $prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "存在路径无法证明或不属于本安装目录的 EngineHost，拒绝安装：PID=$($process.ProcessId)"
+        }
+        $process
+    }
+}
+
+function Confirm-InstalledEngineRetirement([string]$Root, [bool]$IsolationConfirmed) {
+    $engines = @(Get-InstalledEngineHosts $Root)
+    if ($engines.Count -eq 0) { return }
+    if (-not $IsolationConfirmed) {
+        Write-Warning '旧 EngineHost 仍在运行。必须先停止试验、物理隔离执行机构供能、释放液压并备份数据；未完成时输入任何其他内容取消。'
+        $answer = Read-Host '只有已完成上述维护隔离才输入 ISOLATED（不代表自动复跑安全证明）'
+        if ($answer -cne 'ISOLATED') { throw '未确认物理维护隔离，未停止运行环境、未换包。' }
+    }
+    return $engines
+}
+
+function Stop-VerifiedInstalledEngineHosts([string]$Root, [object[]]$ApprovedEngines) {
+    $live = @(Get-InstalledEngineHosts $Root)
+    foreach ($process in $live) {
+        $approved = @($ApprovedEngines | Where-Object {
+            $_.ProcessId -eq $process.ProcessId -and
+            $_.CreationDate -eq $process.CreationDate -and
+            $_.ExecutablePath -eq $process.ExecutablePath
+        })
+        if ($approved.Count -ne 1) {
+            throw "EngineHost 身份在维护确认后发生变化，拒绝强杀或换包：PID=$($process.ProcessId)"
+        }
+    }
+    if ($live.Count -gt 0) {
+        $evidenceRoot = Join-Path $env:ProgramData 'MTTFTest\DeploymentLogs'
+        [void](New-Item -ItemType Directory -Path $evidenceRoot -Force)
+        [ordered]@{
+            kind = 'OperatorConfirmedPhysicalMaintenanceIsolation'
+            confirmedUtc = [DateTime]::UtcNow.ToString('O')
+            authorizationMigrated = $false
+            automaticResumeProof = $false
+            processes = @($live | Select-Object ProcessId,CreationDate,ExecutablePath)
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (
+            Join-Path $evidenceRoot ('engine-retirement-' + [Guid]::NewGuid().ToString('N') + '.json')) -Encoding UTF8
+    }
+    foreach ($process in $live) {
+        Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+        $handle = Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue
+        if ($null -ne $handle -and -not $handle.WaitForExit(10000)) {
+            throw "旧 EngineHost 未退出，拒绝换包：PID=$($process.ProcessId)"
+        }
+    }
+    if (@(Get-InstalledEngineHosts $Root).Count -ne 0) {
+        throw '旧 EngineHost 仍然存在，拒绝换包。'
     }
 }
 
@@ -316,7 +423,8 @@ function Stop-InstalledRuntimeTasks([string]$Root) {
     foreach ($name in @($autoStartTaskName, $taskName)) {
         $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         if ($null -ne $task) {
-            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+            Disable-ScheduledTask -TaskName $name -ErrorAction Stop | Out-Null
+            Stop-ScheduledTask -TaskName $name -ErrorAction Stop
         }
     }
     Stop-InstalledSessionAgent $Root
@@ -610,6 +718,10 @@ function Write-DeploymentResult(
     [string]$Version,
     [string]$Root,
     [string]$Source = '') {
+    $installedIdentity = $null
+    if ($Operation -in @('Install', 'Repair')) {
+        $installedIdentity = Assert-InstalledPackageMatchesSource $Source $Root
+    }
     $stateRoot = Join-Path $env:ProgramData 'MTTFTest'
     $resultRoot = Join-Path $stateRoot 'DeploymentLogs'
     [void](New-Item -ItemType Directory -Path $resultRoot -Force)
@@ -624,6 +736,9 @@ function Write-DeploymentResult(
         userName = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         powershellVersion = [string]$PSVersionTable.PSVersion
         sourceDirectory = $Source
+        installedGitCommit = if ($null -eq $installedIdentity) { '' } else { $installedIdentity.GitCommit }
+        installedPackageContentSha256 = if ($null -eq $installedIdentity) { '' } else { $installedIdentity.PackageContentSha256 }
+        sourceIdentityMatched = $null -ne $installedIdentity
         installRoot = $Root
         installRootExists = Test-Path -LiteralPath $Root -PathType Container
         serviceState = if ($null -eq $service) { 'NotInstalled' } else { [string]$service.Status }
@@ -661,6 +776,11 @@ if ($env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE -eq '1') {
 }
 
 Assert-Administrator
+$deploymentLogRoot = Join-Path $env:ProgramData 'MTTFTest\DeploymentLogs'
+[void](New-Item -ItemType Directory -Path $deploymentLogRoot -Force)
+$deploymentTranscript = Join-Path $deploymentLogRoot (
+    'deploy-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '.log')
+Start-Transcript -LiteralPath $deploymentTranscript -Force | Out-Null
 
 if ($Mode -eq 'Uninstall') {
     $installedExecutable = Join-Path $root 'Current\MTTFTest.exe'
@@ -755,24 +875,36 @@ if ([string]::IsNullOrWhiteSpace($sourceVersion)) {
     throw '无法从来源目录的 MTTFTest.exe 读取版本号。'
 }
 if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环境")) {
+    $attempt = [ordered]@{
+        result = 'IN_PROGRESS'; operation = $Mode; sourceDirectory = $source
+        installRoot = $root; transcript = $deploymentTranscript
+        startedUtc = [DateTime]::UtcNow.ToString('O')
+    }
+    $attemptPath = Join-Path $deploymentLogRoot 'last-deployment-result.json'
+    $attempt | ConvertTo-Json | Set-Content -LiteralPath $attemptPath -Encoding UTF8
+    try {
     Write-OperationContext "$Mode V$sourceVersion" $root $source
     Write-OperationStep 1 9 '确认已安装的主程序没有运行。'
     Assert-InstalledMainStopped $root
     Write-OperationStep 2 9 '只读预检旧检查点，再停止旧监督服务和运行任务。'
     Assert-LegacyCheckpointRolloverPreflight
+    $replacementRequired = Test-CurrentSlotReplacementRequired $source $root
+    $approvedEngines = @(Confirm-InstalledEngineRetirement $root ([bool]$PhysicalIsolationConfirmed))
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
+    Stop-VerifiedInstalledEngineHosts $root $approvedEngines
     Write-OperationStep 3 9 '分类封存旧 schema 1-6 检查点；仅安全证明完整的 schema 5/6 迁移剩余圈数。'
     Invoke-LegacyCheckpointSafeRollover $root
     Write-OperationStep 4 9 '初始化并保留现场运行配置。'
     Initialize-RuntimeConfig $source $root
     Write-OperationStep 5 9 '安装或更新程序文件。'
-    if (Test-CurrentSlotReplacementRequired $source $root) {
+    if ($replacementRequired) {
         [void](Install-CurrentSlot $source $root)
     }
     else {
-        Write-Host '已安装版本不低于来源版本，保留 Current，不创建重复 retired 目录。'
+        Write-Host '已安装包完整身份和清单哈希与来源一致，保留 Current。'
     }
+    [void](Assert-InstalledPackageMatchesSource $source $root)
     Ensure-V3BaselineLastKnownGood $root
     Write-OperationStep 6 9 '配置程序目录和 ProgramData 权限。'
     Set-UnattendedAcl $root
@@ -783,6 +915,13 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Write-OperationStep 9 9 '创建 Supervisor 启动快捷方式并写入配置标记。'
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
-    Write-Host "V$sourceVersion 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
+    Write-Host "V$sourceVersion 程序包已完成 $Mode；仍须验证界面与现场硬件，不代表正式无人值守放行。"
     Write-DeploymentResult $Mode $sourceVersion $root $source
+    }
+    catch {
+        $attempt['result'] = 'FAIL'
+        $attempt['failure'] = $_.Exception.Message
+        $attempt | ConvertTo-Json | Set-Content -LiteralPath $attemptPath -Encoding UTF8
+        throw
+    }
 }

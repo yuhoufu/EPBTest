@@ -29,6 +29,10 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="EngineHostIntegrationTests.cs" />
+    <Compile Include="..\..\MTTFTest.Watchdog\EngineHostPipeClient.cs">
+      <Link>Production\EngineHostPipeClient.cs</Link>
+    </Compile>
+    <Compile Include="ProductionPipeClientTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
