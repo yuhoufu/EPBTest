@@ -164,15 +164,20 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
         throw "拒绝旧许可、V3 混装或非正式包：$directoryFull"
     }
     foreach ($component in @($identity.componentIdentities)) {
-        if ([string]$component.fileVersion -ne [string]$identity.fileVersion) {
+        if ([string]$component.fileVersion -ne [string]$identity.fileVersion -or
+            [IO.Path]::GetFileName([string]$component.name) -ne [string]$component.name -or
+            (Get-Item -LiteralPath (Join-Path $directoryFull ([string]$component.name))).VersionInfo.FileVersion -ne [string]$identity.fileVersion) {
             throw "正式组件版本混装：$($component.name)"
         }
     }
     $prefix = $directoryFull.TrimEnd('\', '/') + '\'
+    $names = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $paths = New-Object 'System.Collections.Generic.SortedDictionary[string,string]' ([StringComparer]::Ordinal)
     foreach ($file in @($identity.files)) {
         $relative = [string]$file.name
         if ([string]::IsNullOrWhiteSpace($relative) -or
-            [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+            [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)' -or
+            -not $names.Add($relative.Replace('\','/'))) {
             throw "安装包清单路径无效：$relative"
         }
         $path = [IO.Path]::GetFullPath((Join-Path $directoryFull $relative))
@@ -182,6 +187,18 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
             (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne [string]$file.sha256) {
             throw "安装包文件缺失或哈希不一致：$path"
         }
+        $paths.Add($relative.Replace('\','/'), $path)
+    }
+    foreach ($actual in @(Get-ChildItem -LiteralPath $directoryFull -File -Recurse)) {
+        $relative = $actual.FullName.Substring($prefix.Length).Replace('\','/')
+        if ($actual.Name -like 'MTTFTest.EngineHost*' -or $actual.Name -like 'MTTFTest.RecoveryKernel*') {
+            throw "V2.16 禁止引入 V3 运行组件：$relative"
+        }
+        if ($relative -in @('build-identity.json','SHA256SUMS.txt','MTTFTest.FirstRun.configured')) { continue }
+        if (-not $names.Contains($relative)) { throw "发现清单外文件，拒绝混包：$relative" }
+    }
+    if ((Get-DeploymentAggregateHash $paths) -ne [string]$identity.packageContentSha256) {
+        throw '安装包聚合哈希不一致。'
     }
     return [pscustomobject]@{
         GitCommit = [string]$identity.gitCommit
@@ -191,6 +208,27 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
         RecoveryArchitectureGeneration = [string]$identity.recoveryArchitectureGeneration
         WatchdogSchema = [int]$identity.watchdogSchema
     }
+}
+
+function Get-DeploymentAggregateHash($Paths) {
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $buffer = New-Object byte[] (1MB)
+    $newline = [byte[]]@(10)
+    try {
+        foreach ($entry in $Paths.GetEnumerator()) {
+            $name = [Text.Encoding]::UTF8.GetBytes($entry.Key.ToLowerInvariant() + "`n")
+            [void]$hash.TransformBlock($name, 0, $name.Length, $name, 0)
+            $stream = [IO.File]::OpenRead($entry.Value)
+            try {
+                while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    [void]$hash.TransformBlock($buffer, 0, $read, $buffer, 0)
+                }
+            } finally { $stream.Dispose() }
+            [void]$hash.TransformBlock($newline, 0, 1, $newline, 0)
+        }
+        [void]$hash.TransformFinalBlock([byte[]]@(), 0, 0)
+        return ([BitConverter]::ToString($hash.Hash)).Replace('-','').ToLowerInvariant()
+    } finally { $hash.Dispose() }
 }
 
 function Assert-InstalledPackageMatchesSource([string]$Source, [string]$Root) {

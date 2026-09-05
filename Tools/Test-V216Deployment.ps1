@@ -26,7 +26,9 @@ function Refresh-FixtureIdentity([string]$Path) {
         @{ name=$_.Name; bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash }
     })
     $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.16.0.0'} })
-    @{ gitCommit=('a'*40); packageContentSha256=('b'*64); files=$files; componentIdentities=$components;
+    $map = New-Object 'System.Collections.Generic.SortedDictionary[string,string]' ([StringComparer]::Ordinal)
+    foreach ($file in $files) { $map.Add($file.name, (Join-Path $Path $file.name)) }
+    @{ gitCommit=('a'*40); packageContentSha256=(Get-DeploymentAggregateHash $map); files=$files; componentIdentities=$components;
         fileVersion='2.16.0.0'; recoveryArchitectureGeneration='EPB-V2.16'; watchdogSchema=6;
         releaseStatus='FORMAL_RELEASE'; deploymentApproved=$true } | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $Path 'build-identity.json') -Encoding UTF8
@@ -77,6 +79,15 @@ try {
     $identity.files[0].name = '..\outside.exe'
     $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $identityPath -Encoding UTF8
     Expect-Failure { Get-VerifiedDeploymentIdentity $source } '清单路径穿越拒绝'
+    [IO.File]::WriteAllText($identityPath, $valid, (New-Object Text.UTF8Encoding($true)))
+    $extra = Join-Path $source 'unexpected.dll'
+    'old-dll' | Set-Content -LiteralPath $extra
+    Expect-Failure { Get-VerifiedDeploymentIdentity $source } '清单外旧DLL拒绝混包'
+    Remove-Item -LiteralPath $extra
+    $identity = $valid | ConvertFrom-Json
+    $identity.packageContentSha256 = 'f' * 64
+    $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $identityPath -Encoding UTF8
+    Expect-Failure { Get-VerifiedDeploymentIdentity $source } '聚合哈希错误拒绝'
     Expect-Failure { Resolve-SafeDirectory 'D:\' 'UnsafeRoot' } '磁盘根目录拒绝'
     $main = @{ Id=123; StartTicks=100 }
     $receipt = [pscustomobject]@{ SchemaVersion=2; MainProcessId=123; MainProcessStartUtcTicks=100;
