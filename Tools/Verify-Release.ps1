@@ -222,6 +222,17 @@ if ($mainExecutableSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
     throw "identity.mainExecutableSha256 不匹配：Identity=$mainExecutableSha256 Actual=$actualMainExecutableSha256"
 }
 
+$engineRuntimeConfigPath = Join-Path $release 'MTTFTest.EngineHost.exe.config'
+if (-not (Test-Path -LiteralPath $engineRuntimeConfigPath -PathType Leaf)) {
+    throw '发布包缺少 EngineHost 运行配置：MTTFTest.EngineHost.exe.config'
+}
+[xml]$engineRuntimeConfig = Get-Content -LiteralPath $engineRuntimeConfigPath -Raw
+foreach ($setting in @('DaqFrequency', 'SamplesPerChannel')) {
+    $entries = @($engineRuntimeConfig.configuration.appSettings.add | Where-Object { $_.key -eq $setting })
+    if ($entries.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$entries[0].value)) {
+        throw "发布包 EngineHost 配置缺少设置：$setting"
+    }
+}
 $requiredComponentNames = @(
     'MTTFTest.exe',
     'MTTFTest.EngineHost.exe',

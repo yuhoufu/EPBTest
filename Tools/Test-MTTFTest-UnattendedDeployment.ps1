@@ -85,6 +85,7 @@ foreach ($required in @(
         "'Configure'",
         'MTTFTest.exe',
         'MTTFTest.EngineHost.exe',
+        'MTTFTest.EngineHost.exe.config',
         'MTTFTest.Recovery.Kernel.dll',
         'MTTFTest.Watchdog.exe',
         'MTTFTest.SessionAgent.exe')) {

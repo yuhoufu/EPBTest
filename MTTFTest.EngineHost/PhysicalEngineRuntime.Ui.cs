@@ -55,6 +55,7 @@ namespace MTTFTest.EngineHost
             }, "ManualChannelBoundary;HistoricalCountsPreserved");
         }
         private GlobalConfig _displayConfig;
+        private string _compositionFailure = string.Empty;
         private EngineDaqConfigurationStore _daqConfigurationStore;
         private EngineAoConfigurationStore _aoConfigurationStore;
         private EngineAoConfigurationSnapshot _aoConfiguration;
@@ -145,7 +146,7 @@ namespace MTTFTest.EngineHost
         // Reads cached facts only. Never performs a DAQ read, SCPI query, config write or recovery action.
         public EngineUiSnapshot CaptureUiSnapshot()
         {
-            var result = EngineUiSnapshotFactory.Empty(string.Empty);
+            var result = EngineUiSnapshotFactory.Empty(_compositionFailure);
             var ao = _aoConfiguration;
             if (ao?.Configuration?.IsStructurallyValid() == true)
             {

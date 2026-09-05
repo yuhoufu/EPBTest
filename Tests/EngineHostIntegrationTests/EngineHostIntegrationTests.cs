@@ -40,6 +40,18 @@ namespace MTTFTest.EngineHostIntegrationTests
             var sessionId = RecoveryProtocolV7.NewId();
             var runId = RecoveryProtocolV7.NewId();
             var passed = 0;
+            var packagedConfig = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                "..", "..", "..", "..", "MTTfTest", "bin", configuration, "MTTFTest.EngineHost.exe.config"));
+            Assert(File.Exists(packagedConfig), "PackagedEngineHostRuntimeConfigurationMissing:" + packagedConfig);
+            var configDocument = new System.Xml.XmlDocument { XmlResolver = null };
+            configDocument.Load(packagedConfig);
+            var values = new System.Collections.Specialized.NameValueCollection();
+            foreach (System.Xml.XmlElement entry in configDocument.SelectNodes("/configuration/appSettings/add"))
+                values.Add(entry.GetAttribute("key"), entry.GetAttribute("value"));
+            var daqSettings = Config.DaqRuntimeSettings.Load(values);
+            Assert(daqSettings.SampleRateHz > 0 && daqSettings.SamplesPerChannel > 0,
+                "PackagedEngineHostRuntimeConfigurationInvalid");
+            passed += Pass("PackagedEngineHostCarriesValidDaqRuntimeConfiguration");
             using (var engine = StartEngine(executable, sessionId, runId))
             {
                 Assert(engine != null, "EngineHostStartFailed");

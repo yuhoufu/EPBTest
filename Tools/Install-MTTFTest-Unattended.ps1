@@ -62,7 +62,7 @@ function Read-Utf8JsonFile([string]$Path, [string]$Label) {
 
 function Assert-RequiredProgramFiles([string]$Directory) {
     foreach ($name in @(
-            'MTTFTest.exe', 'MTTFTest.EngineHost.exe',
+            'MTTFTest.exe', 'MTTFTest.EngineHost.exe', 'MTTFTest.EngineHost.exe.config',
             'MTTFTest.Recovery.Kernel.dll', 'MTTFTest.Watchdog.exe',
             'MTTFTest.SessionAgent.exe', 'MTTFTest.SafetyAgent.exe',
             'MTTFTest.Watchdog.Protocol.dll')) {

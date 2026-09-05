@@ -436,6 +436,7 @@
   </ItemGroup>
   <Target Name="CopyWatchdogSidecar" AfterTargets="Build" Condition="'$(LegacyUiRegressionFixture)' != 'true'">
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.exe.config" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.EngineHost\bin\$(Configuration)\MTTFTest.EngineHost.pdb')" />
     <Copy SourceFiles="$(ProjectDir)..\Recovery.Kernel\bin\$(Configuration)\MTTFTest.Recovery.Kernel.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(ProjectDir)..\Recovery.Kernel\bin\$(Configuration)\MTTFTest.Recovery.Kernel.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\Recovery.Kernel\bin\$(Configuration)\MTTFTest.Recovery.Kernel.pdb')" />

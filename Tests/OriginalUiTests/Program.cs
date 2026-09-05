@@ -40,6 +40,7 @@ internal static partial class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Run("Original layout baseline ignores screen-clamped form size", OriginalLayoutBaseline);
+        Run("Monitor startup binds selection before acquisition and retains a close control", MonitorStartupSelection);
         Run("Production UI excludes hardware assemblies and legacy bootstrap", () =>
         {
             var assembly = typeof(Main_Frm).Assembly;
@@ -321,6 +322,8 @@ internal static partial class Program
                 ExpectText(monitor, "LabEpb4", "21508");
                 var start = monitor.Controls.Find("BtnStartTest", true).Single();
                 Assert(start.Visible && start.Width > 150 && start.Height >= 20);
+                var close = monitor.Controls.Find("BtnCloseMonitor", true).Single();
+                Assert(close.Visible && close.Width >= 60 && close.Right <= close.Parent.ClientSize.Width && close.Left >= 0);
             }
             Assert(Math.Abs(monitor.Controls.Find("uiGroupBox1", true).Single().Width - originalWidth) <= 1);
         }
@@ -344,6 +347,40 @@ internal static partial class Program
             Assert(baseline == new Size((int)Math.Round(2808 * scale), (int)Math.Round(1682 * scale)));
             form.ClientSize = new Size(1200, 700);
             Assert((Size)capture.Invoke(null, new object[] { form }) == baseline);
+        }
+    }
+
+    private static void MonitorStartupSelection()
+    {
+        var fake = ConfigurationClient();
+        fake.Value.Engine.HardwareInitialized = false;
+        fake.Value.StatusDetail = "后台初始化失败：DaqFrequency missing or invalid";
+        fake.Value.Curves = Array.Empty<EngineUiCurve>();
+        foreach (var channel in fake.Value.Channels) channel.CountsValid = false;
+        using (var session = new V3MonitorSession(fake))
+        using (var form = new FrmEpbMainMonitor(session, Path.Combine(Path.GetTempPath(), RecoveryProtocolV7.NewId(), "display.xml")))
+        {
+            session.RefreshAsync().GetAwaiter().GetResult();
+            var close = form.Controls.Find("BtnCloseMonitor", true).Single();
+            Assert(close.Text == "关闭监控" && close.Enabled && !session.CanStart);
+            Func<int, Control> checkbox = channel => form.Controls.Find("CheckEpbA" + channel, true).Single();
+            Func<Control, bool> isChecked = control => (bool)control.GetType().GetProperty("Checked").GetValue(control);
+            foreach (var channel in fake.Value.Channels)
+                Assert(isChecked(checkbox(channel.Channel)) == channel.Selected);
+            var graph = form.Controls.Find("zedGraphRealChart", true).Single();
+            var pane = graph.GetType().GetProperty("GraphPane").GetValue(graph);
+            var firstCurve = ((System.Collections.IEnumerable)pane.GetType().GetProperty("CurveList").GetValue(pane)).Cast<object>().First();
+            Assert(!(bool)firstCurve.GetType().GetProperty("IsVisible").GetValue(firstCurve));
+            Assert(form.Controls.Find("RtbInfo", true).Single().Text.Contains("DaqFrequency"));
+            var draw = checkbox(4);
+            // Binding refresh must not undo a local display choice.
+            WriteField(form, "_binding", true); draw.GetType().GetProperty("Checked").SetValue(draw, false); WriteField(form, "_binding", false);
+            session.RefreshAsync().GetAwaiter().GetResult(); Assert(!isChecked(draw));
+            fake.Value.Channels[0].Selected = true;
+            fake.Value.Channels[3].Selected = false;
+            session.RefreshAsync().GetAwaiter().GetResult();
+            Assert(isChecked(checkbox(1)) && !isChecked(draw));
+            Assert((bool)firstCurve.GetType().GetProperty("IsVisible").GetValue(firstCurve));
         }
     }
 

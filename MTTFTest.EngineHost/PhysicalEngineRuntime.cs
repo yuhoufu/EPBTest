@@ -215,6 +215,7 @@ namespace MTTFTest.EngineHost
                 var safety = await _manager.StopAllAsync(token).ConfigureAwait(false);
                 await FlushProgressAsync(token).ConfigureAwait(false);
                 Initialized = safety?.FullyConfirmed == true;
+                _compositionFailure = string.Empty;
                 return (Initialized,
                     safety == null
                         ? "InitialSafetyProofMissing"
@@ -224,6 +225,7 @@ namespace MTTFTest.EngineHost
             catch (Exception ex)
             {
                 _log.Error("EngineHost硬件组合根初始化失败。", "EngineHost", ex);
+                _compositionFailure = "后台初始化失败：" + ex.GetBaseException().Message + "；实时采集不可用，请检查后台运行配置和硬件。";
                 Dispose();
                 return (false, "EngineCompositionFailed:" + ex.GetBaseException().Message);
             }

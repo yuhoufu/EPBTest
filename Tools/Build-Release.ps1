@@ -467,6 +467,7 @@ $safetyAgentExePath = Join-Path $output 'MTTFTest.SafetyAgent.exe'
 $safetyHardwarePath = Join-Path $output 'MTTFTest.SafetyHardware.dll'
 $sessionAgentExePath = Join-Path $output 'MTTFTest.SessionAgent.exe'
 $engineHostExePath = Join-Path $output 'MTTFTest.EngineHost.exe'
+$engineHostConfigPath = $engineHostExePath + '.config'
 $recoveryKernelPath = Join-Path $output 'MTTFTest.Recovery.Kernel.dll'
 foreach ($requiredSidecar in @(
         $watchdogExePath,
@@ -476,12 +477,20 @@ foreach ($requiredSidecar in @(
         $safetyHardwarePath,
         $sessionAgentExePath,
         $engineHostExePath,
+        $engineHostConfigPath,
         $recoveryKernelPath)) {
     if (-not (Test-Path -LiteralPath $requiredSidecar -PathType Leaf)) {
         throw "Release 构建缺少独立看门狗文件：$requiredSidecar"
     }
 }
 $safetyAgentFileVersion = (Get-Item -LiteralPath $safetyAgentExePath).VersionInfo.FileVersion
+[xml]$engineHostConfig = Get-Content -LiteralPath $engineHostConfigPath -Raw
+foreach ($runtimeSetting in @('DaqFrequency', 'SamplesPerChannel')) {
+    $entry = @($engineHostConfig.configuration.appSettings.add | Where-Object { $_.key -eq $runtimeSetting })
+    if ($entry.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$entry[0].value)) {
+        throw "EngineHost 运行配置缺少有效设置：$runtimeSetting"
+    }
+}
 if ($safetyAgentFileVersion -ne $expectedProductVersion) {
     throw "SafetyAgent 文件版本身份不一致：期望 $expectedProductVersion，实际 $safetyAgentFileVersion"
 }

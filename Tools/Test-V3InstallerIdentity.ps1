@@ -50,12 +50,17 @@ try {
     [void](New-Item -ItemType Directory -Path $source,$current -Force)
     $binary = Join-Path $PSScriptRoot '..\MTTfTest\bin\Release\MTTFTest.exe'
     Copy-Item -LiteralPath $binary -Destination (Join-Path $source 'MTTFTest.exe')
-    foreach ($name in @('MTTFTest.EngineHost.exe','MTTFTest.Recovery.Kernel.dll',
+    foreach ($name in @('MTTFTest.EngineHost.exe','MTTFTest.EngineHost.exe.config','MTTFTest.Recovery.Kernel.dll',
             'MTTFTest.Watchdog.exe','MTTFTest.SessionAgent.exe','MTTFTest.SafetyAgent.exe',
             'MTTFTest.Watchdog.Protocol.dll')) {
         [IO.File]::WriteAllText((Join-Path $source $name), "fixture:$name")
     }
     Copy-Item -LiteralPath $binary -Destination (Join-Path $source 'MTTFTest.EngineHost.exe') -Force
+    $engineConfig = Join-Path $source 'MTTFTest.EngineHost.exe.config'
+    Move-Item -LiteralPath $engineConfig -Destination ($engineConfig + '.missing')
+    try { Assert-Throws { Assert-RequiredProgramFiles $source } 'MissingEngineConfigMustNotInstall' }
+    finally { Move-Item -LiteralPath ($engineConfig + '.missing') -Destination $engineConfig }
+    Write-Output 'PASS V3MissingEngineRuntimeConfigRejected 1/1'
     Write-FixtureIdentity $source ('1' * 40)
     Get-ChildItem -LiteralPath $source | Copy-Item -Destination $current
     if (Test-CurrentSlotReplacementRequired $source $root) { throw 'IdenticalPackageReplaced' }

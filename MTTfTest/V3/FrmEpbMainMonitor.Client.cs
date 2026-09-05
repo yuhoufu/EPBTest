@@ -22,6 +22,7 @@ namespace MTEmbTest
         private string _logLevel = "INFO";
         private bool _binding;
         private bool _selectionInitialized;
+        private string _selectionIdentity;
         private double _windowSeconds = 30;
         internal Func<int, bool> ConfirmQualificationRetry { get; set; }
 
@@ -30,6 +31,15 @@ namespace MTEmbTest
             _session = session ?? throw new ArgumentNullException(nameof(session));
             _preferences = new OriginalMonitorPreferences(displaySettingsPath);
             InitializeComponent();
+            var closeMonitor = new Button
+            {
+                Name = "BtnCloseMonitor", Text = "关闭监控", Location = new Point(8, 8),
+                Size = new Size(Math.Max(80, uiPanel6.ClientSize.Width - 16), Math.Max(40, Font.Height * 2)),
+                BackColor = Color.White, ForeColor = Color.FromArgb(40, 80, 120), FlatStyle = FlatStyle.Flat
+            };
+            closeMonitor.Click += (_, __) => Close();
+            uiPanel6.Controls.Add(closeMonitor);
+            closeMonitor.BringToFront();
             Shown += (_, __) => ResizeLedDisplays();
             Resize += (_, __) => ResizeLedDisplays();
             _details = new ToolTip(components) { AutoPopDelay = 15000 };
@@ -213,11 +223,14 @@ namespace MTEmbTest
                     TxtTestCycleTime.Text = snapshot.PeriodSeconds.ToString(CultureInfo.InvariantCulture);
                     TxtTargetCycles.Text = snapshot.TargetCycles.ToString(CultureInfo.InvariantCulture);
                     uiCheckBoxIsSameCycleForAllEpb.Checked = snapshot.SharedTargetCycles;
-                    if (!_selectionInitialized && snapshot.Channels.Any(c => c.CountsValid))
+                    var selectionIdentity = snapshot.Engine.SessionId + "/" + snapshot.Engine.RunId + "/" +
+                        string.Join(",", snapshot.Channels.Where(c => c.Selected).Select(c => c.Channel));
+                    if (_selectionIdentity != selectionIdentity &&
+                        (snapshot.TestConfiguration != null || snapshot.Channels.Any(c => c.CountsValid)))
                     {
                         foreach (var channel in snapshot.Channels)
                             FindControl<DevExpress.XtraEditors.CheckEdit>("CheckEpbA" + channel.Channel).Checked =
-                                _preferences.Curves.TryGetValue("A" + channel.Channel, out var visible) ? visible : channel.Selected;
+                                !_selectionInitialized && _preferences.Curves.TryGetValue("A" + channel.Channel, out var visible) ? visible : channel.Selected;
                         if (_preferences.Curves.TryGetValue("P1", out var p1)) CheckP1.Checked = p1;
                         if (_preferences.Curves.TryGetValue("P2", out var p2)) CheckP2.Checked = p2;
                         if (_preferences.Curves.TryGetValue("F", out var force)) CheckF.Checked = force;
@@ -225,6 +238,7 @@ namespace MTEmbTest
                         comboBoxEditCurrentRecord.SelectedIndex = (first?.Channel ?? 1) - 1;
                         comboBoxEditCurrentRecord.EditValue = "EPB-" + (first?.Channel ?? 1);
                         _selectionInitialized = true;
+                        _selectionIdentity = selectionIdentity;
                     }
                     foreach (var channel in snapshot.Channels)
                     {
@@ -291,6 +305,10 @@ namespace MTEmbTest
 
         private void ResizeLedDisplays()
         {
+            var closeMonitor = uiPanel6?.Controls["BtnCloseMonitor"];
+            if (closeMonitor != null)
+                closeMonitor.SetBounds(6, 6, Math.Max(1, uiPanel6.ClientSize.Width - 12),
+                    Math.Max(24, closeMonitor.Font.Height + 12));
             if (LedRunTime?.Parent == null) return;
             UIHelpers.LedAutoSizer.ResizeLedToParentWidth(LedRunTime, LedRunTime.Parent);
             LedRunTime.Height = 7 * LedRunTime.IntervalOn + 6 * LedRunTime.IntervalIn + 4;
@@ -340,7 +358,13 @@ namespace MTEmbTest
                 _preferences.WindowSeconds : Math.Max(1, _session.Latest.PeriodSeconds * 2));
             pane.XAxis.Scale.Min = 0; pane.XAxis.Scale.Max = _windowSeconds;
             pane.XAxis.Scale.MinAuto = pane.XAxis.Scale.MaxAuto = false;
-            foreach (var item in _curves) item.Value.Clear();
+            foreach (var item in _curves)
+            {
+                item.Value.Clear();
+                item.Value.IsVisible = item.Key.StartsWith("A", StringComparison.Ordinal) ?
+                    FindControl<DevExpress.XtraEditors.CheckEdit>("CheckEpbA" + item.Key.Substring(1)).Checked :
+                    item.Key == "P1" ? CheckP1.Checked : item.Key == "P2" ? CheckP2.Checked : CheckF.Checked;
+            }
             var end = _session.Latest.CapturedUtcTicks;
             var begin = end - (long)(_windowSeconds * TimeSpan.TicksPerSecond);
             foreach (var curve in _session.Latest.Curves)
