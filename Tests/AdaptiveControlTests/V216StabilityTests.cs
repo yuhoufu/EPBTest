@@ -29,7 +29,59 @@ namespace AdaptiveControlTests
             FormalClosureLifetimeIsBounded();
             TerminalSessionsNeverRestart();
             AuthorityReceiptRoundTripPreservesHash();
-            return 11;
+            OverdueStaggerDoesNotCaptureCallerContext();
+            return 12;
+        }
+
+        private sealed class HeldSynchronizationContext : SynchronizationContext
+        {
+            private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _posts =
+                new System.Collections.Concurrent.ConcurrentQueue<Action>();
+            internal int PostCount;
+            public override void Post(SendOrPostCallback callback, object state)
+            {
+                Interlocked.Increment(ref PostCount);
+                _posts.Enqueue(() => callback(state));
+            }
+            internal void Drain()
+            {
+                while (_posts.TryDequeue(out var action)) action();
+            }
+        }
+
+        private static IEnumerable<int> DelayedStaggerChannels()
+        {
+            // Force enumeration past the executor's 2 ms anchor margin.
+            Thread.Sleep(20);
+            yield return 4;
+        }
+
+        private static void OverdueStaggerDoesNotCaptureCallerContext()
+        {
+            var context = new HeldSynchronizationContext();
+            var previous = SynchronizationContext.Current;
+            var plan = ElectricalStaggerPlanner.Build(new[] { 4 },
+                new[] { new ElectricalGroup { Id = 2, StaggerMs = 800, Members = { 4, 5, 6 } } }, 15000);
+            var started = 0;
+            Task run = null;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(context);
+                run = ElectricalStaggerExecutor.RunAsync(DelayedStaggerChannels(), plan,
+                    DateTime.UtcNow.AddSeconds(-10), (channel, token) =>
+                    {
+                        Interlocked.Increment(ref started);
+                        return Task.CompletedTask;
+                    }, CancellationToken.None);
+            }
+            finally { SynchronizationContext.SetSynchronizationContext(previous); }
+            var completedWithoutPump = run.Wait(2000);
+            // Release old-code continuations before reporting the regression failure.
+            context.Drain();
+            Assert(run.Wait(2000), "错峰执行无法完成回归清理");
+            Assert(completedWithoutPump && context.PostCount == 0 && started == 1,
+                "过期相位捕获调用线程上下文，界面同步等待导致启动互锁");
+            Console.WriteLine("PASS V216 T03 过期错峰不依赖调用线程消息泵");
         }
 
         private static void TerminalSessionsNeverRestart()

@@ -319,7 +319,9 @@ namespace Controller
                 else
                 {
                     token.ThrowIfCancellationRequested();
-                    await Task.Yield();
+                    // Task.Yield captures a WinForms caller's context. The overdue
+                    // path must remain asynchronous without requiring that UI to pump.
+                    await Task.Delay(1, token).ConfigureAwait(false);
                 }
 
                 await work(channel, token).ConfigureAwait(false);
