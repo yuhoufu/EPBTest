@@ -1,0 +1,670 @@
+{
+  "productVersion": "V2.17.0.0",
+  "fileVersion": "2.17.0.0",
+  "assemblyName": "MTTFTest",
+  "releaseStatus": "FORMAL_RELEASE",
+  "deploymentApproved": true,
+  "gitCommit": "7170e902d77c8fdbf5cfeaebe6aa98b86235fc26",
+  "gitBranch": "codex/v2.17-stability",
+  "gitDirty": false,
+  "buildUtc": "2026-09-05T19:07:05.9566115Z",
+  "mainExecutableSha256": "ede2258bacdf3293bcef919350eba045c96153e9a4d8599bb58edcffc0ba33cc",
+  "packageContentSha256": "6be65a6d247ed3e6f7cf79f9058376cfa53f7ca12d43b55fdea138cb0b52ee86",
+  "configSha256": "24b60e98dce3b85dbe557d2ef1c04c310cc72abeb919a63d57fd253891fe4607",
+  "platform": "x86",
+  "recoveryArchitectureGeneration": "EPB-V2.17",
+  "fieldValidation": "PENDING_USER_HARDWARE_AND_168H",
+  "watchdogSchema": 7,
+  "packageSlotSchema": 5,
+  "componentIdentities": [
+    {
+      "name": "Controller.dll",
+      "fileVersion": "2.17.0.0",
+      "sha256": "b0cc6443be9849242b537b7b27b17395a2fef5a1a7d8c9134520356db7abf0cc",
+      "pdb": "Controller.pdb",
+      "pdbSha256": "670633435f2910d3b0f735c487b413c34d7f8913143ab28506b51bd28b50067a"
+    },
+    {
+      "name": "MTTFTest.exe",
+      "fileVersion": "2.17.0.0",
+      "sha256": "ede2258bacdf3293bcef919350eba045c96153e9a4d8599bb58edcffc0ba33cc",
+      "pdb": "MTTFTest.pdb",
+      "pdbSha256": "757110a3156bcf78ec710023a17226e7f03816a8aa686a052a2ea5f6a665a57d"
+    },
+    {
+      "name": "MTTFTest.SafetyAgent.exe",
+      "fileVersion": "2.17.0.0",
+      "sha256": "46def8709165ecdae852ab592c2d7d912cb597cbf7c2ffe6876a6da62da61a9e",
+      "pdb": "MTTFTest.SafetyAgent.pdb",
+      "pdbSha256": "af643b15ea01926815c6050c98cc6907b9050625a1fe30d12e2dc60bd9cdc0ee"
+    },
+    {
+      "name": "MTTFTest.SafetyHardware.dll",
+      "fileVersion": "2.17.0.0",
+      "sha256": "f76573ac648f5d3ab7a7012d30996cb5871299eecba66fa3d1a6da9f6d5a0d60",
+      "pdb": "MTTFTest.SafetyHardware.pdb",
+      "pdbSha256": "7d55fecdeac9614edd74ce9d13d55fe8190bffe4cf998416e20d3d4198bb9b3a"
+    },
+    {
+      "name": "MTTFTest.SessionAgent.exe",
+      "fileVersion": "2.17.0.0",
+      "sha256": "22772ab39de4e75d318c179dca4afabff0d4a6e633a9b47e43ebec713f25ff4d",
+      "pdb": "MTTFTest.SessionAgent.pdb",
+      "pdbSha256": "ed7320d9f5c62446c8febb4e3c45dab9306a44fdefe113d806da0ceac15ece61"
+    },
+    {
+      "name": "MTTFTest.Watchdog.Client.dll",
+      "fileVersion": "2.17.0.0",
+      "sha256": "4c2e73b65daccc7bf252c6c57db6a55f9d8354a30f4057c0e2b75e754499067b",
+      "pdb": "MTTFTest.Watchdog.Client.pdb",
+      "pdbSha256": "89fcf87f021864dd7012f316c9564f780da94a75d5fcabed42da57331de24b09"
+    },
+    {
+      "name": "MTTFTest.Watchdog.exe",
+      "fileVersion": "2.17.0.0",
+      "sha256": "981ffb5e43a5c4c62d027fae1aabce33ba1cef7753860f63140db675bfe854ee",
+      "pdb": "MTTFTest.Watchdog.pdb",
+      "pdbSha256": "213753b18e5999e19a7a2ab8c462c7658d35fa18c4a954d70f2b1927be08d537"
+    },
+    {
+      "name": "MTTFTest.Watchdog.Protocol.dll",
+      "fileVersion": "2.17.0.0",
+      "sha256": "9893c7069b74ec10f8eda509eb049cccae4fcd1c7f0a898416e4db3534cda36c",
+      "pdb": "MTTFTest.Watchdog.Protocol.pdb",
+      "pdbSha256": "16a97a06b2bbf4ec2f10720edb66c5633ba3df5c602dfb32aa835bc613bca03c"
+    }
+  ],
+  "verification": {
+    "v217Deployment": "PASS V217Deployment 26/26 (isolated filesystem; no SCM or hardware mutation)",
+    "solutionRebuild": "PASS",
+    "adaptiveControlTests": "PASS 741/741",
+    "epbDiskWriterTests": "PASS 64/64",
+    "powerSupplyDebuggerTests": "PASS 19/19",
+    "fieldGateTests": "Ran 49 tests in 206.936s",
+    "simpleUnattendedDeploymentContract": "PASS SimpleUnattendedDeploymentContract 1/1",
+    "quickDeployCommandParse": "PASS QuickDeployCommandParse 5/5",
+    "releaseBuildNoMandatorySoak": "PASS ReleaseBuildNoMandatorySoak 1/1"
+  },
+  "files": [
+    {
+      "name": "AsyncTcpClient.dll",
+      "bytes": 8704,
+      "sha256": "20e8f1e7020b682d2eb0f2d8e0070a82438f36833a814b5d389a89be50bc5b28"
+    },
+    {
+      "name": "Config.dll",
+      "bytes": 205312,
+      "sha256": "041adc3a2feb4ae42c5104482e47bfcaf072ab9fe7eb575c332496a97c681558"
+    },
+    {
+      "name": "Config.pdb",
+      "bytes": 536064,
+      "sha256": "ddebba83a0d9afec1e734db5b10650d1dc4a4d135b34e9109e0a249abf7a61e9"
+    },
+    {
+      "name": "Config/AIConfig.xml",
+      "bytes": 5283,
+      "sha256": "0a55427f7fc4e5285bdf55587ff7eeda9420f0fba33e078af639f661d942db9e"
+    },
+    {
+      "name": "Config/AOConfig.xml",
+      "bytes": 2204,
+      "sha256": "8dc6b5afaa52d945dbfafb04e3d4e6d040ef758429bdf5fc1de60f1c6e9f3843"
+    },
+    {
+      "name": "Config/AlarmConfig.xml",
+      "bytes": 6471,
+      "sha256": "2ff48034888b778814d6659b2ed9f69e3dd1746aee48a1c3ba9a3e7d536dd0bd"
+    },
+    {
+      "name": "Config/DOConfig.xml",
+      "bytes": 5940,
+      "sha256": "4a4d855f743a17cd6e71df4af4c9b228be1d8167ded079735407c2b955a55601"
+    },
+    {
+      "name": "Config/PowerSupplyConfig.xml",
+      "bytes": 2256,
+      "sha256": "31b2ab1cfacf4afecd8c6ff36194784aa247e9bd6288ce8fa2e114047bb5f70d"
+    },
+    {
+      "name": "Config/TestConfig.xml",
+      "bytes": 13914,
+      "sha256": "5537dfc0a1639e022bee6e0908b9e2d82d39e038059e602e1eabba9d25b36f68"
+    },
+    {
+      "name": "Config/UIConfig.xml",
+      "bytes": 1484,
+      "sha256": "c6da2d2e7ce6bf609db8106a2c6187033f8b199fdfdb1eb3aaf144e5af282916"
+    },
+    {
+      "name": "Config/UnattendedAlarmConfig.xml",
+      "bytes": 512,
+      "sha256": "0bd381690c5d4cf2c3280704c2033b63598b7f669e7af3f61e23eae9c0210462"
+    },
+    {
+      "name": "Controller.dll",
+      "bytes": 1851392,
+      "sha256": "b0cc6443be9849242b537b7b27b17395a2fef5a1a7d8c9134520356db7abf0cc"
+    },
+    {
+      "name": "Controller.pdb",
+      "bytes": 3403264,
+      "sha256": "670633435f2910d3b0f735c487b413c34d7f8913143ab28506b51bd28b50067a"
+    },
+    {
+      "name": "DataOperation.dll",
+      "bytes": 206848,
+      "sha256": "92925c879f363227875cf7fd130fc90150c21303687c70e1fbd62bf59f7ab45c"
+    },
+    {
+      "name": "DataOperation.pdb",
+      "bytes": 435712,
+      "sha256": "ccf8d57b906cfb0e33909394d45599fd343930c42c5a5e3896942ed9967a3771"
+    },
+    {
+      "name": "Deployment/Export-StabilityEvidence.ps1",
+      "bytes": 4663,
+      "sha256": "529b855ebaf8a6c24b3c2e72e8ab36886e56b7a8c5bd1163d65ae39daacdf164"
+    },
+    {
+      "name": "Deployment/Install-EPB-UnattendedAlarm.ps1",
+      "bytes": 3147,
+      "sha256": "b22cc85caf7cfc66ffe94aecc521a26bb3c469fb5eb787a8f7210aeceea98548"
+    },
+    {
+      "name": "Deployment/Install-MTTFTest-Unattended.ps1",
+      "bytes": 43283,
+      "sha256": "b8c58d8e84c7764b5cd1f1f0135efdc820c1f9cc89885c81e1eaa5595e11d31a"
+    },
+    {
+      "name": "Deployment/Stop-RelatedProcesses.ps1",
+      "bytes": 11992,
+      "sha256": "8d1a39287c435f19816978301ff82c7cfada9c91b20048aeb65f9e88be6f488f"
+    },
+    {
+      "name": "Deployment/Verify-Release.ps1",
+      "bytes": 18005,
+      "sha256": "385414504ee49698e838f59f82876143512cbd6ba45739e9bee513032ecffaf7"
+    },
+    {
+      "name": "DevExpress.Data.Desktop.v24.2.dll",
+      "bytes": 1135720,
+      "sha256": "2a1e663d6ae8026a2d77852aa81c7e82fc4ace72efd941d8f80c1537e8bf2850"
+    },
+    {
+      "name": "DevExpress.Data.Desktop.v24.2.xml",
+      "bytes": 91625,
+      "sha256": "28aaf3892232d92f91b67c76b37d651ddba88e67395431ea751621254a297560"
+    },
+    {
+      "name": "DevExpress.Data.v24.2.dll",
+      "bytes": 5719144,
+      "sha256": "fcc9411b22485fa4d2a5fb5ec0c7f7940129dd1e8305b7dd9b3df72939950bcc"
+    },
+    {
+      "name": "DevExpress.Data.v24.2.xml",
+      "bytes": 1324936,
+      "sha256": "39bbd5a25d78f8b1fcb37504da1bc2d9906a9bea00b917312ebc031fe818b50e"
+    },
+    {
+      "name": "DevExpress.Drawing.v24.2.dll",
+      "bytes": 1037928,
+      "sha256": "41a21b5305cab65ffba357f373f40ce91499def1bc38d55a81cb698f7c367bb5"
+    },
+    {
+      "name": "DevExpress.Drawing.v24.2.xml",
+      "bytes": 225731,
+      "sha256": "d67c34b1a3b5b0ac04af62a37b9185603ce06b39218ba6ad0ba8516e95f0af96"
+    },
+    {
+      "name": "DevExpress.Mvvm.v24.2.dll",
+      "bytes": 1604200,
+      "sha256": "d8b84976bbf691068db416b402a1fc7f07593a3d24690eef701b4f837278f681"
+    },
+    {
+      "name": "DevExpress.Mvvm.v24.2.xml",
+      "bytes": 284384,
+      "sha256": "e1ed5fe2661b5c969275c05e41abbfb5cf7082e3586a7cdd08135251a224ea1c"
+    },
+    {
+      "name": "DevExpress.Office.v24.2.Core.dll",
+      "bytes": 3711080,
+      "sha256": "a23693297b9115acb0eb5dbacc9767be3ada3ff16cfcf6cfc7cecfe29a8338eb"
+    },
+    {
+      "name": "DevExpress.Office.v24.2.Core.xml",
+      "bytes": 117220,
+      "sha256": "e2c909a1167b4ee432ca5ee49e20d23771f4fa87a0e2837fab0759a8abc707db"
+    },
+    {
+      "name": "DevExpress.Pdf.v24.2.Core.dll",
+      "bytes": 5233256,
+      "sha256": "4ce851c18c8300fc6808efe07b9a77b4fbfe0a9f919f30e557b414b29982528f"
+    },
+    {
+      "name": "DevExpress.Pdf.v24.2.Core.xml",
+      "bytes": 697774,
+      "sha256": "8a6da6d231d2777812abc12bd11a6b8a32f2a51947865678370e739ce2a134cf"
+    },
+    {
+      "name": "DevExpress.Pdf.v24.2.Drawing.dll",
+      "bytes": 568424,
+      "sha256": "f50e193fd4f428d72ed2ac769e4cd2375eab453d89fb5921d021976b602846a0"
+    },
+    {
+      "name": "DevExpress.Pdf.v24.2.Drawing.xml",
+      "bytes": 114062,
+      "sha256": "307e73134f92b4a8d904afaf4a048200c23001fe5a840ef28147bb3dea642ce5"
+    },
+    {
+      "name": "DevExpress.Printing.v24.2.Core.dll",
+      "bytes": 4619880,
+      "sha256": "e0a613b95a03414a2e33e966e90d798ad350af477e681ca767f93ec6c05791f5"
+    },
+    {
+      "name": "DevExpress.Printing.v24.2.Core.xml",
+      "bytes": 1730496,
+      "sha256": "f2de4c41ef3429d138ad29c174b156d55e7960bffdecd48f0425cb0b9ee692b7"
+    },
+    {
+      "name": "DevExpress.RichEdit.v24.2.Core.dll",
+      "bytes": 9343080,
+      "sha256": "e51a5389ab888b3ff337ff47142843e290d9a2bad4f568b097e0168eadf9096a"
+    },
+    {
+      "name": "DevExpress.RichEdit.v24.2.Core.xml",
+      "bytes": 2480007,
+      "sha256": "4b5e0a565f8a7274feb006cab8df991ecd3bfcf2a4b64ec036d9531c8cc61169"
+    },
+    {
+      "name": "DevExpress.Sparkline.v24.2.Core.dll",
+      "bytes": 96360,
+      "sha256": "6555513e1e7afc9f1b3b0407942b8a11adc7b6df55ab7b61e0e8156b377c55ea"
+    },
+    {
+      "name": "DevExpress.Sparkline.v24.2.Core.xml",
+      "bytes": 25431,
+      "sha256": "8ff1e58fc2aaf020cb412330471e00ce0268b0773b4ad65cd99b4fb2eedc7c79"
+    },
+    {
+      "name": "DevExpress.Utils.v24.2.dll",
+      "bytes": 20519528,
+      "sha256": "c9da0cd9a8b85ac1601a7ab03974c2ad4fcf832af9cae441cee44daa650d8d29"
+    },
+    {
+      "name": "DevExpress.Utils.v24.2.xml",
+      "bytes": 1272544,
+      "sha256": "359ed41bb906d37963e90045800d2bbffde667d2d74db341c6d87e29dd9b1499"
+    },
+    {
+      "name": "DevExpress.XtraBars.v24.2.dll",
+      "bytes": 7048296,
+      "sha256": "d3a40eed55b8f5ca889895f210d1cdff5c279315ea346f99d1c8857e23a1c373"
+    },
+    {
+      "name": "DevExpress.XtraBars.v24.2.xml",
+      "bytes": 2645263,
+      "sha256": "b75a84487b5ebf4dcef34225117aef4336f45829b297ce55991fa7ac78a812c5"
+    },
+    {
+      "name": "DevExpress.XtraEditors.v24.2.dll",
+      "bytes": 8350824,
+      "sha256": "ded844e749e1b8928d7b30861e29c26696f4deefec60302a245af074578f7530"
+    },
+    {
+      "name": "DevExpress.XtraEditors.v24.2.xml",
+      "bytes": 2677849,
+      "sha256": "3e41f03a8bf32e6b2078d1fb97c9c724bcd1262031bdebcd06856f1dc7b3b3f1"
+    },
+    {
+      "name": "DevExpress.XtraGrid.v24.2.dll",
+      "bytes": 3858024,
+      "sha256": "1cc7194c1f812ec14b3809c20639e659a47f384fc3ab04d2fdded99e87aac417"
+    },
+    {
+      "name": "DevExpress.XtraGrid.v24.2.xml",
+      "bytes": 1815382,
+      "sha256": "ac4688c60d01c00f2829a0856387212a6acceea191f73067447249cd1a62bc94"
+    },
+    {
+      "name": "DevExpress.XtraLayout.v24.2.dll",
+      "bytes": 2186856,
+      "sha256": "8c9b510167a4313572d9f8501cfede11cb55bf3171a8a6118dbc8da3b8d6a5d2"
+    },
+    {
+      "name": "DevExpress.XtraLayout.v24.2.xml",
+      "bytes": 412511,
+      "sha256": "689ac9429dd63a6ad709496c606522b224a328294461838fcdfb499194d8177e"
+    },
+    {
+      "name": "DevExpress.XtraPrinting.v24.2.dll",
+      "bytes": 1152104,
+      "sha256": "2d8316423b60d0dd96960641d8d5f1b3d384513d8cdd83d0491672ab9835570a"
+    },
+    {
+      "name": "DevExpress.XtraPrinting.v24.2.xml",
+      "bytes": 219205,
+      "sha256": "b3ac3e1273b28a32a4be1b15196fa88bce31eec4e45e0b04474a32835c0316dd"
+    },
+    {
+      "name": "DevExpress.XtraTreeList.v24.2.dll",
+      "bytes": 1710696,
+      "sha256": "c7dfc290b2076a20f1d6ce01f0df2d35b3a2c4646dcc55300b4e219e2dabbb20"
+    },
+    {
+      "name": "DevExpress.XtraTreeList.v24.2.xml",
+      "bytes": 772823,
+      "sha256": "a249535c0bb1b39155fe9588de6a2aa209fa20efbb1f69be77d2337774d19921"
+    },
+    {
+      "name": "Dia2Lib.dll",
+      "bytes": 59024,
+      "sha256": "6c4cac68010fe032218efe5e9fcf46eef9f77bfaa5f3bd33f03c5ff77d5a8fac"
+    },
+    {
+      "name": "IO.NI.dll",
+      "bytes": 251392,
+      "sha256": "504fa3f5b13f7025c48fa8f6eb493579bf12971338dd45149e55e1116c15a761"
+    },
+    {
+      "name": "IO.NI.pdb",
+      "bytes": 593408,
+      "sha256": "db42c81a7d5e11c629316d12765b5bec8d1f690e7d3cb7d7bd4ba7b1449d153d"
+    },
+    {
+      "name": "MTTFTest.SafetyAgent.exe",
+      "bytes": 18944,
+      "sha256": "46def8709165ecdae852ab592c2d7d912cb597cbf7c2ffe6876a6da62da61a9e"
+    },
+    {
+      "name": "MTTFTest.SafetyAgent.pdb",
+      "bytes": 46592,
+      "sha256": "af643b15ea01926815c6050c98cc6907b9050625a1fe30d12e2dc60bd9cdc0ee"
+    },
+    {
+      "name": "MTTFTest.SafetyHardware.dll",
+      "bytes": 27136,
+      "sha256": "f76573ac648f5d3ab7a7012d30996cb5871299eecba66fa3d1a6da9f6d5a0d60"
+    },
+    {
+      "name": "MTTFTest.SafetyHardware.pdb",
+      "bytes": 75264,
+      "sha256": "7d55fecdeac9614edd74ce9d13d55fe8190bffe4cf998416e20d3d4198bb9b3a"
+    },
+    {
+      "name": "MTTFTest.SessionAgent.exe",
+      "bytes": 11776,
+      "sha256": "22772ab39de4e75d318c179dca4afabff0d4a6e633a9b47e43ebec713f25ff4d"
+    },
+    {
+      "name": "MTTFTest.SessionAgent.pdb",
+      "bytes": 30208,
+      "sha256": "ed7320d9f5c62446c8febb4e3c45dab9306a44fdefe113d806da0ceac15ece61"
+    },
+    {
+      "name": "MTTFTest.UnattendedMode.required",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "MTTFTest.Watchdog.Client.dll",
+      "bytes": 183296,
+      "sha256": "4c2e73b65daccc7bf252c6c57db6a55f9d8354a30f4057c0e2b75e754499067b"
+    },
+    {
+      "name": "MTTFTest.Watchdog.Client.pdb",
+      "bytes": 402944,
+      "sha256": "89fcf87f021864dd7012f316c9564f780da94a75d5fcabed42da57331de24b09"
+    },
+    {
+      "name": "MTTFTest.Watchdog.Protocol.dll",
+      "bytes": 434176,
+      "sha256": "9893c7069b74ec10f8eda509eb049cccae4fcd1c7f0a898416e4db3534cda36c"
+    },
+    {
+      "name": "MTTFTest.Watchdog.Protocol.pdb",
+      "bytes": 1197568,
+      "sha256": "16a97a06b2bbf4ec2f10720edb66c5633ba3df5c602dfb32aa835bc613bca03c"
+    },
+    {
+      "name": "MTTFTest.Watchdog.exe",
+      "bytes": 319488,
+      "sha256": "981ffb5e43a5c4c62d027fae1aabce33ba1cef7753860f63140db675bfe854ee"
+    },
+    {
+      "name": "MTTFTest.Watchdog.pdb",
+      "bytes": 517632,
+      "sha256": "213753b18e5999e19a7a2ab8c462c7658d35fa18c4a954d70f2b1927be08d537"
+    },
+    {
+      "name": "MTTFTest.exe",
+      "bytes": 3472384,
+      "sha256": "ede2258bacdf3293bcef919350eba045c96153e9a4d8599bb58edcffc0ba33cc"
+    },
+    {
+      "name": "MTTFTest.exe.config",
+      "bytes": 13010,
+      "sha256": "fda9a93bf4c363d78d3b3286a02a9513beee8b9087fa4163dc7b739f0594c73e"
+    },
+    {
+      "name": "MTTFTest.pdb",
+      "bytes": 1558016,
+      "sha256": "757110a3156bcf78ec710023a17226e7f03816a8aa686a052a2ea5f6a665a57d"
+    },
+    {
+      "name": "Microsoft.Diagnostics.FastSerialization.dll",
+      "bytes": 73600,
+      "sha256": "dce0e3f64905e2bbd12d55880a83a96889ef1f3c9f4f83ab35e59ceffe7e4131"
+    },
+    {
+      "name": "Microsoft.Diagnostics.FastSerialization.xml",
+      "bytes": 103967,
+      "sha256": "30104d9f5203bc02c766e61f53bff4f088232e730e736fbca6621c8e78e3fde9"
+    },
+    {
+      "name": "Microsoft.Diagnostics.Tracing.TraceEvent.dll",
+      "bytes": 3067768,
+      "sha256": "edcfb5fc9340f82053586938762d76b5dfb1d1aad9801df3898883f427f36c5c"
+    },
+    {
+      "name": "Microsoft.Diagnostics.Tracing.TraceEvent.xml",
+      "bytes": 827631,
+      "sha256": "c5ffc064a5168e38579256a063cf101451caa88dc2537908fae9e481bb45932e"
+    },
+    {
+      "name": "NationalInstruments.Common.dll",
+      "bytes": 767376,
+      "sha256": "024e9bad2331221ebe9752df0dcb39dc5e2b4eb02ce5258fb3a56dee0996dd4a"
+    },
+    {
+      "name": "NationalInstruments.Common.xml",
+      "bytes": 2445495,
+      "sha256": "142db6a0a9d4278c1bfcd151c3d0a138acd3c925ce35354dd8abefa0a5ef8c31"
+    },
+    {
+      "name": "NationalInstruments.DAQmx.dll",
+      "bytes": 1701640,
+      "sha256": "b40f81159f9f6db7d17066a2ba6df62522a4ddc8546cf2da1f5fee7d8bcaf320"
+    },
+    {
+      "name": "NationalInstruments.DAQmx.xml",
+      "bytes": 4640493,
+      "sha256": "c596f9c6f5488c21ce10d062ae0b6aa6250dc416fb915cc21f72ffe169e319ba"
+    },
+    {
+      "name": "OSExtensions.dll",
+      "bytes": 32496,
+      "sha256": "8cee77653448156d7fdf2ce8371ca830f3208321c77fe3e224ed58adaac406da"
+    },
+    {
+      "name": "PowerSupply.Core.dll",
+      "bytes": 48128,
+      "sha256": "7ea8cd0fceb35ad333adc351995a617a7d5a3727424f996063fb36d19333e9f6"
+    },
+    {
+      "name": "PowerSupply.Core.pdb",
+      "bytes": 18328,
+      "sha256": "0ddd655babace87a43f07d33cd5bdc4fd6b1405701f3a6aa806033aa81f83de8"
+    },
+    {
+      "name": "SunnyUI.Common.dll",
+      "bytes": 207360,
+      "sha256": "725cfc038292a597dbf9e4510c09368855b44dd78904e4df786f28005980bedd"
+    },
+    {
+      "name": "SunnyUI.dll",
+      "bytes": 3356160,
+      "sha256": "82c4e5b29d19734095605ba83738a06f8d955273cc1e70ad6259c512dca1de10"
+    },
+    {
+      "name": "System.Buffers.dll",
+      "bytes": 27992,
+      "sha256": "9444b5a41a816b193c033bec199d74cdfc8298ed8300a3c39a4e953dec137494"
+    },
+    {
+      "name": "System.Buffers.xml",
+      "bytes": 3195,
+      "sha256": "5047e342f6e3860e8b37b77207d5e10c5007e07692777eb504d0ced628da022c"
+    },
+    {
+      "name": "System.Data.SQLite.dll",
+      "bytes": 450232,
+      "sha256": "77dac4e1aa63161d6aff363030a801945d6b8d5b823a6b460b2c2be9ec38d3b7"
+    },
+    {
+      "name": "System.Data.SQLite.xml",
+      "bytes": 1245480,
+      "sha256": "1b6c751c39881f02db601b7cc7b2e54e122f4870955e06ddb521314c20d23016"
+    },
+    {
+      "name": "System.Memory.dll",
+      "bytes": 148760,
+      "sha256": "41b5e1a4c59abdb1ce1467f58c3d9fd06d39dff4fc61d500a2410fece8037f4b"
+    },
+    {
+      "name": "System.Memory.xml",
+      "bytes": 13950,
+      "sha256": "d5714c96607eb1a9d0f90f57ca194d8a9c3ede0656a1d1f461e78b209f054813"
+    },
+    {
+      "name": "System.Numerics.Vectors.dll",
+      "bytes": 115936,
+      "sha256": "a044d77edb6e8db4053bf67cc671e7687c226c1b9b0963a81ebe359ce79dfdf7"
+    },
+    {
+      "name": "System.Numerics.Vectors.xml",
+      "bytes": 183543,
+      "sha256": "996e11f72e5bb4f58b080ccaf94c325f8cabb175070dde109516a5069ed17708"
+    },
+    {
+      "name": "System.Runtime.CompilerServices.Unsafe.dll",
+      "bytes": 23600,
+      "sha256": "1ad2dd7225d5162a0fd3a3b337a1949448520e3130a4bc8e010ec02f76097500"
+    },
+    {
+      "name": "System.Runtime.CompilerServices.Unsafe.xml",
+      "bytes": 14080,
+      "sha256": "63e32ebb4b26c25f65ddf26b5fa9d7147a9c8b45df355db90ac706afec980036"
+    },
+    {
+      "name": "Timing.dll",
+      "bytes": 15872,
+      "sha256": "8e843c5a7b48ca6b6e94781048a67c30d70d07e1af9be41c0e156664f9aadc2e"
+    },
+    {
+      "name": "Timing.pdb",
+      "bytes": 36352,
+      "sha256": "94d14f8edeb2cfebb1f454e27f80bd6097f61227320d8bc86d4ecb21d48a945f"
+    },
+    {
+      "name": "TraceReloggerLib.dll",
+      "bytes": 23216,
+      "sha256": "6830c0f1d3f3c17719181e73dd5cfa8ccbb3f3c575329d2120576545103467b5"
+    },
+    {
+      "name": "ZedGraph.dll",
+      "bytes": 295424,
+      "sha256": "25fc9def11bb77772cbad751a59da5a69eeeffdb91ffc40fb3638e77595c263a"
+    },
+    {
+      "name": "ZedGraph.xml",
+      "bytes": 1505908,
+      "sha256": "36f6edb35d220d1ac2925073d857035ff33085d93df8f73167a59380c09515e6"
+    },
+    {
+      "name": "de/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "c3f5114fe4394791616ff9ab0f2364d1f24ae172621bc35881c9cff9c15e57e9"
+    },
+    {
+      "name": "es/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "b4a62f6b1407af079edf80eddcc512927c1c26afb4b7c8647f76e8d4ee0ddef6"
+    },
+    {
+      "name": "fr/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "e960a574abb157c545cdb2f8f3c36409492e3c684667343fc6328124671d2cb3"
+    },
+    {
+      "name": "hu/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "ddaf291f34d7d5bcfffdfac2a052480f1940f15b8bdfee1ab557f62da2fde718"
+    },
+    {
+      "name": "it/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "c2a157432702ee332ea2473d390126baefbf0abbd4a96e4ca0c51b43e75b6e41"
+    },
+    {
+      "name": "ja/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "1ad644ccd96807c161f691159ec7f17873bc346058500b5123d7342b543c8af8"
+    },
+    {
+      "name": "pt/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "ea81b3e5db7e84bd192c451306c4f895f022a9427e6dc29db6bc7cf9f97e6cdb"
+    },
+    {
+      "name": "ru/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "73e7e7fcb927a53c47d25d8bf63e84ed5ab7d11ae5c5e137086c348de7af47a0"
+    },
+    {
+      "name": "sk/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "627b914674ff9858ea0f39f529246d51fc76bfa98f080ed430f41df5a970ef2b"
+    },
+    {
+      "name": "sv/ZedGraph.resources.dll",
+      "bytes": 4096,
+      "sha256": "b5d6ba3cc4676d6dd1e3474a3c0bbd8770cd1fa709f7deb0a7a3a5c0e8f4bfe1"
+    },
+    {
+      "name": "tr/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "b8d11848316b6994801fa9838b46eda08541ae1a8e7ffa4ef0eb73a579ab5a3c"
+    },
+    {
+      "name": "x64/SQLite.Interop.dll",
+      "bytes": 2005688,
+      "sha256": "1111916dc329a13bd627b2cd90c9b2263de9923fd0bb6059c69c52332f360c37"
+    },
+    {
+      "name": "x86/SQLite.Interop.dll",
+      "bytes": 1592504,
+      "sha256": "553693b15bda4bbf7788bee09b8bd325ffe4db151686f432194c58e15b9b4f1e"
+    },
+    {
+      "name": "zh-cn/ZedGraph.resources.dll",
+      "bytes": 4096,
+      "sha256": "034479d119989a93994b31855c1c2376b532112344afd8a72004bde5c6f38b18"
+    },
+    {
+      "name": "zh-tw/ZedGraph.resources.dll",
+      "bytes": 4608,
+      "sha256": "04d8d84966b084b71156f2e7ce1c3d56adaa0b57656a790e5e768bf7be210a75"
+    }
+  ]
+}

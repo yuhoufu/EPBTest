@@ -1,0 +1,19 @@
+{
+  "verified": true,
+  "productVersion": "V2.17.0.0",
+  "fileVersion": "2.17.0.0",
+  "assemblyName": "MTTFTest",
+  "releaseStatus": "FORMAL_RELEASE",
+  "deploymentApproved": true,
+  "gitCommit": "7170e902d77c8fdbf5cfeaebe6aa98b86235fc26",
+  "gitDirty": false,
+  "buildUtc": "2026-09-05T19:07:05.9566115Z",
+  "configSha256": "24b60e98dce3b85dbe557d2ef1c04c310cc72abeb919a63d57fd253891fe4607",
+  "verification": "PASS",
+  "identityFileCount": 116,
+  "checksumFileCount": 117,
+  "exeSha256": "ede2258bacdf3293bcef919350eba045c96153e9a4d8599bb58edcffc0ba33cc",
+  "packageContentSha256": "6be65a6d247ed3e6f7cf79f9058376cfa53f7ca12d43b55fdea138cb0b52ee86",
+  "watchdogSchema": 7,
+  "componentIdentityCount": 8
+}

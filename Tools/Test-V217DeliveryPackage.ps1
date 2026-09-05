@@ -1,6 +1,7 @@
 ﻿param([Parameter(Mandatory=$true)][string]$PackageDirectory,
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
-    [Parameter(Mandatory=$true)][string]$EvidenceDirectory)
+    [Parameter(Mandatory=$true)][string]$EvidenceDirectory,
+    [switch]$RecordEnvironmentBlocks)
 $ErrorActionPreference='Stop'
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $verified = & (Join-Path $workspace 'Tools\Verify-Release.ps1') -ReleaseDirectory $PackageDirectory | ConvertFrom-Json
@@ -30,8 +31,20 @@ try {
     $installed = & (Join-Path $current 'Deployment\Verify-Release.ps1') -ReleaseDirectory $current -AllowInstalledRuntimeState | ConvertFrom-Json
     if (-not $installed.verified) { throw 'Installed marker verification failed' }
     & (Join-Path $BundleDirectory 'Stop-RelatedProcesses.ps1') -Mode Stop -InstallRoot $install -WhatIf
-    $status = & (Join-Path $BundleDirectory 'Stop-RelatedProcesses.ps1') -Mode Status -InstallRoot $install | ConvertFrom-Json
-    if (@($status.Processes).Count -ne 0) { throw 'Unexpected process in isolated install' }
+    $status = $null
+    $statusBlock = $null
+    try {
+        $status = & (Join-Path $BundleDirectory 'Stop-RelatedProcesses.ps1') -Mode Status -InstallRoot $install | ConvertFrom-Json
+        if (@($status.Processes).Count -ne 0) { throw 'Unexpected process in isolated install' }
+    }
+    catch {
+        # A protected production service can hide its path from a non-elevated
+        # test host. Preserve the production tool's refusal and report this check
+        # as blocked; never turn it into a successful process-identity assertion.
+        $reason = $_.Exception.Message
+        if (-not $RecordEnvironmentBlocks -or $reason -notmatch '^IdentityBlocked: 无法读取 .* 的路径。$') { throw }
+        $statusBlock = $reason
+    }
     $export = Join-Path $EvidenceDirectory ('evidence-tool-smoke-' + [Guid]::NewGuid().ToString('N'))
     & (Join-Path $BundleDirectory 'Export-StabilityEvidence.ps1') -InstallRoot $install -OutputDirectory $export
     $index = Get-Content -LiteralPath (Join-Path $export 'evidence-index.json') -Raw | ConvertFrom-Json
@@ -40,7 +53,8 @@ try {
     $evidenceSummary = Get-Content -LiteralPath (Join-Path $export 'evidence-summary.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($evidenceSummary.Complete -and @($index | Where-Object { $_.Copied -eq $false }).Count -gt 0) { throw 'Evidence summary hides gaps' }
     $result = [ordered]@{ packageVerified=$true; outerFilesVerified=$count;
-        installedMarkerVerified=$true; maintenanceWhatIf=$true; maintenanceStatus=$true;
+        installedMarkerVerified=$true; maintenanceWhatIf=$true; maintenanceStatus=($null -ne $status);
+        maintenanceStatusBlocked=$statusBlock; allChecksPassed=($null -ne $status);
         evidenceExport=$true; evidenceComplete=$evidenceSummary.Complete; evidenceProblems=$evidenceSummary.Problems; scmMutationPerformed=$false; hardwareTestPerformed=$false;
         sourceIdentitySha256=(Get-FileHash -LiteralPath (Join-Path $PackageDirectory 'build-identity.json')).Hash }
     $result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'delivery-smoke-result.json') -Encoding UTF8
