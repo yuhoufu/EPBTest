@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -18,7 +19,85 @@ namespace AdaptiveControlTests
             StartupRetryCancellationCannotReauthorize();
             StartupRetryOldEpochCannotReauthorize();
             ConcurrentStartupRetriesKeepTheirOwners();
-            return 4;
+            DaqReadQueueDoesNotRunBusinessOnReader();
+            DaqFreshnessUsesOneCommittedBatch();
+            FormalClosureLifetimeIsBounded();
+            return 7;
+        }
+
+        private static void DaqReadQueueDoesNotRunBusinessOnReader()
+        {
+            using (var entered = new ManualResetEventSlim(false))
+            using (var release = new ManualResetEventSlim(false))
+            {
+                var readerThread = Thread.CurrentThread.ManagedThreadId;
+                var consumed = 0;
+                Exception workerFailure = null;
+                var dispatcher = new DaqReadDispatcher<object>("V216-DaqReadBridge", 2, frame =>
+                {
+                    Assert(Thread.CurrentThread.ManagedThreadId != readerThread, "读取线程执行了订阅业务");
+                    entered.Set(); release.Wait(); Interlocked.Increment(ref consumed);
+                }, error => workerFailure = error);
+                try
+                {
+                    Assert(dispatcher.TryPublish(new object()) && entered.Wait(3000), "读取交接未运行");
+                    var watch = Stopwatch.StartNew();
+                    Assert(dispatcher.TryPublish(new object()) && dispatcher.TryPublish(new object()), "有界队列提前拒绝");
+                    Assert(!dispatcher.TryPublish(new object()) && dispatcher.Depth == 2, "队满没有明确拒绝");
+                    Assert(watch.ElapsedMilliseconds < 250, "读取准入等待被阻塞的消费者");
+                }
+                finally { dispatcher.Complete(); release.Set(); }
+                Assert(dispatcher.Quiesced.Wait(3000) && consumed == 3 && workerFailure == null, "读取交接丢失已接纳批次");
+                Assert(!dispatcher.TryPublish(new object()), "已关闭代际仍接纳读取");
+                Console.WriteLine("PASS V216 T04/T06 有界读取交接、队满证据与代际关闭");
+            }
+        }
+
+        private static void DaqFreshnessUsesOneCommittedBatch()
+        {
+            Assert(DaqBacklogPolicy.Milliseconds(80, 2000) == 40 &&
+                !DaqBacklogPolicy.Reject(80, 2000) && DaqBacklogPolicy.Reject(202, 2000), "驱动积压没有按时间量判断");
+            var now = Stopwatch.GetTimestamp();
+            foreach (var age in new[] { 0.9, 40, 101, 250, 300, 1100, 2600 })
+            {
+                var sampleTick = now - (long)(Stopwatch.Frequency * age / 1000);
+                var batch = new FastControlBatchMetadata(5, 11, DateTime.UtcNow, DateTime.UtcNow,
+                    sampleTick, now, 0, 2000, ClockState.WarmingUp, 0, 0, 0, 1,
+                    FastSignalQualityFlags.None, 80, 3, DaqReaderLagState.Healthy);
+                var publication = new DaqControlPublication(batch, now);
+                var snapshot = new DaqFreshnessSnapshot { ReaderLagState = DaqReaderLagState.Stale, BufferedSamples = 999 };
+                publication.Apply(snapshot, 5, now, 100);
+                Assert(snapshot.IsFresh == (age <= 100) && snapshot.BufferedSamples == 80 &&
+                    snapshot.ReaderLagState == DaqReaderLagState.Healthy && snapshot.LastProcessedSequence == 11,
+                    "新鲜度混用了不同批次的时间与质量: " + age);
+                publication.Apply(snapshot, 6, now, 100);
+                Assert(!snapshot.IsFresh && snapshot.RejectionReason == "GenerationMismatch", "旧代际发布仍允许准入");
+            }
+            Console.WriteLine("PASS V216 T04/T05/T06 40ms积压、100/250ms门限及0.3/1.1/2.6秒超龄");
+        }
+
+        private static void FormalClosureLifetimeIsBounded()
+        {
+            var sampled = new List<WeakReference>();
+            for (var slot = 0; slot < 200000; slot++)
+            {
+                var transaction = new FormalSafetyClosureTransaction();
+                var calls = 0;
+                Func<Task<FormalSafetyClosureObservation>> close = () =>
+                {
+                    calls++;
+                    return Task.FromResult(new FormalSafetyClosureObservation
+                    { MotorOffConfirmed = true, HydraulicReleased = true, PersistenceRequired = false });
+                };
+                var normal = transaction.RunAsync(close);
+                var fallback = transaction.RunAsync(close);
+                Assert(ReferenceEquals(normal, fallback) && calls == 1 && normal.Result.IsClosed,
+                    "正式圈normal/fallback重复收尾");
+                if (slot % 1000 == 0) sampled.Add(new WeakReference(transaction));
+            }
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            Assert(sampled.Count(reference => reference.IsAlive) <= 1, "已完成圈的事务被长期持有");
+            Console.WriteLine("PASS V216 T07/T15 200000槽共用收尾与生命周期回收");
         }
 
         private static void StartupRetryCommitsBeforeWorkerReturns()

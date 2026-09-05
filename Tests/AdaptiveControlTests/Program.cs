@@ -735,6 +735,7 @@ namespace AdaptiveControlTests
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += PswTcpClientTimeoutTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
+                _passed += V216StabilityTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }

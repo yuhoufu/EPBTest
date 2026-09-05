@@ -32,6 +32,12 @@ namespace AdaptiveControlTests
                 SafetyUnprovenBlocksSlot, ref passed);
             Run("正式槽先等待并行安全闭合再提交终态",
                 PendingSafetyClosureWaitsForRealEvidence, ref passed);
+            Run("正常与fallback复用同一幂等安全收口事务",
+                SafetyClosureTransactionIsSingleFlight, ref passed);
+            Run("fallback异步等待三秒级闭合而不瞬时SafetyUnproven",
+                AsyncFallbackKeepsSlotPendingUntilClosure, ref passed);
+            Run("MotorOff确认后反向必须立即判定物理状态反转",
+                MotorOffReversalFailsClosure, ref passed);
             Run("重复OFF不得覆盖首次物理成功证据",
                 RepeatedOffPreservesFirstSuccess, ref passed);
             Run("墙钟边界计算禁止补跑历史槽",
@@ -104,6 +110,101 @@ namespace AdaptiveControlTests
                 "后续重复OFF失败覆盖了首次物理成功证据。");
             Assert(!OffCommandEvidencePolicy.Resolve(false, false),
                 "从未成功的OFF被错误证明为已关闭。");
+        }
+
+        private static void SafetyClosureTransactionIsSingleFlight()
+        {
+            var transaction = new FormalSafetyClosureTransaction();
+            var release = new TaskCompletionSource<FormalSafetyClosureObservation>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var calls = 0;
+            Func<Task<FormalSafetyClosureObservation>> action = () =>
+            {
+                Interlocked.Increment(ref calls);
+                return release.Task;
+            };
+            var normal = transaction.RunAsync(action);
+            var fallback = transaction.RunAsync(action);
+            Assert(ReferenceEquals(normal, fallback) && calls == 1,
+                "正常路径与fallback创建了两份安全收口事务。");
+            release.SetResult(new FormalSafetyClosureObservation
+            {
+                State = FormalSafetyClosureState.Closed,
+                MotorOffConfirmed = true,
+                HydraulicReleased = true,
+                PersistenceRequired = true,
+                PersistenceClosed = true
+            });
+            Assert(normal.GetAwaiter().GetResult().IsClosed &&
+                   fallback.GetAwaiter().GetResult().IsClosed,
+                "幂等事务没有向两个调用方发布同一个闭合结果。");
+        }
+
+        private static void AsyncFallbackKeepsSlotPendingUntilClosure()
+        {
+            var coordinator = new FormalBatchSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var anchor = DateTime.UtcNow.AddSeconds(-1);
+            var release = new TaskCompletionSource<FormalBatchParticipantTerminal>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var slot = coordinator.EnterAsync(
+                    runId,
+                    0,
+                    1,
+                    new[] { 1 },
+                    anchor,
+                    10,
+                    null,
+                    CancellationToken.None,
+                    () => release.Task)
+                .GetAwaiter().GetResult();
+            slot.Dispose();
+            var next = coordinator.EnterAsync(
+                runId,
+                1,
+                1,
+                new[] { 1 },
+                anchor,
+                10,
+                null,
+                CancellationToken.None);
+            Thread.Sleep(25);
+            Assert(!next.IsCompleted,
+                "fallback在真实安全证据到达前同步生成了SafetyUnproven终态。");
+            release.SetResult(new FormalBatchParticipantTerminal
+            {
+                Channel = 1,
+                Disposition = FormalParticipantDisposition.SafeAborted,
+                MotorOffConfirmed = true,
+                HydraulicMemberReleased = true,
+                PersistenceBoundaryRequired = true,
+                PersistenceCommitted = true,
+                Result = "DelayedSafetyClosure",
+                CompletedUtc = DateTime.UtcNow
+            });
+            var admitted = next.GetAwaiter().GetResult();
+            admitted.Complete(SafeTerminal(1));
+            coordinator.ClearRun(runId);
+        }
+
+        private static void MotorOffReversalFailsClosure()
+        {
+            var count = 0;
+            var result = FormalSafetyClosurePolicy.AwaitAsync(
+                    () => new FormalSafetyClosureObservation
+                    {
+                        MotorOffConfirmed = Interlocked.Increment(ref count) == 1,
+                        HydraulicReleased = false,
+                        PersistenceRequired = true,
+                        PersistenceClosed = false
+                    },
+                    TimeSpan.FromSeconds(1),
+                    CancellationToken.None,
+                    (duration, token) => Task.CompletedTask)
+                .GetAwaiter().GetResult();
+            Assert(result.State == FormalSafetyClosureState.PhysicalStateReversed &&
+                   result.FailureReason == "MotorOffStateReversed",
+                "MotorOff从已确认回到通电状态时没有立即失败关闭。");
         }
 
         private static void WaitsForAllParticipantsAndFutureBoundary()

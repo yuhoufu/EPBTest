@@ -556,7 +556,12 @@ namespace Controller
             var snapshot = _acq.GetDaqFreshnessSnapshot(device, _daqFreshnessCutoffMs);
             if (snapshot.IsFresh) return true;
             reason =
-                $"DAQ样本陈旧：Device={device} Age={snapshot.AgeMs:F1}ms，要求≤100ms。";
+                $"DAQ准入拒绝：Device={device} Reason={snapshot.RejectionReason} " +
+                $"SampleAgeMs={snapshot.SampleAgeMs:F1} ProcessedAgeMs={snapshot.AgeMs:F1} " +
+                $"LimitMs={_daqFreshnessCutoffMs:F1} DriverBacklogMs={snapshot.DriverBacklogMs:F1} " +
+                $"BufferedSamples={snapshot.BufferedSamples} Reader={snapshot.ReaderLagState} " +
+                $"FreshBatches={snapshot.ConsecutiveFreshBatches} Quality={snapshot.QualityFlags} " +
+                $"Generation={snapshot.Generation} Sequence={snapshot.LastProcessedSequence}";
             return false;
         }
 

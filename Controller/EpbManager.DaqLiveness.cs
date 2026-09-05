@@ -192,26 +192,40 @@ namespace Controller
                         recoveredGap: true);
             }
 
-            if (freshness.CallbackAgeMs < suspectMs)
+            var observedAgeMs = Math.Max(
+                freshness.CallbackAgeMs,
+                Math.Max(
+                    freshness.SampleAgeMs,
+                    Math.Max(
+                        freshness.ControlEnqueueAgeMs,
+                        freshness.ControlProcessedAgeMs)));
+            var readerLagged = freshness.ReaderLagState ==
+                                    DaqReaderLagState.Backlog ||
+                               freshness.ReaderLagState ==
+                                    DaqReaderLagState.Draining ||
+                               freshness.ReaderLagState ==
+                                    DaqReaderLagState.Stale;
+
+            if (observedAgeMs < suspectMs && !readerLagged)
             {
                 _suspect = false;
                 _tripConfirmations = 0;
             }
 
-            if (freshness.CallbackAgeMs < warnMs)
+            if (observedAgeMs < warnMs && !readerLagged)
             {
                 _warned = false;
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
             }
 
-            if (freshness.CallbackAgeMs < suspectMs)
+            if (observedAgeMs < suspectMs)
             {
                 var emit = !_warned;
                 _warned = true;
                 return new DaqLivenessDecision(
                     false,
                     emit ? "DaqLivenessWarn" : string.Empty,
-                    emit ? $"DAQ回调年龄={freshness.CallbackAgeMs:F1}ms。" : string.Empty,
+                    emit ? $"DAQ数据年龄={observedAgeMs:F1}ms。" : string.Empty,
                     warn: emit);
             }
 
@@ -228,16 +242,19 @@ namespace Controller
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
             }
 
-            if (freshness.CallbackAgeMs >= tripMs)
-                _tripConfirmations++;
+            if (observedAgeMs >= tripMs)
+                _tripConfirmations = 1;
             else
                 _tripConfirmations = 0;
-            var trip = _tripConfirmations >= 3;
+            var trip = _tripConfirmations >= 1;
             return new DaqLivenessDecision(
                 trip,
                 trip ? "DaqCallbackStale" : "DaqLivenessSuspect",
-                $"CallbackAge={freshness.CallbackAgeMs:F1}ms Generation={freshness.Generation} " +
-                $"Produced={freshness.LastProducedSequence} Confirmations={_tripConfirmations}/3",
+                $"CallbackAge={freshness.CallbackAgeMs:F1}ms " +
+                $"SampleAge={freshness.SampleAgeMs:F1}ms " +
+                $"BufferedSamples={freshness.BufferedSamples} " +
+                $"ReaderLag={freshness.ReaderLagState} Generation={freshness.Generation} " +
+                $"Produced={freshness.LastProducedSequence} Confirmations={_tripConfirmations}/1",
                 warn: !_warned,
                 suspect: true,
                 tripConfirmations: _tripConfirmations);

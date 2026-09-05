@@ -74,6 +74,7 @@
   <ItemGroup>
     <Compile Include="AoController.cs" />
     <Compile Include="ControlBatchRing.cs" />
+    <Compile Include="DaqReadDispatcher.cs" />
     <Compile Include="ClrGcPauseMonitor.cs" />
     <Compile Include="FastCurrentEvidenceRing.cs" />
     <Compile Include="DaqDiagnosticRing.cs" />

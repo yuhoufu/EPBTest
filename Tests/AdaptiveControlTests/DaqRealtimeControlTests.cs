@@ -84,7 +84,9 @@ namespace AdaptiveControlTests
             Run("DAQ输入缓冲覆盖现场调度抖动且保持批周期", DaqInputBufferHasRecoveryMargin, ref passed);
             Run("NI -200279明确归类为输入缓冲溢出", DaqInputOverflowClassification, ref passed);
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
-            Run("DAQ按250/1500/5000ms分级且历史峰值不反向升级", IndependentDaqLivenessSupervisorPolicy, ref passed);
+            Run("DAQ按75/100/250ms分级且250ms立即断能", IndependentDaqLivenessSupervisorPolicy, ref passed);
+            Run("双DAQ 2.6秒积压回放禁止陈旧控制并合并基础设施事务",
+                DualDaqBacklogReplayIsFailSafeAndCorrelated, ref passed);
             Run("DAQ存活日志转换按批次关联与参与设备有界去重", DaqLivenessLogTransitionDedup, ref passed);
             Run("未带电DAQ回调空窗只记录一次且不触发恢复", UnenergizedDaqGapObservationPolicy, ref passed);
             Run("后台冻结边界结果逐项报告Published与Raw未闭合谓词", BackgroundDrainResultExplainsPendingPredicate, ref passed);
@@ -972,9 +974,9 @@ namespace AdaptiveControlTests
 
         private static void IndependentDaqLivenessSupervisorPolicy()
         {
-            Assert(EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 1500, 5000) &&
-                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 250, 5000) &&
-                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(0, 1500, 5000),
+            Assert(EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(75, 100, 250) &&
+                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(100, 100, 250) &&
+                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(0, 100, 250),
                 "DAQ阈值未按正数且严格递增校验");
             var state = new DaqLivenessDeviceState();
             var stale = new DaqFreshnessSnapshot
@@ -982,49 +984,99 @@ namespace AdaptiveControlTests
                 Device = "Dev1",
                 Generation = 7,
                 LastCallbackMonotonicTicks = Stopwatch.GetTimestamp(),
-                CallbackAgeMs = 134,
+                CallbackAgeMs = 74,
+                SampleAgeMs = 74,
+                ReaderLagState = DaqReaderLagState.Healthy,
                 LastProducedSequence = 100,
                 LastProcessedSequence = 100
             };
-            var freshGap = state.Observe(true, true, false, stale, 250, 1500, 5000);
+            var freshGap = state.Observe(true, true, false, stale, 75, 100, 250);
             Assert(!freshGap.Trip && !freshGap.Warn && !freshGap.Suspect,
-                "134ms双设备短空窗被错误放大为作废或恢复");
-            stale.CallbackAgeMs = 251;
-            var warn = state.Observe(true, true, false, stale, 250, 1500, 5000);
+                "75ms以内短空窗被错误放大为作废或恢复");
+            stale.CallbackAgeMs = 76;
+            stale.SampleAgeMs = 76;
+            var warn = state.Observe(true, true, false, stale, 75, 100, 250);
             Assert(!warn.Trip && warn.Warn && warn.Code == "DaqLivenessWarn",
-                "250ms以上空窗没有保持为带电OFF/作废级Warn策略");
+                "75ms以上空窗没有进入预警策略");
             Assert(!EpbManager.EvaluateDaqLiveness(true, false, false, stale, 0, 250).Trip,
                 "未带电设备被独立监督器错误断言为故障");
             Assert(!EpbManager.EvaluateDaqLiveness(true, true, true, stale, 0, 250).Trip,
                 "既有恢复上下文期间重复发布DAQ存活故障");
-            stale.CallbackAgeMs = 1499;
-            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Suspect,
-                "1500ms门槛以内被错误建立资格栅栏");
-            stale.CallbackAgeMs = 1501;
-            var suspect = state.Observe(true, true, false, stale, 250, 1500, 5000);
+            stale.CallbackAgeMs = 99;
+            stale.SampleAgeMs = 99;
+            Assert(!state.Observe(true, true, false, stale, 75, 100, 250).Suspect,
+                "100ms门槛以内被错误建立资格栅栏");
+            stale.CallbackAgeMs = 101;
+            stale.SampleAgeMs = 101;
+            var suspect = state.Observe(true, true, false, stale, 75, 100, 250);
             Assert(suspect.Suspect && !suspect.Trip,
-                "1500ms没有进入Suspect或被错误Trip");
-            stale.CallbackAgeMs = 4999;
-            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
-                "5000ms内恢复窗口被错误Trip");
-            stale.CallbackAgeMs = 5001;
-            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
-                "Trip首次监督确认即触发");
-            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
-                "Trip第二次监督确认即触发");
-            var trip = state.Observe(true, true, false, stale, 250, 1500, 5000);
-            Assert(trip.Trip && trip.TripConfirmations == 3,
-                "超过2000ms且连续三次确认未触发局部恢复");
+                "100ms没有进入Suspect或被错误Trip");
+            stale.CallbackAgeMs = 249;
+            stale.SampleAgeMs = 249;
+            Assert(!state.Observe(true, true, false, stale, 75, 100, 250).Trip,
+                "250ms内被错误Trip");
+            stale.CallbackAgeMs = 251;
+            stale.SampleAgeMs = 251;
+            var trip = state.Observe(true, true, false, stale, 75, 100, 250);
+            Assert(trip.Trip && trip.TripConfirmations == 1,
+                "达到250ms未立即触发断能和局部恢复");
 
             stale.CallbackAgeMs = 10;
             stale.LastProducedSequence++;
             stale.CallbackGapEventCount = 4;
             stale.LastCallbackGapIntervalMs = 5200;
             var recoveredBeforeWatchdog = state.Observe(
-                true, true, false, stale, 250, 1500, 5000);
+                true, true, false, stale, 75, 100, 250);
             Assert(!recoveredBeforeWatchdog.Trip && recoveredBeforeWatchdog.RecoveredGap &&
                    recoveredBeforeWatchdog.Code == "RecoveredGap",
                 "已恢复5200ms历史空窗被事后重建DAQ");
+        }
+
+        private static void DualDaqBacklogReplayIsFailSafeAndCorrelated()
+        {
+            var runId = Guid.NewGuid();
+            var observedUtc = DateTime.UtcNow;
+            var latch = new DaqIncidentLatch();
+            latch.BeginRun(runId, new[] { "Dev1", "Dev2" });
+            Guid correlationId = Guid.Empty;
+            foreach (var device in new[] { "Dev1", "Dev2" })
+            {
+                var freshness = new DaqFreshnessSnapshot
+                {
+                    Device = device,
+                    Generation = 9,
+                    CallbackAgeMs = 12,
+                    SampleAgeMs = 2600,
+                    BufferedSamples = 5200,
+                    ReaderLagState = DaqReaderLagState.Backlog,
+                    ConsecutiveFreshBatches = 0,
+                    LastProducedSequence = 8120,
+                    LastProcessedSequence = 2920
+                };
+                var decision = new DaqLivenessDeviceState().Observe(
+                    true, true, false, freshness, 75, 100, 250);
+                Assert(decision.Trip && decision.TripConfirmations == 1 &&
+                       decision.Reason.Contains("SampleAge=2600.0ms") &&
+                       decision.Reason.Contains("BufferedSamples=5200"),
+                    device + " 2.6秒积压未立即触发断能，或证据字段丢失。");
+
+                var incident = latch.Observe(
+                    runId,
+                    device,
+                    device == "Dev1" ? 4 : 8,
+                    "DaqSampleStale",
+                    "SampleAge=2600ms;BufferedSamples=5200",
+                    observedUtc.AddMilliseconds(device == "Dev1" ? 0 : 20),
+                    device == "Dev1" ? new[] { 4, 5 } : new[] { 8, 9 });
+                if (correlationId == Guid.Empty)
+                    correlationId = incident.Context.CorrelationId;
+                else
+                    Assert(incident.Context.CorrelationId == correlationId,
+                        "双DAQ同时间窗积压被放大为多个基础设施事务。");
+            }
+            Assert(FastPathTripClassifier.HasInvalidControlQuality(
+                       FastSignalQualityFlags.SampleStale),
+                "陈旧批次仍可能参与快速控制判定。");
         }
 
         private static void DaqLivenessLogTransitionDedup()
@@ -2047,7 +2099,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.14.2.3";
+                const string version = "V2.15.0.0";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
