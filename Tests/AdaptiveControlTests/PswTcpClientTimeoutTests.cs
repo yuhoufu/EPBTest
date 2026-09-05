@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using PowerSupply.Core;
@@ -17,7 +18,36 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("程控电源查询超时不遗留未观察NetworkStream异常", TimeoutObservesDisposedReadTask, ref passed);
             Run("电源快照时间戳取轮询完成且保护设定低频读取", SnapshotTimestampUsesPollCompletion, ref passed);
+            Run("安全OFF优先于已排队遥测且半行回读超时关闭连接", SafetyOffPrecedesQueuedTelemetry, ref passed);
             return passed;
+        }
+
+        private static void SafetyOffPrecedesQueuedTelemetry()
+        {
+            using (var server = new ScriptedScpiServer(0))
+            {
+                server.Start();
+                using (var client = new PswTcpClient(new PswEndpoint
+                { Id = 1, Host = "127.0.0.1", Port = server.Port, Terminator = "\r\n" },
+                    commandTimeoutMs: 200, connectTimeoutMs: 1000))
+                {
+                    client.ConnectAsync(CancellationToken.None).GetAwaiter().GetResult();
+                    while (server.Commands.TryDequeue(out _)) { }
+                    var gate = (SemaphoreSlim)typeof(PswTcpClient).GetField("_gate",
+                        BindingFlags.Instance | BindingFlags.NonPublic).GetValue(client);
+                    gate.Wait();
+                    var telemetry = client.ReadSnapshotAsync(CancellationToken.None);
+                    var off = client.SetOutputAndReadBackAsync(false, CancellationToken.None);
+                    gate.Release();
+                    Assert(off.GetAwaiter().GetResult().Succeeded, "OFF回读未成功");
+                    telemetry.GetAwaiter().GetResult();
+                    Assert(server.Commands.First() == "OUTP OFF", "排队遥测抢在安全OFF前执行");
+                    server.PartialOutput = true;
+                    var failed = client.SetOutputAndReadBackAsync(false, CancellationToken.None).GetAwaiter().GetResult();
+                    Assert(!failed.Succeeded && !failed.ReadBackVerified && !client.IsConnected,
+                        "OFF半行超时被误报成功或仍复用残留响应连接");
+                }
+            }
         }
 
         private static void SnapshotTimestampUsesPollCompletion()
@@ -203,6 +233,8 @@ namespace AdaptiveControlTests
 
         private sealed class ScriptedScpiServer : IDisposable
         {
+            internal readonly ConcurrentQueue<string> Commands = new ConcurrentQueue<string>();
+            internal volatile bool PartialOutput;
             private readonly TcpListener _listener = new TcpListener(IPAddress.Loopback, 0);
             private readonly int _ocpDelayMs;
             private Task _serverTask;
@@ -231,8 +263,15 @@ namespace AdaptiveControlTests
                             {
                                 var command = await reader.ReadLineAsync().ConfigureAwait(false);
                                 if (command == null) break;
+                                Commands.Enqueue(command.Trim());
                                 var response = ResponseFor(command.Trim());
                                 if (response == null) continue;
+                                if (PartialOutput && command.Trim() == "OUTP?")
+                                {
+                                    await writer.WriteAsync("0").ConfigureAwait(false);
+                                    await writer.FlushAsync().ConfigureAwait(false);
+                                    continue;
+                                }
                                 if (command.Trim().Equals("SOUR:CURR:PROT?", StringComparison.OrdinalIgnoreCase) &&
                                     Interlocked.Exchange(ref _ocpDelayApplied, 1) == 0)
                                     await Task.Delay(_ocpDelayMs).ConfigureAwait(false);
@@ -256,6 +295,7 @@ namespace AdaptiveControlTests
                     case "SOUR:CURR:PROT? MIN": return "1";
                     case "SOUR:CURR:PROT? MAX": return "79";
                     case "OUTP?": return "0";
+                    case "OUTP OFF": return null;
                     case "SOUR:VOLT?": return "24";
                     case "SOUR:CURR?": return "20";
                     case "MEAS:ALL:DC?": return "0,0,0";

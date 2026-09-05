@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -8,6 +9,7 @@ using System.Threading.Tasks;
 using Config;
 using Controller;
 using IO.NI;
+using MTTFTest.Watchdog.Protocol;
 
 namespace AdaptiveControlTests
 {
@@ -18,11 +20,50 @@ namespace AdaptiveControlTests
             StartupRetryCommitsBeforeWorkerReturns();
             StartupRetryCancellationCannotReauthorize();
             StartupRetryOldEpochCannotReauthorize();
+            StartupRetryRevocationCannotReauthorize();
             ConcurrentStartupRetriesKeepTheirOwners();
             DaqReadQueueDoesNotRunBusinessOnReader();
             DaqFreshnessUsesOneCommittedBatch();
+            DaqOldGenerationCannotPublish();
             FormalClosureLifetimeIsBounded();
-            return 7;
+            TerminalSessionsNeverRestart();
+            return 10;
+        }
+
+        private static void TerminalSessionsNeverRestart()
+        {
+            var session = Guid.NewGuid().ToString("N");
+            var manifest = new WatchdogSessionManifest
+            { SessionId = session, TerminalUtc = DateTime.UtcNow.ToString("O"), TerminalState = "TerminalSessionObservedOnStartup" };
+            Assert(SupervisorSessionRetirement.Decide(session, manifest, null, null) == "Retired", "终态会话仍重启");
+            var closing = new WatchdogClosingTombstone
+            { SessionId = session, State = WatchdogClosingTombstoneState.Closing };
+            Assert(SupervisorSessionRetirement.Decide(session, manifest, closing, null) == "Blocked", "缺少安全证据仍重复重启或伪报安全");
+            var handoff = new WatchdogSafetyHandoffReceipt
+            { SessionId = session, State = WatchdogSafetyHandoffState.Accepted, RelaunchDisposition = WatchdogRelaunchDisposition.Forbidden };
+            Assert(SupervisorSessionRetirement.Decide(session, manifest, closing, handoff) == "Recovering", "人工停止取消了独立安全接管");
+            Assert(!handoff.CanExitApplication, "未落盘的安全接管被当成退出授权");
+            for (var tick = 0; tick < 60; tick++)
+                Assert(SupervisorSessionRetirement.SuppressesRestart("Retired") &&
+                    SupervisorSessionRetirement.SuppressesRestart("Blocked"), "退休状态在监控轮询中复活");
+            Assert(SupervisorProtocol.CompatibilityFamily == "EPB-V2.16" &&
+                SupervisorProtocol.PipeName.EndsWith("V216", StringComparison.Ordinal), "协议混入旧组件");
+            var changed = new WatchdogSafetyHandoffReceipt { SessionGeneration = 19, Nonce = "must-not-log-capability" };
+            var differences = SupervisorSafetyAuthorityStore.DescribeIdentityDifferences(handoff, changed);
+            Assert(differences.Contains("SessionGeneration") && differences.Contains("Nonce") &&
+                !differences.Contains(changed.Nonce), "身份错误缺少具体字段或泄漏许可");
+            var marker = Path.Combine(Path.GetTempPath(), "V216-Maintenance-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                WatchdogMaintenancePolicy.AssertMainLaunchAllowed(marker);
+                File.WriteAllText(marker, "{\"CleanupCompleted\":false}");
+                var blocked = false;
+                try { WatchdogMaintenancePolicy.AssertMainLaunchAllowed(marker); }
+                catch (InvalidOperationException) { blocked = true; }
+                Assert(blocked, "持久维护标记未阻止主程序拉起");
+            }
+            finally { if (File.Exists(marker)) File.Delete(marker); }
+            Console.WriteLine("PASS V216 T11/T12/T14 终态退休、证据阻断与独立安全意图");
         }
 
         private static void DaqReadQueueDoesNotRunBusinessOnReader()
@@ -50,6 +91,24 @@ namespace AdaptiveControlTests
                 Assert(dispatcher.Quiesced.Wait(3000) && consumed == 3 && workerFailure == null, "读取交接丢失已接纳批次");
                 Assert(!dispatcher.TryPublish(new object()), "已关闭代际仍接纳读取");
                 Console.WriteLine("PASS V216 T04/T06 有界读取交接、队满证据与代际关闭");
+            }
+        }
+
+        private static void DaqOldGenerationCannotPublish()
+        {
+            using (var fixture = new StartupFixture())
+            {
+                var acquirer = fixture.Acquirer;
+                var generation = typeof(TwoDeviceAiAcquirer).GetField("_generationDev1", BindingFlags.NonPublic | BindingFlags.Instance);
+                generation.SetValue(acquirer, 10L);
+                var publications = 0;
+                Assert(acquirer.TryPublishCurrentGeneration("Dev1", 10, () => publications++), "当前代际无法提交");
+                generation.SetValue(acquirer, 11L);
+                Assert(!acquirer.TryPublishCurrentGeneration("Dev1", 10, () => publications++) && publications == 1,
+                    "旧代际处理返回后更新新采样状态");
+                Assert(acquirer.TryPublishCurrentGeneration("Dev1", 11, () => publications++) && publications == 2,
+                    "旧代际拒绝污染了新任务发布");
+                Console.WriteLine("PASS V216 T06 真实采集器发布门拒绝旧代际写入");
             }
         }
 
@@ -127,6 +186,21 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void StartupRetryRevocationCannotReauthorize()
+        {
+            using (var fixture = new StartupFixture())
+            {
+                var task = fixture.Retry(4, 200, CancellationToken.None);
+                fixture.WaitRecovering(4);
+                fixture.Manager.RevokeExecutionForExternalRecovery("V216InjectedRevocation");
+                try { task.GetAwaiter().GetResult(); }
+                catch (OperationCanceledException) { }
+                Assert(fixture.Manager.RequiresProcessRestart && fixture.State(4).ReasonCode != "StartupPositioningRetryReady",
+                    "撤权后重试重新授权");
+                Console.WriteLine("PASS V216 T02 真实外部撤权与启动重试竞争保持禁止上电");
+            }
+        }
+
         private static void StartupRetryOldEpochCannotReauthorize()
         {
             using (var fixture = new StartupFixture())
@@ -170,6 +244,7 @@ namespace AdaptiveControlTests
 
         private sealed class StartupFixture : IDisposable
         {
+            internal TwoDeviceAiAcquirer Acquirer => _acq;
             internal static readonly int[] Channels = { 4, 5, 7, 8, 9, 12 };
             internal readonly EpbManager Manager;
             private readonly Guid _runId = Guid.NewGuid();

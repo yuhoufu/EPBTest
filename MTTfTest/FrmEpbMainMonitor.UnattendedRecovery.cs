@@ -35,6 +35,43 @@ namespace MTEmbTest
 
     public partial class FrmEpbMainMonitor
     {
+        private async Task RequestManualStopSafetyHandoffAsync(
+            RuntimeTransportSessionContext context, StopSafetyResult safety)
+        {
+            // Independent shutdown must remain possible after cancellation of
+            // trial resume. Hardware exclusivity is proven before handoff;
+            // incomplete persistence still prevents application exit.
+            var release = Task.Run(() => ReleaseOwnedControlHardwareOnce());
+            if (await Task.WhenAny(release, Task.Delay(2000)) != release)
+            {
+                _ = release.ContinueWith(task => logger?.Warn(
+                    "安全接管硬件释放失败：" + task.Exception?.GetBaseException().Message, "Watchdog"),
+                    TaskContinuationOptions.OnlyOnFaulted);
+                LogInfo("安全接管尚未提交：正在等待硬件资源释放；自动续跑已取消。");
+                return;
+            }
+            try
+            {
+                if (!await release) { LogInfo("安全接管受阻：硬件资源释放未确认。"); return; }
+                var handoff = await Task.Run(() => WatchdogRuntime.RequestSafetyHandoff(
+                    context, safety, true, safetyOnly: true));
+                if (handoff == null) { LogInfo("安全接管提交失败，请导出故障证据；自动续跑已取消。"); return; }
+                for (var i = 0; i < 25; i++)
+                {
+                    if (WatchdogSafetyHandoffReceiptStore.TryRead(context.JournalDirectory,
+                        context.SessionId, out var receipt) && receipt.HandoffId == handoff.HandoffId &&
+                        receipt.State >= WatchdogSafetyHandoffState.Accepted)
+                    {
+                        LogInfo($"独立安全接管回执：{receipt.State}，阶段={receipt.Stage}，" +
+                            $"事务={receipt.HandoffId}；自动续跑已取消。");
+                        return;
+                    }
+                    await Task.Delay(200);
+                }
+                LogInfo("安全接管已提交，尚未收到接受回执；自动续跑已取消。");
+            }
+            catch (Exception ex) { LogInfo("安全接管失败：" + ex.GetBaseException().Message); }
+        }
         private const int UnattendedQuiesceTotalTimeoutMs = 30000;
         private int _watchdogTakeoverExit;
         private long _watchdogRecoveryBatchCommitGeneration;
@@ -257,8 +294,49 @@ namespace MTEmbTest
             var watchdogRunId = aggregate?.Infrastructure?.RunId ?? Guid.Empty;
             var watchdogRunEpoch = aggregate?.Infrastructure?.RunEpoch ?? 0;
             var logHealth = ProjectLogHub.CaptureHealth();
+            IO.NI.DaqFreshnessSnapshot daqDev1 = null;
+            IO.NI.DaqFreshnessSnapshot daqDev2 = null;
+            try
+            {
+                daqDev1 = twoDeviceAiAcquirer?.GetDaqFreshnessSnapshot("Dev1", 100);
+                daqDev2 = twoDeviceAiAcquirer?.GetDaqFreshnessSnapshot("Dev2", 100);
+            }
+            catch { }
+            ThreadPool.GetAvailableThreads(
+                out var availableWorkerThreads,
+                out var availableIoThreads);
             return new WatchdogHeartbeat
             {
+                UiLifecycle = MonitorLifecycle.ToString(),
+                ControlProgressVersion = Math.Max(
+                    logical?.SourceVersion ?? 0,
+                    stop?.ProgressVersion ?? 0),
+                TypedExitTransactionId =
+                    WatchdogRuntime.LatestTypedExitTransactionId,
+                GcTotalMemoryBytes = GC.GetTotalMemory(false),
+                GcCollectionCount0 = GC.CollectionCount(0),
+                GcCollectionCount1 = GC.CollectionCount(1),
+                GcCollectionCount2 = GC.CollectionCount(2),
+                ThreadPoolAvailableWorkerThreads = availableWorkerThreads,
+                ThreadPoolAvailableIoThreads = availableIoThreads,
+                DaqDev1SampleAgeMs = NormalizeEvidenceAge(
+                    daqDev1?.SampleAgeMs),
+                DaqDev1BufferedSamples = daqDev1?.BufferedSamples ?? 0,
+                DaqDev1ReaderLagState =
+                    daqDev1?.ReaderLagState.ToString() ?? "Unavailable",
+                DaqDev1DroppedFromSequence =
+                    daqDev1?.DroppedStaleFromSequence ?? 0,
+                DaqDev1DroppedToSequence =
+                    daqDev1?.DroppedStaleToSequence ?? 0,
+                DaqDev2SampleAgeMs = NormalizeEvidenceAge(
+                    daqDev2?.SampleAgeMs),
+                DaqDev2BufferedSamples = daqDev2?.BufferedSamples ?? 0,
+                DaqDev2ReaderLagState =
+                    daqDev2?.ReaderLagState.ToString() ?? "Unavailable",
+                DaqDev2DroppedFromSequence =
+                    daqDev2?.DroppedStaleFromSequence ?? 0,
+                DaqDev2DroppedToSequence =
+                    daqDev2?.DroppedStaleToSequence ?? 0,
                 RunId = watchdogRunId == Guid.Empty ? string.Empty : watchdogRunId.ToString("N"),
                 RunEpoch = watchdogRunEpoch,
                 Phase = phase,
@@ -451,6 +529,14 @@ namespace MTEmbTest
                 DiagnosticSinkFailure = logHealth.LastError,
                 RunActive = logical?.BatchSessionActive ?? false
             };
+        }
+
+        private static double NormalizeEvidenceAge(double? value)
+        {
+            return value.HasValue && !double.IsNaN(value.Value) &&
+                   !double.IsInfinity(value.Value)
+                ? Math.Max(0, value.Value)
+                : -1;
         }
 
         private sealed class WatchdogRecoveryEvidence

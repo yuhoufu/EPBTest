@@ -98,6 +98,7 @@ namespace MTTFTest.Watchdog
             _safetyAgents =
                 new ConcurrentDictionary<string, SupervisorOwnedSafetyAgent>(
                     StringComparer.OrdinalIgnoreCase);
+        private readonly object _mainLaunchGate = new object();
         private Task _acceptLoop;
         private SupervisorP0AlarmHardwareOwner _p0AlarmOwner;
         private int _started;
@@ -116,7 +117,10 @@ namespace MTTFTest.Watchdog
                 StateDirectory);
             RestorePersistedSessions();
             _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
-            WriteAudit("SupervisorStarted", "Schema=5;Pipe=" + SupervisorProtocol.PipeName);
+            WriteAudit(
+                "SupervisorStarted",
+                "Schema=" + SupervisorProtocol.SchemaVersion +
+                ";Pipe=" + SupervisorProtocol.PipeName);
         }
 
         private static string StateDirectory => Path.Combine(
@@ -166,7 +170,9 @@ namespace MTTFTest.Watchdog
                 {
                     var record = Json.Deserialize<SupervisorLaunchRecord>(
                         File.ReadAllText(path, Encoding.UTF8));
+                    if (SupervisorSessionRetirement.SuppressesRestart(record?.State)) continue;
                     ValidateStoredRecord(record);
+                    if (TryRetireSession(record, StateDirectory)) continue;
                     var owned = _sessions.GetOrAdd(
                         record.SessionId,
                         id => new SupervisorOwnedSession(id));
@@ -198,6 +204,9 @@ namespace MTTFTest.Watchdog
                 string.IsNullOrWhiteSpace(record.WorkingDirectory) ||
                 string.IsNullOrWhiteSpace(record.MainExecutablePath) ||
                 !IsSha256(record.MainExecutableSha256) ||
+                record.MainProcessId <= 0 ||
+                record.MainProcessStartUtcTicks <= 0 ||
+                record.MainDesktopSessionId < 0 ||
                 string.IsNullOrWhiteSpace(record.ProjectDirectory) ||
                 string.IsNullOrWhiteSpace(record.RegistrationRunId) ||
                 string.IsNullOrWhiteSpace(record.ConfigurationIdentity))
@@ -240,6 +249,15 @@ namespace MTTFTest.Watchdog
                         record.ProjectDirectory),
                     StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("PersistedSupervisorArgumentIdentityMismatch");
+            if (!int.TryParse(
+                    ReadLaunchArgument(record.Arguments, "--parent-pid"),
+                    out var parentPid) || parentPid != record.MainProcessId ||
+                !long.TryParse(
+                    ReadLaunchArgument(record.Arguments, "--parent-start-ticks"),
+                    out var parentStartTicks) ||
+                parentStartTicks != record.MainProcessStartUtcTicks)
+                throw new InvalidDataException(
+                    "PersistedSupervisorMainProcessIdentityMismatch");
             var match = SessionPattern.Match(record.Arguments ?? string.Empty);
             if (!match.Success || !string.Equals(
                     match.Groups["id"].Value,
@@ -250,6 +268,25 @@ namespace MTTFTest.Watchdog
                 throw new InvalidDataException("PersistedSupervisorWorkingDirectoryMissing");
             // 版本和安装目录内容由操作人员负责。持久会话只校验实际进程、
             // 参数和项目身份，不再依赖包槽、DPAPI 或配置文件哈希。
+        }
+
+        private static bool TryRetireSession(SupervisorLaunchRecord record, string stateDirectory)
+        {
+            if (SupervisorSessionRetirement.SuppressesRestart(record.State)) return true;
+            var manifestPath = Path.Combine(record.ProjectDirectory,
+                "session-" + WatchdogJournalPaths.SafeName(record.SessionId) + ".manifest.json");
+            if (!File.Exists(manifestPath)) return false;
+            var manifest = Json.Deserialize<WatchdogSessionManifest>(File.ReadAllText(manifestPath, Encoding.UTF8));
+            WatchdogClosingTombstoneStore.TryRead(record.ProjectDirectory, record.SessionId, out var closing);
+            WatchdogSafetyHandoffReceiptStore.TryRead(record.ProjectDirectory, record.SessionId, out var handoff);
+            var state = SupervisorSessionRetirement.Decide(record.SessionId, manifest, closing, handoff);
+            if (!SupervisorSessionRetirement.SuppressesRestart(state)) return false;
+            record.State = state;
+            record.Revision = DateTime.UtcNow.Ticks;
+            SupervisorOwnedSession.WriteRecord(stateDirectory, record);
+            WriteAudit("Session" + state, $"Session={record.SessionId};Terminal={manifest.TerminalState};" +
+                $"SafetyState={handoff?.State};Reason=TerminalHostMustNotRestart");
+            return true;
         }
 
         private async Task AcceptLoopAsync(CancellationToken cancellationToken)
@@ -325,6 +362,34 @@ namespace MTTFTest.Watchdog
                     var magic = SupervisorProtocol.ReadRequestMagic(reader);
                     if (string.Equals(
                             magic,
+                            SupervisorProtocol.MainLaunchRequestMagic,
+                            StringComparison.Ordinal))
+                    {
+                        SupervisorMainLaunchRequest request = null;
+                        SupervisorMainLaunchResponse response;
+                        try
+                        {
+                            request = SupervisorMainLaunchRequest.ReadBodyFrom(
+                                reader,
+                                magic);
+                            response = LaunchMainThroughSessionAgent(request);
+                        }
+                        catch (Exception ex)
+                        {
+                            response = new SupervisorMainLaunchResponse
+                            {
+                                RequestId = request?.RequestId ?? string.Empty,
+                                ChallengeNonce = request?.ChallengeNonce ?? string.Empty,
+                                Accepted = false,
+                                FailureCode = "SupervisorMainLaunchRejected",
+                                Detail = ex.GetBaseException().Message
+                            };
+                        }
+                        response.WriteTo(writer);
+                        return;
+                    }
+                    if (string.Equals(
+                            magic,
                             SupervisorProtocol.RequestMagic,
                             StringComparison.Ordinal))
                     {
@@ -353,6 +418,65 @@ namespace MTTFTest.Watchdog
                     }
                     if (string.Equals(
                             magic,
+                            SupervisorProtocol.SafetyHandoffBeginRequestMagic,
+                            StringComparison.Ordinal))
+                    {
+                        SupervisorSafetyHandoffBeginRequest request = null;
+                        SupervisorSafetyHandoffBeginResponse response;
+                        try
+                        {
+                            request = SupervisorSafetyHandoffBeginRequest.ReadBodyFrom(
+                                reader,
+                                magic);
+                            response = BeginSafetyHandoff(request);
+                        }
+                        catch (Exception ex)
+                        {
+                            response = new SupervisorSafetyHandoffBeginResponse
+                            {
+                                RequestId = request?.RequestId ?? string.Empty,
+                                ChallengeNonce = request?.ChallengeNonce ?? string.Empty,
+                                Accepted = false,
+                                FailureCode = SafetyFailureCode(
+                                    ex,
+                                    "SupervisorSafetyHandoffBeginRejected"),
+                                Detail = ex.GetBaseException().Message
+                            };
+                        }
+                        response.WriteTo(writer);
+                        return;
+                    }
+                    if (string.Equals(
+                            magic,
+                            SupervisorProtocol.SafetyAuthorityReadRequestMagic,
+                            StringComparison.Ordinal))
+                    {
+                        SupervisorSafetyAuthorityReadRequest request = null;
+                        SupervisorSafetyAuthorityReadResponse response;
+                        try
+                        {
+                            request = SupervisorSafetyAuthorityReadRequest
+                                .ReadBodyFrom(reader, magic);
+                            response = ReadSafetyAuthority(request);
+                        }
+                        catch (Exception ex)
+                        {
+                            response = new SupervisorSafetyAuthorityReadResponse
+                            {
+                                RequestId = request?.RequestId ?? string.Empty,
+                                ChallengeNonce = request?.ChallengeNonce ?? string.Empty,
+                                Accepted = false,
+                                FailureCode = SafetyFailureCode(
+                                    ex,
+                                    "SupervisorSafetyAuthorityReadRejected"),
+                                Detail = ex.GetBaseException().Message
+                            };
+                        }
+                        response.WriteTo(writer);
+                        return;
+                    }
+                    if (string.Equals(
+                            magic,
                             SupervisorProtocol.SafetyAgentRequestMagic,
                             StringComparison.Ordinal))
                     {
@@ -372,7 +496,9 @@ namespace MTTFTest.Watchdog
                                 RequestId = request?.RequestId ?? string.Empty,
                                 ChallengeNonce = request?.ChallengeNonce ?? string.Empty,
                                 Accepted = false,
-                                FailureCode = "SupervisorSafetyRequestRejected",
+                                FailureCode = SafetyFailureCode(
+                                    ex,
+                                    "SupervisorSafetyRequestRejected"),
                                 Detail = ex.GetBaseException().Message
                             };
                         }
@@ -414,6 +540,176 @@ namespace MTTFTest.Watchdog
                     WriteAudit(
                         "SupervisorProtocolRejected",
                         ex.GetBaseException().Message);
+                }
+            }
+        }
+
+        private SupervisorMainLaunchResponse LaunchMainThroughSessionAgent(
+            SupervisorMainLaunchRequest request)
+        {
+            WatchdogMaintenancePolicy.AssertMainLaunchAllowed();
+            if (request?.IsStructurallyValid() != true)
+                throw new InvalidDataException("SupervisorMainLaunchRequestInvalid");
+            string launcherPath;
+            int launcherSession;
+            int targetDesktopSessionId;
+            bool requesterIsInteractiveSupervisorLauncher;
+            SupervisorOwnedSession ownedRequester;
+            using (var requester = Process.GetProcessById(request.RequesterProcessId))
+            using (var current = Process.GetCurrentProcess())
+            {
+                if (requester.HasExited ||
+                    requester.StartTime.ToUniversalTime().Ticks !=
+                        request.RequesterProcessStartUtcTicks)
+                    throw new InvalidDataException(
+                        "SupervisorMainLaunchRequesterIdentityMismatch");
+                launcherPath = Path.GetFullPath(requester.MainModule.FileName);
+                launcherSession = requester.SessionId;
+                ownedRequester = _sessions.Values.FirstOrDefault(session =>
+                    session.MatchesProcess(
+                        request.RequesterProcessId,
+                        request.RequesterProcessStartUtcTicks));
+                requesterIsInteractiveSupervisorLauncher =
+                    ownedRequester == null && string.Equals(
+                        launcherPath,
+                        Path.GetFullPath(current.MainModule.FileName),
+                        StringComparison.OrdinalIgnoreCase);
+                if (!requesterIsInteractiveSupervisorLauncher &&
+                    ownedRequester == null)
+                    throw new InvalidDataException(
+                        "SupervisorMainLaunchRequesterExecutableMismatch");
+            }
+            if (ownedRequester == null)
+            {
+                if (request.IsRecoveryLaunch)
+                    throw new InvalidDataException(
+                        "SupervisorMainLaunchUnexpectedRecoveryBinding");
+                if (launcherSession != request.DesktopSessionId)
+                    throw new InvalidDataException(
+                        "SupervisorMainLaunchDesktopSessionMismatch");
+                targetDesktopSessionId = request.DesktopSessionId;
+            }
+            else
+            {
+                if (!request.IsRecoveryLaunch)
+                    throw new InvalidDataException(
+                        "SupervisorMainRecoveryBindingMissing");
+                if (request.DesktopSessionId !=
+                    SessionAgentProtocol.RegisteredDesktopSessionId)
+                    throw new InvalidDataException(
+                        "SupervisorMainRecoveryDesktopSessionMismatch");
+                if (!ownedRequester.MatchesSessionId(
+                        request.RecoverySessionId))
+                    throw new InvalidDataException(
+                        "SupervisorMainRecoverySessionMismatch");
+                targetDesktopSessionId =
+                    ownedRequester.RegisteredDesktopSessionId;
+                if (targetDesktopSessionId < 0)
+                    throw new InvalidDataException(
+                        "SupervisorMainRecoveryDesktopSessionMissing");
+            }
+
+            var mainExecutable = Path.GetFullPath(request.ExecutablePath);
+            var launcherDirectory = Path.GetDirectoryName(launcherPath);
+            if (ownedRequester != null &&
+                !ownedRequester.MatchesMainExecutable(
+                    mainExecutable,
+                    request.ExecutableSha256))
+                throw new InvalidDataException(
+                    "SupervisorMainRelaunchExecutableMismatch");
+            if (!string.Equals(
+                    Path.GetDirectoryName(mainExecutable),
+                    launcherDirectory,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    Path.GetFileName(mainExecutable),
+                    "MTTFTest.exe",
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "SupervisorMainLaunchExecutablePathMismatch");
+            if (!File.Exists(Path.Combine(
+                    launcherDirectory,
+                    "MTTFTest.UnattendedMode.required")))
+                throw new InvalidDataException(
+                    "SupervisorMainLaunchFormalModeMarkerMissing");
+            if (!string.Equals(
+                    SupervisorProtocol.ComputeSha256(mainExecutable),
+                    request.ExecutableSha256,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorMainLaunchExecutableHashMismatch");
+
+            lock (_mainLaunchGate)
+            {
+                var capabilityId = request.IsRecoveryLaunch
+                    ? request.RecoveryCapabilityId
+                    : Guid.NewGuid().ToString("N");
+                var sessionId = request.IsRecoveryLaunch
+                    ? request.RecoverySessionId
+                    : Guid.NewGuid().ToString("N");
+                var permitGeneration = request.IsRecoveryLaunch
+                    ? request.RecoveryPermitGeneration
+                    : 1;
+                var permitId = request.IsRecoveryLaunch
+                    ? request.RecoveryPermitId
+                    : Guid.NewGuid().ToString("N");
+                var launchNonce = Guid.NewGuid().ToString("N");
+                var effectiveArguments = SessionAgentLaunchClient.AppendLaunchProof(
+                    request.Arguments,
+                    capabilityId,
+                    launchNonce,
+                    sessionId);
+                SessionLaunchCapability capability;
+                using (var current = Process.GetCurrentProcess())
+                {
+                    capability = new SessionLaunchCapability
+                    {
+                        CapabilityId = capabilityId,
+                        SessionId = sessionId,
+                        PermitGeneration = permitGeneration,
+                        PermitId = permitId,
+                        DesktopSessionId = targetDesktopSessionId,
+                        ExecutablePath = mainExecutable,
+                        ExecutableSha256 = request.ExecutableSha256,
+                        Arguments = effectiveArguments,
+                        ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(
+                            effectiveArguments),
+                        WorkingDirectory = Path.GetFullPath(request.WorkingDirectory),
+                        LaunchNonce = launchNonce,
+                        IssuedUtcTicks = DateTime.UtcNow.Ticks,
+                        ExpiresUtcTicks = DateTime.UtcNow.AddSeconds(60).Ticks,
+                        IssuerProcessId = current.Id,
+                        IssuerProcessStartUtcTicks =
+                            current.StartTime.ToUniversalTime().Ticks
+                    };
+                }
+                using (var launched = SessionAgentLaunchClient.Start(capability))
+                {
+                    var startTicks = launched.StartTime.ToUniversalTime().Ticks;
+                    WriteAudit(
+                        "SupervisorMainLaunchCapabilityConsumed",
+                        $"Kind={(request.IsRecoveryLaunch ? "Recovery" : "Initial")};" +
+                        $"Capability={capabilityId};Session={sessionId};" +
+                        $"PermitGeneration={permitGeneration};Permit={permitId};" +
+                        $"DesktopSession={targetDesktopSessionId};" +
+                        (request.IsRecoveryLaunch
+                            ? $"AuthorityRevision={request.RecoveryAuthorityRevision};" +
+                              $"AuthoritySha256={request.RecoveryAuthoritySha256};"
+                            : string.Empty) +
+                        $"PID={launched.Id};StartUtcTicks={startTicks};" +
+                        $"ExecutableSha256={request.ExecutableSha256}");
+                    return new SupervisorMainLaunchResponse
+                    {
+                        RequestId = request.RequestId,
+                        ChallengeNonce = request.ChallengeNonce,
+                        Accepted = true,
+                        CapabilityId = capabilityId,
+                        ProcessId = launched.Id,
+                        ProcessStartUtcTicks = startTicks,
+                        Detail = request.IsRecoveryLaunch
+                            ? "SupervisorRecoveryCapabilitySessionAgentLaunch"
+                            : "SupervisorCapabilitySessionAgentLaunch"
+                    };
                 }
             }
         }
@@ -471,6 +767,11 @@ namespace MTTFTest.Watchdog
                 $"{request.PermitId};Handoff={request.HandoffId};" +
                 $"PID={identity.ProcessId};StartUtcTicks=" +
                 identity.ProcessStartUtcTicks);
+            WriteProjectAudit(
+                projectDirectory,
+                "SafetyAgentRegistered",
+                $"Session={request.SessionId};Authority={request.AuthorityId};" +
+                $"PID={identity.ProcessId};StartUtcTicks={identity.ProcessStartUtcTicks}");
             return new SupervisorSafetyAgentLaunchResponse
             {
                 RequestId = request.RequestId,
@@ -480,6 +781,237 @@ namespace MTTFTest.Watchdog
                 ProcessStartUtcTicks = identity.ProcessStartUtcTicks,
                 Detail = "SupervisorOwnedSafetyAgent"
             };
+        }
+
+        private SupervisorSafetyHandoffBeginResponse BeginSafetyHandoff(
+            SupervisorSafetyHandoffBeginRequest request)
+        {
+            if (request == null)
+                throw new InvalidDataException("SupervisorSafetyHandoffRequestMissing");
+            if (request.SchemaVersion != SupervisorProtocol.SchemaVersion)
+                throw new InvalidDataException("SupervisorSafetyHandoffSchemaMismatch");
+            if (request.IsStructurallyValid() != true)
+                throw new InvalidDataException("SupervisorSafetyHandoffRequestInvalid");
+            if (!_sessions.TryGetValue(request.SessionId, out var session) ||
+                !session.MatchesProcess(
+                    request.RequesterProcessId,
+                    request.RequesterProcessStartUtcTicks))
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffRequesterIdentityMismatch");
+
+            WatchdogSafetyHandoffReceipt receipt;
+            try
+            {
+                receipt = Json.Deserialize<WatchdogSafetyHandoffReceipt>(
+                    request.ReceiptJson);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffReceiptReadFailed",
+                    ex);
+            }
+            if (receipt == null)
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffReceiptReadFailed");
+            if (receipt.SchemaVersion != SupervisorProtocol.SchemaVersion)
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffReceiptSchemaMismatch");
+            if (!receipt.IsValidFor(request.SessionId))
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffReceiptInvalid");
+            if (receipt.State < WatchdogSafetyHandoffState.Accepted ||
+                receipt.IsTerminal)
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffReceiptStateMismatch");
+            if (!string.Equals(receipt.HandoffId, request.HandoffId,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffIdMismatch");
+            var projectDirectory = WatchdogJournalPaths.ValidateProjectDirectory(
+                request.ProjectDirectory);
+            if (!string.Equals(
+                    Path.GetFullPath(receipt.ProjectDirectory),
+                    Path.GetFullPath(projectDirectory),
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffPathMismatch");
+            if (!session.MatchesProjectRoot(projectDirectory))
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffRegisteredPathMismatch");
+            if (!session.MatchesMainExecutable(
+                    receipt.MainExecutablePath,
+                    receipt.MainExecutableSha256))
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffRegisteredExecutableMismatch");
+            if (!string.Equals(
+                    SupervisorSafetyAuthorityStore.ComputeReceiptSha256(receipt),
+                    request.ReceiptCanonicalSha256,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyHandoffCanonicalHashMismatch");
+            if (receipt.CrashRecovery)
+            {
+                if (!session.MatchesMainProcessIdentity(
+                        receipt.OldProcessId,
+                        receipt.OldProcessStartUtcTicks))
+                    throw new InvalidDataException(
+                        "SupervisorSafetyHandoffOldProcessIdentityMismatch");
+                if (!IsOldProcessExitIdentityProven(receipt))
+                    throw new InvalidDataException(
+                        "SupervisorSafetyHandoffOldProcessExitUnproven");
+            }
+
+            var authority = SupervisorSafetyAuthorityStore.CreateOrRead(
+                StateDirectory,
+                projectDirectory,
+                receipt);
+            WriteAudit(
+                "SafetyAuthorityCommitted",
+                $"Session={receipt.SessionId};Handoff={receipt.HandoffId};" +
+                $"Authority={authority.AuthorityId};Revision=" +
+                $"{authority.InitialReceiptRevision};CanonicalSha256=" +
+                authority.InitialReceiptCanonicalSha256);
+            WriteProjectAudit(
+                projectDirectory,
+                "SafetyAuthorityCommitted",
+                $"Session={receipt.SessionId};Handoff={receipt.HandoffId};" +
+                $"Authority={authority.AuthorityId};Revision=" +
+                $"{authority.InitialReceiptRevision};CanonicalSha256=" +
+                authority.InitialReceiptCanonicalSha256);
+            CopyAuthorityEvidence(
+                SupervisorSafetyAuthorityStore.GetPath(
+                    StateDirectory,
+                    authority.AuthorityId),
+                projectDirectory,
+                authority.AuthorityId);
+            return new SupervisorSafetyHandoffBeginResponse
+            {
+                RequestId = request.RequestId,
+                ChallengeNonce = request.ChallengeNonce,
+                Accepted = true,
+                AuthorityId = authority.AuthorityId,
+                SessionId = authority.SessionId,
+                HandoffId = authority.HandoffId,
+                PermitGeneration = authority.Receipt.RelaunchPermitGeneration,
+                PermitId = authority.Receipt.RelaunchPermitId,
+                ReceiptRevision = authority.InitialReceiptRevision,
+                ReceiptCanonicalSha256 =
+                    authority.InitialReceiptCanonicalSha256,
+                Detail = "SupervisorSafetyAuthorityCommitted"
+            };
+        }
+
+        private SupervisorSafetyAuthorityReadResponse ReadSafetyAuthority(
+            SupervisorSafetyAuthorityReadRequest request)
+        {
+            if (request?.IsStructurallyValid() != true)
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadRequestInvalid");
+            if (!_sessions.TryGetValue(request.SessionId, out var session) ||
+                !session.MatchesProcess(
+                    request.RequesterProcessId,
+                    request.RequesterProcessStartUtcTicks))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadRequesterIdentityMismatch");
+
+            SupervisorSafetyAuthorityRecord authority;
+            string failure;
+            if (!SupervisorSafetyAuthorityStore.TryRead(
+                    StateDirectory,
+                    request.AuthorityId,
+                    out authority,
+                    out failure))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadFailed:" + failure);
+            if (authority.SchemaVersion != SupervisorProtocol.SchemaVersion ||
+                authority.Receipt?.SchemaVersion != SupervisorProtocol.SchemaVersion)
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadSchemaMismatch");
+            if (!string.Equals(authority.AuthorityId, request.AuthorityId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(authority.SessionId, request.SessionId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(authority.HandoffId, request.HandoffId,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadHandoffIdMismatch");
+            if (authority.Receipt.RelaunchPermitGeneration !=
+                    request.PermitGeneration ||
+                !string.Equals(authority.Receipt.RelaunchPermitId,
+                    request.PermitId, StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadPermitMismatch");
+            if (authority.InitialReceiptRevision !=
+                    request.InitialReceiptRevision)
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadRevisionMismatch");
+            if (!string.Equals(
+                    authority.InitialReceiptCanonicalSha256,
+                    request.InitialReceiptCanonicalSha256,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadCanonicalHashMismatch");
+            if (!session.MatchesProjectRoot(authority.ProjectDirectory))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadPathMismatch");
+
+            var receiptJson =
+                SupervisorSafetyAuthorityStore.SerializeReceipt(
+                    authority.Receipt);
+            var canonical = SupervisorProtocol.ComputeTextSha256(receiptJson);
+            if (!string.Equals(
+                    authority.ReceiptCanonicalSha256,
+                    canonical,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadCurrentHashMismatch");
+            return new SupervisorSafetyAuthorityReadResponse
+            {
+                RequestId = request.RequestId,
+                ChallengeNonce = request.ChallengeNonce,
+                Accepted = true,
+                AuthorityId = authority.AuthorityId,
+                SessionId = authority.SessionId,
+                HandoffId = authority.HandoffId,
+                ReceiptRevision = authority.ReceiptRevision,
+                ReceiptCanonicalSha256 = canonical,
+                ReceiptJson = receiptJson,
+                Detail = "SupervisorSafetyAuthorityRead"
+            };
+        }
+
+        private static bool IsOldProcessExitIdentityProven(
+            WatchdogSafetyHandoffReceipt receipt)
+        {
+            if (!receipt.OldProcessExitProven || receipt.OldProcessId <= 0 ||
+                receipt.OldProcessStartUtcTicks <= 0 ||
+                receipt.OldProcessExitEvidenceOwner !=
+                    WatchdogSafetyEvidenceOwner.SupervisorService)
+                return false;
+            try
+            {
+                using (var process = Process.GetProcessById(receipt.OldProcessId))
+                    return process.HasExited ||
+                           process.StartTime.ToUniversalTime().Ticks !=
+                               receipt.OldProcessStartUtcTicks;
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+        }
+
+        private static string SafetyFailureCode(
+            Exception exception,
+            string fallback)
+        {
+            var message = exception?.GetBaseException().Message ?? string.Empty;
+            var separator = message.IndexOf(':');
+            var code = separator < 0 ? message : message.Substring(0, separator);
+            return code.StartsWith("SupervisorSafety", StringComparison.Ordinal)
+                ? code
+                : fallback;
         }
 
         private SupervisorSessionLaunchResponse RegisterOrGetSession(
@@ -505,6 +1037,13 @@ namespace MTTFTest.Watchdog
                 $"Session={sessionId};PID={identity.ProcessId};" +
                 $"StartUtcTicks={identity.ProcessStartUtcTicks};" +
                 $"RequestId={request.RequestId}");
+            WriteProjectAudit(
+                projectDirectory,
+                "SessionRegistered",
+                $"Session={sessionId};SidecarPID={identity.ProcessId};" +
+                $"StartUtcTicks={identity.ProcessStartUtcTicks};" +
+                $"MainExecutable={mainExecutablePath};" +
+                $"MainSha256={SupervisorProtocol.ComputeSha256(mainExecutablePath)}");
             return new SupervisorSessionLaunchResponse
             {
                 RequestId = request.RequestId,
@@ -652,26 +1191,73 @@ namespace MTTFTest.Watchdog
                 throw new InvalidDataException(
                     "SupervisorSafetyArgumentIdentityMismatch");
 
-            if (!WatchdogSafetyHandoffReceiptStore.TryRead(
-                    projectDirectory,
-                    request.SessionId,
-                    out receipt) ||
-                receipt.SchemaVersion != SupervisorProtocol.SchemaVersion ||
-                receipt.State < WatchdogSafetyHandoffState.Accepted ||
-                receipt.IsTerminal ||
-                !string.Equals(receipt.HandoffId, request.HandoffId,
+            SupervisorSafetyAuthorityRecord authority;
+            string authorityFailure;
+            if (!SupervisorSafetyAuthorityStore.TryRead(
+                    StateDirectory,
+                    request.AuthorityId,
+                    out authority,
+                    out authorityFailure))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityReadFailed:" + authorityFailure);
+            if (authority.SchemaVersion != SupervisorProtocol.SchemaVersion ||
+                authority.Receipt?.SchemaVersion != SupervisorProtocol.SchemaVersion)
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthoritySchemaMismatch");
+            if (authority.Receipt.State < WatchdogSafetyHandoffState.Accepted ||
+                authority.Receipt.IsTerminal)
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityStateMismatch");
+            if (!string.Equals(authority.SessionId, request.SessionId,
                     StringComparison.Ordinal) ||
-                !string.Equals(receipt.Nonce, argumentNonce,
+                !string.Equals(authority.HandoffId, request.HandoffId,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityHandoffIdMismatch");
+            if (!string.Equals(authority.Receipt.Nonce, argumentNonce,
                     StringComparison.Ordinal) ||
-                receipt.RelaunchPermitGeneration != request.PermitGeneration ||
-                !string.Equals(receipt.RelaunchPermitId, request.PermitId,
-                    StringComparison.Ordinal) ||
-                !string.Equals(receipt.SafetyAgentExecutablePath, executable,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(receipt.SafetyAgentExecutableSha256,
+                !string.Equals(
+                    SupervisorProtocol.ComputeTextSha256(argumentNonce),
+                    request.HandoffNonceSha256,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityNonceMismatch");
+            if (authority.Receipt.RelaunchPermitGeneration !=
+                    request.PermitGeneration ||
+                !string.Equals(authority.Receipt.RelaunchPermitId,
+                    request.PermitId, StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityPermitMismatch");
+            // The authority is bound to the project root, while the
+            // SafetyAgent command line intentionally receives the
+            // WatchdogSessions journal directory.  Compare their canonical
+            // project roots; an exact path comparison rejects every valid
+            // installed handoff.
+            if (!AreEquivalentProjectRoots(
+                    authority.ProjectDirectory,
+                    projectDirectory) ||
+                !AreEquivalentProjectRoots(
+                    authority.Receipt.ProjectDirectory,
+                    projectDirectory) ||
+                !session.MatchesProjectRoot(projectDirectory))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityPathMismatch");
+            if (!string.Equals(authority.Receipt.SafetyAgentExecutablePath,
+                    executable, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(authority.Receipt.SafetyAgentExecutableSha256,
                     request.ExecutableSha256, StringComparison.Ordinal))
                 throw new InvalidDataException(
-                    "SupervisorSafetyHandoffIdentityMismatch");
+                    "SupervisorSafetyAuthorityExecutableHashMismatch");
+            if (authority.InitialReceiptRevision !=
+                request.AuthorityReceiptRevision)
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityRevisionMismatch");
+            if (!string.Equals(authority.InitialReceiptCanonicalSha256,
+                    request.AuthorityReceiptCanonicalSha256,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "SupervisorSafetyAuthorityCanonicalHashMismatch");
+            receipt = authority.Receipt;
 
             // SafetyAgent 仍绑定当前 Supervisor 会话、进程和一次性交接凭证；
             // 不再额外绑定版本包槽，避免可写配置导致安全停机本身无法执行。
@@ -701,6 +1287,27 @@ namespace MTTFTest.Watchdog
                        RegexOptions.CultureInvariant);
         }
 
+        internal static bool AreEquivalentProjectRoots(
+            string firstDirectory,
+            string secondDirectory)
+        {
+            return string.Equals(
+                ResolveProjectRoot(firstDirectory),
+                ResolveProjectRoot(secondDirectory),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ResolveProjectRoot(string directory)
+        {
+            var full = WatchdogJournalPaths.ValidateProjectDirectory(directory);
+            return string.Equals(
+                    Path.GetFileName(full),
+                    "WatchdogSessions",
+                    StringComparison.OrdinalIgnoreCase)
+                ? Directory.GetParent(full)?.FullName ?? full
+                : full;
+        }
+
         private static void WriteAudit(string eventType, string detail)
         {
             try
@@ -712,6 +1319,52 @@ namespace MTTFTest.Watchdog
                     DateTime.UtcNow.ToString("O") + " " + eventType + " " +
                     (detail ?? string.Empty) + Environment.NewLine,
                     new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        private static void WriteProjectAudit(
+            string projectDirectory,
+            string eventType,
+            string detail)
+        {
+            try
+            {
+                var root = WatchdogJournalPaths.ValidateProjectDirectory(
+                    projectDirectory);
+                var directory = Path.Combine(root, "SupervisorEvidence");
+                Directory.CreateDirectory(directory);
+                File.AppendAllText(
+                    Path.Combine(directory, "supervisor-audit.jsonl"),
+                    Json.Serialize(new
+                    {
+                        SchemaVersion = SupervisorProtocol.SchemaVersion,
+                        Utc = DateTime.UtcNow.ToString("O"),
+                        EventType = eventType ?? string.Empty,
+                        Detail = detail ?? string.Empty
+                    }) + Environment.NewLine,
+                    new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        private static void CopyAuthorityEvidence(
+            string authorityPath,
+            string projectDirectory,
+            string authorityId)
+        {
+            try
+            {
+                var root = WatchdogJournalPaths.ValidateProjectDirectory(
+                    projectDirectory);
+                var directory = Path.Combine(root, "SupervisorEvidence");
+                Directory.CreateDirectory(directory);
+                File.Copy(
+                    authorityPath,
+                    Path.Combine(
+                        directory,
+                        "safety-authority-" + authorityId + ".v6.json"),
+                    true);
             }
             catch { }
         }
@@ -739,6 +1392,13 @@ namespace MTTFTest.Watchdog
                 new CancellationTokenSource();
             private Process _process;
             private long _processStartUtcTicks;
+            private int _mainProcessId;
+            private long _mainProcessStartUtcTicks;
+            private int _mainDesktopSessionId =
+                SessionAgentProtocol.RegisteredDesktopSessionId;
+            private string _mainExecutablePath;
+            private string _mainExecutableSha256;
+            private string _projectDirectory;
             private Task _monitorTask;
             private string _stateDirectory;
 
@@ -756,8 +1416,19 @@ namespace MTTFTest.Watchdog
             {
                 lock (_gate)
                 {
+                    var mainDesktopSessionId = GetExactProcessSessionId(
+                        request.RequesterProcessId,
+                        request.RequesterProcessStartUtcTicks);
                     if (IsCurrentProcessAlive())
                     {
+                        if (!MatchesMainProcessIdentityUnsafe(
+                                request.RequesterProcessId,
+                                request.RequesterProcessStartUtcTicks))
+                            throw new InvalidDataException(
+                                "SupervisorOwnedSessionMainProcessIdentityMismatch");
+                        if (_mainDesktopSessionId != mainDesktopSessionId)
+                            throw new InvalidDataException(
+                                "SupervisorOwnedSessionMainDesktopSessionMismatch");
                         EnsureMonitor(stateDirectory);
                         return CurrentIdentity();
                     }
@@ -770,7 +1441,7 @@ namespace MTTFTest.Watchdog
 
                     var record = new SupervisorLaunchRecord
                     {
-                        SchemaVersion = 5,
+                        SchemaVersion = SupervisorProtocol.SchemaVersion,
                         SessionId = _sessionId,
                         RequestId = request.RequestId,
                         ChallengeNonceSha256 =
@@ -781,6 +1452,10 @@ namespace MTTFTest.Watchdog
                         MainExecutablePath = mainExecutablePath,
                         MainExecutableSha256 =
                             SupervisorProtocol.ComputeSha256(mainExecutablePath),
+                        MainProcessId = request.RequesterProcessId,
+                        MainProcessStartUtcTicks =
+                            request.RequesterProcessStartUtcTicks,
+                        MainDesktopSessionId = mainDesktopSessionId,
                         ProjectDirectory = projectDirectory,
                         RegistrationRunId = "PENDING_FIRST_HEARTBEAT",
                         ConfigurationIdentity = configurationIdentity,
@@ -809,6 +1484,8 @@ namespace MTTFTest.Watchdog
                             StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException(
                             "PersistedSupervisorOwnedSessionMismatch");
+                    if (TryRetireSession(record, stateDirectory))
+                        throw new InvalidOperationException("SupervisorSessionRetired:" + record.SessionId);
                     TryAttachRecordProcess(record);
                     if (!IsCurrentProcessAlive())
                         StartFromRecord(record, stateDirectory);
@@ -854,6 +1531,7 @@ namespace MTTFTest.Watchdog
                             var record = Json.Deserialize<SupervisorLaunchRecord>(
                                 File.ReadAllText(path, Encoding.UTF8));
                             ValidateStoredRecord(record);
+                            if (TryRetireSession(record, _stateDirectory)) return;
                             StartFromRecord(record, _stateDirectory);
                             WriteAudit(
                                 "SessionHostRestarted",
@@ -890,13 +1568,14 @@ namespace MTTFTest.Watchdog
                     if (!File.Exists(path)) return;
                     var record = Json.Deserialize<SupervisorLaunchRecord>(
                         File.ReadAllText(path, Encoding.UTF8));
-                    if (record?.SchemaVersion != 5 ||
+                    if (record?.SchemaVersion != SupervisorProtocol.SchemaVersion ||
                         !string.Equals(record.SessionId, _sessionId,
                             StringComparison.OrdinalIgnoreCase) ||
                         !string.Equals(record.ExecutableSha256,
                             request.ExecutableSha256, StringComparison.Ordinal) ||
                         !string.Equals(record.ArgumentsSha256,
                             request.ArgumentsSha256, StringComparison.Ordinal) ||
+                        record.MainDesktopSessionId < 0 ||
                         record.ProcessId <= 0 || record.ProcessStartUtcTicks <= 0)
                         return;
                     TryAttachRecordProcess(record);
@@ -907,7 +1586,8 @@ namespace MTTFTest.Watchdog
             private void TryAttachRecordProcess(SupervisorLaunchRecord record)
             {
                 if (record == null || record.ProcessId <= 0 ||
-                    record.ProcessStartUtcTicks <= 0)
+                    record.ProcessStartUtcTicks <= 0 ||
+                    record.MainDesktopSessionId < 0)
                     return;
                 var process = Process.GetProcessById(record.ProcessId);
                 if (process.HasExited || process.StartTime.ToUniversalTime().Ticks !=
@@ -918,6 +1598,12 @@ namespace MTTFTest.Watchdog
                 }
                 _process = process;
                 _processStartUtcTicks = record.ProcessStartUtcTicks;
+                _mainProcessId = record.MainProcessId;
+                _mainProcessStartUtcTicks = record.MainProcessStartUtcTicks;
+                _mainDesktopSessionId = record.MainDesktopSessionId;
+                _mainExecutablePath = record.MainExecutablePath;
+                _mainExecutableSha256 = record.MainExecutableSha256;
+                _projectDirectory = record.ProjectDirectory;
             }
 
             private void StartFromRecord(
@@ -938,6 +1624,12 @@ namespace MTTFTest.Watchdog
                         "SupervisorSessionHostStartReturnedNull");
                 _process = process;
                 _processStartUtcTicks = process.StartTime.ToUniversalTime().Ticks;
+                _mainProcessId = record.MainProcessId;
+                _mainProcessStartUtcTicks = record.MainProcessStartUtcTicks;
+                _mainDesktopSessionId = record.MainDesktopSessionId;
+                _mainExecutablePath = record.MainExecutablePath;
+                _mainExecutableSha256 = record.MainExecutableSha256;
+                _projectDirectory = record.ProjectDirectory;
                 record.State = "Started";
                 record.ProcessId = process.Id;
                 record.ProcessStartUtcTicks = _processStartUtcTicks;
@@ -969,6 +1661,103 @@ namespace MTTFTest.Watchdog
                 }
             }
 
+            internal bool MatchesSessionId(string sessionId)
+            {
+                return string.Equals(
+                    _sessionId,
+                    sessionId,
+                    StringComparison.OrdinalIgnoreCase);
+            }
+
+            internal int RegisteredDesktopSessionId
+            {
+                get
+                {
+                    lock (_gate)
+                        return _mainDesktopSessionId;
+                }
+            }
+
+            internal bool MatchesMainProcessIdentity(
+                int processId,
+                long startUtcTicks)
+            {
+                lock (_gate)
+                    return MatchesMainProcessIdentityUnsafe(
+                        processId,
+                        startUtcTicks);
+            }
+
+            private bool MatchesMainProcessIdentityUnsafe(
+                int processId,
+                long startUtcTicks)
+            {
+                return SupervisorOriginalProcessIdentityPolicy.Matches(
+                    _mainProcessId,
+                    _mainProcessStartUtcTicks,
+                    processId,
+                    startUtcTicks);
+            }
+
+            private static int GetExactProcessSessionId(
+                int processId,
+                long processStartUtcTicks)
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    if (process.HasExited ||
+                        process.StartTime.ToUniversalTime().Ticks !=
+                            processStartUtcTicks)
+                        throw new InvalidDataException(
+                            "SupervisorMainDesktopSessionIdentityMismatch");
+                    return process.SessionId;
+                }
+            }
+
+            internal bool MatchesProjectRoot(string projectDirectory)
+            {
+                lock (_gate)
+                {
+                    if (string.IsNullOrWhiteSpace(_projectDirectory) ||
+                        string.IsNullOrWhiteSpace(projectDirectory))
+                        return false;
+                    return string.Equals(
+                        ResolveProjectRoot(_projectDirectory),
+                        ResolveProjectRoot(projectDirectory),
+                        StringComparison.OrdinalIgnoreCase);
+                }
+            }
+
+            internal bool MatchesMainExecutable(
+                string executablePath,
+                string executableSha256)
+            {
+                lock (_gate)
+                {
+                    return !string.IsNullOrWhiteSpace(_mainExecutablePath) &&
+                           !string.IsNullOrWhiteSpace(_mainExecutableSha256) &&
+                           string.Equals(
+                               Path.GetFullPath(_mainExecutablePath),
+                               Path.GetFullPath(executablePath ?? string.Empty),
+                               StringComparison.OrdinalIgnoreCase) &&
+                           string.Equals(
+                               _mainExecutableSha256,
+                               executableSha256,
+                               StringComparison.Ordinal);
+                }
+            }
+
+            private static string ResolveProjectRoot(string directory)
+            {
+                var full = WatchdogJournalPaths.ValidateProjectDirectory(directory);
+                return string.Equals(
+                        Path.GetFileName(full),
+                        "WatchdogSessions",
+                        StringComparison.OrdinalIgnoreCase)
+                    ? Directory.GetParent(full)?.FullName ?? full
+                    : full;
+            }
+
             private SupervisorProcessIdentity CurrentIdentity()
             {
                 return new SupervisorProcessIdentity
@@ -978,7 +1767,7 @@ namespace MTTFTest.Watchdog
                 };
             }
 
-            private static void WriteRecord(
+            internal static void WriteRecord(
                 string stateDirectory,
                 SupervisorLaunchRecord record)
             {
@@ -1461,6 +2250,18 @@ namespace MTTFTest.Watchdog
                     TryAttachPersisted(request, stateDirectory);
                     if (IsAlive()) return CurrentIdentity();
 
+                    var authorityPath = SupervisorSafetyAuthorityStore.GetPath(
+                        stateDirectory,
+                        request.AuthorityId);
+                    var authoritativeArguments =
+                        (request.Arguments ?? string.Empty) +
+                        " --authority-id " + QuoteArgument(request.AuthorityId) +
+                        " --authority-receipt " + QuoteArgument(authorityPath) +
+                        " --authority-revision " +
+                        request.AuthorityReceiptRevision.ToString(
+                            CultureInfo.InvariantCulture) +
+                        " --authority-sha256 " +
+                        QuoteArgument(request.AuthorityReceiptCanonicalSha256);
                     var record = new SupervisorSafetyAgentRecord
                     {
                         SchemaVersion = SupervisorProtocol.SchemaVersion,
@@ -1472,8 +2273,15 @@ namespace MTTFTest.Watchdog
                         HandoffNonceSha256 = request.HandoffNonceSha256,
                         ExecutablePath = request.ExecutablePath,
                         ExecutableSha256 = request.ExecutableSha256,
-                        Arguments = request.Arguments,
-                        ArgumentsSha256 = request.ArgumentsSha256,
+                        AuthorityId = request.AuthorityId,
+                        AuthorityReceiptRevision =
+                            request.AuthorityReceiptRevision,
+                        AuthorityReceiptCanonicalSha256 =
+                            request.AuthorityReceiptCanonicalSha256,
+                        BaseArgumentsSha256 = request.ArgumentsSha256,
+                        Arguments = authoritativeArguments,
+                        ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(
+                            authoritativeArguments),
                         WorkingDirectory = request.WorkingDirectory,
                         ProjectDirectory = projectDirectory,
                         ReceiptRevisionAtLaunch = receipt.Revision,
@@ -1530,7 +2338,14 @@ namespace MTTFTest.Watchdog
                             request.HandoffNonceSha256, StringComparison.Ordinal) ||
                         !string.Equals(record.ExecutableSha256,
                             request.ExecutableSha256, StringComparison.Ordinal) ||
-                        !string.Equals(record.ArgumentsSha256,
+                        !string.Equals(record.AuthorityId,
+                            request.AuthorityId, StringComparison.Ordinal) ||
+                        record.AuthorityReceiptRevision !=
+                            request.AuthorityReceiptRevision ||
+                        !string.Equals(record.AuthorityReceiptCanonicalSha256,
+                            request.AuthorityReceiptCanonicalSha256,
+                            StringComparison.Ordinal) ||
+                        !string.Equals(record.BaseArgumentsSha256,
                             request.ArgumentsSha256, StringComparison.Ordinal) ||
                         record.ProcessId <= 0 || record.ProcessStartUtcTicks <= 0)
                         return;
@@ -1607,6 +2422,12 @@ namespace MTTFTest.Watchdog
                     "safety-" + safe + ".launch.json");
             }
 
+            private static string QuoteArgument(string value)
+            {
+                return "\"" + (value ?? string.Empty)
+                    .Replace("\"", "\\\"") + "\"";
+            }
+
             public void Dispose()
             {
                 lock (_gate)
@@ -1627,6 +2448,10 @@ namespace MTTFTest.Watchdog
             public string ExecutableSha256 { get; set; }
             public string MainExecutablePath { get; set; }
             public string MainExecutableSha256 { get; set; }
+            public int MainProcessId { get; set; }
+            public long MainProcessStartUtcTicks { get; set; }
+            public int MainDesktopSessionId { get; set; } =
+                SessionAgentProtocol.RegisteredDesktopSessionId;
             public string ProjectDirectory { get; set; }
             public string RegistrationRunId { get; set; }
             public string ConfigurationIdentity { get; set; }
@@ -1648,8 +2473,12 @@ namespace MTTFTest.Watchdog
             public string PermitId { get; set; }
             public string HandoffId { get; set; }
             public string HandoffNonceSha256 { get; set; }
+            public string AuthorityId { get; set; }
+            public long AuthorityReceiptRevision { get; set; }
+            public string AuthorityReceiptCanonicalSha256 { get; set; }
             public string ExecutablePath { get; set; }
             public string ExecutableSha256 { get; set; }
+            public string BaseArgumentsSha256 { get; set; }
             public string Arguments { get; set; }
             public string ArgumentsSha256 { get; set; }
             public string WorkingDirectory { get; set; }

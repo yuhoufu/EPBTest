@@ -1385,9 +1385,9 @@ namespace MTEmbTest
                 "DaqWarnMs={0:F0};DaqSuspectMs={1:F0};DaqTripMs={2:F0};" +
                 "FormalAdmissionMs={3};OrphanGraceMs={4};NoProgressMs={5};MaxTotalMs={6};" +
                 "PowerOffProofA={7:F3};PowerOffProofMaxAgeMs={8}",
-                ReadDouble("DaqLivenessWarnThresholdMs", 250, 100, 5000),
-                ReadDouble("DaqLivenessSuspectThresholdMs", 1500, 200, 30000),
-                ReadDouble("DaqLivenessTripThresholdMs", 5000, 300, 300000),
+                ReadDouble("DaqLivenessWarnThresholdMs", 75, 20, 200),
+                ReadDouble("DaqLivenessSuspectThresholdMs", 100, 50, 249),
+                ReadDouble("DaqLivenessTripThresholdMs", 250, 100, 5000),
                 ReadInt("GlobalFormalSlotAdmissionWindowMs", 300, 200, 500),
                 ReadInt("RecoveryOrphanGraceMs", 10000, 10000, 60000),
                 ReadInt("InProcessRecoveryNoProgressMs", 60000, 10000, 300000),
@@ -1479,7 +1479,6 @@ namespace MTEmbTest
         private static GlobalConfig _config;
         private static Func<Task> _quiesceAndFlush;
         private static CancellationTokenSource _restartSequenceCancellation;
-        private static EventWaitHandle _activeHandoffRevocation;
         private static int _restartStarted;
         private static int _inProcessRecoveryStarted;
         private static int _recoveryProcessMode;
@@ -1613,14 +1612,11 @@ namespace MTEmbTest
         private static void CancelRestartRetrySequence()
         {
             CancellationTokenSource cancellation;
-            EventWaitHandle handoffRevocation;
             lock (Sync)
             {
                 cancellation = _restartSequenceCancellation;
-                handoffRevocation = _activeHandoffRevocation;
             }
             try { cancellation?.Cancel(); } catch (ObjectDisposedException) { }
-            try { handoffRevocation?.Set(); } catch (ObjectDisposedException) { }
         }
 
         internal static void RequestFatalRestart(string source, Exception exception)
@@ -2567,73 +2563,16 @@ namespace MTEmbTest
 
         private static void StartRecoveryProcess(RecoveryStartupIntent intent)
         {
-            var executable = Process.GetCurrentProcess().MainModule?.FileName ??
-                             Assembly.GetEntryAssembly()?.Location;
-            var arguments = string.Format(
-                CultureInfo.InvariantCulture,
-                "--epb-recover {0} --wait-parent {1} --parent-start-ticks {2}",
-                intent.Nonce,
-                intent.ParentPid,
-                intent.ParentStartUtcTicks);
-            var revocation = new EventWaitHandle(
-                false,
-                EventResetMode.ManualReset,
-                RecoveryProcessBootstrap.GetRevocationEventName(intent.Nonce));
-            using (var attached = new EventWaitHandle(
-                       false,
-                       EventResetMode.ManualReset,
-                       RecoveryProcessBootstrap.GetAttachedEventName(intent.Nonce)))
-            {
-                EventWaitHandle previous;
-                lock (Sync)
-                {
-                    previous = _activeHandoffRevocation;
-                    _activeHandoffRevocation = revocation;
-                }
-                try { previous?.Dispose(); } catch { }
-
-                Process child = null;
-                var attachedToRevocationGate = false;
-                try
-                {
-                    child = Process.Start(new ProcessStartInfo
-                    {
-                        FileName = executable,
-                        Arguments = arguments,
-                        WorkingDirectory = Environment.CurrentDirectory,
-                        UseShellExecute = false,
-                        CreateNoWindow = false
-                    });
-                    if (child == null)
-                        throw new InvalidOperationException("恢复子进程创建未返回进程句柄。");
-                    if (!attached.WaitOne(5000))
-                        throw new TimeoutException("恢复子进程未在5秒内接管跨进程撤权门。");
-                    if (revocation.WaitOne(0))
-                        throw new OperationCanceledException("恢复子进程交接期间运行授权已撤销。");
-                    attachedToRevocationGate = true;
-                }
-                finally
-                {
-                    if (!attachedToRevocationGate)
-                    {
-                        lock (Sync)
-                        {
-                            if (ReferenceEquals(_activeHandoffRevocation, revocation))
-                                _activeHandoffRevocation = null;
-                        }
-                        try { revocation.Dispose(); } catch { }
-                        try
-                        {
-                            if (child != null && !child.HasExited) child.Kill();
-                        }
-                        catch { }
-                    }
-                    try { child?.Dispose(); } catch { }
-                }
-            }
-            // 成功时父进程必须继续持有 revocation，直到 Environment.Exit。人工停止即使
-            // 恰好发生在 Process.Start 与父进程退出之间，也会同步置位；子进程已持有
-            // 同一个内核事件，并会在等待父进程退出后、读取检查点和初始化硬件前拒绝续测。
+            if (intent == null)
+                throw new ArgumentNullException(nameof(intent));
+            // V2.15 禁止主程序自行 Process.Start 另一个主程序。安全检查点已提交后
+            // 这里只提交“退出并由 Supervisor 接管”的意图；外部 Watchdog 在精确观察
+            // PID/StartTicks 终结、执行 schema 6 断能事务后签发唯一的新 capability。
+            ProjectLogHub.Write(
+                ProjectLogLevel.Warning,
+                $"SupervisorOwnedRelaunchRequested Nonce={intent.Nonce} " +
+                $"Parent={intent.ParentPid}/{intent.ParentStartUtcTicks}",
+                "无人值守恢复");
         }
     }
 

@@ -210,8 +210,8 @@ namespace Controller
         public static string GetOperatorMessage(bool stopTimedOut)
         {
             return stopTimedOut
-                ? "停止试验超过安全截止：本进程已永久禁止再次开始，正在等待 Watchdog 完成安全接管。"
-                : "停止试验已安全收口，但诊断状态要求重启：本进程已永久禁止再次开始；请等待 Watchdog 重启，或关闭软件后重新启动。";
+                ? "停止试验超过安全截止：本进程已永久禁止再次开始。Watchdog 安全接管状态以回执为准，人工停止后不会自动续跑。"
+                : "停止试验已安全收口：本进程已永久禁止再次开始，请关闭软件后重新启动，软件将保持待机。";
         }
     }
 

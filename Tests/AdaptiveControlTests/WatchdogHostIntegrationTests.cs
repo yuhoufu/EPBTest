@@ -47,6 +47,12 @@ namespace AdaptiveControlTests
             Run("强杀恢复只在旧进程退出、种子和许可精确绑定后放行",
                 CrashRecoveryRequiresExactSeedExitAndPermit,
                 ref passed);
+            Run("可执行文件SHA256比较跨大小写保持精确且拒绝内容变化",
+                ExecutableSha256ComparisonIsCanonical,
+                ref passed);
+            Run("Supervisor权威项目根与WatchdogSessions目录规范化匹配",
+                SupervisorAuthorityPathMatchesJournalProjectRoot,
+                ref passed);
             Run("初次安全替换无预退避且使用5秒拉起15秒附着契约",
                 RecoverySlaAndBackoffPolicyAreExact,
                 ref passed);
@@ -161,6 +167,57 @@ namespace AdaptiveControlTests
             handoff.OldProcessExitProven = false;
             Assert(!WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
                 "缺少旧进程退出证明仍绕过了PersistenceDrained要求");
+        }
+
+        private static void ExecutableSha256ComparisonIsCanonical()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "mttftest-watchdog-hash-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "agent.exe");
+            try
+            {
+                File.WriteAllBytes(path, new byte[] { 1, 2, 3, 4, 5 });
+                var sha256 = SupervisorProtocol.ComputeSha256(path);
+                Assert(WatchdogHost.ExecutableSha256Matches(path, sha256),
+                    "大写SHA256未匹配原文件");
+                Assert(WatchdogHost.ExecutableSha256Matches(
+                        path,
+                        sha256.ToLowerInvariant()),
+                    "相同SHA256因十六进制大小写被误判为文件变化");
+                File.AppendAllText(path, "changed");
+                Assert(!WatchdogHost.ExecutableSha256Matches(path, sha256),
+                    "内容变化仍通过SHA256校验");
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        }
+
+        private static void SupervisorAuthorityPathMatchesJournalProjectRoot()
+        {
+            var root = Path.Combine(
+                Path.GetTempPath(),
+                "mttftest-supervisor-root-" + Guid.NewGuid().ToString("N"));
+            var journal = Path.Combine(root, "WatchdogSessions");
+            var sibling = Path.Combine(
+                Path.GetDirectoryName(root) ?? Path.GetTempPath(),
+                "mttftest-supervisor-other-" + Guid.NewGuid().ToString("N"),
+                "WatchdogSessions");
+            Assert(
+                SupervisorServiceRuntime.AreEquivalentProjectRoots(root, journal),
+                "项目根与其WatchdogSessions目录被误判为不同授权路径");
+            Assert(
+                SupervisorServiceRuntime.AreEquivalentProjectRoots(
+                    root.ToUpperInvariant(),
+                    journal.ToLowerInvariant()),
+                "同一项目根因路径大小写差异被误拒绝");
+            Assert(
+                !SupervisorServiceRuntime.AreEquivalentProjectRoots(root, sibling),
+                "不同项目的WatchdogSessions目录错误通过授权路径校验");
         }
 
         private static void RecoverySafetyProofRequiresCompleteEvidence()

@@ -14,6 +14,7 @@ namespace MTTFTest.Watchdog
         {
             Normal = 0x00000000,
             WithDataSegs = 0x00000001,
+            WithFullMemory = 0x00000002,
             WithHandleData = 0x00000004,
             WithThreadInfo = 0x00001000
         }
@@ -33,7 +34,8 @@ namespace MTTFTest.Watchdog
             string journalDirectory,
             string sessionId,
             TimeSpan timeout,
-            Action<string> report)
+            Action<string> report,
+            bool fullMemory = false)
         {
             if (process == null) return;
             var directory = Path.Combine(
@@ -53,12 +55,15 @@ namespace MTTFTest.Watchdog
                            FileAccess.ReadWrite,
                            FileShare.Read))
                 {
+                    var dumpType = MiniDumpType.WithDataSegs |
+                                   MiniDumpType.WithHandleData |
+                                   MiniDumpType.WithThreadInfo;
+                    if (fullMemory) dumpType |= MiniDumpType.WithFullMemory;
                     var ok = MiniDumpWriteDump(
                         process.Handle,
                         process.Id,
                         stream.SafeFileHandle.DangerousGetHandle(),
-                        MiniDumpType.WithDataSegs | MiniDumpType.WithHandleData |
-                        MiniDumpType.WithThreadInfo,
+                        dumpType,
                         IntPtr.Zero,
                         IntPtr.Zero,
                         IntPtr.Zero);

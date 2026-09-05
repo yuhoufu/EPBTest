@@ -990,6 +990,7 @@ namespace IO.NI
             public Thread ReadThread { get; set; }
             public int ReadFaulted;
             public DaqReadDispatcher<SynchronousReadResult> Dispatcher;
+            public Task StopTask;
         }
 
         private sealed class SynchronousReadResult : IAsyncResult
@@ -3984,26 +3985,22 @@ namespace IO.NI
                             }
                             if (double.IsNaN(filtered) || double.IsInfinity(filtered))
                                 sampleQuality |= FastSignalQualityFlags.NonFinite;
-                            _lastFastValue[parameterName] = filtered;
-
-                            if (samples[i].PressureId > 0)
-                                _lastPressureSample[parameterName] = new PressureSample(
-                                    samples[i].PressureId,
-                                    filtered,
-                                    metadata.SampleUtc,
-                                    metadata.CaptureMonotonicTicks);
-
-                            if (samples[i].Channel < 1 || samples[i].Channel > 12) continue;
+                            var hasEpbChannel = samples[i].Channel >= 1 && samples[i].Channel <= 12;
                             var fastSample = new FastEpbCurrentSample(
-                                samples[i].Channel,
-                                filtered,
-                                samples[i].RepresentativeA,
-                                metadata.SampleUtc,
-                                metadata.CaptureMonotonicTicks,
-                                metadata.Generation,
-                                metadata.SourceSequence,
-                                sampleQuality);
-                            _lastFastEpbSample[samples[i].Channel] = fastSample;
+                                samples[i].Channel, filtered, samples[i].RepresentativeA,
+                                metadata.SampleUtc, metadata.CaptureMonotonicTicks,
+                                metadata.Generation, metadata.SourceSequence, sampleQuality);
+                            var sampleIndex = i;
+                            if (!TryPublishCurrentGeneration(workerDevice, metadata.Generation, () =>
+                            {
+                                _lastFastValue[parameterName] = filtered;
+                                if (samples[sampleIndex].PressureId > 0)
+                                    _lastPressureSample[parameterName] = new PressureSample(
+                                        samples[sampleIndex].PressureId, filtered,
+                                        metadata.SampleUtc, metadata.CaptureMonotonicTicks);
+                                if (hasEpbChannel) _lastFastEpbSample[samples[sampleIndex].Channel] = fastSample;
+                            })) break;
+                            if (!hasEpbChannel) continue;
                             _fastEvidence.Append(
                                 workerDevice,
                                 new FastControlBatchMetadata(
@@ -4041,17 +4038,15 @@ namespace IO.NI
                         }
 
                         var processedTicks = Stopwatch.GetTimestamp();
-                        MarkControlProcessed(
-                            workerDevice,
-                            processedTicks,
-                            metadata.CaptureMonotonicTicks,
-                            metadata.SampleUtc,
-                            metadata.Generation,
-                            metadata.SourceSequence);
-                        if (IsCurrentGeneration(workerDevice, metadata.Generation) &&
-                            _callbackTimingDiag.TryGetValue(workerDevice, out var committedDiag))
-                            Volatile.Write(ref committedDiag.CommittedPublication,
-                                new DaqControlPublication(metadata, processedTicks));
+                        TryPublishCurrentGeneration(workerDevice, metadata.Generation, () =>
+                        {
+                            MarkControlProcessed(workerDevice, processedTicks,
+                                metadata.CaptureMonotonicTicks, metadata.SampleUtc,
+                                metadata.Generation, metadata.SourceSequence);
+                            if (_callbackTimingDiag.TryGetValue(workerDevice, out var committedDiag))
+                                Volatile.Write(ref committedDiag.CommittedPublication,
+                                    new DaqControlPublication(metadata, processedTicks));
+                        });
                         var processMs = AgeMs(batchStarted, processedTicks);
                         Interlocked.Exchange(
                             ref isDev1Worker ? ref _lastControlBatchProcessMsBitsDev1 : ref _lastControlBatchProcessMsBitsDev2,
@@ -4077,6 +4072,18 @@ namespace IO.NI
             {
                 _backgroundTasks.TryRun("ControlWorkerFault:" + workerDevice, () =>
                     _log.Error($"{workerDevice} DAQ控制工作线程异常：{ex}", "AI", ex));
+            }
+        }
+
+        internal bool TryPublishCurrentGeneration(string device, long generation, Action publish)
+        {
+            // Share the task generation transition lock, but never invoke subscribers under it.
+            // This closes the check-then-write race with StopDevice/StartDevice.
+            lock (string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase) ? _taskGateDev1 : _taskGateDev2)
+            {
+                if (!IsCurrentGeneration(device, generation)) return false;
+                publish();
+                return true;
             }
         }
 
@@ -5652,7 +5659,9 @@ namespace IO.NI
         {
             if (_quiescingReads.TryGetValue(device, out var previousRead))
             {
-                if (!previousRead.Quiesced.IsSet || previousRead.Dispatcher?.Quiesced.IsSet == false)
+                if (!previousRead.Quiesced.IsSet || previousRead.Dispatcher?.Quiesced.IsSet == false ||
+                    previousRead.ReadThread?.IsAlive == true ||
+                    previousRead.StopTask == null || previousRead.StopTask.Status != TaskStatus.RanToCompletion)
                     throw new InvalidOperationException("PreviousDaqGenerationNotQuiesced:" + device);
                 _quiescingReads.TryRemove(device, out _);
             }
@@ -5795,8 +5804,12 @@ namespace IO.NI
                 catch (Exception ex) { _log.Warn($"停止 {device} DAQ任务异常：{ex.Message}", "AI"); }
                 finally { task.Dispose(); }
             });
+            if (state != null) state.StopTask = stop;
+            _ = stop.ContinueWith(failed => { var observed = failed.Exception; },
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
             if (!stop.Wait(1000) || (state != null &&
-                (!state.Quiesced.Wait(500) || state.Dispatcher?.Quiesced.Wait(500) == false)))
+                (!state.Quiesced.Wait(500) || state.ReadThread?.Join(500) == false ||
+                    state.Dispatcher?.Quiesced.Wait(500) == false)))
                 throw new TimeoutException("PreviousDaqGenerationNotQuiesced:" + device);
             _quiescingReads.TryRemove(device, out _);
         }

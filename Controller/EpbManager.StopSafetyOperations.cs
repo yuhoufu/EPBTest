@@ -233,7 +233,7 @@ namespace Controller
                 case StopSafetyStage.ClearRecoveryOwners:
                     return await ExecuteStopRecoveryOwnerStageAsync(state, safetyToken).ConfigureAwait(false);
                 case StopSafetyStage.ReleaseHydraulics:
-                    return await ExecuteStopHydraulicReleaseStageAsync(state).ConfigureAwait(false);
+                    return await ExecuteStopHydraulicReleaseStageAsync(state, safetyToken).ConfigureAwait(false);
                 case StopSafetyStage.StopAcquisition:
                     return ExecuteStopAcquisitionStage(state);
                 case StopSafetyStage.ClosePersistenceBoundary:
@@ -764,16 +764,22 @@ namespace Controller
         }
 
         private async Task<StopSafetyPortResult> ExecuteStopHydraulicReleaseStageAsync(
-            StopSafetyProductionState state)
+            StopSafetyProductionState state, CancellationToken safetyToken)
         {
             try
             {
-                await AwaitStopOffEvidenceAsync(state).ConfigureAwait(false);
+                await AwaitStopEvidenceWithProgressAsync(AwaitStopOffEvidenceAsync(state), state,
+                    "DoOffReceipt", safetyToken).ConfigureAwait(false);
                 state.PressureTask ??= ConfirmPressureSafeForStopAsync(
                     state.Context,
                     state.PowerTask,
                     state.Generation);
+                await AwaitStopEvidenceWithProgressAsync(state.PressureTask, state,
+                    "PressureFreshAndReleased", safetyToken).ConfigureAwait(false);
                 var pressure = await state.PressureTask.ConfigureAwait(false);
+                if (state.PowerTask != null)
+                    await AwaitStopEvidenceWithProgressAsync(state.PowerTask, state,
+                        "PowerOffReadback", safetyToken).ConfigureAwait(false);
                 state.Power = state.PowerTask == null
                     ? (true, string.Empty)
                     : await state.PowerTask.ConfigureAwait(false);
@@ -797,6 +803,24 @@ namespace Controller
             {
                 return StopSafetyPortResult.Failure("液压/物理安全确认失败: " + ex.Message);
             }
+        }
+
+        private async Task AwaitStopEvidenceWithProgressAsync(Task task,
+            StopSafetyProductionState state, string predicate, CancellationToken token)
+        {
+            while (!task.IsCompleted)
+            {
+                token.ThrowIfCancellationRequested();
+                if (await Task.WhenAny(task, Task.Delay(1000, token)).ConfigureAwait(false) == task) break;
+                token.ThrowIfCancellationRequested();
+                _log?.Warn($"StopSafetyPending Transaction={state.TransactionId:N} " +
+                    $"Run={state.RunId:N}/{state.RunEpoch} Predicate={predicate} " +
+                    $"Power={state.PowerTask?.Status} Pressure={state.PressureTask?.Status} " +
+                    $"DoPending=[{string.Join(",", state.OffCompletions.Where(p => !p.Value.Task.IsCompleted).Select(p => p.Key))}] " +
+                    $"Dev1={_acq?.GetDaqFreshnessSnapshot("Dev1").RejectionReason} " +
+                    $"Dev2={_acq?.GetDaqFreshnessSnapshot("Dev2").RejectionReason}", "EPB-Safety");
+            }
+            await task.ConfigureAwait(false);
         }
 
         private StopSafetyPortResult ExecuteStopAcquisitionStage(

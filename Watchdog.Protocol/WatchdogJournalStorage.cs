@@ -15,7 +15,7 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public sealed class WatchdogJournalPolicy
     {
-        public const int CurrentSchemaVersion = 5;
+        public const int CurrentSchemaVersion = 6;
         public const int DefaultRetentionDays = 90;
         public const int DefaultRetainSessionCount = 32;
         public const long DefaultMaxTotalBytes = 128L * 1024L * 1024L;
@@ -181,7 +181,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (value.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion)
                 return value;
             if (value.SchemaVersion == 2 || value.SchemaVersion == 3 ||
-                value.SchemaVersion == 4)
+                value.SchemaVersion == 4 || value.SchemaVersion == 5)
             {
                 value.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
                 return value;
@@ -730,6 +730,7 @@ namespace MTTFTest.Watchdog.Protocol
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         private readonly object _gate = new object();
+        private readonly object _snapshotWriteGate = new object();
         private readonly Queue<PendingEvent> _events = new Queue<PendingEvent>();
         private readonly Queue<string> _errors = new Queue<string>();
         private readonly AutoResetEvent _wake = new AutoResetEvent(false);
@@ -745,6 +746,8 @@ namespace MTTFTest.Watchdog.Protocol
         private readonly long _processStartTicks;
         private readonly string _spoolDirectory;
         private string _snapshot;
+        private long _snapshotRevision;
+        private long _lastSynchronousSnapshotRevision;
         private bool _leasePending = true;
         private string _revocationReason;
         private PendingTerminal _terminal;
@@ -832,6 +835,7 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 if (_stopping) return false;
                 _snapshot = json;
+                _snapshotRevision++;
                 if (DateTime.UtcNow.Ticks - _lastLeaseUtcTicks >= TimeSpan.FromSeconds(30).Ticks)
                     _leasePending = true;
                 _idle.Reset();
@@ -854,15 +858,24 @@ namespace MTTFTest.Watchdog.Protocol
             lock (_gate)
             {
                 if (_stopping) return false;
+                var snapshotRevision = ++_snapshotRevision;
                 try
                 {
-                    Directory.CreateDirectory(_directory);
-                    AtomicWrite(
-                        Path.Combine(_directory, "session-" + _safeSession + ".json"),
-                        json);
+                    lock (_snapshotWriteGate)
+                    {
+                        Directory.CreateDirectory(_directory);
+                        AtomicWrite(
+                            Path.Combine(_directory, "session-" + _safeSession + ".json"),
+                            json);
+                        TryDelete(Path.Combine(
+                            _spoolDirectory,
+                            "session.snapshot.pending.json"));
+                        Interlocked.Exchange(
+                            ref _lastSynchronousSnapshotRevision,
+                            snapshotRevision);
+                    }
                     _snapshot = null;
                     _idle.Set();
-                    TryDelete(Path.Combine(_spoolDirectory, "session.snapshot.pending.json"));
                     return true;
                 }
                 catch
@@ -1021,6 +1034,7 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 _wake.WaitOne(1000);
                 string snapshot;
+                long snapshotRevision;
                 bool lease;
                 PendingTerminal terminal;
                 string revocationReason;
@@ -1031,6 +1045,7 @@ namespace MTTFTest.Watchdog.Protocol
                 lock (_gate)
                 {
                     snapshot = _snapshot;
+                    snapshotRevision = _snapshotRevision;
                     _snapshot = null;
                     lease = _leasePending;
                     _leasePending = false;
@@ -1049,7 +1064,8 @@ namespace MTTFTest.Watchdog.Protocol
 
                 TryReplaySpool();
                 if (!IsClientAuditOnly && lease) TryWriteLease();
-                if (!IsClientAuditOnly && snapshot != null) TryWriteSnapshot(snapshot);
+                if (!IsClientAuditOnly && snapshot != null)
+                    TryWriteSnapshot(snapshot, snapshotRevision);
                 foreach (var item in events)
                 {
                     if (item.Checkpoint && IsStopping())
@@ -1081,15 +1097,25 @@ namespace MTTFTest.Watchdog.Protocol
             }
         }
 
-        private void TryWriteSnapshot(string content)
+        private void TryWriteSnapshot(string content, long snapshotRevision)
         {
             if (IsClientAuditOnly) return;
             try
             {
-                Directory.CreateDirectory(_directory);
-                AtomicWrite(Path.Combine(_directory, "session-" + _safeSession + ".json"), content);
-                var pending = Path.Combine(_spoolDirectory, "session.snapshot.pending.json");
-                TryDelete(pending);
+                lock (_snapshotWriteGate)
+                {
+                    if (snapshotRevision <= Interlocked.Read(
+                            ref _lastSynchronousSnapshotRevision))
+                        return;
+                    Directory.CreateDirectory(_directory);
+                    AtomicWrite(
+                        Path.Combine(_directory, "session-" + _safeSession + ".json"),
+                        content);
+                    var pending = Path.Combine(
+                        _spoolDirectory,
+                        "session.snapshot.pending.json");
+                    TryDelete(pending);
+                }
             }
             catch
             {
@@ -1214,9 +1240,13 @@ namespace MTTFTest.Watchdog.Protocol
                 var snapshot = Path.Combine(_spoolDirectory, "session.snapshot.pending.json");
                 if (File.Exists(snapshot))
                 {
-                    AtomicWrite(Path.Combine(_directory, "session-" + _safeSession + ".json"),
-                        File.ReadAllText(snapshot, Encoding.UTF8));
-                    File.Delete(snapshot);
+                    lock (_snapshotWriteGate)
+                    {
+                        AtomicWrite(
+                            Path.Combine(_directory, "session-" + _safeSession + ".json"),
+                            File.ReadAllText(snapshot, Encoding.UTF8));
+                        File.Delete(snapshot);
+                    }
                 }
                 var lease = Path.Combine(_spoolDirectory, "session.lease.pending.json");
                 if (File.Exists(lease))

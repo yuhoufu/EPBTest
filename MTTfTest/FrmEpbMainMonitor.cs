@@ -2820,8 +2820,8 @@ namespace MTEmbTest
                             $"({elapsed:F0}/5秒)");
                     else
                         LogInfo(
-                            $"正在安全收尾，必要时将自动重启；Watchdog接管倒计时 " +
-                            $"{Math.Max(0, 15 - (int)elapsed)} 秒。阶段={progress.Stage}");
+                            $"正在安全收尾：阶段={progress.Stage}，{progress.Detail}；" +
+                            $"已等待{elapsed:F0}秒。人工停止后不自动续跑。");
                 }
                 var safety = await stopTask;
                 completedSafety = safety;
@@ -2838,6 +2838,7 @@ namespace MTEmbTest
                         System.Threading.Tasks.Task.Delay(750));
                 if (safety.RequiresProcessRestart || safety.TimedOut)
                 {
+                    await RequestManualStopSafetyHandoffAsync(stopWatchdogContext, safety);
                     _stopSessionReceipt.Complete(new StopSessionReceipt
                     {
                         CommandId = stopCommandId,

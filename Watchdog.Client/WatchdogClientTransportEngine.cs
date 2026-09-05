@@ -447,6 +447,7 @@ namespace MTTFTest.Watchdog.Client
         private long _activeSessionLease;
         private long _attachedConnectionGeneration;
         private long _heartbeatSequence;
+        private long _heartbeatPulseSequence;
         private long _lastHeartbeatAckUtcTicks;
         private long _lastHeartbeatAckSequence;
         private long _monitorGeneration;
@@ -2298,11 +2299,15 @@ namespace MTTFTest.Watchdog.Client
                     throw new WatchdogConnectException(
                         WatchdogConnectFailureKind.TransportFailure,
                         "Attached 后首个Watchdog心跳发送失败。");
-                heartbeatTask = Task.Run(() => HeartbeatLoopAsync(
-                    lifetimeToken,
-                    connectionGeneration,
-                    sessionLease,
-                    connectionIdentity));
+                heartbeatTask = Task.Factory.StartNew(
+                    () => HeartbeatThreadLoop(
+                        lifetimeToken,
+                        connectionGeneration,
+                        sessionLease,
+                        connectionIdentity),
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default);
                 lock (_gate)
                 {
                     if (IsCurrentConnectionLocked(connectionGeneration, sessionGeneration, sessionLease, connectionIdentity))
@@ -3130,7 +3135,7 @@ namespace MTTFTest.Watchdog.Client
             }
         }
 
-        private async Task HeartbeatLoopAsync(
+        private void HeartbeatThreadLoop(
             CancellationToken token,
             long connectionGeneration,
             long sessionLease,
@@ -3142,8 +3147,7 @@ namespace MTTFTest.Watchdog.Client
             {
                 while (!token.IsCancellationRequested && !IsClosing)
                 {
-                    await Task.Delay(1000, token).ConfigureAwait(false);
-                    if (token.IsCancellationRequested) break;
+                    if (token.WaitHandle.WaitOne(1000)) break;
                     if (!IsExpectedConnectionCurrent(sessionLease, connectionGeneration, connectionIdentity)) break;
                     var heartbeatDisposition = SendHeartbeatSnapshotWithDisposition(
                         "Periodic",
@@ -3163,7 +3167,6 @@ namespace MTTFTest.Watchdog.Client
                     }
                 }
             }
-            catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 unexpectedExit = true;
@@ -3294,10 +3297,17 @@ namespace MTTFTest.Watchdog.Client
                             expectedConnectionIdentity))
                         return HeartbeatSendDisposition.ScopeStale;
                     heartbeat.Sequence = ++_heartbeatSequence;
+                    heartbeat.PulseSequence = ++_heartbeatPulseSequence;
                     heartbeat.SessionId = sessionId;
                     heartbeat.ProcessId = processId;
                     heartbeat.ProcessStartUtcTicks = processStartTicks;
                 }
+                heartbeat.SnapshotAgeMs = heartbeat.SnapshotCapturedUtcTicks <= 0
+                    ? double.PositiveInfinity
+                    : Math.Max(
+                        0,
+                        (DateTime.UtcNow.Ticks - heartbeat.SnapshotCapturedUtcTicks) /
+                        (double)TimeSpan.TicksPerMillisecond);
                 if (string.IsNullOrWhiteSpace(heartbeat.RecoveryProcessSource))
                     heartbeat.RecoveryProcessSource = options.RecoveryProcess
                         ? "RecoveryProcess"

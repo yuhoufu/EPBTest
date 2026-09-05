@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -14,6 +14,7 @@ namespace PowerSupply.Core
     public sealed class PswTcpClient : IPswClient
     {
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
+        private int _pendingSafetyOff;
         private readonly IPswLog _log;
         private readonly int _connectTimeoutMs;
         private readonly int _commandTimeoutMs;
@@ -257,6 +258,8 @@ namespace PowerSupply.Core
                     }
                     catch (Exception ex)
                     {
+                        if (ex is IOException || ex is SocketException || ex is TimeoutException)
+                            DisposeTransport();
                         result.FailureCode = ex is OperationCanceledException
                             ? "OutputCommandCanceled"
                             : ex is TimeoutException
@@ -265,7 +268,7 @@ namespace PowerSupply.Core
                         result.Detail = ex.GetBaseException().Message;
                         return CompleteOutputResult(result, started);
                     }
-                }, token).ConfigureAwait(false);
+                }, token, safetyPriority: !enabled).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -500,27 +503,40 @@ namespace PowerSupply.Core
             }
         }
 
-        private async Task<T> ExecuteLockedAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken token)
+        private async Task<T> ExecuteLockedAsync<T>(Func<CancellationToken, Task<T>> action,
+            CancellationToken token, bool safetyPriority = false)
         {
-            await _gate.WaitAsync(token).ConfigureAwait(false);
+            if (safetyPriority) Interlocked.Increment(ref _pendingSafetyOff);
+            var acquired = false;
             try
             {
-                // StreamReader.ReadLineAsync 在 netstandard2.0 中无法真正取消。若把调用方的
-                // CancellationToken 传入超时包装，取消只会让包装任务提前退出，底层读取仍
-                // 占用 StreamReader；下一条命令随后会触发“流正在由其上的前一操作使用”，
-                // 并可能让残留读取吞掉下一条 SCPI 响应。拿到 I/O 锁后必须让当前事务在
-                // 自身命令超时范围内完整结束；调用方取消仍可中止等待 I/O 锁。
+                while (!acquired)
+                {
+                    await _gate.WaitAsync(token).ConfigureAwait(false);
+                    if (safetyPriority || Volatile.Read(ref _pendingSafetyOff) == 0)
+                        acquired = true;
+                    else
+                    {
+                        _gate.Release();
+                        await Task.Delay(5, token).ConfigureAwait(false);
+                    }
+                }
+                // An in-flight response must finish or time out as one paired
+                // transaction. OFF takes priority over every queued telemetry
+                // transaction; it never steals another query's response bytes.
                 return await action(CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                // TcpClient.Connected 只反映最近一次 I/O 的缓存状态；远端 FIN/RST 后它仍可能为 true。
-                // 一旦读写、套接字或超时异常发生，必须主动丢弃传输层，避免上层误判仍在线。
-                if (ex is IOException || ex is SocketException || ex is TimeoutException || !IsConnected)
-                    DisposeTransport();
+                if (acquired && (ex is IOException || ex is SocketException ||
+                    ex is TimeoutException || !IsConnected)) DisposeTransport();
                 throw;
             }
-            finally { _gate.Release(); }
+            finally
+            {
+                if (safetyPriority) Interlocked.Decrement(ref _pendingSafetyOff);
+                if (acquired) _gate.Release();
+            }
         }
 
         private static async Task<T> AwaitWithTimeout<T>(Task<T> task, int timeoutMs, CancellationToken token, string operation)

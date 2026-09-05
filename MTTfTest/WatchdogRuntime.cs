@@ -751,9 +751,14 @@ namespace MTEmbTest
         internal TaskCompletionSource<RecoveryFailureReceipt> Completion { get; }
     }
 
-    internal sealed class RuntimeHeartbeatSource
+    internal sealed class RuntimeHeartbeatSource : IDisposable
     {
         private Func<WatchdogHeartbeat> _provider;
+        private WatchdogHeartbeat _snapshot;
+        private readonly AutoResetEvent _providerChanged = new AutoResetEvent(false);
+        private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+        private Thread _publisherThread;
+        private long _snapshotRevision;
 
         internal RuntimeHeartbeatSource(Func<WatchdogHeartbeat> provider)
         {
@@ -763,12 +768,87 @@ namespace MTEmbTest
         internal void Set(Func<WatchdogHeartbeat> provider)
         {
             Interlocked.Exchange(ref _provider, provider);
+            EnsurePublisher();
+            _providerChanged.Set();
         }
 
         internal WatchdogHeartbeat Capture()
         {
-            var provider = Volatile.Read(ref _provider);
-            return provider == null ? null : provider();
+            var snapshot = Volatile.Read(ref _snapshot);
+            return snapshot ?? new WatchdogHeartbeat
+            {
+                SnapshotRevision = 0,
+                SnapshotCapturedUtcTicks = 0,
+                RecoveryCode = "SemanticSnapshotPending",
+                RecoveryContext = "Heartbeat publisher has not committed a snapshot."
+            };
+        }
+
+        private void EnsurePublisher()
+        {
+            if (Volatile.Read(ref _publisherThread) != null) return;
+            var thread = new Thread(PublishLoop)
+            {
+                IsBackground = true,
+                Name = "MTTFTest.WatchdogSemanticSnapshot"
+            };
+            if (Interlocked.CompareExchange(
+                    ref _publisherThread,
+                    thread,
+                    null) == null)
+                thread.Start();
+        }
+
+        private void PublishLoop()
+        {
+            var handles = new WaitHandle[]
+            {
+                _providerChanged,
+                _stop.Token.WaitHandle
+            };
+            while (!_stop.IsCancellationRequested)
+            {
+                var provider = Volatile.Read(ref _provider);
+                if (provider != null)
+                {
+                    try
+                    {
+                        var snapshot = provider() ?? new WatchdogHeartbeat
+                        {
+                            RecoveryCode = "SemanticSnapshotProviderReturnedNull"
+                        };
+                        snapshot.SnapshotRevision = Interlocked.Increment(
+                            ref _snapshotRevision);
+                        snapshot.SnapshotCapturedUtcTicks = DateTime.UtcNow.Ticks;
+                        Interlocked.Exchange(ref _snapshot, snapshot);
+                    }
+                    catch (Exception ex)
+                    {
+                        var previous = Volatile.Read(ref _snapshot);
+                        if (previous == null)
+                            Interlocked.Exchange(
+                                ref _snapshot,
+                                new WatchdogHeartbeat
+                                {
+                                    SnapshotRevision = Interlocked.Increment(
+                                        ref _snapshotRevision),
+                                    SnapshotCapturedUtcTicks = DateTime.UtcNow.Ticks,
+                                    RecoveryCode = "SemanticSnapshotProviderFault",
+                                    RecoveryContext = ex.GetBaseException().Message
+                                });
+                    }
+                }
+                if (WaitHandle.WaitAny(handles, 250) == 1) return;
+            }
+        }
+
+        public void Dispose()
+        {
+            try { _stop.Cancel(); } catch { }
+            _providerChanged.Set();
+            try { _publisherThread?.Join(1000); } catch { }
+            _providerChanged.Dispose();
+            _stop.Dispose();
         }
     }
 
@@ -822,6 +902,10 @@ namespace MTEmbTest
         private static string _journalExportDirectory;
         private static long _sessionGeneration;
         private static DaqRuntimeSettings _daqRuntimeSettings;
+        private static string _latestTypedExitTransactionId = string.Empty;
+
+        internal static string LatestTypedExitTransactionId =>
+            Volatile.Read(ref _latestTypedExitTransactionId) ?? string.Empty;
 
         internal static event Action<string, string> TransportLost;
         internal static event Action<string, string> TransportError;
@@ -2568,10 +2652,11 @@ namespace MTEmbTest
         internal static WatchdogSafetyHandoffReceipt RequestSafetyHandoff(
             RuntimeTransportSessionContext context,
             StopSafetyResult safety,
-            bool hardwareResourcesReleased)
+            bool hardwareResourcesReleased,
+            bool safetyOnly = false)
         {
             if (context == null || context.SessionLease <= 0 || safety == null ||
-                safety.SafetyTransactionId == Guid.Empty || !safety.PersistenceBoundaryConfirmed ||
+                safety.SafetyTransactionId == Guid.Empty || (!safetyOnly && !safety.PersistenceBoundaryConfirmed) ||
                 !hardwareResourcesReleased ||
                 Volatile.Read(ref context.State.SessionClosing) == 0 ||
                 (context.PipelineState != RuntimeCallbackPipelineState.Closing &&
@@ -2583,6 +2668,8 @@ namespace MTEmbTest
                 if (WatchdogSafetyHandoffReceiptStore.TryRead(
                         context.JournalDirectory, context.SessionId, out existing))
                 {
+                    if (safetyOnly && existing.RelaunchDisposition != WatchdogRelaunchDisposition.Forbidden)
+                        throw new InvalidOperationException("ManualStopExistingHandoffHasRelaunchIntent: " + existing.HandoffId);
                     if (existing.SessionGeneration == context.SessionGeneration &&
                         existing.SessionLease == context.SessionLease &&
                         string.Equals(existing.StopSafetyTransactionId,
@@ -2591,8 +2678,8 @@ namespace MTEmbTest
                     return null;
                 }
                 var handoffId = Guid.NewGuid().ToString("N");
-                WatchdogApplicationExitReceipt applicationExit;
-                var hasTypedApplicationExit = WatchdogApplicationExitReceiptStore.TryRead(
+                WatchdogApplicationExitReceipt applicationExit = null;
+                var hasTypedApplicationExit = !safetyOnly && WatchdogApplicationExitReceiptStore.TryRead(
                                                   context.JournalDirectory,
                                                   context.SessionId,
                                                   out applicationExit) &&
@@ -2671,7 +2758,7 @@ namespace MTEmbTest
                         configSnapshot?.Error ?? "SafetyConfigSnapshotUnavailable");
                 var receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = 5,
+                    SchemaVersion = SupervisorProtocol.SchemaVersion,
                     SessionId = context.SessionId,
                     SessionGeneration = context.SessionGeneration,
                     SessionLease = context.SessionLease,
@@ -2902,11 +2989,18 @@ namespace MTEmbTest
                         out existing) &&
                     existing.SessionGeneration == context.SessionGeneration &&
                     existing.SessionLease == context.SessionLease)
-                    return existing.SchemaVersion >= 2 &&
-                           existing.ExitDisposition == exitDisposition &&
-                           existing.RelaunchDisposition == relaunchDisposition
-                        ? existing
-                        : null;
+                {
+                    if (existing.SchemaVersion >= 2 &&
+                        existing.ExitDisposition == exitDisposition &&
+                        existing.RelaunchDisposition == relaunchDisposition)
+                    {
+                        Volatile.Write(
+                            ref _latestTypedExitTransactionId,
+                            existing.ExitIntentId ?? string.Empty);
+                        return existing;
+                    }
+                    return null;
+                }
 
                 var permit = preservePermit
                     ? AwaitApprovedRelaunchPermit(context, TimeSpan.FromSeconds(2))
@@ -2951,6 +3045,9 @@ namespace MTEmbTest
                     WatchdogApplicationExitReceiptStore.WriteThrough(
                         context.JournalDirectory,
                         receipt);
+                    Volatile.Write(
+                        ref _latestTypedExitTransactionId,
+                        receipt.ExitIntentId);
                     RecordClientEvent(
                         context,
                         "ApplicationExitRequested",
@@ -3364,7 +3461,7 @@ namespace MTEmbTest
                             context,
                             "TakeoverCloseFenceMissingTypedExit",
                             previous);
-                    previous.SchemaVersion = 5;
+                    previous.SchemaVersion = SupervisorProtocol.SchemaVersion;
                     previous.ExitDisposition = exitDisposition;
                     previous.RelaunchDisposition = relaunchDisposition;
                     previous.TakeoverTransactionId = hasTypedExit
@@ -3410,7 +3507,7 @@ namespace MTEmbTest
             const long version = 1;
             var tombstone = new WatchdogClosingTombstone
             {
-                SchemaVersion = 5,
+                SchemaVersion = SupervisorProtocol.SchemaVersion,
                 SessionId = context.SessionId,
                 SessionGeneration = context.SessionGeneration,
                 SessionLease = context.SessionLease,

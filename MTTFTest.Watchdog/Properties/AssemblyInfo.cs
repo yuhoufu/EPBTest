@@ -8,7 +8,4 @@ using System.Runtime.CompilerServices;
 [assembly: AssemblyProduct("MT EPB Test System")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b236eb0c-01ae-4aab-b350-bdd30dbe3e3d")]
-[assembly: AssemblyVersion("2.14.2.3")]
-[assembly: AssemblyFileVersion("2.14.2.3")]
-[assembly: AssemblyInformationalVersion("2.14.2.3")]
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]
