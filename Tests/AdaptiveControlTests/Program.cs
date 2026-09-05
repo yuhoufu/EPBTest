@@ -96,6 +96,12 @@ namespace AdaptiveControlTests
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
+                if (args.Length == 1 && args[0].Equals("--v216-stability", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += V216StabilityTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 1 &&
                     args[0].Equals("--watchdog-host-integration", StringComparison.OrdinalIgnoreCase))
                 {

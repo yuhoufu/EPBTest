@@ -258,6 +258,23 @@ namespace Controller
                 return async () =>
                 {
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
+                    // The coordinator adjudicates the terminal immediately when
+                    // this body returns. Commit retry readiness while this exact
+                    // owner still holds admission; finally must never reauthorize.
+                    lock (_recoveryAdmissionGate)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (IsEnergizationRevoked || runId != _activeBatchId ||
+                            runEpoch != Interlocked.Read(ref _runEpoch) ||
+                            IsChannelEnergized(channel))
+                            throw new OperationCanceledException("StartupRetrySupersededOrOutputNotOff", token);
+                        if (!recoveryIncident.CompleteAfterTerminal(contract =>
+                            CommitRecoveryIncidentStateForRetry(
+                                contract, ChannelRuntimeState.Starting,
+                                "StartupPositioningRetryReady",
+                                "启动定位重试前安全断电已确认，继续当前定位流程。")))
+                            throw new InvalidOperationException("StartupRetryReadyCommitRejected");
+                    }
                 };
             }
 
@@ -301,14 +318,14 @@ namespace Controller
                         $"EPB[{channel}] 启动定位恢复worker启动许可被拒绝。");
                 await recoveryIncident.WorkerTask.ConfigureAwait(false);
             }
-            finally
+            catch
             {
+                // Failures are closed by the real coordinator. No retry state
+                // may be published from cancellation/error cleanup.
                 recoveryIncident.CompleteAfterTerminal(contract =>
-                    CommitRecoveryIncidentStateForRetry(
-                        contract,
-                        ChannelRuntimeState.Starting,
-                        "StartupPositioningRetryReady",
-                        "启动定位重试前安全断电已确认，继续当前定位流程。"));
+                    PublishRecoverySafeTerminal(contract, "StartupRetryFailedOrCancelled",
+                        "启动重试失败或已取消，保持安全停止。"));
+                throw;
             }
         }
 
