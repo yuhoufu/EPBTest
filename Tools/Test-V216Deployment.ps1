@@ -37,6 +37,24 @@ try {
     [void](New-Item -ItemType Directory -Path $temp)
     Import-Functions (Join-Path $PSScriptRoot 'Install-MTTFTest-Unattended.ps1')
     Import-Functions (Join-Path $PSScriptRoot 'Stop-RelatedProcesses.ps1')
+    Import-Functions (Join-Path $PSScriptRoot 'Export-StabilityEvidence.ps1')
+    $evidenceSource = Join-Path $temp 'evidence-source'
+    $deniedDirectory = Join-Path $evidenceSource 'denied'
+    [void](New-Item -ItemType Directory -Path $deniedDirectory -Force)
+    'readable' | Set-Content -LiteralPath (Join-Path $evidenceSource 'readable.txt')
+    $originalAcl = Get-Acl -LiteralPath $deniedDirectory
+    $restrictedAcl = Get-Acl -LiteralPath $deniedDirectory
+    $deny = New-Object Security.AccessControl.FileSystemAccessRule(
+        [Security.Principal.WindowsIdentity]::GetCurrent().User,
+        [Security.AccessControl.FileSystemRights]::ListDirectory,
+        [Security.AccessControl.AccessControlType]::Deny)
+    $restrictedAcl.AddAccessRule($deny)
+    try {
+        Set-Acl -LiteralPath $deniedDirectory -AclObject $restrictedAcl
+        $scan = Get-EvidenceSourceScan $evidenceSource
+        Check (@($scan.Files | Where-Object { $_.Name -eq 'readable.txt' }).Count -eq 1) '采证遇受保护目录仍取得可读文件'
+        Check (@($scan.Errors | Where-Object { $_.Kind -eq 'Enumeration' -and $_.Reason }).Count -gt 0) '采证明确记录目录权限拒绝而非伪报完整'
+    } finally { Set-Acl -LiteralPath $deniedDirectory -AclObject $originalAcl }
     $source = Join-Path $temp 'Package'
     $root = Join-Path $temp 'MTTFTest'
     [void](New-Item -ItemType Directory -Path $source)
