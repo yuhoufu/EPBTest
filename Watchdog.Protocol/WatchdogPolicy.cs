@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -631,8 +631,7 @@ namespace MTTFTest.Watchdog.Protocol
             // limits the initial process to one recovery child and makes a
             // recovery child failure immediately durable SafeIdle.
             var samePointBlocked = sameFingerprint && sameToken;
-            var unavailable = IsHardwareOrDaqUnavailable(classification.Code);
-            var budget = classification.Permanent || unavailable
+            var budget = classification.Permanent
                 ? 0
                 : Math.Max(0, classification.MaximumProcessRelaunches);
             // ConsecutiveCount is the number of failures for the current
@@ -685,17 +684,7 @@ namespace MTTFTest.Watchdog.Protocol
             string reason)
         {
             var text = ((code ?? string.Empty) + " " + (reason ?? string.Empty)).Trim();
-            var deterministicConfigurationFailure =
-                Contains(text, "ConfigDuplicateEpbId") ||
-                Contains(text, "ConfigEpbRecordInvariant") ||
-                Contains(text, "已添加了具有相同键的项") ||
-                Contains(text, "RecoveryCheckpointRejected") ||
-                Contains(text, "CheckpointInvariant") ||
-                Contains(text, "PackageManifest") ||
-                Contains(text, "PackageVerification") ||
-                Contains(text, "AssemblyLoad") ||
-                Contains(text, "BadImageFormat");
-            if (permanent || deterministicConfigurationFailure)
+            if (permanent)
             {
                 return new RecoveryFailureClassification
                 {
@@ -714,24 +703,13 @@ namespace MTTFTest.Watchdog.Protocol
                 Contains(text, "Timeout") ||
                 Contains(text, "PortInUse") ||
                 Contains(text, "RecoveryAttachFailed");
-            var unavailable = Contains(text, "HardwareUnavailable") ||
-                              Contains(text, "DaqUnavailable") ||
-                              Contains(text, "DaqCallbackStale") ||
-                              Contains(text, "DaqSampleStale") ||
-                              Contains(text, "DaqRecoveryFailed") ||
-                              Contains(text, "DaqStartPreflightFailed") ||
-                              Contains(text, "OffCurrentUnverifiableDaqStale");
             return new RecoveryFailureClassification
             {
                 Code = string.IsNullOrWhiteSpace(code)
                     ? (transientHardware ? "TransientInfrastructure" : "UnhandledSoftwareStartup")
                     : code,
                 Permanent = false,
-                MaximumProcessRelaunches = unavailable
-                    ? 0
-                    : transientHardware
-                        ? RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit
-                    : 2
+                MaximumProcessRelaunches = ContinuousRecoveryPolicy.MaximumRestarts
             };
         }
 

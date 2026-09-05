@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -321,7 +321,7 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class WatchdogSafetyHandoffReceipt
     {
-        public int SchemaVersion { get; set; } = 6;
+        public int SchemaVersion { get; set; } = SupervisorProtocol.SchemaVersion;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -335,7 +335,7 @@ namespace MTTFTest.Watchdog.Protocol
         public WatchdogSafetyStage Stage { get; set; }
         public string PreviousStageReceiptSha256 { get; set; } = string.Empty;
         // .NET Framework's R formatting can move a Double by one bit on readback.
-        // V216 persists invariant G17 text, avoiding both R and JSON numeric conversion.
+        // V217 persists invariant G17 text, avoiding both R and JSON numeric conversion.
         // Control code keeps its numeric API; the receipt's strict hash remains enforced.
         [ScriptIgnore]
         public double StageMonotonicElapsedMs { get; set; }
@@ -391,7 +391,7 @@ namespace MTTFTest.Watchdog.Protocol
             Guid parsed;
             var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
                           SchemaVersion == 3 || SchemaVersion == 4 ||
-                          SchemaVersion == 5 || SchemaVersion == 6) &&
+                          SchemaVersion == 5 || SchemaVersion == 6 || SchemaVersion == 7) &&
                    !double.IsNaN(StageMonotonicElapsedMs) && !double.IsInfinity(StageMonotonicElapsedMs) &&
                    StageMonotonicElapsedMs >= 0 && Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
@@ -653,7 +653,7 @@ namespace MTTFTest.Watchdog.Protocol
             return previous.State == WatchdogSafetyHandoffState.Completed &&
                    current.State == WatchdogSafetyHandoffState.Completed &&
                    current.Stage == previous.Stage &&
-                   current.SchemaVersion == 6 &&
+                   current.SchemaVersion >= 6 &&
                    current.SchemaVersion >= previous.SchemaVersion &&
                    HasSameImmutableHandoffIdentity(previous, current) &&
                    previous.MotorsOff == current.MotorsOff &&
@@ -738,10 +738,10 @@ namespace MTTFTest.Watchdog.Protocol
             WatchdogSafetyHandoffReceipt current)
         {
             return (previous.SchemaVersion == 3 || previous.SchemaVersion == 4 ||
-                    previous.SchemaVersion == 5 || previous.SchemaVersion == 6) &&
+                    previous.SchemaVersion == 5 || previous.SchemaVersion == 6 || previous.SchemaVersion == 7) &&
                    previous.IsSafetyCompleted &&
                    (current.SchemaVersion == 3 || current.SchemaVersion == 4 ||
-                    current.SchemaVersion == 5 || current.SchemaVersion == 6) &&
+                    current.SchemaVersion == 5 || current.SchemaVersion == 6 || current.SchemaVersion == 7) &&
                    current.RelaunchDisposition ==
                        WatchdogRelaunchDisposition.PreserveApprovedPermit &&
                    current.RelaunchPermitGeneration >

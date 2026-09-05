@@ -165,6 +165,7 @@
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="FrmEpbMainMonitor.CycleAccounting.cs" />
     <Compile Include="FrmEpbMainMonitor.PowerSupply.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>

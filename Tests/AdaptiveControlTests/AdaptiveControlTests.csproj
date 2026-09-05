@@ -51,6 +51,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="V216StabilityTests.cs" />
+    <Compile Include="V217StabilityTests.cs" />
     <Compile Include="CalibrationMathTests.cs" />
     <Compile Include="CycleAttemptLifecycleTests.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />

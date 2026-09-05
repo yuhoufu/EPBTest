@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -506,8 +506,7 @@ namespace Controller
         {
             return nonceReleased &&
                    armed &&
-                   attemptsInWindow > 0 &&
-                   attemptsInWindow < UnattendedProcessRestartBudget &&
+                   attemptsInWindow >= 0 &&
                    AreSameNonEmptyRunIds(checkpointRunId, expectedRunId);
         }
 
@@ -701,21 +700,8 @@ namespace Controller
                 runEpoch != Interlocked.Read(ref _runEpoch))
                 return false;
 
-            // A DAQ/externally-owned incident has a different safety contract
-            // from a channel software circuit.  Once its retry budget is
-            // exhausted, close exactly one incident-local SafeIdle and stop;
-            // never manufacture SystemFaultRaised, batch recycle or process
-            // restart for a permanent DAQ disconnect.
-            if (IsDaqInfrastructureRecoveryCode(faultCode) ||
-                (stage ?? string.Empty).StartsWith("Daq", StringComparison.OrdinalIgnoreCase))
-                return CompleteDaqInfrastructureCircuitAsSafeIdle(
-                    stage,
-                    reason,
-                    affectedChannels,
-                    runId,
-                    runEpoch,
-                    faultCode);
-
+            // Acquisition/communication loss is not proof of a permanent hardware fault.
+            // Exhausted local attempts retain operator intent through the batch/Host cooldown path.
             // 可重放的DAQ/外部基础设施抖动不是“所有卡钳都坏”的证据，前两次优先在
             // 受影响组内修复；第3次仍未闭环即说明本进程恢复生命周期失效，必须转入
             // 统一StopAll/整批回收。该升级仍是软件故障，不会伪装成卡钳永久报警。

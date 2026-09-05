@@ -8,11 +8,11 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class SessionAgentProtocol
     {
-        public const int SchemaVersion = 6;
-        public const string PipePrefix = "MTTFTestSessionAgent.Launch.v6.";
+        public const int SchemaVersion = 7;
+        public const string PipePrefix = "MTTFTestSessionAgent.Launch.v7.";
         public const int RegisteredDesktopSessionId = -1;
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes(
-            "MTTFTest.SessionAgent.LaunchCapability.Schema6");
+            "MTTFTest.SessionAgent.LaunchCapability.Schema7");
 
         public const string CapabilityArgument = "--supervisor-launch-capability";
         public const string NonceArgument = "--supervisor-launch-nonce";
@@ -132,7 +132,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void WriteTo(BinaryWriter writer, byte[] seal)
         {
-            writer.Write("MTTF-SESSION-AGENT-REQUEST-V6-V216");
+            writer.Write("MTTF-SESSION-AGENT-REQUEST-V7-V217");
             writer.Write(SchemaVersion);
             writer.Write(CapabilityId ?? string.Empty);
             writer.Write(SessionId ?? string.Empty);
@@ -160,7 +160,7 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (!string.Equals(
                     reader.ReadString(),
-                    "MTTF-SESSION-AGENT-REQUEST-V6-V216",
+                    "MTTF-SESSION-AGENT-REQUEST-V7-V217",
                     StringComparison.Ordinal))
                 throw new InvalidDataException("SessionAgentRequestMagicMismatch");
             var result = new SessionLaunchCapability
@@ -205,7 +205,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void WriteTo(BinaryWriter writer)
         {
-            writer.Write("MTTF-SESSION-AGENT-RESPONSE-V6-V216");
+            writer.Write("MTTF-SESSION-AGENT-RESPONSE-V7-V217");
             writer.Write(SchemaVersion);
             writer.Write(CapabilityId ?? string.Empty);
             writer.Write(LaunchNonce ?? string.Empty);
@@ -221,7 +221,7 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (!string.Equals(
                     reader.ReadString(),
-                    "MTTF-SESSION-AGENT-RESPONSE-V6-V216",
+                    "MTTF-SESSION-AGENT-RESPONSE-V7-V217",
                     StringComparison.Ordinal))
                 throw new InvalidDataException("SessionAgentResponseMagicMismatch");
             return new SessionLaunchResponse

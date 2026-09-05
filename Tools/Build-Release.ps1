@@ -343,8 +343,8 @@ $snapshotSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\W
 $receiptSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyReceipts.cs') -Raw
 $programSource = Get-Content -LiteralPath (Join-Path $repo 'MTTfTest\Program.cs') -Raw
 if ($snapshotSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*2' -or
-    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*6') {
-    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 6 支持。'
+    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*SupervisorProtocol\.SchemaVersion') {
+    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 7 支持。'
 }
 if ($programSource -match 'watchdog-safety-shutdown' -or
     (Test-Path -LiteralPath (Join-Path $repo 'MTTfTest\WatchdogSafetyShutdownWorker.cs'))) {
@@ -674,12 +674,12 @@ Assert-SourceSnapshot -ExpectedCommit $commit `
     -ExpectedFingerprint $sourceSnapshotFingerprint `
     -Stage '写入构建身份前源码快照校验'
 
-$v216Deployment = @(& (Join-Path $PSScriptRoot 'Test-V216Deployment.ps1') 2>&1)
-foreach ($line in $v216Deployment) { Write-Host ([string]$line) }
-$v216DeploymentSummary = @($v216Deployment | Where-Object { [string]$_ -match '^PASS V216Deployment \d+/\d+ ' } | Select-Object -Last 1)
-if ($v216DeploymentSummary.Count -ne 1) { throw 'V2.16 隔离换包测试未通过。' }
+$v217Deployment = @(& (Join-Path $PSScriptRoot 'Test-V217Deployment.ps1') 2>&1)
+foreach ($line in $v217Deployment) { Write-Host ([string]$line) }
+$v217DeploymentSummary = @($v217Deployment | Where-Object { [string]$_ -match '^PASS V217Deployment \d+/\d+ ' } | Select-Object -Last 1)
+if ($v217DeploymentSummary.Count -ne 1) { throw 'V2.17 隔离换包测试未通过。' }
 $verification = [ordered]@{
-    v216Deployment = [string]$v216DeploymentSummary[0]
+    v217Deployment = [string]$v217DeploymentSummary[0]
     solutionRebuild = 'PASS'
     adaptiveControlTests = $adaptiveSummary
     epbDiskWriterTests = $diskWriterSummary
@@ -777,9 +777,9 @@ $identity = [ordered]@{
     packageContentSha256 = $packageContentSha256
     configSha256 = $configHash
     platform = 'x86'
-    recoveryArchitectureGeneration = 'EPB-V2.16'
+    recoveryArchitectureGeneration = 'EPB-V2.17'
     fieldValidation = 'PENDING_USER_HARDWARE_AND_168H'
-    watchdogSchema = 6
+    watchdogSchema = 7
     packageSlotSchema = 5
     componentIdentities = $componentIdentities
     verification = $verification

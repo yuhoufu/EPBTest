@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -25,6 +25,12 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0].Equals("--v217-stability", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += V217StabilityTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 2 &&
                     args[0].Equals("--watchdog-guarded-launch-child", StringComparison.OrdinalIgnoreCase))
                 {
@@ -736,6 +742,7 @@ namespace AdaptiveControlTests
                 _passed += PswTcpClientTimeoutTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
                 _passed += V216StabilityTests.RunAll();
+                _passed += V217StabilityTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -5101,7 +5108,7 @@ namespace AdaptiveControlTests
                        StopSource.ManualUi,
                        persistenceBoundaryConfirmed: true),
                 "写盘器关闭策略没有区分退出和普通停止");
-            Assert(!EpbManager.CanReuseStopResultForSource(
+            Assert(EpbManager.CanReuseStopResultForSource(
                        StopSource.ManualUi,
                        StopSource.ApplicationClosing) &&
                    EpbManager.CanReuseStopResultForSource(
@@ -5110,7 +5117,7 @@ namespace AdaptiveControlTests
                    EpbManager.CanReuseStopResultForSource(
                        StopSource.ApplicationClosing,
                        StopSource.ManualUi),
-                "Manual Stop的成功结果被ApplicationClosing误复用，最终persistence shutdown会被跳过");
+                "Manual Stop与关闭未共用物理停止证明；最终写盘器退出由共享收尾任务负责");
             Assert(EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
                        StopSource.ApplicationClosing) &&
                    EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(

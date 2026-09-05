@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -542,9 +542,7 @@ namespace MTEmbTest
             ChannelWarningOverlayChangedEvent[] warnings;
             lock (_channelWarningOverlays)
                 warnings = _channelWarningOverlays.Values.ToArray();
-            var running = states.Count(x => x.State == ChannelRuntimeState.Starting ||
-                                            x.State == ChannelRuntimeState.Learning ||
-                                            x.State == ChannelRuntimeState.Running ||
+            var running = states.Count(x => x.State == ChannelRuntimeState.Running ||
                                             x.State == ChannelRuntimeState.WaitingForSlotBarrier);
             var warning = warnings.Count(x =>
                               states.Any(state =>
@@ -558,7 +556,9 @@ namespace MTEmbTest
                                           x.State == ChannelRuntimeState.StartBlocked);
             var interlock = states.Count(x => x.State == ChannelRuntimeState.InterlockStopped);
             var completed = states.Count(x => x.State == ChannelRuntimeState.Completed);
-            EPBGroupBox.Text = $"EPB 控制｜运行 {running}  预警 {warning}  报警 {alarm}  联锁 {interlock}  完成 {completed}";
+            var preparing = states.Count(x => x.State == ChannelRuntimeState.Starting || x.State == ChannelRuntimeState.Learning ||
+                x.State == ChannelRuntimeState.Qualification || x.State == ChannelRuntimeState.Recovering);
+            EPBGroupBox.Text = $"EPB｜运行{running} 准备/恢复{preparing} 预警{warning} 报警{alarm} 联锁{interlock} 完成{completed}";
         }
 
         private void ShowPowerGroupInterlockLatch(int channel)

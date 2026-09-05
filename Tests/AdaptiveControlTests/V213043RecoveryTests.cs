@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -408,7 +408,7 @@ namespace AdaptiveControlTests
                         SupervisorSafetyAgentLaunchRequest.ReadBodyFrom(reader, magic);
                     Assert(roundTrip.IsStructurallyValid() &&
                            roundTrip.SchemaVersion ==
-                               WatchdogJournalPolicy.CurrentSchemaVersion &&
+                               SupervisorProtocol.SchemaVersion &&
                            roundTrip.PermitGeneration == source.PermitGeneration &&
                            string.Equals(roundTrip.PermitId, source.PermitId,
                                StringComparison.Ordinal) &&
@@ -742,7 +742,7 @@ namespace AdaptiveControlTests
                     var roundTrip = SupervisorP0AlarmRequest.ReadBodyFrom(reader, magic);
                     Assert(roundTrip.IsStructurallyValid() &&
                            roundTrip.SchemaVersion ==
-                               WatchdogJournalPolicy.CurrentSchemaVersion &&
+                               SupervisorProtocol.SchemaVersion &&
                            roundTrip.Action == SupervisorP0AlarmAction.MuteBuzzer &&
                            roundTrip.Action != SupervisorP0AlarmAction.ClearTransient &&
                            string.Equals(roundTrip.EventId, source.EventId,
@@ -870,11 +870,11 @@ namespace AdaptiveControlTests
                        "RecoveryLaunchFailed:Process.Start", false) &&
                    WatchdogHost.IsAutomaticHalfOpenEligible(
                        "RecoveryAttachFailed:Timeout", false) &&
-                   !WatchdogHost.IsAutomaticHalfOpenEligible(
+                   WatchdogHost.IsAutomaticHalfOpenEligible(
                        "SafetyAgentConfigInvalid", false) &&
                    !WatchdogHost.IsAutomaticHalfOpenEligible(
                        "RecoveryLaunchFailed:IdentityMismatch", true),
-                "Circuit half-open混入安全证据失败或永久身份失败。");
+                "软件失败未保留重新取证的冷却意图，或永久身份失败被放行。");
         }
 
         private static void CircuitOpenIsAttachmentIndependentAndSummarized()

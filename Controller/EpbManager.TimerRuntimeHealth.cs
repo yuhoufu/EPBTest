@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -326,6 +326,7 @@ namespace Controller
                 TryLogFieldRuntimeMetrics();
                 var nowUtc = DateTime.UtcNow;
                 InspectRecoveringRuntimeInvariants();
+                InspectExpectedExecutionProgress();
                 foreach (var pair in _timers.ToArray())
                 {
                     var channel = pair.Key;

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Diagnostics;
@@ -16,7 +16,7 @@ using DataOperation;
 
 namespace EpbDiskWriterTests
 {
-    internal static class Program
+    internal static partial class Program
     {
         private static int _passed;
 
@@ -46,6 +46,9 @@ namespace EpbDiskWriterTests
                     return 0;
                 }
 
+                RunV217PersistenceTests();
+                if (args.Length == 1 && args[0] == "--v217-stability")
+                { Console.WriteLine($"PASS {_passed}/{_passed}"); return 0; }
                 Run("重启后写指针连续", RestartRestoresWritePosition);
                 Run("running 圈重启后不覆盖", RestartAfterRunningCycle);
                 Run("Watchdog强制接管只作废旧running圈", WatchdogTakeoverAbortsInterruptedCycles);

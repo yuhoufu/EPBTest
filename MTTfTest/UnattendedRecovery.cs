@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -50,6 +50,7 @@ namespace MTEmbTest
         public string LastRecoveryLoadSha256 { get; set; }
         public bool Armed { get; set; }
         public bool RestartPending { get; set; }
+        public string NextRetryUtc { get; set; }
         public bool GracefulPaused { get; set; }
         public string PausedUtc { get; set; }
         public string AdaptiveProfilesSha256 { get; set; }
@@ -446,11 +447,10 @@ namespace MTEmbTest
                 }
 
                 var now = DateTime.UtcNow;
-                if (!TryParseUtc(checkpoint.UpdatedUtc, out var lastCheckpointUtc) ||
-                    now - lastCheckpointUtc > TimeSpan.FromMinutes(5))
+                if (!TryParseUtc(checkpoint.UpdatedUtc, out var lastCheckpointUtc))
                 {
                     DisarmUnsafe(checkpoint, "CheckpointExpiredBeforeRestart");
-                    error = "检查点已超过5分钟，拒绝自动续测。";
+                    error = "检查点时间格式无效，拒绝自动续测。";
                     return false;
                 }
                 if (string.Equals(checkpoint.ConfigurationSha256, "unavailable", StringComparison.OrdinalIgnoreCase) ||
@@ -466,17 +466,19 @@ namespace MTEmbTest
                     .ToList();
                 if (checkpoint.RestartHistoryUtc.Count >= EpbManager.UnattendedProcessRestartBudget)
                 {
-                    checkpoint.Armed = false;
                     checkpoint.RestartPending = false;
-                    checkpoint.LastReason = "RestartBudgetExhausted";
-                    checkpoint.UpdatedUtc = now.ToString("O", CultureInfo.InvariantCulture);
+                    var retryAt = ContinuousRecoveryPolicy.NextAllowedUtc(checkpoint.RestartHistoryUtc
+                        .Select(value => DateTime.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime()), now);
+                    checkpoint.NextRetryUtc = retryAt.ToString("O", CultureInfo.InvariantCulture);
+                    checkpoint.LastReason = "RecoveryCoolingDown";
                     SaveUnsafe(checkpoint);
-                    error = $"10分钟内已执行{EpbManager.UnattendedProcessRestartBudget}次自重启，重启预算耗尽。";
+                    error = "RecoveryCoolingDown:" + checkpoint.NextRetryUtc;
                     return false;
                 }
 
                 var nonce = Guid.NewGuid().ToString("N");
                 checkpoint.RestartHistoryUtc.Add(now.ToString("O", CultureInfo.InvariantCulture));
+                checkpoint.NextRetryUtc = null;
                 checkpoint.RestartPending = true;
                 checkpoint.RecoveryNonce = nonce;
                 checkpoint.LastRecoveryNonceSha256 = ComputeTextHash(nonce);
@@ -636,11 +638,10 @@ namespace MTEmbTest
                     error = "恢复检查点缺少V5根RunId，拒绝自动续测。";
                     return false;
                 }
-                if (!TryParseUtc(current.UpdatedUtc, out var updatedUtc) ||
-                    DateTime.UtcNow - updatedUtc > TimeSpan.FromMinutes(5))
+                if (!TryParseUtc(current.UpdatedUtc, out var updatedUtc))
                 {
                     DisarmUnsafe(current, "CheckpointExpired");
-                    error = "检查点已超过5分钟。";
+                    error = "检查点时间格式无效。";
                     return false;
                 }
                 if (config?.Test == null ||
@@ -1079,6 +1080,9 @@ namespace MTEmbTest
                     "//EpbRecords/Record/LatestStartTime | " +
                     "//EpbRecords/Record/RunTime | " +
                     "//EpbRecords/Record/RunCount | " +
+                    "//EpbRecords/Record/MechanicalCycleCount | " +
+                    "//EpbRecords/Record/ConsecutivePeriodOverrunCount | " +
+                    "//EpbRecords/Record/LastPeriodOverrunUtc | " +
                     "//EpbRecords/Record/Status");
                 if (runtimeFields != null)
                     foreach (XmlNode node in runtimeFields.Cast<XmlNode>().ToArray())
@@ -2264,6 +2268,17 @@ namespace MTEmbTest
                             out intent,
                             out var registrationError))
                     {
+                        if ((registrationError ?? string.Empty).StartsWith("RecoveryCoolingDown:", StringComparison.Ordinal))
+                        {
+                            await SafeStopOnlyAsync("RecoveryCoolingDown", correlationId).ConfigureAwait(false);
+                            var retryCheckpoint = UnattendedRunCheckpointStore.Load();
+                            var retryAt = DateTime.TryParse(retryCheckpoint?.NextRetryUtc,
+                                CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsedRetry)
+                                ? parsedRetry.ToUniversalTime() : DateTime.UtcNow.AddSeconds(30);
+                            await Task.Delay((int)Math.Min(30000, Math.Max(100, (retryAt - DateTime.UtcNow).TotalMilliseconds)),
+                                sequenceCancellation.Token).ConfigureAwait(false);
+                            continue;
+                        }
                         if (string.Equals(registrationError, "RunIdMismatch", StringComparison.Ordinal))
                         {
                             ProjectLogHub.Write(

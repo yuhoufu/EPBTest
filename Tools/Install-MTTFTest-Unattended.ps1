@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
-$shortcutName = 'MT EPB 试验系统 V2.16.lnk'
+$shortcutName = 'MT EPB 试验系统 V2.17.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
 $runtimeConfigNames = @(
     'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
@@ -154,12 +154,12 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
         @($identity.files).Count -eq 0) {
         throw "安装包身份不完整：$directoryFull"
     }
-    if ([string]$identity.recoveryArchitectureGeneration -ne 'EPB-V2.16' -or
-        [int]$identity.watchdogSchema -ne 6 -or
+    if ([string]$identity.recoveryArchitectureGeneration -ne 'EPB-V2.17' -or
+        [int]$identity.watchdogSchema -ne 7 -or
         [string]$identity.releaseStatus -ne 'FORMAL_RELEASE' -or
         -not [bool]$identity.deploymentApproved -or
         ([Version]$identity.fileVersion).Major -ne 2 -or
-        ([Version]$identity.fileVersion).Minor -ne 16 -or
+        ([Version]$identity.fileVersion).Minor -ne 17 -or
         @($identity.componentIdentities).Count -ne 8) {
         throw "拒绝旧许可、V3 混装或非正式包：$directoryFull"
     }
@@ -192,7 +192,7 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
     foreach ($actual in @(Get-ChildItem -LiteralPath $directoryFull -File -Recurse)) {
         $relative = $actual.FullName.Substring($prefix.Length).Replace('\','/')
         if ($actual.Name -like 'MTTFTest.EngineHost*' -or $actual.Name -like 'MTTFTest.RecoveryKernel*') {
-            throw "V2.16 禁止引入 V3 运行组件：$relative"
+            throw "V2.17 禁止引入 V3 运行组件：$relative"
         }
         if ($relative -in @('build-identity.json','SHA256SUMS.txt','MTTFTest.FirstRun.configured')) { continue }
         if (-not $names.Contains($relative)) { throw "发现清单外文件，拒绝混包：$relative" }
@@ -460,7 +460,7 @@ function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
     if ($null -eq $legacy -and (Test-Path -LiteralPath (Join-Path $stateRoot 'Migration\schema5-remaining-cycles-migration.json'))) { return }
 
     $migration = [ordered]@{
-        migrationSchemaVersion = 6
+        migrationSchemaVersion = 7
         sourceSchemaVersion = if ($null -eq $legacy) { 0 } else { [int]$legacy.SchemaVersion }
         migratedUtc = [DateTime]::UtcNow.ToString('O')
         safetyState = 'SafeIdleAlarmed'
@@ -835,7 +835,7 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     [void](Assert-InstalledPackageMatchesSource $source $root)
     Write-OperationStep 6 9 '配置程序目录和 ProgramData 权限。'
     Set-UnattendedAcl $root
-    Write-OperationStep 7 9 '安装 schema 6 监督服务、登录代理和自启动任务。'
+    Write-OperationStep 7 9 '安装 schema 7 监督服务、登录代理和自启动任务。'
     Install-ServiceAndAgent $root
     Write-OperationStep 8 9 '检查程序文件、服务和任务状态。'
     Assert-Health $root

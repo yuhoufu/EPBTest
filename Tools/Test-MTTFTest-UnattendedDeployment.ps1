@@ -161,8 +161,8 @@ $sessionLaunchClientText = [IO.File]::ReadAllText(
 $supervisorMainLaunchClientText = [IO.File]::ReadAllText(
     (Join-Path $repo 'MTTFTest.Watchdog\SupervisorMainLaunchClient.cs'), [Text.Encoding]::UTF8)
 if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
-    -not $supervisorProtocolText.Contains('public const int SchemaVersion = 6') -or
-    -not $sessionProtocolText.Contains('public const int SchemaVersion = 6') -or
+    -not $supervisorProtocolText.Contains('public const int SchemaVersion = 7') -or
+    -not $sessionProtocolText.Contains('public const int SchemaVersion = 7') -or
     -not $sessionAgentHostText.Contains('LaunchCapabilityAlreadyConsumed') -or
     -not $supervisorHostText.Contains('MainProcessStartUtcTicks') -or
     -not $supervisorHostText.Contains('SupervisorSafetyHandoffOldProcessIdentityMismatch') -or

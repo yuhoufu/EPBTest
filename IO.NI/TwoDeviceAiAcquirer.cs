@@ -2756,6 +2756,17 @@ namespace IO.NI
 
         public DaqFreshnessSnapshot GetDaqFreshnessSnapshot(string device, double maxAgeMs = 100)
         {
+            DaqFreshnessSnapshot snapshot = null;
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                snapshot = CaptureDaqFreshnessSnapshot(device, maxAgeMs);
+                if (snapshot.RejectionReason != "SnapshotGenerationChanged") return snapshot;
+            }
+            return snapshot;
+        }
+
+        private DaqFreshnessSnapshot CaptureDaqFreshnessSnapshot(string device, double maxAgeMs)
+        {
             if (string.IsNullOrWhiteSpace(device) ||
                 !_callbackTimingDiag.TryGetValue(device, out var diag))
                 return new DaqFreshnessSnapshot
@@ -2765,16 +2776,16 @@ namespace IO.NI
                     IsFresh = false
                 };
 
+            var generation = GetCurrentGeneration(device);
             var callbackTick = Interlocked.Read(ref diag.LastCallbackEntrySwTick);
             var enqueuedTick = Interlocked.Read(ref diag.LastControlEnqueuedSwTick);
             var processedTick = Interlocked.Read(ref diag.LastSampleCommitSwTick);
             var sampleTick = Interlocked.Read(ref diag.LastSampleMonotonicTicks);
-            var nowTick = Stopwatch.GetTimestamp();
+            var committed = DaqControlPublication.Capture(ref diag.CommittedPublication, out var nowTick);
             var ageMs = processedTick <= 0
                 ? double.PositiveInfinity
                 : (nowTick - processedTick) * 1000.0 / Stopwatch.Frequency;
             var processedUtcTicks = Interlocked.Read(ref diag.LastProcessedSampleUtcTicks);
-            var committed = Volatile.Read(ref diag.CommittedPublication);
             var snapshot = new DaqFreshnessSnapshot
             {
                 Device = device,
@@ -2834,7 +2845,12 @@ namespace IO.NI
                     : default
             };
             snapshot.IsFresh = false;
-            committed?.Apply(snapshot, GetCurrentGeneration(device), nowTick, Math.Max(1, maxAgeMs));
+            committed?.Apply(snapshot, generation, nowTick, Math.Max(1, maxAgeMs));
+            if (generation != GetCurrentGeneration(device))
+            {
+                snapshot.IsFresh = false;
+                snapshot.RejectionReason = "SnapshotGenerationChanged";
+            }
             return snapshot;
         }
 
@@ -3616,8 +3632,10 @@ namespace IO.NI
                         // 执行 ConvertToEngineeringInPlace，因此必须等快速代表值计算、
                         // 质量检查和控制环 RawTail 深复制全部完成后，才发布同一数组引用。
                         // 此调用是所有权转移点；调用后本回调不得再读写 raw。
-                        if (!dropStaleBatch)
-                            EnqueueForProcessing(new Item(
+                        // Control may reject a stale sample, but every source batch
+                        // still belongs to the raw evidence stream. An OFF motor
+                        // can have an open learning/formal attempt awaiting its tail.
+                        EnqueueForProcessing(new Item(
                             device,
                             generation,
                             sequence,

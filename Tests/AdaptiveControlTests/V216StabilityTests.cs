@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -100,8 +100,8 @@ namespace AdaptiveControlTests
             for (var tick = 0; tick < 60; tick++)
                 Assert(SupervisorSessionRetirement.SuppressesRestart("Retired") &&
                     SupervisorSessionRetirement.SuppressesRestart("Blocked"), "退休状态在监控轮询中复活");
-            Assert(SupervisorProtocol.CompatibilityFamily == "EPB-V2.16" &&
-                SupervisorProtocol.PipeName.EndsWith("V216", StringComparison.Ordinal), "协议混入旧组件");
+            Assert(SupervisorProtocol.CompatibilityFamily == "EPB-V2.17" &&
+                SupervisorProtocol.PipeName.EndsWith("V217", StringComparison.Ordinal), "协议混入旧组件");
             var changed = new WatchdogSafetyHandoffReceipt { SessionGeneration = 19, Nonce = "must-not-log-capability" };
             var differences = SupervisorSafetyAuthorityStore.DescribeIdentityDifferences(handoff, changed);
             Assert(differences.Contains("SessionGeneration") && differences.Contains("Nonce") &&

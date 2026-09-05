@@ -85,7 +85,7 @@ if (-not $PSCmdlet.ShouldProcess($root, "维护操作 $Mode；保留生产数据
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw '请以管理员身份运行。' }
 [void](New-Item -ItemType Directory -Path $stateRoot -Force)
-$mutex = New-Object Threading.Mutex($false, 'Global\MTTFTest.Maintenance.V216')
+$mutex = New-Object Threading.Mutex($false, 'Global\MTTFTest.Maintenance.V217')
 $owned = $false
 try {
     $owned = $mutex.WaitOne(0)

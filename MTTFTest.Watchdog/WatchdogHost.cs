@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Globalization;
@@ -102,6 +102,7 @@ namespace MTTFTest.Watchdog
         public long SafetyPrerequisiteNextRetryUtcTicks { get; set; }
         public long RelaunchGeneration { get; set; }
         public int CircuitProbeAttempt { get; set; }
+        public long NextRecoveryRetryUtcTicks { get; set; }
         public bool RecoveryBlocked { get; set; }
         public string RecoveryFailureCode { get; set; }
         public bool RecoveryFailurePermanent { get; set; }
@@ -854,6 +855,8 @@ namespace MTTFTest.Watchdog
                 RecoveryFirstFailureUtcTicks = previous?.RecoveryFirstFailureUtcTicks ?? 0,
                 RecoveryLastFailureUtcTicks = previous?.RecoveryLastFailureUtcTicks ?? 0,
                 RecoveryBlockedUtcTicks = previous?.RecoveryBlockedUtcTicks ?? 0,
+                CircuitProbeAttempt = previous?.CircuitProbeAttempt ?? 0,
+                NextRecoveryRetryUtcTicks = previous?.NextRecoveryRetryUtcTicks ?? 0,
                 LastRecoveryCommitRunId = previous?.LastRecoveryCommitRunId,
                 LastReason = previous?.LastReason,
                 ManualStopRequested = previous?.ManualStopRequested == true,
@@ -4609,6 +4612,8 @@ namespace MTTFTest.Watchdog
                         // could consume an action whose launch body never ran.
                         // RegisterRecoveryFailure is the single strict-V4
                         // failure transaction and closes the active permit.
+                        if (ContinuousRecoveryPolicy.TryReadRetryUtc(ex.GetBaseException().Message, out var serviceRetryUtc))
+                            lock (_journalGate) _journal.NextRecoveryRetryUtcTicks = serviceRetryUtc.ToUniversalTime().Ticks;
                         var failureDecision = RegisterRecoveryFailure(
                             "RecoveryLaunchFailed:" + ex.GetBaseException().Message,
                             RecoveryFailurePolicy.Classify(
@@ -5303,8 +5308,7 @@ namespace MTTFTest.Watchdog
                     if (result.Blocked ||
                         result.TransitionStatus == DurableAuthorityTransitionStatus.Unproven)
                     {
-                        _journal.RecoveryBlocked = true;
-                        _journal.RecoveryFailurePermanent = true;
+                        MarkRecoveryBlockedLocked(_journal.LastReason);
                     }
                     try { TryPersistJournalSnapshotLocked(); } catch { }
                     return false;
@@ -5317,8 +5321,7 @@ namespace MTTFTest.Watchdog
                 {
                     _journal.LastReason =
                         "ReplacementTransactionPersistFailed:CheckpointCommitted";
-                    _journal.RecoveryBlocked = true;
-                    _journal.RecoveryFailurePermanent = true;
+                    MarkRecoveryBlockedLocked(_journal.LastReason);
                     try { TryPersistJournalSnapshotLocked(); } catch { }
                     return false;
                 }
@@ -5486,12 +5489,15 @@ namespace MTTFTest.Watchdog
         private void MarkRecoveryBlockedLocked(string reason)
         {
             _journal.RecoveryBlocked = true;
-            _journal.RecoveryFailurePermanent = true;
+            _journal.RecoveryFailurePermanent = _journal.RecoveryFailurePermanent ||
+                !ContinuousRecoveryPolicy.CanRetrySoftwareFailure(reason, false);
+            if (string.IsNullOrWhiteSpace(_journal.RecoveryFailureCode)) _journal.RecoveryFailureCode = reason;
             _journal.LastReason = reason ?? string.Empty;
             if (string.IsNullOrWhiteSpace(_journal.RecoveryFailureFingerprint))
                 _journal.RecoveryFailureFingerprint = RecoveryFailurePolicy.BuildFingerprint(
                     _journal.RecoveryFailureCode ?? reason);
             _journal.RecoveryBlockedUtcTicks = DateTime.UtcNow.Ticks;
+            ThreadPool.QueueUserWorkItem(_ => { try { ScheduleNextCircuitHalfOpen(); } catch { } });
         }
 
         private void EnterRelaunchCircuitOpen(string fingerprint, int consecutiveCount, string detail)
@@ -5537,11 +5543,7 @@ namespace MTTFTest.Watchdog
             string failureCode,
             bool permanent)
         {
-            if (permanent || string.IsNullOrWhiteSpace(failureCode)) return false;
-            return failureCode.StartsWith("RecoveryLaunchFailed", StringComparison.Ordinal) ||
-                   failureCode.StartsWith("RecoveryAttachFailed", StringComparison.Ordinal) ||
-                   failureCode.StartsWith("RecoveryBootstrapStartupFailed", StringComparison.Ordinal) ||
-                   failureCode.StartsWith("RecoveryProcessExitedBeforeBatchCommit", StringComparison.Ordinal);
+            return ContinuousRecoveryPolicy.CanRetrySoftwareFailure(failureCode, permanent);
         }
 
         internal static bool ShouldProbeCircuitHalfOpen(bool recoveryBlocked, bool attached)
@@ -5570,7 +5572,8 @@ namespace MTTFTest.Watchdog
                 failureCode = _journal.RecoveryFailureCode;
                 permanent = _journal.RecoveryFailurePermanent;
             }
-            if (!IsAutomaticHalfOpenEligible(failureCode, permanent))
+            if (_journal.ManualStopRequested || IsSessionRevoked() ||
+                !IsAutomaticHalfOpenEligible(failureCode, permanent))
             {
                 Interlocked.Exchange(ref _nextCircuitHalfOpenTimestamp, 0);
                 Interlocked.Exchange(ref _circuitHalfOpenStarted, 0);
@@ -5586,9 +5589,21 @@ namespace MTTFTest.Watchdog
                     activeDirectory,
                     "LastKnownGood",
                     StringComparison.OrdinalIgnoreCase));
-            Interlocked.Exchange(
-                ref _nextCircuitHalfOpenTimestamp,
-                Stopwatch.GetTimestamp() + seconds * Stopwatch.Frequency);
+            DateTime retryUtc;
+            lock (_journalGate)
+            {
+                var nowUtc = DateTime.UtcNow;
+                retryUtc = _journal.NextRecoveryRetryUtcTicks > nowUtc.Ticks &&
+                           _journal.NextRecoveryRetryUtcTicks <= DateTime.MaxValue.Ticks
+                    ? new DateTime(_journal.NextRecoveryRetryUtcTicks, DateTimeKind.Utc)
+                    : nowUtc.AddSeconds(seconds);
+                _journal.NextRecoveryRetryUtcTicks = retryUtc.Ticks;
+                _journal.LastReason = "RecoveryCoolingDown;NextRetryUtc=" + retryUtc.ToString("O");
+                // A scheduling record must survive the independent Host being restarted.
+                TryPersistJournalSnapshotLocked();
+            }
+            Interlocked.Exchange(ref _nextCircuitHalfOpenTimestamp,
+                Stopwatch.GetTimestamp() + (long)(Math.Max(0, (retryUtc - DateTime.UtcNow).TotalSeconds) * Stopwatch.Frequency));
             return true;
         }
 
@@ -5610,7 +5625,8 @@ namespace MTTFTest.Watchdog
                 count = _journal.ConsecutiveStartupFailures;
                 permanent = _journal.RecoveryFailurePermanent;
             }
-            if (!IsAutomaticHalfOpenEligible(failureCode, permanent))
+            if (_journal.ManualStopRequested || IsSessionRevoked() ||
+                !IsAutomaticHalfOpenEligible(failureCode, permanent))
             {
                 Interlocked.Exchange(ref _nextCircuitHalfOpenTimestamp, 0);
                 Interlocked.Exchange(ref _circuitHalfOpenStarted, 0);
@@ -5621,6 +5637,7 @@ namespace MTTFTest.Watchdog
             {
                 try
                 {
+                    if (_journal.ManualStopRequested || IsSessionRevoked()) return;
                     var opened = _relaunchCoordinator.TryAutomaticHalfOpen(
                         fingerprint,
                         count);
@@ -5666,6 +5683,7 @@ namespace MTTFTest.Watchdog
                         "RecoveryCircuitHalfOpenApproved",
                         $"Generation={permit.Generation};PermitId={permit.PermitId};" +
                         $"PreviousFailureCount={count}");
+                    if (_journal.ManualStopRequested || IsSessionRevoked()) return;
                     BeginSafetyHandoff(safetyReceipt);
                     BeginRelaunchAfterExit(permit.Generation);
                 }
@@ -5807,12 +5825,13 @@ namespace MTTFTest.Watchdog
             _transitionWindow.BeginTransition();
             _transitionWindow.Show(
                 "自动恢复已阻断，设备保持安全",
-                $"恢复失败已进入持久终态（Code={_journal.RecoveryFailureCode ?? "Unknown"}，" +
+                $"恢复状态（Code={_journal.RecoveryFailureCode ?? "Unknown"}，" +
                 $"Count={Math.Max(1, _journal.ConsecutiveStartupFailures)}）。" +
                 (IsAutomaticHalfOpenEligible(
                     _journal.RecoveryFailureCode,
                     _journal.RecoveryFailurePermanent)
-                    ? "设备持续断能；冷却后将自动执行安全复核和半开重试，无需人工点击。"
+                    ? "设备持续断能；下次安全复核时间：" +
+                      (_journal.NextRecoveryRetryUtcTicks > 0 ? new DateTime(_journal.NextRecoveryRetryUtcTicks, DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "正在计算") + "。"
                     : "证据或配置无法安全验证，系统保持断能并持续告警。") +
                 "可点击下方按钮停止并关闭。\r\n" +
                 (detail ?? string.Empty),
@@ -7196,7 +7215,10 @@ namespace MTTFTest.Watchdog
                     receipt.RelaunchPermitGeneration,
                     receipt.RelaunchPermitId);
                 if (receipt.State == WatchdogSafetyHandoffState.Failed)
+                {
+                    CoolDownTerminalSafetyHandoff(receipt);
                     return;
+                }
                 if (receipt.State == WatchdogSafetyHandoffState.Requested)
                 {
                     receipt.State = WatchdogSafetyHandoffState.Accepted;
@@ -7278,12 +7300,32 @@ namespace MTTFTest.Watchdog
                             receipt.Detail,
                             receipt.FailureDomain,
                             receipt);
+                        CoolDownTerminalSafetyHandoff(receipt);
+                        return;
+                    }
+
+                    if (receipt.IsTerminal)
+                    {
+                        Record("SafetyHandoffTerminalWithoutProof", receipt.Detail);
+                        _unattendedAlarmSink.Publish("P0", "SafetyProofIncomplete", receipt.Detail,
+                            receipt.FailureDomain, receipt);
+                        CoolDownTerminalSafetyHandoff(receipt);
                         return;
                     }
 
                     while (IsCurrentProcessAlive() && !_stop.IsCancellationRequested)
                         await Task.Delay(250).ConfigureAwait(false);
                     if (_stop.IsCancellationRequested) return;
+
+                    // The authority can become terminal while waiting for the old main to exit.
+                    // Never launch from the pre-wait projection (or regenerate a terminal worker).
+                    if (!TryReadExactSafetyHandoff(handoffId, nonce, authorityToken,
+                            out receipt, out authorityReadFailure))
+                    {
+                        await Task.Delay(1000).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (receipt.IsTerminal) continue;
 
                     if (receipt.State == WatchdogSafetyHandoffState.WorkerStarted &&
                         ProbeProcessIdentity(
@@ -7428,6 +7470,16 @@ namespace MTTFTest.Watchdog
             {
                 Interlocked.Exchange(ref _safetyHandoffStarted, 0);
             }
+        }
+
+        private void CoolDownTerminalSafetyHandoff(WatchdogSafetyHandoffReceipt receipt)
+        {
+            if (receipt == null || _journal.ManualStopRequested || IsSessionRevoked() ||
+                receipt.RelaunchDisposition != WatchdogRelaunchDisposition.PreserveApprovedPermit) return;
+            var code = string.IsNullOrWhiteSpace(receipt.FailureCode) ? "SafetyProofIncomplete" : receipt.FailureCode;
+            var failure = RegisterRecoveryFailure(code,
+                RecoveryFailurePolicy.Classify(code, _journal.RecoveryFailurePermanent, receipt.Detail));
+            EnterRelaunchCircuitOpen(failure.Fingerprint, failure.ConsecutiveCount, code);
         }
 
         private bool TryReadExactSafetyHandoff(

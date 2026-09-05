@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -893,6 +893,14 @@ namespace Controller
                     }
                     return;
                 }
+                catch (DaqSequenceGapException ex)
+                {
+                    var correlation = EnsureCorrelation(q);
+                    Interlocked.Exchange(ref q.PauseLatched, 1);
+                    Publish(batch, q, DaqPersistenceState.Paused, "DaqSequenceGap",
+                        ex.Message + "；异常圈缺口已耐久提交，同批健康通道继续写入。", correlation);
+                    // Retry the exact batch against the committed abnormal terminal.
+                }
                 catch (ActiveCycleDataLimitExceededException ex)
                 {
                     // EpbDiskWriter has already latched the offending channel and rolled back the
@@ -1263,7 +1271,7 @@ namespace Controller
         }
 
         // Caller holds q.SuppressionGate.
-        private static bool TryHandleSuppressionUnderGate(
+        private bool TryHandleSuppressionUnderGate(
             DeviceQueue q,
             long sequence,
             bool closeFiniteWindow)
@@ -1277,7 +1285,10 @@ namespace Controller
                 (suppressThroughSequence == long.MaxValue ||
                  sequence <= suppressThroughSequence))
             {
-                // Explicitly excluded batches are terminally handled but not physically written.
+                // Production raw evidence continues through the durable writer. The cycle's
+                // frozen end boundary controls membership; control suppression cannot discard raw.
+                if (_recorder() is IRawJournalCycleRecorder) return false;
+                // Compatibility adapters without a journal retain explicit excluded-tail semantics.
                 RecordSuppressedUnderGate(q, sequence);
                 MarkTerminallyHandled(q, sequence);
                 return true;

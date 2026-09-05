@@ -2,11 +2,11 @@
 param()
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$temp = Join-Path ([IO.Path]::GetTempPath()) ('EPB V216 中文 & () ! 测试-' + [Guid]::NewGuid().ToString('N'))
+$temp = Join-Path ([IO.Path]::GetTempPath()) ('EPB V217 中文 & () ! 测试-' + [Guid]::NewGuid().ToString('N'))
 $passed = 0
 function Check([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
-    $script:passed++; Write-Output "PASS V216Deployment $Message"
+    $script:passed++; Write-Output "PASS V217Deployment $Message"
 }
 function Expect-Failure([scriptblock]$Action, [string]$Message) {
     $failed = $false
@@ -25,11 +25,11 @@ function Refresh-FixtureIdentity([string]$Path) {
     $files = @(Get-ChildItem -LiteralPath $Path -File | Where-Object { $_.Name -ne 'build-identity.json' } | ForEach-Object {
         @{ name=$_.Name; bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash }
     })
-    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.16.0.0'} })
+    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.17.0.0'} })
     $map = New-Object 'System.Collections.Generic.SortedDictionary[string,string]' ([StringComparer]::Ordinal)
     foreach ($file in $files) { $map.Add($file.name, (Join-Path $Path $file.name)) }
     @{ gitCommit=('a'*40); packageContentSha256=(Get-DeploymentAggregateHash $map); files=$files; componentIdentities=$components;
-        fileVersion='2.16.0.0'; recoveryArchitectureGeneration='EPB-V2.16'; watchdogSchema=6;
+        fileVersion='2.17.0.0'; recoveryArchitectureGeneration='EPB-V2.17'; watchdogSchema=7;
         releaseStatus='FORMAL_RELEASE'; deploymentApproved=$true } | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $Path 'build-identity.json') -Encoding UTF8
 }
@@ -145,7 +145,7 @@ try {
             } finally { $process.Dispose() }
         }
     } finally { $env:MTTFTEST_QUICKDEPLOY_PARSE_ONLY=$saved }
-    Write-Output "PASS V216Deployment $passed/$passed (isolated filesystem; no SCM or hardware mutation)"
+    Write-Output "PASS V217Deployment $passed/$passed (isolated filesystem; no SCM or hardware mutation)"
 }
 finally {
     $resolved = [IO.Path]::GetFullPath($temp)

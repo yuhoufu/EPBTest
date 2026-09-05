@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -67,6 +67,7 @@ namespace MTTFTest.Watchdog
                            PipeOptions.None))
                 {
                     pipe.Connect(1500);
+                    using (var deadline = new PipeExchangeDeadline(pipe, 10000))
                     using (var writer = new BinaryWriter(
                                pipe,
                                new UTF8Encoding(false),

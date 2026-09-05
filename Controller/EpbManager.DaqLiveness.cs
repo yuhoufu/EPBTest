@@ -161,6 +161,13 @@ namespace Controller
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
             }
 
+            // A reset crossing the snapshot is not a measurement of elapsed
+            // time. Control admission still rejects IsFresh=false; the next
+            // coherent observation decides whether an actual DAQ trip is due.
+            if (freshness.RejectionReason == "SnapshotGenerationChanged")
+                return new DaqLivenessDecision(false, "DaqSnapshotRetry",
+                    "DAQ快照读取跨代，保持上电准入关闭并等待一致快照。", warn: true);
+
             if (_generation != freshness.Generation)
             {
                 _generation = freshness.Generation;
@@ -252,6 +259,9 @@ namespace Controller
                 trip ? "DaqCallbackStale" : "DaqLivenessSuspect",
                 $"CallbackAge={freshness.CallbackAgeMs:F1}ms " +
                 $"SampleAge={freshness.SampleAgeMs:F1}ms " +
+                $"ControlEnqueueAge={freshness.ControlEnqueueAgeMs:F1}ms " +
+                $"ControlProcessedAge={freshness.ControlProcessedAgeMs:F1}ms " +
+                $"ObservedAge={observedAgeMs:F1}ms Rejection={freshness.RejectionReason} " +
                 $"BufferedSamples={freshness.BufferedSamples} " +
                 $"ReaderLag={freshness.ReaderLagState} Generation={freshness.Generation} " +
                 $"Produced={freshness.LastProducedSequence} Confirmations={_tripConfirmations}/1",

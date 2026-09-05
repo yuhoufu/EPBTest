@@ -19,7 +19,7 @@ function Get-EvidenceSourceScan([string]$Source) {
     }) }
 }
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'MTTFTest' }
-if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Path ([Environment]::GetFolderPath('Desktop')) ('EPB-V216-Evidence-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Path ([Environment]::GetFolderPath('Desktop')) ('EPB-V217-Evidence-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $output) { throw '采证目录已存在，拒绝覆盖。' }
 [void](New-Item -ItemType Directory -Path $output)

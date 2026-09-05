@@ -26,6 +26,9 @@ namespace DataOperation;
 /// </summary>
 public sealed class DataRetentionPolicy
 {
+    /// <summary>尚未应用到耐久环形文件的原始日志上限；容量不足时拒绝新写入并保留证据。</summary>
+    public long RawJournalMaxBytes { get; set; } = 256L * 1024 * 1024;
+
     /// <summary>Latest 导出格式。直接 new 策略时保留旧双格式兼容；EXE 配置解析默认为 CsvOnly。</summary>
     public StorageFormatLevel LatestStorageLevel { get; set; } = StorageFormatLevel.CsvAndBin;
 
@@ -140,7 +143,7 @@ public enum StopTrigger
 ///     EpbDiskWriter：12 路 EPB 的内存映射数据写入 + SQLite 圈级索引 + 最新 N 圈保留/落盘。<br />
 ///     —— 已改为“分块视图（窗口化映射）”，避免整文件映射导致“内存资源不足”。 ——
 /// </summary>
-public sealed class EpbDiskWriter : IDisposable
+public sealed partial class EpbDiskWriter : IDisposable
 {
     private const string CSV_HEADER =
         "Timestamp,RelativeTimeSeconds,Cycle,SampleIndex,EpbCurrent,GroupPressure";
@@ -176,6 +179,7 @@ public sealed class EpbDiskWriter : IDisposable
         public DateTime CurrentCycleStartUtc;
         public DateTime? CurrentCycleEndUtc;
         public bool SequenceBoundaryEnabled;
+        public bool DataGapLatched;
         public string CurrentCycleDevice = string.Empty;
         public long CurrentCycleGeneration;
         public long CurrentCycleStartAfterSequence;
@@ -248,6 +252,7 @@ public sealed class EpbDiskWriter : IDisposable
     public StorageFormatLevel AlarmStorageLevel =>
         NormalizeStorageLevel(_policy.AlarmStorageLevel, StorageFormatLevel.CsvAndBin);
 
+    private readonly FileStream[] _ringFiles = new FileStream[EPB_COUNT + 1];
     private readonly MemoryMappedFile[] _mmfs = new MemoryMappedFile[EPB_COUNT + 1]; // 1..12
     private readonly MemoryMappedViewAccessor[] _views = new MemoryMappedViewAccessor[EPB_COUNT + 1];
     private readonly EpbState[] _states = new EpbState[EPB_COUNT + 1];
@@ -326,11 +331,11 @@ public sealed class EpbDiskWriter : IDisposable
         // SQLite 连接：index.db 放在 _indexDir 下
         var dbPath = Path.Combine(_indexDir, _policy.IndexDbFile ?? "index.db");
         _conn = new SQLiteConnection(
-            $"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous=Normal");
+            $"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous=Full");
         _conn.Open();
         RecoverAndValidateSqliteWal();
         InitSchema();
-        RecoverInterruptedCyclesOnStartup();
+        OpenRawJournal();
 
         // 12 路映射 + 状态
         for (var ch = 1; ch <= EPB_COUNT; ch++)
@@ -342,11 +347,10 @@ public sealed class EpbDiskWriter : IDisposable
 
             // 保留同一数据根目录的跨进程互斥，同时避免不同项目/测试目录共享
             // EPB1_MMF...EPB12_MMF 而互相阻塞。
+            _ringFiles[ch] = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
             _mmfs[ch] = MemoryMappedFile.CreateFromFile(
-                path,
-                FileMode.Open,
-                $"EPB_{_mappingScope}_{ch}_MMF",
-                _fileBytes);
+                _ringFiles[ch], $"EPB_{_mappingScope}_{ch}_MMF", _fileBytes,
+                MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, leaveOpen: true);
 
             // 视图延迟到通道第一次真正读/写时才创建。未启用通道不占用视图地址空间。
             _views[ch] = null;
@@ -358,6 +362,11 @@ public sealed class EpbDiskWriter : IDisposable
                 ch,
                 _states[ch].CapacityRecords);
         }
+        ReplayRawJournal();
+        RecoverInterruptedCyclesOnStartup();
+        using var receipts = _conn.CreateCommand();
+        receipts.CommandText = "UPDATE cycle_receipts SET status=(SELECT status FROM epb_cycles c WHERE c.epb_id=cycle_receipts.epb_id AND c.cycle_number=cycle_receipts.cycle_number) WHERE status='running' AND EXISTS(SELECT 1 FROM epb_cycles c WHERE c.epb_id=cycle_receipts.epb_id AND c.cycle_number=cycle_receipts.cycle_number);";
+        receipts.ExecuteNonQuery();
     }
 
     /// <summary>
@@ -456,6 +465,11 @@ public sealed class EpbDiskWriter : IDisposable
             }
         }
 
+        lock (_rawJournalGate)
+        {
+            _rawJournal?.Dispose();
+            _rawJournal = null;
+        }
         // 1) 关闭 12 路内存映射视图和文件
         for (var ch = 1; ch <= EPB_COUNT; ch++)
         {
@@ -474,6 +488,7 @@ public sealed class EpbDiskWriter : IDisposable
                 try
                 {
                     _mmfs[ch]?.Dispose();
+                    _ringFiles[ch]?.Dispose();
                 }
                 catch
                 {
@@ -678,6 +693,7 @@ public sealed class EpbDiskWriter : IDisposable
     private static void ResetSequenceBoundary(EpbState state)
     {
         state.SequenceBoundaryEnabled = false;
+        state.DataGapLatched = false;
         state.CurrentCycleDevice = string.Empty;
         state.CurrentCycleGeneration = 0;
         state.CurrentCycleStartAfterSequence = 0;
@@ -691,6 +707,7 @@ public sealed class EpbDiskWriter : IDisposable
         out string validationError)
     {
         validationError = string.Empty;
+        if (state.DataGapLatched) { validationError = "DurableDaqSequenceGap"; return false; }
         if (!state.SequenceBoundaryEnabled) return true;
         if (state.CurrentCyclePreTriggerSamples < MINIMUM_PRE_TRIGGER_SAMPLE_COUNT)
         {
@@ -1589,20 +1606,11 @@ public sealed class EpbDiskWriter : IDisposable
                 WriteBatch(epbId, tsUtc, epbCurrents, groupPressures, count);
                 return;
             }
-            if (!string.Equals(state.CurrentCycleDevice, device, StringComparison.OrdinalIgnoreCase) ||
-                state.CurrentCycleGeneration != generation)
-                throw new InvalidDataException(
-                    $"EPB[{epbId}] 圈跨越DAQ代次或设备。" +
-                    $"Expected={state.CurrentCycleDevice}/{state.CurrentCycleGeneration} " +
-                    $"Actual={device}/{generation} Sequence={sequence}。");
+            ValidateOrTerminateSequenceGap(epbId, state, device, generation, sequence);
             if (state.CurrentCycleEndSequence.HasValue && sequence > state.CurrentCycleEndSequence.Value)
                 return;
-            if (state.CurrentCycleLastSequence > 0 && sequence <= state.CurrentCycleLastSequence)
+            if (state.CurrentCycleGeneration == generation && state.CurrentCycleLastSequence > 0 && sequence <= state.CurrentCycleLastSequence)
                 return;
-            if (state.CurrentCycleLastSequence > 0 && sequence != state.CurrentCycleLastSequence + 1)
-                throw new InvalidDataException(
-                    $"EPB[{epbId}] 圈内DAQ批次序号不连续。" +
-                    $"Previous={state.CurrentCycleLastSequence} Current={sequence}。");
             if (state.ActiveCycleLimitLatched || count == 0) return;
             if (_policy.MaxActiveCycleRecords > 0 &&
                 state.CurrentSampleIndex + count > _policy.MaxActiveCycleRecords)
@@ -1743,6 +1751,21 @@ public sealed class EpbDiskWriter : IDisposable
         if (channelCount < 0 || channelCount > channels.Length)
             throw new ArgumentOutOfRangeException(nameof(channelCount));
         if (channelCount == 0) return;
+        if (boundary.HasValue)
+        {
+            // Exclude only structurally invalid members after their exact evidence and gap
+            // are durable. Never acknowledge a healthy peer until its own write succeeds.
+            var validCount = 0;
+            var valid = new EpbChannelDiskBatch[channelCount];
+            for (var i = 0; i < channelCount; i++)
+                if (ValidateOrQuarantineBatch(boundary.Value, timestampsUtc, channels[i], sampleCount))
+                    valid[validCount++] = channels[i];
+            if (validCount != channelCount)
+            {
+                if (validCount > 0) WriteDeviceBatchCore(boundary, timestampsUtc, valid, validCount, sampleCount);
+                return;
+            }
+        }
 
         // 设备通道通常已按 EPB 编号排列；插入排序只处理 2~4 个描述符，
         // 不再为每个 10 ms 批次创建 Where/OrderBy/ToArray 对象图。
@@ -1779,6 +1802,13 @@ public sealed class EpbDiskWriter : IDisposable
                 lockedStates[acquired++] = state;
             }
 
+            // Commit deterministic gaps before entering the optional progress transaction.
+            if (boundary.HasValue)
+                for (var i = 0; i < channelCount; i++)
+                    ValidateOrTerminateSequenceGap(channels[i].EpbId, lockedStates[i],
+                        boundary.Value.Device, boundary.Value.Generation, boundary.Value.Sequence);
+            if (boundary.HasValue)
+                StageDeviceRawJournal(boundary.Value, timestampsUtc, channels, channelCount, sampleCount);
             var needsProgressTransaction = false;
             var lastTimestampUtc = sampleCount > 0
                 ? timestampsUtc[Math.Min(sampleCount, timestampsUtc.Length) - 1]
@@ -1846,6 +1876,8 @@ public sealed class EpbDiskWriter : IDisposable
                         WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
                 }
             }
+            for (var i = 0; i < channelCount; i++)
+                CheckpointRawJournal(channels[i].EpbId, force: false);
         }
         catch
         {
@@ -3130,7 +3162,7 @@ public sealed class EpbDiskWriter : IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 SELECT COALESCE(MAX(cycle_number), 0)
-  FROM {TABLE_CYCLES}
+  FROM (SELECT epb_id,cycle_number FROM {TABLE_CYCLES} UNION SELECT epb_id,cycle_number FROM cycle_receipts)
  WHERE epb_id=@e
    AND cycle_number > 0";
         cmd.Parameters.AddWithValue("@e", epbId);
@@ -3147,7 +3179,7 @@ SELECT COALESCE(MAX(cycle_number), 0)
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 SELECT COALESCE(MIN(cycle_number), 0)
-  FROM {TABLE_CYCLES}
+  FROM (SELECT epb_id,cycle_number FROM {TABLE_CYCLES} UNION SELECT epb_id,cycle_number FROM cycle_receipts)
  WHERE epb_id=@e
    AND cycle_number < 0";
         cmd.Parameters.AddWithValue("@e", epbId);
@@ -3305,6 +3337,7 @@ SELECT COUNT(1)
 
     private void WriteRecordBatch(int epbId, EpbState state, SampleRecord[] records, int count)
     {
+        AppendRawJournal(epbId, state, records, count);
         var startIndex = state.TotalWritten % state.CapacityRecords;
         var firstCount = (int)Math.Min(count, state.CapacityRecords - startIndex);
         WriteRecordSegment(epbId, startIndex, records, 0, firstCount);
@@ -3505,23 +3538,7 @@ UPDATE {TABLE_CYCLES}
     /// <summary>持久化“夹紧+释放已经完成”的物理事实；不依赖该圈最终证据状态。</summary>
     public void MarkMechanicalCycleCompleted(int epbId, int cycleNumber, DateTime completedUtc)
     {
-        if (cycleNumber == 0)
-            throw new ArgumentOutOfRangeException(nameof(cycleNumber), "机械完成圈必须有正式或学习圈号。");
-        lock (_dbGate)
-        {
-            using var cmd = _conn.CreateCommand();
-            cmd.CommandText = $@"
-UPDATE {TABLE_CYCLES}
-   SET mechanical_completed=1,
-       mechanical_completed_at=COALESCE(mechanical_completed_at,@completed)
- WHERE epb_id=@e AND cycle_number=@c";
-            cmd.Parameters.AddWithValue("@completed", completedUtc.ToLocalTime().ToString("o"));
-            cmd.Parameters.AddWithValue("@e", epbId);
-            cmd.Parameters.AddWithValue("@c", cycleNumber);
-            if (cmd.ExecuteNonQuery() != 1)
-                throw new InvalidOperationException(
-                    $"EPB[{epbId}] Cycle={cycleNumber} 机械完成事实没有对应数据库圈边界。");
-        }
+        TryRecordMechanicalCompletion(epbId, cycleNumber, completedUtc);
     }
 
     public long GetMechanicalCycleCompletedCount(int epbId)
@@ -3530,8 +3547,8 @@ UPDATE {TABLE_CYCLES}
         {
             using var cmd = _conn.CreateCommand();
             cmd.CommandText = $@"
-SELECT COUNT(*) FROM {TABLE_CYCLES}
- WHERE epb_id=@e AND mechanical_completed=1";
+SELECT COUNT(*) + COALESCE((SELECT legacy_offset FROM mechanical_baselines WHERE epb_id=@e),0) FROM cycle_receipts
+ WHERE epb_id=@e AND mechanical=1";
             cmd.Parameters.AddWithValue("@e", epbId);
             return Math.Max(0L, Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture));
         }
@@ -3646,11 +3663,13 @@ VALUES(@e,@c,@st,@pos,'running',0);";
 
     private void MarkCycleCompleted(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
     {
+        CheckpointRawJournal(epbId, force: true);
         ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, "completed");
     }
 
     private void MarkCycleAlarm(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
     {
+        CheckpointRawJournal(epbId, force: true);
         ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, "alarm");
     }
 
@@ -3720,7 +3739,12 @@ UPDATE {TABLE_CYCLES}
             cmd.Parameters.AddWithValue("@e", epbId);
             cmd.Parameters.AddWithValue("@c", cycleNumber);
             var affected = cmd.ExecuteNonQuery();
-            if (affected == 1) return;
+            if (affected == 1)
+            {
+                if (!string.Equals(status, "running", StringComparison.OrdinalIgnoreCase))
+                    RecordCycleTerminalReceipt(epbId, cycleNumber);
+                return;
+            }
 
             using var inspect = _conn.CreateCommand();
             inspect.Transaction = _activeBatchTransaction;
@@ -3731,6 +3755,13 @@ SELECT status FROM {TABLE_CYCLES}
             inspect.Parameters.AddWithValue("@e", epbId);
             inspect.Parameters.AddWithValue("@c", cycleNumber);
             var existing = Convert.ToString(inspect.ExecuteScalar(), CultureInfo.InvariantCulture);
+            if (string.Equals(existing, "data_gap", StringComparison.OrdinalIgnoreCase))
+            {
+                RecordCycleTerminalReceipt(epbId, cycleNumber);
+                if (status == "completed" || status == "learning_completed" || status == "qualification_completed")
+                    throw new InvalidDataException("AbnormalCycleCannotComplete: original gap retained");
+                return;
+            }
             if (!string.Equals(status, "running", StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(existing, status, StringComparison.OrdinalIgnoreCase))
                 return;
@@ -3774,6 +3805,7 @@ SELECT status FROM {TABLE_CYCLES}
         DateTime endUtc,
         string status)
     {
+        CheckpointRawJournal(epbId, force: true);
         ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, status);
     }
 
@@ -3784,6 +3816,7 @@ SELECT status FROM {TABLE_CYCLES}
         DateTime endUtc,
         string status)
     {
+        CheckpointRawJournal(epbId, force: true);
         ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, status);
     }
 
@@ -4319,7 +4352,9 @@ public interface IMechanicalCycleRecorder
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ISequencedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder
+public interface IRawJournalCycleRecorder { }
+
+public sealed class DiskWriterRecorderAdapter : IMechanicalReceiptRecorder, IRawJournalCycleRecorder, IEpbCycleRecorder, ISequencedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder
 {
     private readonly EpbDiskWriter _writer;
 
@@ -4484,6 +4519,9 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ISequencedEpb
 
     public void MarkMechanicalCycleCompleted(int epbId, int cycleNumber, DateTime completedUtc)
         => _writer.MarkMechanicalCycleCompleted(epbId, cycleNumber, completedUtc);
+
+    public bool TryRecordMechanicalCompletion(int channel, int cycle, DateTime completedUtc)
+        => _writer.TryRecordMechanicalCompletion(channel, cycle, completedUtc);
 
     public long GetMechanicalCycleCompletedCount(int epbId)
         => _writer.GetMechanicalCycleCompletedCount(epbId);

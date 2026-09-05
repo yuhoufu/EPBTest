@@ -199,11 +199,11 @@ if ($actualAssemblyName -ne $expectedAssemblyName -or
 if ($identity.platform -ne 'x86') {
     throw "identity 平台不是 x86：$($identity.platform)"
 }
-if ($expectedProductVersion -ne '2.16.0.0') {
-    throw "无人值守正式版必须统一为 2.16.0.0：$expectedProductVersion"
+if ($expectedProductVersion -ne '2.17.0.0') {
+    throw "无人值守正式版必须统一为 2.17.0.0：$expectedProductVersion"
 }
-if ((Get-RequiredJsonProperty $identity 'watchdogSchema' 'identity') -ne 6) {
-    throw "identity.watchdogSchema 不是 6：$($identity.watchdogSchema)"
+if ((Get-RequiredJsonProperty $identity 'watchdogSchema' 'identity') -ne 7) {
+    throw "identity.watchdogSchema 不是 7：$($identity.watchdogSchema)"
 }
 $mainExecutableSha256 = [string](Get-RequiredJsonProperty `
     $identity 'mainExecutableSha256' 'identity')

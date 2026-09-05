@@ -3304,6 +3304,7 @@ namespace Controller
                 .ToArray();
             foreach (var channel in formalChannels)
             {
+                ExpectVerifiedBusinessCycle(channel);
                 if (registerParticipants)
                 {
                     MarkHydraulicParticipant(channel);
@@ -4197,7 +4198,8 @@ namespace Controller
 
             // 组级/通道级故障只取消其各自 stop token。学习阶段不得再有一个共享
             // “任一故障取消整批”的令牌，否则健康电源组也会被启动回滚停止。
-            var phaseToken = token;
+            using var learningPhaseCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var phaseToken = learningPhaseCancellation.Token;
             var stopCtsByChannel = new Dictionary<int, CancellationTokenSource>();
             var stopTokensByChannel = new Dictionary<int, CancellationToken>();
             var learningRunId = _activeBatchId;
@@ -4381,8 +4383,25 @@ namespace Controller
                     }
                 }
 
-                // 本圈所有任务结束后进入下一圈
-                await Task.WhenAll(tasksAllGroups).ConfigureAwait(false);
+                // A worker which ignores cancellation must remain visible to shutdown/drain.
+                // It cannot keep the whole learning barrier waiting without a deadline.
+                var learningMembers = Task.WhenAll(tasksAllGroups);
+                _taskSupervisor.Observe(learningMembers, "LearningSlotMembers", learningRunId);
+                var learningDeadline = Task.Delay((int)Math.Min(int.MaxValue,
+                    Math.Max(RecoveryGroupHardDeadlineMs, (double)PeriodMs * 3)), phaseToken);
+                if (await Task.WhenAny(learningMembers, learningDeadline).ConfigureAwait(false) != learningMembers)
+                {
+                    learningPhaseCancellation.Cancel();
+                    foreach (var member in stopCtsByChannel)
+                    {
+                        member.Value.Cancel();
+                        try { CommandEpbOffHighPriority(member.Key, "LearningMemberDeadline"); } catch { }
+                    }
+                    QueueExecutionProgressEvidence("LearningMemberDeadline Run=" + learningRunId);
+                    token.ThrowIfCancellationRequested();
+                    throw new TimeoutException("LearningMemberDeadline");
+                }
+                await learningMembers.ConfigureAwait(false);
                 if (globalSlot.HasFailures &&
                     groups.Values.SelectMany(list => list ?? new List<int>())
                         .Any(ch => !quarantined.ContainsKey(ch) && !IsMechanicalTargetReached(ch)))
@@ -5796,6 +5815,7 @@ namespace Controller
             CycleAttemptContext attempt,
             Adaptive.EpbCycleOutcome outcome)
         {
+            ConfirmBusinessCycle(channel, attempt, outcome);
             _faultConfirmationTracker.ResetScope($"Channel:{channel}");
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (!string.IsNullOrWhiteSpace(device))
@@ -5832,7 +5852,11 @@ namespace Controller
             {
                 try
                 {
-                    durableRecorder.MarkMechanicalCycleCompleted(channel, cycleNumber, completedUtc);
+                    if (durableRecorder is IMechanicalReceiptRecorder receipts)
+                    {
+                        if (!receipts.TryRecordMechanicalCompletion(channel, cycleNumber, completedUtc)) return;
+                    }
+                    else durableRecorder.MarkMechanicalCycleCompleted(channel, cycleNumber, completedUtc);
                 }
                 catch (Exception ex)
                 {

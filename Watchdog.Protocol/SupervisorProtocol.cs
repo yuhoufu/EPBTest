@@ -8,31 +8,58 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class SupervisorProtocol
     {
-        public const int SchemaVersion = 6;
-        public const string CompatibilityFamily = "EPB-V2.16";
-        public const string PipeName = "MTTFTestSupervisor.Control.v6.V216";
-        public const string RequestMagic = "MTTF-SUPERVISOR-REQUEST-V6-V216";
-        public const string ResponseMagic = "MTTF-SUPERVISOR-RESPONSE-V6-V216";
+        /// <summary>Compare validated SHA-256 bytes, never their display casing.</summary>
+        public static bool Sha256Equals(string left, string right)
+        {
+            if (left == null || right == null || left.Length != 64 || right.Length != 64)
+                return false;
+            var difference = 0;
+            for (var i = 0; i < 64; i += 2)
+            {
+                var a = HexByte(left[i], left[i + 1]);
+                var b = HexByte(right[i], right[i + 1]);
+                if (a < 0 || b < 0) return false;
+                difference |= a ^ b;
+            }
+            return difference == 0;
+        }
+
+        private static int HexByte(char high, char low)
+        {
+            var h = HexNibble(high);
+            var l = HexNibble(low);
+            return h < 0 || l < 0 ? -1 : (h << 4) | l;
+        }
+
+        private static int HexNibble(char c) => c >= '0' && c <= '9' ? c - '0' :
+            c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+            c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+
+        public const int SchemaVersion = 7;
+        public const string CompatibilityFamily = "EPB-V2.17";
+        public const string PipeName = "MTTFTestSupervisor.Control.v7.V217";
+        public const string RequestMagic = "MTTF-SUPERVISOR-REQUEST-V7-V217";
+        public const string ResponseMagic = "MTTF-SUPERVISOR-RESPONSE-V7-V217";
         public const string MainLaunchRequestMagic =
-            "MTTF-SUPERVISOR-MAIN-LAUNCH-REQUEST-V6-V216";
+            "MTTF-SUPERVISOR-MAIN-LAUNCH-REQUEST-V7-V217";
         public const string MainLaunchResponseMagic =
-            "MTTF-SUPERVISOR-MAIN-LAUNCH-RESPONSE-V6-V216";
+            "MTTF-SUPERVISOR-MAIN-LAUNCH-RESPONSE-V7-V217";
         public const string SafetyHandoffBeginRequestMagic =
-            "MTTF-SUPERVISOR-SAFETY-BEGIN-REQUEST-V6-V216";
+            "MTTF-SUPERVISOR-SAFETY-BEGIN-REQUEST-V7-V217";
         public const string SafetyHandoffBeginResponseMagic =
-            "MTTF-SUPERVISOR-SAFETY-BEGIN-RESPONSE-V6-V216";
+            "MTTF-SUPERVISOR-SAFETY-BEGIN-RESPONSE-V7-V217";
         public const string SafetyAuthorityReadRequestMagic =
-            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-REQUEST-V6-V216";
+            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-REQUEST-V7-V217";
         public const string SafetyAuthorityReadResponseMagic =
-            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-RESPONSE-V6-V216";
+            "MTTF-SUPERVISOR-SAFETY-AUTHORITY-READ-RESPONSE-V7-V217";
         public const string SafetyAgentRequestMagic =
-            "MTTF-SUPERVISOR-SAFETY-REQUEST-V6-V216";
+            "MTTF-SUPERVISOR-SAFETY-REQUEST-V7-V217";
         public const string SafetyAgentResponseMagic =
-            "MTTF-SUPERVISOR-SAFETY-RESPONSE-V6-V216";
+            "MTTF-SUPERVISOR-SAFETY-RESPONSE-V7-V217";
         public const string P0AlarmRequestMagic =
-            "MTTF-SUPERVISOR-P0-ALARM-REQUEST-V6-V216";
+            "MTTF-SUPERVISOR-P0-ALARM-REQUEST-V7-V217";
         public const string P0AlarmResponseMagic =
-            "MTTF-SUPERVISOR-P0-ALARM-RESPONSE-V6-V216";
+            "MTTF-SUPERVISOR-P0-ALARM-RESPONSE-V7-V217";
         public const int MaximumTextLength = 1024 * 1024;
 
         public static string ComputeSha256(string path)

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.IO;
@@ -422,7 +422,7 @@ namespace MTTFTest.Watchdog.Protocol
 
         private static string MutexName(string authorityId)
         {
-            return "Global\\MTTFTest.SupervisorSafetyAuthority.V216." + authorityId;
+            return "Global\\MTTFTest.SupervisorSafetyAuthority.V217." + authorityId;
         }
 
         private static Mutex OpenAuthorityMutex(string authorityId)

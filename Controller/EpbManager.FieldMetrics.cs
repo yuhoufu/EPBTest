@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -299,8 +299,7 @@ namespace Controller
         internal static bool CanReuseStopResultForSource(
             StopSource completedSource,
             StopSource requestedSource)
-            => !IsFinalExitStopSource(requestedSource) ||
-               IsFinalExitStopSource(completedSource);
+            => true; // All sources now freeze acquisition and prove the same final boundary.
 
         internal static bool RequiresRecoveredPersistenceStateForStop(StopSource source)
             => !IsFinalExitStopSource(source);

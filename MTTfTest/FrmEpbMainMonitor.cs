@@ -1324,36 +1324,7 @@ namespace MTEmbTest
         }
 
 
-        /// <summary>
-        ///     启动加载试验时，从 SQLite(index.db) 回填每个 EPB 的累计圈次数到 <see cref="_uiEpbRecords"/>。
-        /// </summary>
-        /// <returns>
-        ///     若存在任何通道的 <see cref="EpbTestRecord.RunCount"/> 被更新，则返回 true；否则返回 false。
-        /// </returns>
-        /// <remarks>
-        ///     <para>
-        ///     口径说明：
-        ///     <list type="bullet">
-        ///         <item>
-        ///             <description>
-        ///             本项目中 <see cref="EpbTestRecord.RunCount"/> 既用于 UI 展示“已运行圈数”，也用于“下一圈号”的续号基准；
-        ///             因此启动回填必须与落盘使用的圈号口径一致。
-        ///             </description>
-        ///         </item>
-        ///         <item>
-        ///             <description>
-        ///             回填采用：<c>RunCount = MAX(cycle_number)</c>（CycleNumber &gt; 0）。
-        ///             这样即便现场手工修正过 <c>cycle_number</c>（例如补齐/跳号），
-        ///             也能保证 TestConfig.xml 与 index.db 的“圈号基准”一致，避免开始后出现差 1 或唯一键冲突。
-        ///             </description>
-        ///         </item>
-        ///     </list>
-        ///     </para>
-        ///     <para>
-        ///     为避免“首次新建项目/缺失 DB 文件”导致把 XML 进度覆盖成 0：
-        ///     仅当启动时检测到项目目录下已存在 index.db 时，才执行回填。
-        ///     </para>
-        /// </remarks>
+        /// <summary>保留历史次数基线，仅用耐久机械回执补齐重启前尚未保存的动作。</summary>
         private bool TryBackfillRunCountFromDiskIndex()
         {
             if (!_shouldBackfillRunCountFromDbOnLoad)
@@ -1372,21 +1343,8 @@ namespace MTEmbTest
                     if (rec == null || rec.Id < 1 || rec.Id > 12)
                         continue;
 
-                    // 关键：使用“最大圈号”回填，保证与 BeginCycle/续号基准一致。
-                    var dbLastCycleNumber = writer.GetLastCycleNumber(rec.Id);
-                    if (dbLastCycleNumber < 0) dbLastCycleNumber = 0;
-
-                    if (rec.RunCount != dbLastCycleNumber)
-                    {
-                        rec.RunCount = dbLastCycleNumber;
-                        changed = true;
-                    }
-                    if (rec.MechanicalCycleCount < dbLastCycleNumber)
-                    {
-                        rec.MechanicalCycleCount = dbLastCycleNumber;
-                        changed = true;
-                    }
-                    var dbMechanicalCount = writer.GetMechanicalCycleCompletedCount(rec.Id);
+                    var dbMechanicalCount = writer.ReconcileMechanicalBaseline(
+                        rec.Id, rec.EffectiveMechanicalCycleCount);
                     if (rec.MechanicalCycleCount < dbMechanicalCount)
                     {
                         rec.MechanicalCycleCount = dbMechanicalCount;
@@ -3953,7 +3911,7 @@ namespace MTEmbTest
             LedRunTime.Text = EpbTestRecord.FormatDHMS(record.RunTimeSpan);
 
             // === ③ 完成次数 ===
-            uiLabel57.Text = "机械完成次数";
+            UpdateCycleAccountingDisplay(record.Id);
             var mechanicalCount = Math.Max(record.MechanicalCycleCount, record.RunCount);
             LedRunCycles.Text = mechanicalCount.ToString();
 

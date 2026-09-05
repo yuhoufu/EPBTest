@@ -109,7 +109,7 @@ try {
     $identitySummary = [ordered]@{
         schemaVersion = 2
         bundleRevision = $bundleRevision
-        recoveryArchitectureGeneration = 'EPB-V2.16'
+        recoveryArchitectureGeneration = 'EPB-V2.17'
         fieldValidation = 'PENDING_USER_HARDWARE_AND_168H'
         bundleSourceCommit = $bundleSourceCommit
         productVersion = [string]$identity.productVersion

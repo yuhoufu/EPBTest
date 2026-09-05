@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1293,13 +1293,13 @@ namespace AdaptiveControlTests
                        checkpointRunId: run1,
                        expectedRunId: run2,
                        attemptsInWindow: 1) &&
-                   !EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                   EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
                        nonceReleased: true,
                        armed: true,
                        checkpointRunId: run1,
                        expectedRunId: run1,
                        attemptsInWindow: EpbManager.UnattendedProcessRestartBudget),
-                "旧nonce、人工撤权、旧RunId或预算耗尽仍可复活进程回收");
+                "旧nonce/人工撤权/旧RunId未阻止恢复，或额度耗尽错误丢失冷却意图");
         }
 
         private static void InfrastructureRecoveryRemainsLocal()

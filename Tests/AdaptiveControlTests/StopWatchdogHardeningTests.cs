@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -1461,9 +1461,9 @@ namespace AdaptiveControlTests
                 false,
                 "NullReferenceException during startup");
             Assert(duplicate.Permanent && duplicate.MaximumProcessRelaunches == 0 &&
-                   !transient.Permanent && transient.MaximumProcessRelaunches == 5 &&
-                   !unknown.Permanent && unknown.MaximumProcessRelaunches == 2,
-                "永久/瞬态/未知启动失败没有进入0/5/2次结构化预算");
+                   !transient.Permanent && transient.MaximumProcessRelaunches == 3 &&
+                   !unknown.Permanent && unknown.MaximumProcessRelaunches == 3,
+                "永久保护/瞬态/未知启动失败没有进入0/3/3次窗口预算");
             Assert(!RecoveryFailurePolicy.CanLaunchMainProcess(recoveryBlocked: true) &&
                    RecoveryFailurePolicy.CanLaunchMainProcess(recoveryBlocked: false) &&
                    !RecoveryFailurePolicy.AllowsMainProcessCircuitProbe,

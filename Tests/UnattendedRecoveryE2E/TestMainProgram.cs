@@ -139,7 +139,7 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                 Application.SetCompatibleTextRenderingDefault(false);
                 using (var form = new Form
                 {
-                    Text = "MTTFTest V2.16 Unattended Recovery E2E Host",
+                    Text = "MTTFTest V2.17 Unattended Recovery E2E Host",
                     Width = 520,
                     Height = 160,
                     StartPosition = FormStartPosition.CenterScreen
@@ -289,7 +289,7 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                 seedId,
                 Path.Combine(baseDirectory, "Config"),
                 Path.Combine(project, "Config"),
-                "V2.16.0.0-E2E-TestHost",
+                "V2.17.0.0-E2E-TestHost",
                 runtime,
                 sessionId,
                 generation,
@@ -322,7 +322,7 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                     ConfigSnapshotManifestPath = snapshot.ManifestPath,
                     ConfigSnapshotManifestSha256 = snapshot.ManifestSha256,
                     ConfigSnapshotSchemaVersion = 2,
-                    BuildIdentity = "V2.16.0.0-E2E-TestHost"
+                    BuildIdentity = "V2.17.0.0-E2E-TestHost"
                 });
             AppendEvent("CrashRecoverySeedCommitted", "Seed=" + seedId);
         }

@@ -50,6 +50,16 @@ namespace IO.NI
         {
             _batch = batch; _processedTick = processedTick;
         }
+        internal static DaqControlPublication Capture(
+            ref DaqControlPublication slot, out long now)
+        {
+            // The comparison clock MUST follow the immutable publication read.
+            // Reading it first can turn a concurrently committed fresh batch into
+            // an infinite age (processedTick > now) and spuriously trip the rig.
+            var publication = Volatile.Read(ref slot);
+            now = Stopwatch.GetTimestamp();
+            return publication;
+        }
         internal void Apply(DaqFreshnessSnapshot result, long currentGeneration, long now, double maxAgeMs)
         {
             result.Generation = _batch.Generation;

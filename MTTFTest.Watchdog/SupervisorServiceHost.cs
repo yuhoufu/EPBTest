@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -221,17 +221,11 @@ namespace MTTFTest.Watchdog
                     throw new InvalidDataException("PersistedSupervisorExecutableMismatch");
             }
             if (!File.Exists(executable) ||
-                !string.Equals(
-                    SupervisorProtocol.ComputeSha256(executable),
-                    record.ExecutableSha256,
-                    StringComparison.Ordinal))
+                !SupervisorProtocol.Sha256Equals(SupervisorProtocol.ComputeSha256(executable), record.ExecutableSha256))
                 throw new InvalidDataException("PersistedSupervisorHashMismatch");
             var mainExecutable = Path.GetFullPath(record.MainExecutablePath);
             if (!File.Exists(mainExecutable) ||
-                !string.Equals(
-                    SupervisorProtocol.ComputeSha256(mainExecutable),
-                    record.MainExecutableSha256,
-                    StringComparison.Ordinal))
+                !SupervisorProtocol.Sha256Equals(SupervisorProtocol.ComputeSha256(mainExecutable), record.MainExecutableSha256))
                 throw new InvalidDataException("PersistedSupervisorMainHashMismatch");
             WatchdogJournalPaths.ValidateProjectDirectory(record.ProjectDirectory);
             if (!string.Equals(
@@ -632,10 +626,7 @@ namespace MTTFTest.Watchdog
                     "MTTFTest.UnattendedMode.required")))
                 throw new InvalidDataException(
                     "SupervisorMainLaunchFormalModeMarkerMissing");
-            if (!string.Equals(
-                    SupervisorProtocol.ComputeSha256(mainExecutable),
-                    request.ExecutableSha256,
-                    StringComparison.Ordinal))
+            if (!SupervisorProtocol.Sha256Equals(SupervisorProtocol.ComputeSha256(mainExecutable), request.ExecutableSha256))
                 throw new InvalidDataException(
                     "SupervisorMainLaunchExecutableHashMismatch");
 
@@ -653,6 +644,10 @@ namespace MTTFTest.Watchdog
                 var permitId = request.IsRecoveryLaunch
                     ? request.RecoveryPermitId
                     : Guid.NewGuid().ToString("N");
+                if (request.IsRecoveryLaunch &&
+                    !new RecoveryRestartWindowStore(Path.Combine(StateDirectory, "relaunch-window.v217.json"))
+                        .TryReserve(capabilityId, DateTime.UtcNow, out var nextRetryUtc))
+                    throw new InvalidOperationException("RecoveryCoolingDown;NextRetryUtc=" + nextRetryUtc.ToString("O"));
                 var launchNonce = Guid.NewGuid().ToString("N");
                 var effectiveArguments = SessionAgentLaunchClient.AppendLaunchProof(
                     request.Arguments,
@@ -1083,10 +1078,7 @@ namespace MTTFTest.Watchdog
                         StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("SupervisorExecutablePathMismatch");
             }
-            if (!string.Equals(
-                    SupervisorProtocol.ComputeSha256(executable),
-                    request.ExecutableSha256,
-                    StringComparison.Ordinal))
+            if (!SupervisorProtocol.Sha256Equals(SupervisorProtocol.ComputeSha256(executable), request.ExecutableSha256))
                 throw new InvalidDataException("SupervisorExecutableHashMismatch");
             if (!int.TryParse(
                     ReadLaunchArgument(request.Arguments, "--parent-pid"),
@@ -1154,10 +1146,7 @@ namespace MTTFTest.Watchdog
                 throw new InvalidDataException(
                     "SupervisorSafetyExecutablePathMismatch");
             if (!File.Exists(executable) ||
-                !string.Equals(
-                    SupervisorProtocol.ComputeSha256(executable),
-                    request.ExecutableSha256,
-                    StringComparison.Ordinal))
+                !SupervisorProtocol.Sha256Equals(SupervisorProtocol.ComputeSha256(executable), request.ExecutableSha256))
                 throw new InvalidDataException(
                     "SupervisorSafetyExecutableHashMismatch");
             if (!string.Equals(
@@ -1740,10 +1729,9 @@ namespace MTTFTest.Watchdog
                                Path.GetFullPath(_mainExecutablePath),
                                Path.GetFullPath(executablePath ?? string.Empty),
                                StringComparison.OrdinalIgnoreCase) &&
-                           string.Equals(
+                           SupervisorProtocol.Sha256Equals(
                                _mainExecutableSha256,
-                               executableSha256,
-                               StringComparison.Ordinal);
+                               executableSha256);
                 }
             }
 

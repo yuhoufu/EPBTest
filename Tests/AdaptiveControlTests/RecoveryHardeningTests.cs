@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -341,8 +341,8 @@ namespace AdaptiveControlTests
 
             var hardware = RecoveryFailurePolicy.Classify(
                 "HardwareUnavailable", false, "hardware detail with changing prose");
-            Assert(hardware.MaximumProcessRelaunches == 0,
-                "HardwareUnavailable仍获得主进程重拉预算");
+            Assert(hardware.MaximumProcessRelaunches == 3,
+                "通信不可用丢失冷却后重新取证的重试预算");
 
             var wire = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(
                 new WatchdogMessage

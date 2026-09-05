@@ -83,6 +83,21 @@ namespace Controller
             }
         }
 
+        internal bool RevokeIfCurrent(ChannelExecutionPermit permit)
+        {
+            if (permit.Channel < 1 || permit.Channel > 12) return false;
+            var entry = _entries.GetOrAdd(permit.Channel, _ => new Entry());
+            lock (entry.Gate)
+            {
+                if (!entry.Authorized || entry.Generation != permit.Generation ||
+                    entry.RunEpoch != permit.RunEpoch) return false;
+                entry.Generation++;
+                entry.Authorized = false;
+                try { entry.Revocation.Cancel(); } catch { }
+                return true;
+            }
+        }
+
         internal bool IsCurrent(ChannelExecutionPermit permit)
         {
             if (!permit.Authorized || permit.Channel < 1 || permit.Channel > 12) return false;

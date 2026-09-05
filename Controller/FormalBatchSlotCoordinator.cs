@@ -37,6 +37,7 @@ namespace Controller
         public long RunEpoch { get; }
         public int Channel { get; }
         public long ParticipantGeneration { get; }
+        internal ChannelExecutionPermit ExecutionPermit { get; set; }
 
         internal bool SameIdentity(FormalBatchParticipantLease other) =>
             other != null &&

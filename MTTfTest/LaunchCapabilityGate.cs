@@ -27,8 +27,8 @@ namespace MtEmbTest
             try
             {
                 MessageBox.Show(
-                    "V2.16.0.0 正式版仅允许由 Supervisor 服务启动。\r\n" +
-                    "请使用桌面“MT EPB 试验系统 V2.16”快捷方式。" +
+                    "V2.17.0.0 正式版仅允许由 Supervisor 服务启动。\r\n" +
+                    "请使用桌面“MT EPB 试验系统 V2.17”快捷方式。" +
                     "\r\n\r\n拒绝原因：" + failure,
                     "启动已拒绝",
                     MessageBoxButtons.OK,
