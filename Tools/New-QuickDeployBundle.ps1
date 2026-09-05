@@ -40,6 +40,10 @@ $bundleSourceCommit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($bundleSourceCommit)) {
     throw '无法读取快捷部署器源码提交身份。'
 }
+$bundleSourceStatus = @(& git -C $repo status --porcelain)
+if ($LASTEXITCODE -ne 0 -or $bundleSourceStatus.Count -ne 0) {
+    throw '快捷部署器必须来自干净源码，拒绝将未提交工具标记为正式交付。'
+}
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $repo 'artifacts\deploy'
 }
@@ -122,8 +126,11 @@ try {
     }
     $identitySummary | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `
         (Join-Path $staging '快捷部署包身份.json') -Encoding UTF8
+    Copy-Item -LiteralPath (Join-Path $staging '快捷部署包身份.json') `
+        -Destination (Join-Path $staging 'bundle-identity.json')
     $hashLines = Get-ChildItem -LiteralPath $staging -File -Recurse |
-        Where-Object { $_.Name -ne '快捷部署包-SHA256.txt' } |
+        Where-Object { $_.FullName -ne (Join-Path $staging '快捷部署包-SHA256.txt') -and
+            $_.FullName -ne (Join-Path $staging 'SHA256SUMS.txt') } |
         Sort-Object FullName |
         ForEach-Object {
             $relative = $_.FullName.Substring($staging.TrimEnd('\').Length + 1).Replace('\', '/')
@@ -134,6 +141,8 @@ try {
         (Join-Path $staging '快捷部署包-SHA256.txt'),
         @($hashLines),
         (New-Object Text.UTF8Encoding($false)))
+    Copy-Item -LiteralPath (Join-Path $staging '快捷部署包-SHA256.txt') `
+        -Destination (Join-Path $staging 'SHA256SUMS.txt')
     Move-Item -LiteralPath $staging -Destination $output
 }
 catch {
