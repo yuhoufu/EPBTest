@@ -60,7 +60,7 @@ try {
     $ExeVersionInfo = (Get-Item -LiteralPath $ApplicationExecutable).VersionInfo
     $ProjectVersion = "V" + [string]$ExeVersionInfo.ProductVersion
     $ProjectIdentityPath = Join-Path $ProjectConfigDir "runtime-build-identity.json"
-    [ordered]@{
+    $ProjectIdentityJson = [ordered]@{
         schemaVersion = 1
         projectName = "source"
         projectRoot = $SourceDir
@@ -68,8 +68,18 @@ try {
         assemblyVersion = [string]$ExeVersionInfo.FileVersion
         executablePath = $ApplicationExecutable
         executableSha256 = (Get-FileHash -LiteralPath $ApplicationExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+        releasePackageVerified = $true
+        releasePackageCode = "OperatorManaged"
+        releasePackageDetail = "版本与交付包由操作人员管理；运行时不执行包身份门禁。"
         capturedUtc = [DateTime]::UtcNow.ToString("o")
-    } | ConvertTo-Json | Set-Content -LiteralPath $ProjectIdentityPath -Encoding UTF8
+    } | ConvertTo-Json
+    # 与主程序 RuntimeBuildIdentity.WriteJson 保持一致：UTF-8 无 BOM。
+    # Windows PowerShell 5.1 若未显式指定 UTF-8，会把中文按 ANSI 读取并损坏 JSON。
+    [IO.File]::WriteAllText(
+        $ProjectIdentityPath,
+        $ProjectIdentityJson,
+        (New-Object Text.UTF8Encoding($false))
+    )
 
     # 合法 CSV 可以没有末尾换行，不能因此中止整轮备份。
     [IO.File]::WriteAllText(

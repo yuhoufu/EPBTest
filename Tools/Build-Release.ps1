@@ -1,6 +1,7 @@
 ﻿param(
     [string]$MsBuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe',
     [string]$PackageRoot = '',
+    [string]$PythonExe = '',
     [switch]$AllowDirtyCandidate
 )
 
@@ -8,13 +9,16 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$releaseProjectPath = Join-Path $repo 'MTTfTest\MTTfTest.csproj'
-[xml]$releaseProjectXml = Get-Content -LiteralPath $releaseProjectPath -Raw
-$expectedProductVersion = ([string]$releaseProjectXml.Project.PropertyGroup.ApplicationVersion |
+$versionPropsPath = Join-Path $repo 'Build\UnattendedVersion.props'
+if (-not (Test-Path -LiteralPath $versionPropsPath -PathType Leaf)) {
+    throw '缺少统一版本源 Build\UnattendedVersion.props。'
+}
+[xml]$versionPropsXml = Get-Content -LiteralPath $versionPropsPath -Raw
+$expectedProductVersion = ([string]$versionPropsXml.Project.PropertyGroup.UnattendedProductVersion |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Select-Object -First 1).Trim()
 if ([string]::IsNullOrWhiteSpace($expectedProductVersion)) {
-    throw 'MTTfTest.csproj 未声明 ApplicationVersion。'
+    throw '统一版本源未声明 UnattendedProductVersion。'
 }
 $expectedProductLabel = 'V' + $expectedProductVersion
 $expectedAssemblyName = 'MTTFTest'
@@ -213,22 +217,72 @@ function Invoke-CandidateTest {
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
-        [Parameter(Mandatory = $true)][string]$SuccessPattern
+        [Parameter(Mandatory = $true)][string]$SuccessPattern,
+        [ValidateRange(1, 1800)][int]$TimeoutSeconds = 900
     )
 
     Write-Host "[$Label] $FilePath $($ArgumentList -join ' ')"
-    $captured = @(& $FilePath @ArgumentList 2>&1)
-    $exitCode = $LASTEXITCODE
-    foreach ($line in $captured) { Write-Host ([string]$line) }
-    if ($exitCode -ne 0) {
-        throw "$Label 失败，ExitCode=$exitCode"
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+    $captureDirectory = [IO.Path]::GetFullPath((Join-Path $tempRoot `
+        ('epb-release-test-' + [Guid]::NewGuid().ToString('N'))))
+    $tempPrefix = $tempRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $captureDirectory.StartsWith(
+            $tempPrefix,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label 测试输出临时目录越界：$captureDirectory"
     }
-    $summary = @($captured | ForEach-Object { [string]$_ } |
-        Where-Object { $_ -match $SuccessPattern } | Select-Object -Last 1)
-    if ($summary.Count -eq 0) {
-        throw "$Label 未输出预期通过摘要：$SuccessPattern"
+    $stdoutPath = Join-Path $captureDirectory 'stdout.log'
+    $stderrPath = Join-Path $captureDirectory 'stderr.log'
+    try {
+        [void](New-Item -ItemType Directory -Path $captureDirectory)
+        $startParameters = @{
+            FilePath = $FilePath
+            WorkingDirectory = $repo
+            RedirectStandardOutput = $stdoutPath
+            RedirectStandardError = $stderrPath
+            PassThru = $true
+            WindowStyle = 'Hidden'
+        }
+        if (@($ArgumentList).Count -ne 0) {
+            $startParameters.ArgumentList = $ArgumentList
+        }
+        $process = Start-Process @startParameters
+        # Windows PowerShell 5.1 may discard the native process handle before
+        # ExitCode is materialized when Start-Process redirects both streams.
+        # Force handle acquisition while the process is alive so ExitCode is
+        # always available after WaitForExit.
+        $processHandle = $process.Handle
+        $completed = $process.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $completed) {
+            try {
+                if (-not $process.HasExited) { $process.Kill() }
+            }
+            catch { }
+        }
+        $process.WaitForExit()
+        $captured = @(
+            @([IO.File]::ReadAllLines($stdoutPath, [Text.Encoding]::Default)) +
+            @([IO.File]::ReadAllLines($stderrPath, [Text.Encoding]::Default)))
+        foreach ($line in $captured) { Write-Host ([string]$line) }
+        if (-not $completed) {
+            throw "$Label 超过 $TimeoutSeconds 秒仍未退出，已终止精确测试进程 PID=$($process.Id)。"
+        }
+        $exitCode = $process.ExitCode
+        if ($exitCode -ne 0) {
+            throw "$Label 失败，ExitCode=$exitCode"
+        }
+        $summary = @($captured | ForEach-Object { [string]$_ } |
+            Where-Object { $_ -match $SuccessPattern } | Select-Object -Last 1)
+        if ($summary.Count -eq 0) {
+            throw "$Label 未输出预期通过摘要：$SuccessPattern"
+        }
+        return $summary[0].Trim()
     }
-    return $summary[0].Trim()
+    finally {
+        if (Test-Path -LiteralPath $captureDirectory -PathType Container) {
+            Remove-Item -LiteralPath $captureDirectory -Recurse -Force
+        }
+    }
 }
 
 # 这些安全、持续运行和背压类位于旧式非 SDK 项目中。目录里存在 .cs 并不代表会参与
@@ -277,6 +331,7 @@ Assert-LegacyCompileItems -ProjectRelativePath 'Watchdog.Protocol\Watchdog.Proto
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.Watchdog\MTTFTest.Watchdog.csproj' -RequiredItems @(
     'UnattendedAlarmSink.cs',
     'SupervisorServiceHost.cs',
+    'SupervisorMainLaunchClient.cs',
     'SessionAgentLaunchClient.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj' -RequiredItems @(
@@ -288,8 +343,8 @@ $snapshotSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\W
 $receiptSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyReceipts.cs') -Raw
 $programSource = Get-Content -LiteralPath (Join-Path $repo 'MTTfTest\Program.cs') -Raw
 if ($snapshotSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*2' -or
-    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*5') {
-    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 5 支持。'
+    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*6') {
+    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 6 支持。'
 }
 if ($programSource -match 'watchdog-safety-shutdown' -or
     (Test-Path -LiteralPath (Join-Path $repo 'MTTfTest\WatchdogSafetyShutdownWorker.cs'))) {
@@ -493,11 +548,18 @@ $powerSupplyTrxPath = Join-Path $powerSupplyResultsDirectory $powerSupplyTrxName
 $powerSupplySummary = $null
 try {
     [void](New-Item -ItemType Directory -Path $powerSupplyResultsDirectory)
-    $powerSupplyOutput = @(& dotnet test $powerSupplyProject `
-        --configuration Release --no-restore --no-build --verbosity minimal `
-        --results-directory $powerSupplyResultsDirectory `
-        --logger "trx;LogFileName=$powerSupplyTrxName" 2>&1)
-    $powerSupplyExitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $powerSupplyOutput = @(& dotnet test $powerSupplyProject `
+            --configuration Release --no-restore --no-build --verbosity minimal `
+            --results-directory $powerSupplyResultsDirectory `
+            --logger "trx;LogFileName=$powerSupplyTrxName" 2>&1)
+        $powerSupplyExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     foreach ($line in $powerSupplyOutput) { Write-Host ([string]$line) }
     if ($powerSupplyExitCode -ne 0) {
         throw "PowerSupplyDebugger.Tests 失败，ExitCode=$powerSupplyExitCode"
@@ -544,10 +606,17 @@ $fieldGateOutput = @()
 $fieldGateExitCode = -1
 try {
     [void](New-Item -ItemType Directory -Path $fieldGateResultsDirectory)
-    $pythonLauncher = (Get-Command py.exe -ErrorAction Stop).Source
+    $pythonArguments = @('-m', 'unittest', '-v', 'Tools.test_validate_epb_field_gate')
+    if (-not [string]::IsNullOrWhiteSpace($PythonExe)) { $pythonLauncher = $PythonExe }
+    else {
+        $py = Get-Command py.exe -ErrorAction SilentlyContinue
+        if ($null -eq $py) { throw '缺少 Python 启动器；请通过 -PythonExe 传入 Python 3 可执行文件。' }
+        $pythonLauncher = $py.Source
+        $pythonArguments = @('-3') + $pythonArguments
+    }
     $fieldGateProcess = Start-Process `
         -FilePath $pythonLauncher `
-        -ArgumentList @('-3', '-m', 'unittest', '-v', 'Tools.test_validate_epb_field_gate') `
+        -ArgumentList $pythonArguments `
         -WorkingDirectory $repo `
         -NoNewWindow `
         -RedirectStandardOutput $fieldGateStdOut `
@@ -586,7 +655,7 @@ if ($deploymentContractSummary.Count -ne 1) {
 }
 $quickDeployParseSummary = @($deploymentContractOutput |
     ForEach-Object { [string]$_ } |
-    Where-Object { $_ -match '^PASS\s+QuickDeployCommandParse\s+3/3$' } |
+    Where-Object { $_ -match '^PASS\s+QuickDeployCommandParse\s+5/5$' } |
     Select-Object -Last 1)
 if ($quickDeployParseSummary.Count -ne 1) {
     throw '快捷部署批处理解析测试未通过。'
@@ -605,7 +674,12 @@ Assert-SourceSnapshot -ExpectedCommit $commit `
     -ExpectedFingerprint $sourceSnapshotFingerprint `
     -Stage '写入构建身份前源码快照校验'
 
+$v216Deployment = @(& (Join-Path $PSScriptRoot 'Test-V216Deployment.ps1') 2>&1)
+foreach ($line in $v216Deployment) { Write-Host ([string]$line) }
+$v216DeploymentSummary = @($v216Deployment | Where-Object { [string]$_ -match '^PASS V216Deployment \d+/\d+ ' } | Select-Object -Last 1)
+if ($v216DeploymentSummary.Count -ne 1) { throw 'V2.16 隔离换包测试未通过。' }
 $verification = [ordered]@{
+    v216Deployment = [string]$v216DeploymentSummary[0]
     solutionRebuild = 'PASS'
     adaptiveControlTests = $adaptiveSummary
     epbDiskWriterTests = $diskWriterSummary
@@ -644,7 +718,9 @@ $utf8Bom = New-Object Text.UTF8Encoding($true)
 foreach ($deploymentScriptName in @(
         'Install-EPB-UnattendedAlarm.ps1',
         'Install-MTTFTest-Unattended.ps1',
-        'Verify-Release.ps1')) {
+        'Verify-Release.ps1',
+        'Stop-RelatedProcesses.ps1',
+        'Export-StabilityEvidence.ps1')) {
     $deploymentScriptSource = Join-Path $repo (Join-Path 'Tools' $deploymentScriptName)
     $deploymentScriptDestination = Join-Path $deploymentDirectory $deploymentScriptName
     $deploymentScriptText = [IO.File]::ReadAllText(
@@ -659,6 +735,7 @@ New-Item -ItemType File -Path (Join-Path $output 'MTTFTest.UnattendedMode.requir
 
 $files = Get-RecursivePackageFiles -Root $output `
     -ExcludedRelativePaths @('build-identity.json', 'SHA256SUMS.txt')
+$packageContentSha256 = Get-AggregateFileHash $files
 $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
     $file = Get-Item -LiteralPath $entry.Value
     [ordered]@{
@@ -667,6 +744,23 @@ $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
         sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
+$componentIdentities = @(
+    @($exePath) + @($versionedComponents) |
+    Sort-Object -Unique |
+    ForEach-Object {
+        $componentPath = [IO.Path]::GetFullPath($_)
+        $pdbPath = [IO.Path]::ChangeExtension($componentPath, '.pdb')
+        if (-not (Test-Path -LiteralPath $pdbPath -PathType Leaf)) {
+            throw "正式组件缺少 PDB 身份：$componentPath"
+        }
+        [ordered]@{
+            name = [IO.Path]::GetFileName($componentPath)
+            fileVersion = (Get-Item -LiteralPath $componentPath).VersionInfo.FileVersion
+            sha256 = (Get-FileHash -LiteralPath $componentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            pdb = [IO.Path]::GetFileName($pdbPath)
+            pdbSha256 = (Get-FileHash -LiteralPath $pdbPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    })
 $identity = [ordered]@{
     productVersion = $expectedProductLabel
     fileVersion = $actualFileVersion
@@ -679,10 +773,15 @@ $identity = [ordered]@{
     gitBranch = $branch
     gitDirty = $isDirty
     buildUtc = $buildUtc
+    mainExecutableSha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    packageContentSha256 = $packageContentSha256
     configSha256 = $configHash
     platform = 'x86'
-    watchdogSchema = 5
+    recoveryArchitectureGeneration = 'EPB-V2.16'
+    fieldValidation = 'PENDING_USER_HARDWARE_AND_168H'
+    watchdogSchema = 6
     packageSlotSchema = 5
+    componentIdentities = $componentIdentities
     verification = $verification
     files = @($manifestFiles)
 }

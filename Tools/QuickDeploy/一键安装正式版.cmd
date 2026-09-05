@@ -1,7 +1,8 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 set "MTTFTEST_DEPLOY_SCRIPT=%~dp0QuickDeploy-Installer.ps1"
-set "MTTFTEST_PACKAGE_SOURCE=%~dp0."
+set "MTTFTEST_PACKAGE_SOURCE=%~dp0Package"
+if not exist "%MTTFTEST_PACKAGE_SOURCE%\MTTFTest.exe" set "MTTFTEST_PACKAGE_SOURCE=%~dp0."
 set "MTTFTEST_ELEVATE_TARGET=%~f0"
 set "MTTFTEST_PROGRAM_FILES=%ProgramFiles(x86)%"
 if not defined MTTFTEST_PROGRAM_FILES set "MTTFTEST_PROGRAM_FILES=%ProgramFiles%"
@@ -10,7 +11,7 @@ if defined MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE goto :argument_probe
 cd /d "%~dp0"
 fltmc >nul 2>&1
 if errorlevel 1 (
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { $child = Start-Process -FilePath $env:MTTFTEST_ELEVATE_TARGET -Verb RunAs -PassThru -Wait; exit $child.ExitCode } catch { Write-Error $_; exit 1223 }"
   exit /b
 )
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%MTTFTEST_DEPLOY_SCRIPT%" -Mode Install -SourceDirectory "%MTTFTEST_PACKAGE_SOURCE%" -InstallRoot "%MTTFTEST_PROGRAM_FILES%\MTTFTest"

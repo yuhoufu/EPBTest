@@ -129,7 +129,11 @@ function Read-ProjectRuntimeIdentity {
     }
 
     try {
-        $Identity = Get-Content -LiteralPath $IdentityPath -Raw | ConvertFrom-Json
+        # RuntimeBuildIdentity 以 UTF-8（无 BOM）写入此文件。Windows PowerShell
+        # 5.1 的 Get-Content 默认按系统 ANSI 代码页读取无 BOM 文件；中文内容会
+        # 乱码，末尾的多字节字符还可能吞掉紧随其后的 JSON 引号。
+        $Identity = Get-Content -LiteralPath $IdentityPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
     }
     catch {
         throw "读取项目运行身份失败：$IdentityPath`n$($_.Exception.Message)"

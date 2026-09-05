@@ -22,6 +22,21 @@ if (@($parseErrors).Count -ne 0) {
     throw "无人值守安装脚本无法解析：$(@($parseErrors)[0].Message)"
 }
 
+$unsupportedStopTaskConfirm = @($ast.FindAll({
+    param($node)
+    if ($node -isnot [Management.Automation.Language.CommandAst] -or
+        $node.GetCommandName() -ne 'Stop-ScheduledTask') {
+        return $false
+    }
+    return @($node.CommandElements | Where-Object {
+        $_ -is [Management.Automation.Language.CommandParameterAst] -and
+        $_.ParameterName -eq 'Confirm'
+    }).Count -ne 0
+}, $true))
+if ($unsupportedStopTaskConfirm.Count -ne 0) {
+    throw 'Stop-ScheduledTask 在 Windows PowerShell 5.1 不支持 -Confirm 参数。'
+}
+
 $installerText = [IO.File]::ReadAllText($installer, [Text.Encoding]::UTF8)
 foreach ($removedGate in @(
         'Read-And-VerifyPackage',
@@ -49,6 +64,16 @@ foreach ($required in @(
         'RunLevel Highest',
         'shortcutBytes[21]',
         'Test-CurrentSlotReplacementRequired',
+        'Read-Utf8JsonFile',
+        'New-Object Text.UTF8Encoding($false, $true)',
+        'Invoke-LegacyCheckpointSafeRollover',
+        'legacySchema -notin @(5, 6)',
+        'authorizationMigrated = $false',
+        'permitMigrated = $false',
+        'nonceMigrated = $false',
+        'SafeIdleAlarmed',
+        "'obj=' 'LocalSystem'",
+        "-Argument '--launch-main'",
         'MTTFTestAutoStart',
         'MTTFTest.FirstRun.configured',
         "'Configure'",
@@ -60,6 +85,49 @@ foreach ($required in @(
     }
 }
 Write-Output 'PASS SimpleUnattendedDeploymentContract 1/1'
+Write-Output 'PASS WindowsPowerShell51ScheduledTaskCompatibility 1/1'
+
+$utf8RegressionRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ('EPBTest-PS51-Utf8-' + [Guid]::NewGuid().ToString('N'))
+try {
+    [void](New-Item -ItemType Directory -Path $utf8RegressionRoot)
+    $utf8RegressionPath = Join-Path $utf8RegressionRoot 'checkpoint.json'
+    $utf8RegressionJson = '{"SchemaVersion":6,"MotorOffConfirmed":true,"PressureSafeConfirmed":true,"PersistenceDrained":true,"LastInProcessRecoveryResult":"必须由 Watchdog 重启软件。","RemainingFormalCycles":{"4":123}}'
+    [IO.File]::WriteAllText(
+        $utf8RegressionPath,
+        $utf8RegressionJson,
+        (New-Object Text.UTF8Encoding($false)))
+    $utf8ReaderScript = Join-Path $utf8RegressionRoot 'read-checkpoint.ps1'
+    $utf8ReaderCommand = @'
+param([Parameter(Mandatory = $true)][string]$CheckpointPath)
+$ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding($false, $true)
+$json = [IO.File]::ReadAllText($CheckpointPath, $utf8) | ConvertFrom-Json
+if ($json.SchemaVersion -ne 6 -or
+    -not $json.MotorOffConfirmed -or
+    $json.LastInProcessRecoveryResult -ne '必须由 Watchdog 重启软件。' -or
+    $json.RemainingFormalCycles.'4' -ne 123) {
+    throw 'UTF-8 checkpoint mismatch'
+}
+'UTF8_CHECKPOINT_PASS'
+'@
+    [IO.File]::WriteAllText(
+        $utf8ReaderScript,
+        $utf8ReaderCommand,
+        (New-Object Text.UTF8Encoding($true)))
+    $utf8Output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+        -File $utf8ReaderScript `
+        -CheckpointPath $utf8RegressionPath 2>&1)
+    if ($LASTEXITCODE -ne 0 -or 'UTF8_CHECKPOINT_PASS' -notin $utf8Output) {
+        throw "Windows PowerShell 5.1 无 BOM UTF-8 检查点回归失败：$($utf8Output -join ' | ')"
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $utf8RegressionRoot -PathType Container) {
+        Remove-Item -LiteralPath $utf8RegressionRoot -Recurse -Force
+    }
+}
+Write-Output 'PASS WindowsPowerShell51Utf8Checkpoint 1/1'
 
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $manifestPath = Join-Path $repo 'MTTfTest\app.manifest'
@@ -78,6 +146,35 @@ if (-not $firstRunText.Contains('ProgramFilesX86') -or
     -not $runtimePathsText.Contains('ProgramFilesX86')) {
     throw 'x86 主程序和运行配置路径必须统一使用 ProgramFilesX86。'
 }
+$programText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTfTest\Program.cs'), [Text.Encoding]::UTF8)
+$supervisorProtocolText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'Watchdog.Protocol\SupervisorProtocol.cs'), [Text.Encoding]::UTF8)
+$sessionProtocolText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'Watchdog.Protocol\SessionAgentProtocol.cs'), [Text.Encoding]::UTF8)
+$sessionAgentHostText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.SessionAgent\SessionAgentHost.cs'), [Text.Encoding]::UTF8)
+$supervisorHostText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.Watchdog\SupervisorServiceHost.cs'), [Text.Encoding]::UTF8)
+$sessionLaunchClientText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.Watchdog\SessionAgentLaunchClient.cs'), [Text.Encoding]::UTF8)
+$supervisorMainLaunchClientText = [IO.File]::ReadAllText(
+    (Join-Path $repo 'MTTFTest.Watchdog\SupervisorMainLaunchClient.cs'), [Text.Encoding]::UTF8)
+if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
+    -not $supervisorProtocolText.Contains('public const int SchemaVersion = 6') -or
+    -not $sessionProtocolText.Contains('public const int SchemaVersion = 6') -or
+    -not $sessionAgentHostText.Contains('LaunchCapabilityAlreadyConsumed') -or
+    -not $supervisorHostText.Contains('MainProcessStartUtcTicks') -or
+    -not $supervisorHostText.Contains('SupervisorSafetyHandoffOldProcessIdentityMismatch') -or
+    -not $supervisorHostText.Contains('SupervisorSafetyHandoffRegisteredPathMismatch') -or
+    -not $supervisorHostText.Contains('SupervisorSafetyHandoffRegisteredExecutableMismatch') -or
+    -not $sessionProtocolText.Contains('RecoveryAuthoritySha256') -or
+    -not $sessionLaunchClientText.Contains('SupervisorMainLaunchClient.Start(source)') -or
+    -not $supervisorMainLaunchClientText.Contains('IsRecoveryLaunch = true') -or
+    -not $supervisorHostText.Contains('SupervisorMainRecoverySessionMismatch') -or
+    -not $supervisorHostText.Contains('SupervisorRecoveryCapabilitySessionAgentLaunch')) {
+    throw 'schema 6 Supervisor 单次 LaunchCapability 生产门禁不完整。'
+}
 foreach ($commandName in @(
         '一键安装正式版.cmd', '一键修复.cmd', '一键卸载.cmd', '启动试验.cmd')) {
     $commandText = [IO.File]::ReadAllText(
@@ -87,7 +184,62 @@ foreach ($commandName in @(
         throw "快捷入口未统一 32/64 位安装路径：$commandName"
     }
 }
+$launchCommandText = [IO.File]::ReadAllText(
+    (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') '启动试验.cmd'),
+    [Text.Encoding]::ASCII)
+if (-not $launchCommandText.Contains('MTTFTest.Watchdog.exe') -or
+    -not $launchCommandText.Contains('--launch-main') -or
+    $launchCommandText.Contains('start "MT EPB Test System" /d "%MTTFTEST_PROGRAM_FILES%\MTTFTest\Current" "%APP%"')) {
+    throw '正式启动入口未唯一收口到 Supervisor launcher。'
+}
 Write-Output 'PASS RequireAdministratorLaunchContract 1/1'
+
+$e2eBuildPath = Join-Path $PSScriptRoot 'Build-UnattendedRecoveryE2EPackage.ps1'
+$e2eRunPath = Join-Path $PSScriptRoot 'Test-MTTFTest-InstalledRecoveryE2E.ps1'
+$e2eMainPath = Join-Path $repo `
+    'Tests\UnattendedRecoveryE2E\TestMainProgram.cs'
+$e2eAgentPath = Join-Path $repo `
+    'Tests\UnattendedRecoveryE2E\NoHardwareSafetyAgentProgram.cs'
+foreach ($path in @($e2eBuildPath, $e2eRunPath, $e2eMainPath, $e2eAgentPath)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "安装态 E2E 测试宿主缺失：$path"
+    }
+}
+$e2eRunText = [IO.File]::ReadAllText($e2eRunPath, [Text.Encoding]::UTF8)
+$e2eMainText = [IO.File]::ReadAllText($e2eMainPath, [Text.Encoding]::UTF8)
+$e2eAgentText = [IO.File]::ReadAllText($e2eAgentPath, [Text.Encoding]::UTF8)
+foreach ($required in @(
+        'ConfirmIsolatedEnvironment',
+        'WindowsBuiltInRole]::Administrator',
+        "'obj=' 'LocalSystem'",
+        "'reset=' '0'",
+        'sc.exe qfailure',
+        '配置 Supervisor SCM failure actions 失败',
+        'keepaliveTrigger',
+        'e2e-session-agent-task.xml',
+        'KillSupervisorAndRecover',
+        'KillSessionAgentAndRecover',
+        'KillSafetyAgentAndResumeAuthority',
+        'MotorOffWithin250ms',
+        'IndependentSafetyProofWithin30Seconds',
+        'RecoveryFirstCycleCommitted',
+        'ExactlyOneMainProcess',
+        'ExactlyOneEffectivePermit')) {
+    if (-not $e2eRunText.Contains($required)) {
+        throw "安装态 E2E 驱动缺少门禁或指标：$required"
+    }
+}
+if (-not $installerText.Contains('keepaliveTrigger') -or
+    -not $installerText.Contains('SessionAgent 登录任务缺少每分钟存活触发器')) {
+    throw '正式 SessionAgent 任务缺少登录与周期存活双触发门禁。'
+}
+if (-not $e2eMainText.Contains('LaunchCapabilityGate.TryValidate') -or
+    -not $e2eMainText.Contains('SupervisorSidecarProcessLauncher') -or
+    -not $e2eAgentText.Contains('E2ENoHardwareMotorOffConfirmed') -or
+    -not $e2eAgentText.Contains('SupervisorSafetyAuthorityStore.Advance')) {
+    throw '独立 E2E 主进程/无硬件 SafetyAgent 未复用正式授权链。'
+}
+Write-Output 'PASS InstalledRecoveryE2ETestHostContract 1/1'
 
 $releaseScripts = @(
     (Join-Path $PSScriptRoot 'Build-Release.ps1'),
@@ -115,6 +267,22 @@ foreach ($releaseScript in $releaseScripts) {
     }
 }
 Write-Output 'PASS ReleaseBuildNoMandatorySoak 1/1'
+
+$formalReleaseText = [IO.File]::ReadAllText(
+    (Join-Path $PSScriptRoot 'Build-Release.ps1'),
+    [Text.Encoding]::UTF8)
+foreach ($requiredNativeCaptureGuard in @(
+        'RedirectStandardOutput = $stdoutPath',
+        'RedirectStandardError = $stderrPath',
+        '$processHandle = $process.Handle',
+        '$process.WaitForExit($TimeoutSeconds * 1000)',
+        '$process.Kill()',
+        '$exitCode = $process.ExitCode')) {
+    if (-not $formalReleaseText.Contains($requiredNativeCaptureGuard)) {
+        throw "正式发布流程缺少 Windows PowerShell 5.1 原生 stderr/退出码兼容门禁：$requiredNativeCaptureGuard"
+    }
+}
+Write-Output 'PASS ReleaseNativeStderrExitCodeContract 1/1'
 
 $simplePackageScript = Join-Path $PSScriptRoot 'New-FormalRelease7z.ps1'
 $simplePackageText = [IO.File]::ReadAllText($simplePackageScript, [Text.Encoding]::UTF8)
@@ -224,6 +392,27 @@ try {
     }
     Write-Output 'PASS QuickDeployArgumentBinding 3/3'
 
+    $nestedPackage = Join-Path $testRoot 'Package'
+    [void](New-Item -ItemType Directory -Path $nestedPackage)
+    [IO.File]::WriteAllText(
+        (Join-Path $nestedPackage 'MTTFTest.exe'),
+        'nested-parse-only',
+        (New-Object Text.UTF8Encoding($false)))
+    try {
+        $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = '1'
+        $commandPath = Join-Path $testRoot '一键安装正式版.cmd'
+        $output = @(& $env:ComSpec /d /c "`"$commandPath`"" 2>&1)
+        $expected = "QUICKDEPLOY_ARGUMENT_PROBE_PASS Mode=Install Source=$nestedPackage Root=$expectedInstallRoot"
+        if ($LASTEXITCODE -ne 0 -or
+            (@($output | Where-Object { [string]$_ -eq $expected }).Count -ne 1)) {
+            throw "快捷部署没有优先使用嵌套正式包：Expected=$expected; Exit=$LASTEXITCODE; Output=$($output -join ' | ')"
+        }
+    }
+    finally {
+        $env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE = $previousArgumentProbe
+    }
+    Write-Output 'PASS QuickDeployNestedFormalPackage 1/1'
+
     $uninstallCommandText = [IO.File]::ReadAllText(
         (Join-Path (Join-Path $PSScriptRoot 'QuickDeploy') '一键卸载.cmd'),
         [Text.Encoding]::ASCII)
@@ -250,20 +439,49 @@ try {
     $previousConfirmationProbe = $env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE
     try {
         $env:MTTFTEST_QUICKDEPLOY_CONFIRMATION_PROBE = '1'
+        $confirmationCaseIndex = 0
         foreach ($case in @(
                 @('Y', 'True'),
                 @('A', 'True'),
                 @('N', 'False'),
                 @('', 'False'))) {
-            $output = @($case[0] | & powershell.exe -NoProfile `
-                -ExecutionPolicy Bypass -File `
-                (Join-Path $testRoot 'QuickDeploy-Installer.ps1') `
-                -Mode Uninstall -SourceDirectory $testRoot `
-                -InstallRoot (Join-Path $env:ProgramFiles 'MTTFTest') 2>&1)
+            $confirmationCaseIndex++
+            $confirmationInput = Join-Path $testRoot `
+                "confirmation-$confirmationCaseIndex-input.txt"
+            $confirmationStdOut = Join-Path $testRoot `
+                "confirmation-$confirmationCaseIndex-stdout.txt"
+            $confirmationStdErr = Join-Path $testRoot `
+                "confirmation-$confirmationCaseIndex-stderr.txt"
+            [IO.File]::WriteAllText(
+                $confirmationInput,
+                [string]$case[0] + [Environment]::NewLine,
+                [Text.Encoding]::ASCII)
+            $confirmationInstaller = Join-Path $testRoot 'QuickDeploy-Installer.ps1'
+            $confirmationInstallRoot = Join-Path $env:ProgramFiles 'MTTFTest'
+            $confirmationArguments =
+                "-NoProfile -ExecutionPolicy Bypass -File `"$confirmationInstaller`" " +
+                "-Mode Uninstall -SourceDirectory `"$testRoot`" " +
+                "-InstallRoot `"$confirmationInstallRoot`""
+            $confirmationProcess = Start-Process `
+                -FilePath 'powershell.exe' `
+                -ArgumentList $confirmationArguments `
+                -RedirectStandardInput $confirmationInput `
+                -RedirectStandardOutput $confirmationStdOut `
+                -RedirectStandardError $confirmationStdErr `
+                -WindowStyle Hidden `
+                -Wait `
+                -PassThru
+            $output = @(
+                @([IO.File]::ReadAllLines(
+                    $confirmationStdOut,
+                    [Text.Encoding]::Default)) +
+                @([IO.File]::ReadAllLines(
+                    $confirmationStdErr,
+                    [Text.Encoding]::Default)))
             $expected = "QUICKDEPLOY_CONFIRMATION_PROBE_PASS Confirmed=$($case[1])"
-            if ($LASTEXITCODE -ne 0 -or
-                (@($output | Where-Object { [string]$_ -eq $expected }).Count -ne 1)) {
-                throw "卸载确认输入校验失败：Input='$($case[0])'; Expected=$expected; Exit=$LASTEXITCODE; Output=$($output -join ' | ')"
+            if ($confirmationProcess.ExitCode -ne 0 -or
+                -not (($output -join [Environment]::NewLine).Contains($expected))) {
+                throw "卸载确认输入校验失败：Input='$($case[0])'; Expected=$expected; Exit=$($confirmationProcess.ExitCode); Output=$($output -join ' | ')"
             }
         }
     }
