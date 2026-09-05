@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -333,7 +334,16 @@ namespace MTTFTest.Watchdog.Protocol
         public WatchdogSafetyHandoffState State { get; set; }
         public WatchdogSafetyStage Stage { get; set; }
         public string PreviousStageReceiptSha256 { get; set; } = string.Empty;
+        // .NET Framework's R formatting can move a Double by one bit on readback.
+        // V216 persists invariant G17 text, avoiding both R and JSON numeric conversion.
+        // Control code keeps its numeric API; the receipt's strict hash remains enforced.
+        [ScriptIgnore]
         public double StageMonotonicElapsedMs { get; set; }
+        public string StageMonotonicElapsedMsText
+        {
+            get => StageMonotonicElapsedMs.ToString("G17", CultureInfo.InvariantCulture);
+            set => StageMonotonicElapsedMs = double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture);
+        }
         public long StageUtcTicks { get; set; }
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
@@ -382,7 +392,8 @@ namespace MTTFTest.Watchdog.Protocol
             var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
                           SchemaVersion == 3 || SchemaVersion == 4 ||
                           SchemaVersion == 5 || SchemaVersion == 6) &&
-                   Revision > 0 && SessionGeneration > 0 &&
+                   !double.IsNaN(StageMonotonicElapsedMs) && !double.IsInfinity(StageMonotonicElapsedMs) &&
+                   StageMonotonicElapsedMs >= 0 && Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    Guid.TryParseExact(HandoffId ?? string.Empty, "N", out parsed) &&

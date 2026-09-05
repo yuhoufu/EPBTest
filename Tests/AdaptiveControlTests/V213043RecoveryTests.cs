@@ -24,6 +24,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
+            Run("V216真实权威存储保持耗时精度并拒绝哈希篡改", AuthorityStorePreservesNumericIdentity, ref passed);
             Run("SafetyAgent使用快照参数并从最后阶段幂等续跑",
                 SafetyAgentUsesSnapshotAndResumesStages, ref passed);
             Run("强杀恢复使用schema6权威回执并由独立代理完成物理确认",
@@ -175,6 +176,26 @@ namespace AdaptiveControlTests
                 Assert(SafetyAgentRunner.Run(fixture.Arguments, factory) == 0 &&
                        factory.CreateCount == createCount,
                     "已完成回执被重复消费并再次打开硬件。");
+            }
+        }
+
+        private static void AuthorityStorePreservesNumericIdentity()
+        {
+            using (var fixture = SafetyFixture.Create())
+            {
+                var receipt = fixture.ReadReceipt();
+                receipt.Revision++;
+                receipt.StageMonotonicElapsedMs = 77.679864632748;
+                var stored = SupervisorSafetyAuthorityStore.Advance(fixture.AuthorityDirectory,
+                    fixture.AuthorityId, fixture.AuthorityRevision, fixture.AuthorityCanonicalSha256, receipt);
+                Assert(stored.IsValid() && BitConverter.DoubleToInt64Bits(stored.Receipt.StageMonotonicElapsedMs) ==
+                    BitConverter.DoubleToInt64Bits(receipt.StageMonotonicElapsedMs), "真实Store写入/读回漂移");
+                var json = new JavaScriptSerializer();
+                var tampered = json.Deserialize<SupervisorSafetyAuthorityRecord>(File.ReadAllText(fixture.AuthorityReceiptPath));
+                tampered.ReceiptCanonicalSha256 = new string('e', 64);
+                File.WriteAllText(fixture.AuthorityReceiptPath, json.Serialize(tampered));
+                Assert(!SupervisorSafetyAuthorityStore.TryRead(fixture.AuthorityDirectory, fixture.AuthorityId,
+                    out _, out var failure) && failure.Contains("ReceiptCanonicalSha256Mismatch"), "篡改被放过或诊断没有指出哈希字段");
             }
         }
 

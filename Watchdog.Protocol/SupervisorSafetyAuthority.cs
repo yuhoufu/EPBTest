@@ -1,6 +1,9 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -91,7 +94,7 @@ namespace MTTFTest.Watchdog.Protocol
 
     public static class SupervisorSafetyAuthorityStore
     {
-        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+        private static JavaScriptSerializer Json => new JavaScriptSerializer();
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
 
         public static string ComputeAuthorityId(
@@ -119,7 +122,13 @@ namespace MTTFTest.Watchdog.Protocol
         public static string SerializeReceipt(WatchdogSafetyHandoffReceipt receipt)
         {
             if (receipt == null) throw new ArgumentNullException(nameof(receipt));
-            return Json.Serialize(receipt);
+            // Reflection property order in .NET Framework is not a wire format.
+            // Named-property lookups can warm that cache in a different order in each process.
+            var values = new SortedDictionary<string, object>(StringComparer.Ordinal);
+            foreach (var property in typeof(WatchdogSafetyHandoffReceipt).GetProperties())
+                if (property.CanRead && !Attribute.IsDefined(property, typeof(ScriptIgnoreAttribute)))
+                    values.Add(property.Name, property.GetValue(receipt));
+            return Json.Serialize(values);
         }
 
         public static string ComputeReceiptSha256(WatchdogSafetyHandoffReceipt receipt)
@@ -139,7 +148,7 @@ namespace MTTFTest.Watchdog.Protocol
                 receipt.RelaunchPermitGeneration,
                 receipt.RelaunchPermitId);
             var path = GetPath(stateDirectory, authorityId);
-            using (var mutex = new Mutex(false, MutexName(authorityId)))
+            using (var mutex = OpenAuthorityMutex(authorityId))
             {
                 bool held;
                 try { held = mutex.WaitOne(5000, false); }
@@ -217,7 +226,7 @@ namespace MTTFTest.Watchdog.Protocol
             WatchdogSafetyHandoffReceipt next)
         {
             var path = GetPath(stateDirectory, authorityId);
-            using (var mutex = new Mutex(false, MutexName(authorityId)))
+            using (var mutex = OpenAuthorityMutex(authorityId))
             {
                 bool held;
                 try { held = mutex.WaitOne(5000, false); }
@@ -309,6 +318,19 @@ namespace MTTFTest.Watchdog.Protocol
                 if (record?.IsValid() != true)
                 {
                     failure = "AuthorityInvalid";
+                    if (record?.Receipt == null) failure += ":ReceiptMissing";
+                    else
+                    {
+                        var actual = ComputeReceiptSha256(record.Receipt);
+                        if (!string.Equals(actual, record.ReceiptCanonicalSha256, StringComparison.Ordinal))
+                            failure += ":ReceiptCanonicalSha256Mismatch Expected=" + record.ReceiptCanonicalSha256 + " Actual=" + actual;
+                        else
+                            failure += ":Contract Schema=" + record.SchemaVersion +
+                                " Session=" + record.SessionId + " Handoff=" + record.HandoffId +
+                                " InitialRevision=" + record.InitialReceiptRevision +
+                                " RecordRevision=" + record.ReceiptRevision + " ReceiptRevision=" + record.Receipt.Revision +
+                                " ReceiptContractValid=" + record.Receipt.IsValidFor(record.SessionId);
+                    }
                     record = null;
                     return false;
                 }
@@ -400,7 +422,22 @@ namespace MTTFTest.Watchdog.Protocol
 
         private static string MutexName(string authorityId)
         {
-            return "Local\\MTTFTest.SupervisorSafetyAuthority." + authorityId;
+            return "Global\\MTTFTest.SupervisorSafetyAuthority.V216." + authorityId;
+        }
+
+        private static Mutex OpenAuthorityMutex(string authorityId)
+        {
+            var name = MutexName(authorityId);
+            const MutexRights usage = MutexRights.Synchronize | MutexRights.Modify;
+            try { return Mutex.OpenExisting(name, usage); }
+            catch (WaitHandleCannotBeOpenedException) { }
+            var security = new MutexSecurity();
+            foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
+                security.AddAccessRule(new MutexAccessRule(new SecurityIdentifier(sid, null), MutexRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(WindowsIdentity.GetCurrent().User, MutexRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null), usage, AccessControlType.Allow));
+            try { return new Mutex(false, name, out _, security); }
+            catch (UnauthorizedAccessException) { return Mutex.OpenExisting(name, usage); }
         }
 
         private static WatchdogSafetyHandoffReceipt Clone(

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using Config;
 using Controller;
 using IO.NI;
@@ -27,7 +28,8 @@ namespace AdaptiveControlTests
             DaqOldGenerationCannotPublish();
             FormalClosureLifetimeIsBounded();
             TerminalSessionsNeverRestart();
-            return 10;
+            AuthorityReceiptRoundTripPreservesHash();
+            return 11;
         }
 
         private static void TerminalSessionsNeverRestart()
@@ -64,6 +66,31 @@ namespace AdaptiveControlTests
             }
             finally { if (File.Exists(marker)) File.Delete(marker); }
             Console.WriteLine("PASS V216 T11/T12/T14 终态退休、证据阻断与独立安全意图");
+        }
+
+        private static void AuthorityReceiptRoundTripPreservesHash()
+        {
+            var serializer = new JavaScriptSerializer();
+            var random = new Random(216);
+            for (var index = 0; index < 10000; index++)
+            {
+                var elapsed = index == 0 ? 77.679864632748 : random.NextDouble() * 100;
+                var receipt = new WatchdogSafetyHandoffReceipt { StageMonotonicElapsedMs = elapsed };
+                Assert(SupervisorSafetyAuthorityStore.SerializeReceipt(receipt).StartsWith("{\"AttemptCount\":", StringComparison.Ordinal),
+                    "权威回执未按固定Ordinal字段顺序序列化");
+                var expected = SupervisorSafetyAuthorityStore.ComputeReceiptSha256(receipt);
+                for (var round = 0; round < 3; round++)
+                {
+                    receipt = serializer.Deserialize<WatchdogSafetyHandoffReceipt>(serializer.Serialize(receipt));
+                    Assert(BitConverter.DoubleToInt64Bits(receipt.StageMonotonicElapsedMs) == BitConverter.DoubleToInt64Bits(elapsed) &&
+                        SupervisorSafetyAuthorityStore.ComputeReceiptSha256(receipt) == expected,
+                        "JSON往返改变未被篡改回执的耗时或哈希: " + index + "/" + round +
+                        " ExpectedValue=" + elapsed.ToString("G17", System.Globalization.CultureInfo.InvariantCulture) +
+                        " ActualValue=" + receipt.StageMonotonicElapsedMs.ToString("G17", System.Globalization.CultureInfo.InvariantCulture) +
+                        " ExpectedHash=" + expected + " ActualHash=" + SupervisorSafetyAuthorityStore.ComputeReceiptSha256(receipt));
+                }
+            }
+            Console.WriteLine("PASS V216 T11 10000耗时三轮JSON往返保持回执位值及权威哈希");
         }
 
         private static void DaqReadQueueDoesNotRunBusinessOnReader()
