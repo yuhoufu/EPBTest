@@ -235,18 +235,38 @@ function Ensure-V3BaselineLastKnownGood([string]$Root) {
 }
 
 function Stop-InstalledProcess([string]$Root, [string]$FileName) {
-    $expected = [IO.Path]::GetFullPath(
-        (Join-Path (Join-Path $Root 'Current') $FileName))
+    $prefix = (Resolve-SafeDirectory $Root 'InstallRoot').TrimEnd('\', '/') + '\'
     $processes = Get-CimInstance Win32_Process `
         -Filter "Name='$FileName'" `
-        -ErrorAction SilentlyContinue
+        -ErrorAction Stop
     foreach ($process in @($processes)) {
-        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
-        $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
-        if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
-            Stop-Process -Id ([int]$process.ProcessId) -Force `
-                -Confirm:$false -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) {
+            throw "无法核验进程路径，停止卸载：$FileName PID=$($process.ProcessId)"
         }
+        $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+        if (-not $actual.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $handle = Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue
+        if ($null -eq $handle) { continue }
+        try {
+            # Retain the exact process handle until exit; never hide access/stop failures.
+            [void]$handle.Handle
+            if (-not [string]::Equals([string]$handle.Path, $actual, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "进程身份已变化，停止卸载：$FileName PID=$($process.ProcessId)"
+            }
+            Stop-Process -InputObject $handle -Force -Confirm:$false -ErrorAction Stop
+            if (-not $handle.WaitForExit(10000)) {
+                throw "进程未在 10 秒内退出，未删除程序文件：$FileName PID=$($process.ProcessId)"
+            }
+            Write-Host "已退出：$FileName PID=$($process.ProcessId)"
+        }
+        finally { $handle.Dispose() }
+    }
+}
+
+function Stop-InstalledRuntimeProcesses([string]$Root) {
+    foreach ($name in @('MTTFTest.SessionAgent.exe', 'MTTFTest.exe',
+            'MTTFTest.EngineHost.exe', 'MTTFTest.SafetyAgent.exe', 'MTTFTest.Watchdog.exe')) {
+        Stop-InstalledProcess $Root $name
     }
 }
 
@@ -256,7 +276,19 @@ function Remove-InstalledProgramFiles([string]$Root) {
         throw "拒绝删除非 MTTFTest 安装目录：$resolved"
     }
     if (Test-Path -LiteralPath $resolved -PathType Container) {
-        Remove-Item -LiteralPath $resolved -Recurse -Force -Confirm:$false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $resolved -Recurse -Force -Confirm:$false -ErrorAction Stop
+                return
+            }
+            catch {
+                if (-not (Test-Path -LiteralPath $resolved)) { return }
+                if ($attempt -eq 3) {
+                    throw "程序目录仍被占用或无删除权限：$resolved。服务和任务可能已经移除；可使用本卸载工具重试，ProgramData 保持不变。原因：$($_.Exception.Message)"
+                }
+                Start-Sleep -Milliseconds 500
+            }
+        }
     }
 }
 
@@ -811,10 +843,7 @@ if ($Mode -eq 'Uninstall') {
             Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
         }
         Write-OperationStep 3 6 '停止安装目录中的主程序和后台组件。'
-        Stop-InstalledSessionAgent $root
-        Stop-InstalledProcess $root 'MTTFTest.exe'
-        Stop-InstalledProcess $root 'MTTFTest.SafetyAgent.exe'
-        Stop-InstalledProcess $root 'MTTFTest.Watchdog.exe'
+        Stop-InstalledRuntimeProcesses $root
         Write-OperationStep 4 6 '删除监督服务。'
         if ($null -ne (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
             & sc.exe delete $serviceName | Out-Host

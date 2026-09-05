@@ -38,6 +38,7 @@ if ($unsupportedStopTaskConfirm.Count -ne 0) {
 }
 
 $installerText = [IO.File]::ReadAllText($installer, [Text.Encoding]::UTF8)
+& (Join-Path $PSScriptRoot 'Test-V3Uninstall.ps1') -InstallerPath $installer
 & (Join-Path $PSScriptRoot 'Test-V3InstallerIdentity.ps1') -InstallerPath $installer
 foreach ($removedGate in @(
         'Read-And-VerifyPackage',
@@ -404,7 +405,7 @@ foreach ($requiredV3PackageContract in @(
         'installedCrashMatrixPassed',
         'hardwareMatrixPassed',
         'soak168HoursPassed',
-        'QUICKDEPLOY_R26',
+        'QUICKDEPLOY_R27',
         'archiveSha256')) {
     if (-not $v3InstallerText.Contains($requiredV3PackageContract)) {
         throw "V3 一键安装包脚本缺少契约：$requiredV3PackageContract"
