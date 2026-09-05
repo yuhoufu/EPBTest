@@ -292,6 +292,10 @@ namespace AdaptiveControlTests
                 catch (InvalidOperationException) { }
                 Assert(fixture.State(4).State != ChannelRuntimeState.Starting,
                     "旧epoch启动worker重新授权");
+                Assert(!fixture.Manager.HasActiveRecoveryContract(4, 41),
+                    "旧epoch已退出worker仍持有恢复租约");
+                Assert(fixture.Manager.DrainBackgroundTasksAsync(2000).GetAwaiter().GetResult(),
+                    "旧epoch恢复监督任务没有完成退出");
                 Console.WriteLine("PASS V216 T02 旧代际启动重试不重新授权");
             }
         }

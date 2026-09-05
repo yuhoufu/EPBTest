@@ -3598,7 +3598,13 @@ namespace Controller
                 var ownsExecution = _cycleAttempts.TryGetLastExecution(channel, out var execution) &&
                     RecoveryOwnsAttempt(contract, fence, execution) &&
                     !execution.IsExecutionCompleted;
-                if (ownsAttempt || ownsExecution || state == null) return false;
+                if (ownsAttempt || ownsExecution) return false;
+                // A superseded run cannot publish into the current projection. Once
+                // its own execution has exited, retire only its registry lease; an
+                // old Recovering projection must not keep the completed worker alive.
+                if (contract.RunId != _activeBatchId ||
+                    contract.RunEpoch != Interlocked.Read(ref _runEpoch)) continue;
+                if (state == null) return false;
                 if (state.State == ChannelRuntimeState.Recovering &&
                     state.RunId == contract.RunId && state.RunEpoch == contract.RunEpoch &&
                     state.RecoveryOwnerId == contract.OwnerId) return false;
