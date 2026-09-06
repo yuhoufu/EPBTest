@@ -2709,11 +2709,11 @@ namespace Controller
             _daqLivenessWatchdogIntervalMs = ReadIntAppSetting(
                 "DaqLivenessWatchdogIntervalMs", 20, 10, 1000);
             _daqLivenessWarnThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessWarnThresholdMs", 75, 20, 200);
+                "DaqLivenessWarnThresholdMs", 250, 100, 5000);
             _daqLivenessSuspectThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessSuspectThresholdMs", 100, 50, 249);
+                "DaqLivenessSuspectThresholdMs", 1500, 200, 30000);
             _daqLivenessTripThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessTripThresholdMs", 250, 100, 5000);
+                "DaqLivenessTripThresholdMs", 5000, 300, 300000);
             if (!AreDaqLivenessThresholdsStrictlyIncreasing(
                     _daqLivenessWarnThresholdMs,
                     _daqLivenessSuspectThresholdMs,
@@ -5844,12 +5844,22 @@ namespace Controller
                     restartDaq: false,
                     update.TimestampUtc)
                 .ConfigureAwait(false);
+            // 同一拥塞的硬容量告警不再为正在排空的事故另开升级链。
+            // 写失败/超时和真实缺口仍升级；60s恢复监督与独立OFF确认预算保持有效。
+            if (KeepPersistenceFailureWithRecoveryOwner(update.Code, update.DurabilityBlocked))
+                return;
             await EscalateDaqAutoRecoveryAsync(
                     update.Device,
                     update.Code,
                     update.Reason,
                     update.CorrelationId)
                 .ConfigureAwait(false);
+        }
+
+        internal static bool KeepPersistenceFailureWithRecoveryOwner(string code, bool durabilityBlocked)
+        {
+            return !durabilityBlocked &&
+                   string.Equals(code, "DaqPersistenceQueueFull", StringComparison.OrdinalIgnoreCase);
         }
 
         public void SetRecoveryInfrastructureHealthProvider(Func<bool> provider)
@@ -5903,36 +5913,59 @@ namespace Controller
         /// <summary>
         /// 固化 DAQ 恢复进入任何所有权等待前的安全顺序。调用方可以把每一步拆成
         /// 整组操作，因此能够证明“全部暂停”早于“冻结边界”，“冻结+抑制”早于
-        /// 当前圈取消和最高优先级 OFF 提交，而且电源 Disable/拒绝项兜底已经启动后，
+        /// 最高优先级 OFF 提交，而且电源 Disable/拒绝项兜底已经启动后，
         /// 必须在任何所有权 await 前撤销液压参与权并投递 lease release；最后才允许
-        /// 日志、UI 或其它观察者运行。
+        /// 当前圈取消回调、日志、UI 或其它观察者运行。
         /// </summary>
         internal static void ExecuteDaqCutoffBeforeOwnershipWait(
             Action startWatchdogs,
             Action pauseAll,
             Action freezeCutoffAndSuppressTail,
-            Action cancelCyclesAndSubmitOffAll,
+            Action submitOffAll,
             Action startPowerDisable = null,
             Action startRejectedOffFallbacks = null,
             Action revokeHydraulicAndStartRelease = null,
-            Action publishRecoveringAndDiagnostics = null)
+            Action publishRecoveringAndDiagnostics = null,
+            Action cancelCyclesAfterSafetySubmission = null,
+            Action<string> timingCompleted = null)
         {
             if (startWatchdogs == null) throw new ArgumentNullException(nameof(startWatchdogs));
             if (pauseAll == null)
                 throw new ArgumentNullException(nameof(pauseAll));
             if (freezeCutoffAndSuppressTail == null)
                 throw new ArgumentNullException(nameof(freezeCutoffAndSuppressTail));
-            if (cancelCyclesAndSubmitOffAll == null)
-                throw new ArgumentNullException(nameof(cancelCyclesAndSubmitOffAll));
+            if (submitOffAll == null)
+                throw new ArgumentNullException(nameof(submitOffAll));
 
-            startWatchdogs();
-            pauseAll();
-            freezeCutoffAndSuppressTail();
-            cancelCyclesAndSubmitOffAll();
-            startPowerDisable?.Invoke();
-            startRejectedOffFallbacks?.Invoke();
-            revokeHydraulicAndStartRelease?.Invoke();
-            publishRecoveringAndDiagnostics?.Invoke();
+            var timings = new List<string>(9);
+            void Execute(string stage, Action action)
+            {
+                if (action == null) return;
+                var started = Stopwatch.GetTimestamp();
+                try { action(); }
+                finally
+                {
+                    timings.Add(stage + "Ms=" + ((Stopwatch.GetTimestamp() - started) *
+                        1000.0 / Stopwatch.Frequency).ToString("F3", CultureInfo.InvariantCulture));
+                }
+            }
+            try
+            {
+                Execute("Watchdogs", startWatchdogs);
+                Execute("PauseAdmission", pauseAll);
+                Execute("FreezeBoundary", freezeCutoffAndSuppressTail);
+                Execute("SubmitOff", submitOffAll);
+                Execute("StartPowerDisable", startPowerDisable);
+                Execute("OffFallbacks", startRejectedOffFallbacks);
+                Execute("HydraulicRelease", revokeHydraulicAndStartRelease);
+                Execute("CancelCycles", cancelCyclesAfterSafetySubmission);
+                Execute("PublishObservers", publishRecoveringAndDiagnostics);
+            }
+            finally
+            {
+                // 计时仅写入内存；所有安全投递结束后才允许观察者/日志消费。
+                try { timingCompleted?.Invoke(string.Join(" ", timings)); } catch { }
+            }
         }
 
         private async Task<bool> TryFinalizeDaqCutoffCyclesAfterPersistenceAsync(
@@ -6713,7 +6746,7 @@ namespace Controller
                             try
                             {
                                 if (_timers.TryGetValue(channel, out var timer))
-                                    timer.Pause($"DaqSoftwareRecovery:{context.TriggerCode}");
+                                    timer.RequestSafetyPauseNonBlocking($"DaqSoftwareRecovery:{context.TriggerCode}");
                             }
                             catch (Exception ex)
                             {
@@ -6758,18 +6791,9 @@ namespace Controller
                     },
                     () =>
                     {
-                        // 截止身份已经冻结后再取消当前圈，并把整组 OFF 非阻塞提交到
+                        // 截止身份已经冻结后把整组 OFF 非阻塞提交到
                         // 最高优先级专用 worker。物理完成由全局完成事件更新带电位图；
                         // 所有权等待期间不得再补发同一批 OFF。
-                        foreach (var channel in affected)
-                        {
-                            try { CancelCyclePauseCts(channel); }
-                            catch (Exception ex)
-                            {
-                                cutoffSafetyDiagnostics.Add(
-                                    $"DAQ截止取消当前圈失败 EPB={channel}: {ex.Message}");
-                            }
-                        }
                         var transactionAccepted = context.Transaction != null &&
                             context.Transaction.SubmitOffBatch();
                         cutoffOffFallbacks = (context.Transaction?.OffReceipts ??
@@ -6879,7 +6903,25 @@ namespace Controller
                                     $"DAQ自愈暂停观察者异常，已隔离：{ex.Message}",
                                     "AI"));
                         }
-                    }), "DaqCutoffStatePublication"));
+                    }), "DaqCutoffStatePublication"),
+                    cancelCyclesAfterSafetySubmission: () =>
+                    {
+                        // 摘除确切旧 CTS 后隔离执行取消回调；不能延迟取消到新一圈 CTS。
+                        foreach (var channel in affected)
+                        {
+                            if (!_cyclePauseCtsByChannel.TryRemove(channel, out var source)) continue;
+                            ObserveNonRecoveryLifecycleTask(Task.Run(() =>
+                            {
+                                try { source.Cancel(); } catch { }
+                                finally { try { source.Dispose(); } catch { } }
+                            }), "DaqCutoffCancelCycle", channel);
+                        }
+                    },
+                    timingCompleted: timings => _log.Info(
+                        $"FieldMetric DAQ_CUTOFF_TIMING Device={device} " +
+                        $"RunId={context.RunId:N} RunEpoch={context.RunEpoch} " +
+                        $"RecoveryEpoch={context.RecoveryEpoch} CorrelationId={context.CorrelationId:N} " +
+                        timings, "FIELD"));
 
                 if (!cutoffOffSubmissionAccepted)
                 {

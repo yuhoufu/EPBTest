@@ -2101,6 +2101,12 @@ namespace MTTFTest.Watchdog
                     // exit completes the connection lifecycle.
                     break;
                 case WatchdogMessageType.ApplicationClosing:
+                    if (PreserveReplacementOnLegacyClose())
+                    {
+                        Record("LegacyApplicationClosingPreservedReplacement", message.Reason);
+                        ObserveApplicationExitIntent();
+                        break;
+                    }
                     _journal.ManualStopRequested = true;
                     CancelAutomaticTakeover("ApplicationClosing");
                     Record(message.Type, message.Reason);
@@ -6769,6 +6775,29 @@ namespace MTTFTest.Watchdog
 
             var started = BeginSafetyHandoff(handoff);
             return started || !handoff.IsTerminal;
+        }
+
+        private bool PreserveReplacementOnLegacyClose()
+        {
+            if (!WatchdogApplicationExitReceiptStore.TryRead(
+                    _args.JournalDirectory, _args.SessionId, out var receipt) ||
+                !WatchdogClosingTombstoneStore.TryRead(
+                    _args.JournalDirectory, _args.SessionId, out var closing))
+                return false;
+            int pid;
+            long startTicks;
+            lock (_journalGate)
+            {
+                pid = _journal.CurrentPid;
+                startTicks = _journal.CurrentProcessStartUtcTicks;
+            }
+            return WatchdogExitDispositionPolicy.ShouldPreserveReplacementOnLegacyClose(
+                _journal.ManualStopRequested, IsSessionRevoked(), receipt, closing,
+                pid, startTicks,
+                WatchdogTakeoverPermitBindingPolicy.Matches(
+                    _relaunchCoordinator.Snapshot, _args.SessionId,
+                    receipt.RelaunchPermitGeneration, receipt.RelaunchPermitId,
+                    receipt.RelaunchPermitNonceSha256));
         }
 
         private bool ObserveApplicationExitIntent()

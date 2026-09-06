@@ -25,11 +25,11 @@ function Refresh-FixtureIdentity([string]$Path) {
     $files = @(Get-ChildItem -LiteralPath $Path -File | Where-Object { $_.Name -ne 'build-identity.json' } | ForEach-Object {
         @{ name=$_.Name; bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash }
     })
-    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.17.1.1'} })
+    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.17.2.0'} })
     $map = New-Object 'System.Collections.Generic.SortedDictionary[string,string]' ([StringComparer]::Ordinal)
     foreach ($file in $files) { $map.Add($file.name, (Join-Path $Path $file.name)) }
     @{ gitCommit=('a'*40); packageContentSha256=(Get-DeploymentAggregateHash $map); files=$files; componentIdentities=$components;
-        fileVersion='2.17.1.1'; recoveryArchitectureGeneration='EPB-V2.17'; watchdogSchema=7;
+        fileVersion='2.17.2.0'; recoveryArchitectureGeneration='EPB-V2.17'; watchdogSchema=7;
         releaseStatus='FORMAL_RELEASE'; deploymentApproved=$true } | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $Path 'build-identity.json') -Encoding UTF8
 }

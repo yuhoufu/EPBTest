@@ -25,6 +25,11 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0].Equals("--i0046", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += I0046AlignmentTests.RunAll();
+                    return 0;
+                }
                 if (args.Length == 1 && args[0].Equals("--v217-stability", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += V217StabilityTests.RunAll();
@@ -555,6 +560,7 @@ namespace AdaptiveControlTests
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
                 _passed += FormalBatchSlotCoordinatorTests.RunAll();
                 _passed += RecoveryClosureV2171Tests.RunAll();
+                _passed += I0046AlignmentTests.RunAll();
                 _passed += FirstRunBootstrapTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
