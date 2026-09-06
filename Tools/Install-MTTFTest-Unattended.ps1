@@ -487,38 +487,63 @@ function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
 
     if ($null -ne $legacy) {
         $legacySchema = [int]$legacy.SchemaVersion
-        if ($legacySchema -notin @(5, 6)) {
-            throw "旧运行检查点 SchemaVersion=$legacySchema 不受支持；保持 SafeIdleAlarmed，拒绝安装新授权。"
+        $legacyCycleKeyCount = 0
+        if ($null -ne $legacy.RemainingFormalCycles) {
+            $legacyCycleKeyCount = @($legacy.RemainingFormalCycles.PSObject.Properties).Count
         }
-        if (-not $PhysicalIsolationConfirmed -and (-not [bool]$legacy.MotorOffConfirmed -or
-            -not [bool]$legacy.PressureSafeConfirmed -or
-            -not [bool]$legacy.PersistenceDrained)) {
-            throw "schema $legacySchema 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。"
-        }
+        $legacyHasPayload =
+            (-not [string]::IsNullOrWhiteSpace([string]$legacy.RunId)) -or
+            (-not [string]::IsNullOrWhiteSpace([string]$legacy.RootRunId)) -or
+            (-not [string]::IsNullOrWhiteSpace([string]$legacy.StoreDir)) -or
+            (-not [string]::IsNullOrWhiteSpace([string]$legacy.TestName)) -or
+            ($legacyCycleKeyCount -gt 0)
+        $isEmptyDisarmed = (-not [bool]$legacy.Armed) -and
+            (-not [bool]$legacy.GracefulPaused) -and
+            (-not $legacyHasPayload)
 
-        foreach ($path in @($checkpoint, "$checkpoint.bak")) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-            $destination = Join-Path $archiveRoot ([IO.Path]::GetFileName($path))
-            Move-Item -LiteralPath $path -Destination $destination
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace([string]$legacy.StoreDir) -and
-            -not [string]::IsNullOrWhiteSpace([string]$legacy.TestName)) {
-            $projectRoot = [IO.Path]::GetFullPath(
-                (Join-Path ([string]$legacy.StoreDir) ([string]$legacy.TestName)))
-            $storeRoot = (Resolve-SafeDirectory ([string]$legacy.StoreDir) 'StoreDir').TrimEnd('\') + '\'
-            if (-not $projectRoot.StartsWith($storeRoot, [StringComparison]::OrdinalIgnoreCase)) { throw '项目检查点路径越界。' }
-            $projectCheckpoint = Join-Path $projectRoot 'Recovery\unattended-run-checkpoint.json'
-            foreach ($path in @($projectCheckpoint, "$projectCheckpoint.bak")) {
+        if ($isEmptyDisarmed) {
+            # 空的未授权检查点不携带授权、许可或剩余圈数，归档留证后直接换代；
+            # 不得把无负载空壳当作不支持的旧格式拒绝安装。
+            $migration['legacyDisposition'] = 'EmptyDisarmedDiscarded'
+            foreach ($path in @($checkpoint, "$checkpoint.bak")) {
                 if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-                $name = 'project-' + [IO.Path]::GetFileName($path)
-                Move-Item -LiteralPath $path -Destination (Join-Path $archiveRoot $name)
+                Move-Item -LiteralPath $path -Destination (Join-Path $archiveRoot ([IO.Path]::GetFileName($path)))
             }
-            $sessions = Join-Path $projectRoot 'WatchdogSessions'
-            if (Test-Path -LiteralPath $sessions -PathType Container) {
-                $sealed = Join-Path $projectRoot "WatchdogSessions.LegacySealed-$stamp"
-                Move-Item -LiteralPath $sessions -Destination $sealed
-                $migration['projectSessionArchive'] = $sealed
+        }
+        else {
+            if ($legacySchema -notin @(5, 6)) {
+                throw "旧运行检查点 SchemaVersion=$legacySchema 不受支持；保持 SafeIdleAlarmed，拒绝安装新授权。"
+            }
+            if (-not $PhysicalIsolationConfirmed -and (-not [bool]$legacy.MotorOffConfirmed -or
+                -not [bool]$legacy.PressureSafeConfirmed -or
+                -not [bool]$legacy.PersistenceDrained)) {
+                throw "schema $legacySchema 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。"
+            }
+
+            foreach ($path in @($checkpoint, "$checkpoint.bak")) {
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+                $destination = Join-Path $archiveRoot ([IO.Path]::GetFileName($path))
+                Move-Item -LiteralPath $path -Destination $destination
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace([string]$legacy.StoreDir) -and
+                -not [string]::IsNullOrWhiteSpace([string]$legacy.TestName)) {
+                $projectRoot = [IO.Path]::GetFullPath(
+                    (Join-Path ([string]$legacy.StoreDir) ([string]$legacy.TestName)))
+                $storeRoot = (Resolve-SafeDirectory ([string]$legacy.StoreDir) 'StoreDir').TrimEnd('\') + '\'
+                if (-not $projectRoot.StartsWith($storeRoot, [StringComparison]::OrdinalIgnoreCase)) { throw '项目检查点路径越界。' }
+                $projectCheckpoint = Join-Path $projectRoot 'Recovery\unattended-run-checkpoint.json'
+                foreach ($path in @($projectCheckpoint, "$projectCheckpoint.bak")) {
+                    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+                    $name = 'project-' + [IO.Path]::GetFileName($path)
+                    Move-Item -LiteralPath $path -Destination (Join-Path $archiveRoot $name)
+                }
+                $sessions = Join-Path $projectRoot 'WatchdogSessions'
+                if (Test-Path -LiteralPath $sessions -PathType Container) {
+                    $sealed = Join-Path $projectRoot "WatchdogSessions.LegacySealed-$stamp"
+                    Move-Item -LiteralPath $sessions -Destination $sealed
+                    $migration['projectSessionArchive'] = $sealed
+                }
             }
         }
     }

@@ -289,7 +289,7 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                 seedId,
                 Path.Combine(baseDirectory, "Config"),
                 Path.Combine(project, "Config"),
-                "V2.17.1.0-E2E-TestHost",
+                "V2.17.1.1-E2E-TestHost",
                 runtime,
                 sessionId,
                 generation,
@@ -322,7 +322,7 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                     ConfigSnapshotManifestPath = snapshot.ManifestPath,
                     ConfigSnapshotManifestSha256 = snapshot.ManifestSha256,
                     ConfigSnapshotSchemaVersion = 2,
-                    BuildIdentity = "V2.17.1.0-E2E-TestHost"
+                    BuildIdentity = "V2.17.1.1-E2E-TestHost"
                 });
             AppendEvent("CrashRecoverySeedCommitted", "Seed=" + seedId);
         }

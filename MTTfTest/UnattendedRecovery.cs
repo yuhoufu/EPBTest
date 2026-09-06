@@ -205,17 +205,13 @@ namespace MTEmbTest
         {
             lock (Sync)
             {
-                var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
-                checkpoint.Armed = false;
-                checkpoint.RestartPending = false;
-                checkpoint.InProcessRecoveryPending = false;
-                checkpoint.GracefulPaused = false;
-                checkpoint.RecoveryChainPendingStart = false;
-                checkpoint.RecoveryNonce = string.Empty;
-                checkpoint.WatchdogSessionId = string.Empty;
-                checkpoint.LastReason = string.IsNullOrWhiteSpace(reason) ? "AuthorizationRevoked" : reason;
-                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-                SaveUnsafe(checkpoint);
+                var checkpoint = LoadUnsafe();
+                // 没有现存检查点时禁止凭空落盘：新建空壳会带默认 SchemaVersion=1，
+                // 部署换代校验只认 5/6，会把空壳当作不支持的旧检查点拒绝安装。
+                if (checkpoint == null) return;
+                DisarmUnsafe(
+                    checkpoint,
+                    string.IsNullOrWhiteSpace(reason) ? "AuthorizationRevoked" : reason);
             }
         }
 
@@ -1097,6 +1093,8 @@ namespace MTEmbTest
 
         private static void DisarmUnsafe(UnattendedRunCheckpoint checkpoint, string reason)
         {
+            // Schema 只能单调前进；解除授权落盘同样必须携带当前版本。
+            checkpoint.SchemaVersion = CurrentSchemaVersion;
             checkpoint.Armed = false;
             checkpoint.RestartPending = false;
             checkpoint.InProcessRecoveryPending = false;

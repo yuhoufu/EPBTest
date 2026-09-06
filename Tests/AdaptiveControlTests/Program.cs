@@ -31,6 +31,12 @@ namespace AdaptiveControlTests
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
+                if (args.Length == 1 && args[0].Equals("--checkpoint-disarm", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += CheckpointDisarmInvariantsTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 2 &&
                     args[0].Equals("--watchdog-guarded-launch-child", StringComparison.OrdinalIgnoreCase))
                 {
