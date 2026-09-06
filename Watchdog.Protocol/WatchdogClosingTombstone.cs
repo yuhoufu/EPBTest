@@ -30,7 +30,11 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public sealed class WatchdogClosingTombstone
     {
-        public int SchemaVersion { get; set; } = 6;
+        /// <summary>
+        /// Defaults to the authoritative supervisor protocol version; a hard-coded
+        /// default has drifted from the producer before and invalidated every tombstone.
+        /// </summary>
+        public int SchemaVersion { get; set; } = SupervisorProtocol.SchemaVersion;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -80,9 +84,8 @@ namespace MTTFTest.Watchdog.Protocol
 
         public bool IsValidFor(string sessionId)
         {
-            var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
-                          SchemaVersion == 3 || SchemaVersion == 4 ||
-                          SchemaVersion == 5 || SchemaVersion == 6) &&
+            var common = (SchemaVersion >= 1 &&
+                          SchemaVersion <= SupervisorProtocol.SchemaVersion) &&
                    !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    SessionGeneration > 0 && SessionLease > 0 && StateVersion > 0 &&

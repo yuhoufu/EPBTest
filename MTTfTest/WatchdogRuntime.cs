@@ -3367,6 +3367,38 @@ namespace MTEmbTest
                 : RuntimeShutdownMarkOutcome.Marked;
         }
 
+        /// <summary>
+        /// Test seam only. When set, every closing-tombstone write goes through this
+        /// delegate so failure paths can be exercised deterministically; production
+        /// code must leave it null.
+        /// </summary>
+        internal static Func<string, WatchdogClosingTombstone, WatchdogClosingTombstone>
+            ClosingTombstoneWriteOverride;
+
+        private static WatchdogClosingTombstone WriteClosingTombstoneDurable(
+            RuntimeTransportSessionContext context,
+            WatchdogClosingTombstone tombstone)
+        {
+            var injected = ClosingTombstoneWriteOverride;
+            if (injected != null)
+                return injected(context.JournalDirectory, tombstone);
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return WatchdogClosingTombstoneStore.WriteThrough(
+                        context.JournalDirectory,
+                        tombstone);
+                }
+                catch (Exception) when (attempt < 3)
+                {
+                    // Transient storage faults get a bounded retry; deterministic
+                    // rejections simply repeat and fall through to the caller.
+                    Thread.Sleep(50 * attempt);
+                }
+            }
+        }
+
         internal static RuntimeSessionCloseFenceReceipt BeginSessionCloseExact(
             RuntimeTransportSessionContext context,
             string closeIntent,
@@ -3479,9 +3511,7 @@ namespace MTEmbTest
                     previous.StateVersion++;
                     try
                     {
-                        previous = WatchdogClosingTombstoneStore.WriteThrough(
-                            context.JournalDirectory,
-                            previous);
+                        previous = WriteClosingTombstoneDurable(context, previous);
                     }
                     catch (Exception ex)
                     {
@@ -3547,22 +3577,29 @@ namespace MTEmbTest
 
             try
             {
-                receipt.Tombstone = WatchdogClosingTombstoneStore.WriteThrough(
-                    context.JournalDirectory,
-                    tombstone);
+                receipt.Tombstone = WriteClosingTombstoneDurable(context, tombstone);
                 receipt.TombstoneDurable = true;
             }
             catch (Exception ex)
             {
                 receipt.Error = ex.GetBaseException().Message;
                 receipt.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
-                try { WriteSessionRevocationMarker(context, "ClosingTombstoneWriteFailed"); }
-                catch { }
+                // A failed tombstone write is a persistence fault, not an operator
+                // revocation. When the approved relaunch permit must survive this
+                // exit, the sidecar stays the recovery owner and rebuilds the
+                // crash-recovery evidence itself; writing a legacy revocation
+                // marker here would terminate the only process able to relaunch.
+                if (!tombstone.PreservesApprovedPermit)
+                {
+                    try { WriteSessionRevocationMarker(context, "ClosingTombstoneWriteFailed"); }
+                    catch { }
+                }
                 RecordClientEvent(
                     context,
                     "WatchdogClosingTombstonePersistenceFailed",
                     DescribeSessionCloseIdentity(context, null) +
-                    ";Error=" + receipt.Error);
+                    ";Error=" + receipt.Error +
+                    ";PreservesApprovedPermit=" + tombstone.PreservesApprovedPermit);
                 FlushClientJournal(context);
                 return receipt;
             }
@@ -3602,9 +3639,7 @@ namespace MTEmbTest
                 existing.SafetyStage = WatchdogClosingSafetyStage.Terminal;
                 existing.StateVersion = Math.Max(1, existing.StateVersion + 1);
                 existing.TerminalReason = terminalReason ?? "RuntimeShutdownTerminal";
-                WatchdogClosingTombstoneStore.WriteThrough(
-                    context.JournalDirectory,
-                    existing);
+                WriteClosingTombstoneDurable(context, existing);
                 if (!existing.PreservesApprovedPermit)
                     WriteSessionRevocationMarker(
                         context,

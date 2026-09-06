@@ -2445,6 +2445,17 @@ namespace MTTFTest.Watchdog
                         // 也能主动全断能。此时 Sidecar 必须继续等待该停止收口，不能
                         // 被自己刚写的 marker 提前结束。
                         if (IsTransitionOperatorStopInProgress()) continue;
+                        if (legacyRevoked &&
+                            IsTombstoneFailureMarkerWithoutOperatorRevocation(closingFence))
+                        {
+                            // 主程序接管退出时墓碑持久化失败不代表人工撤销恢复。
+                            // Sidecar 仍是唯一恢复所有者：继续监护并由崩溃补证
+                            // 路径重建关闭墓碑，绝不能在此终止。
+                            Record(
+                                "LegacyRevocationMarkerSuppressed",
+                                "Reason=ClosingTombstoneWriteFailed;Action=KeepRecoveryOwnership");
+                            continue;
+                        }
                         _journal.ManualStopRequested = true;
                         var closingOwnerExited = closingFence?.State ==
                                                  WatchdogClosingTombstoneState.Closing;
@@ -7653,6 +7664,20 @@ namespace MTTFTest.Watchdog
                     TimestampUtcTicks = receipt.UpdatedUtcTicks
                 }
             });
+        }
+
+        private bool IsTombstoneFailureMarkerWithoutOperatorRevocation(
+            WatchdogClosingTombstone closingFence)
+        {
+            if (closingFence != null && !closingFence.PreservesApprovedPermit)
+                return false;
+            string reason;
+            return WatchdogControlMarker.TryReadReason(
+                       _args.JournalDirectory,
+                       _args.SessionId,
+                       out reason) &&
+                   !string.IsNullOrEmpty(reason) &&
+                   reason.IndexOf("ClosingTombstoneWriteFailed", StringComparison.Ordinal) >= 0;
         }
 
         private WatchdogCloseFenceAction CaptureCloseFenceAction(

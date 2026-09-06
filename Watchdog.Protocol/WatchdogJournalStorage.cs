@@ -385,6 +385,48 @@ namespace MTTFTest.Watchdog.Protocol
             catch { return false; }
         }
 
+        /// <summary>
+        /// Reads the revocation reason recorded in the marker file, preferring the
+        /// local copy. Content format is "UTC reason"; the returned value keeps the
+        /// full line so callers can match by substring.
+        /// </summary>
+        public static bool TryReadReason(
+            string projectDirectory,
+            string sessionId,
+            out string reason)
+        {
+            reason = null;
+            try
+            {
+                if (TryReadFirstLine(
+                        WatchdogJournalPaths.LocalRevocationPath(sessionId),
+                        out reason))
+                    return true;
+                if (!string.IsNullOrWhiteSpace(projectDirectory) &&
+                    TryReadFirstLine(
+                        WatchdogJournalPaths.ProjectRevocationPath(projectDirectory, sessionId),
+                        out reason))
+                    return true;
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool TryReadFirstLine(string path, out string line)
+        {
+            line = null;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+                using (var stream =
+                       new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var reader = new StreamReader(stream))
+                    line = reader.ReadLine();
+                return !string.IsNullOrWhiteSpace(line);
+            }
+            catch { return false; }
+        }
+
         public static void CleanupLocal(int retentionDays, long maxBytes)
         {
             try
