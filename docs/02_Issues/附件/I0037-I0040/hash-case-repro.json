@@ -1,0 +1,9 @@
+﻿{
+    "ReleaseDirectory":  "D:\\Github\\wanxiang\\EPBTest\\artifacts\\releases\\V2.16.0.0-343ea80f8331-20260905_073154",
+    "WatchdogSha256":  "B46E2A7C69B7E49213913D942D319F8A19C02E8B0A6D29F03F142BDA36AA64BE",
+    "MainSha256":  "B7719B967CDC42B780422FBD4D7BC45FAC122EE4F9E914672BD6E253AFECA206",
+    "SameUpperCaseMatches":  true,
+    "SameBytesLowerCaseMatches":  false,
+    "DifferentHashMatches":  false,
+    "Meaning":  "Defect reproduction, not a fix validation; no hardware or services started."
+}

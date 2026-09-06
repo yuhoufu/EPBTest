@@ -1,0 +1,32 @@
+﻿{
+    "Purpose":  "Deterministic interleaving reproduction using unchanged V2.16 release assemblies; no field hardware used.",
+    "ReleaseDirectory":  "D:\\Github\\wanxiang\\EPBTest\\artifacts\\releases\\V2.16.0.0-343ea80f8331-20260905_073154",
+    "IoNiSha256":  "E9DE7C042FC4527F285019633B48536B9973219B3BCFF7C3CA70588435F8B048",
+    "ControllerSha256":  "B366FA10E012BEFEFE03A32E83858F2EDB1040AA6B3070B478A56931D8A37FD8",
+    "Cases":  [
+                  {
+                      "Case":  "PublicationReadAfterNow",
+                      "TickFrequency":  10000000,
+                      "IsFresh":  false,
+                      "CallbackAgeMs":  0.5,
+                      "SampleAgeMs":  2,
+                      "ControlProcessedAgeMs":  "∞",
+                      "RejectionReason":  "ControlDispatchAgeExceeded",
+                      "Trip":  true,
+                      "Code":  "DaqCallbackStale",
+                      "Reason":  "CallbackAge=0.5ms SampleAge=2.0ms BufferedSamples=0 ReaderLag=Healthy Generation=1 Produced=100 Confirmations=1/1"
+                  },
+                  {
+                      "Case":  "NowReadAfterPublication",
+                      "TickFrequency":  10000000,
+                      "IsFresh":  true,
+                      "CallbackAgeMs":  0.5,
+                      "SampleAgeMs":  2.0002,
+                      "ControlProcessedAgeMs":  "0.0001",
+                      "RejectionReason":  "",
+                      "Trip":  false,
+                      "Code":  "",
+                      "Reason":  ""
+                  }
+              ]
+}
