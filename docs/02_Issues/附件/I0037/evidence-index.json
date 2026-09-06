@@ -1,0 +1,471 @@
+{
+  "backup": "D:\\EPB_Data\\Backups\\10243-028_V2.16.0.0_I0037_0905_1653",
+  "read_only": true,
+  "sqlite_quick_check": [
+    [
+      "ok"
+    ]
+  ],
+  "sqlite_tables": [
+    "epb_cycles",
+    "sqlite_sequence"
+  ],
+  "files": [
+    {
+      "path": "backup-manifest.json",
+      "bytes": 517933,
+      "sha256": "1978d7823b75ed21e9a43b172942808c4e305d6c69c190eaf2aab630dfc36af3"
+    },
+    {
+      "path": "Config/runtime-build-identity.json",
+      "bytes": 954,
+      "sha256": "af7c8cd0bf71c3cf6293020634b07085e8e3ba12b81befb20b9bbbbe263aa8e6"
+    },
+    {
+      "path": "log/run.log",
+      "bytes": 6224988,
+      "sha256": "381ef0f92129527ee3a9ff3d009ece3e80e41b74288cee2d4ec2de4eddbf8d10"
+    },
+    {
+      "path": "log/error.log",
+      "bytes": 14439,
+      "sha256": "6cd3cb1fa19d77db7a8e5e645d038c75c3f603ebdeb6c66761d50a17d4f41fd0"
+    },
+    {
+      "path": "log/warning.log",
+      "bytes": 37500,
+      "sha256": "8ed5d940f81dacf1796b7382e8f72649068aff7063c89e2e6d6d0d7cbd146454"
+    },
+    {
+      "path": "log/ui-info.log",
+      "bytes": 27416,
+      "sha256": "8a18edf96a7eb018f6662ac8f1efd9d248efa3e6c02a6805b5abce6af97eb63e"
+    },
+    {
+      "path": "WatchdogSessions/session-0ccbc780120e4d7db7053446724797f1.application-exit.json",
+      "bytes": 954,
+      "sha256": "88b3fc6eeb58b822af10faf70f50fd2bfff6615d94f583fd38da5b30c75ef0ec"
+    },
+    {
+      "path": "WatchdogSessions/session-0ccbc780120e4d7db7053446724797f1.closing.json",
+      "bytes": 1458,
+      "sha256": "8d9521508889eb3d2620b48a579b2d96148de15d4f319de4eba9626d1ef13e06"
+    },
+    {
+      "path": "WatchdogSessions/session-0ccbc780120e4d7db7053446724797f1.sidecar-events.jsonl",
+      "bytes": 272133,
+      "sha256": "67c8c220a84f832330b5ffc50ace8947647b6f2351ba96f3055045911291469b"
+    },
+    {
+      "path": "WatchdogSessions/session-0ccbc780120e4d7db7053446724797f1.client-events.jsonl",
+      "bytes": 49104,
+      "sha256": "83a57cc64231d9c49de0a122f0889c856c270a2f85055e9b11b79565e1ce7027"
+    },
+    {
+      "path": "index.db",
+      "bytes": 45690880,
+      "sha256": "b8e7995769eb60ec0d1088320aaed453b81759b083ac3c785179f38a9a2f6637"
+    }
+  ],
+  "exit": {
+    "State": 4,
+    "MainProcessId": 21708,
+    "StopSafetyTransactionId": "1a66431c475d4423aa8a17a5bde1c194",
+    "Detail": "ExactMainProcessTerminatedAt30SecondDeadline",
+    "MotorsOff": false,
+    "PowerOff": false,
+    "PressureSafe": false,
+    "PersistenceDrained": false,
+    "LogicalQuiescent": false,
+    "DataContinuityVerified": false
+  },
+  "exit_times": {
+    "RequestedUtcTicks": "2026-09-05T16:52:11.550370+08:00",
+    "HardDeadlineUtcTicks": "2026-09-05T16:52:41.550370+08:00",
+    "UpdatedUtcTicks": "2026-09-05T16:52:41.574174+08:00"
+  },
+  "exit_elapsed_ms": 30023.8043,
+  "previous_closing": {
+    "SessionId": "0ccbc780120e4d7db7053446724797f1",
+    "SessionGeneration": 1,
+    "SessionLease": 1,
+    "CloseIntent": "WatchdogCrashRecovery",
+    "OldProcessId": 21412,
+    "StopSafetyTransactionId": "1a66431c475d4423aa8a17a5bde1c194",
+    "StopRunId": "UnknownRun",
+    "StopRunEpoch": 4,
+    "StopSafetyBoundaryGeneration": 0
+  },
+  "excerpts": [
+    {
+      "file": "log/run.log",
+      "line": 133,
+      "text": "2026-09-05 16:18:12.858\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev1 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=348.4 Generation=2 Produced=1413 Processed=1411 RunId=f922d8f0bf314d03bc6f8604be9d25b6 RunEpoch=1 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "file": "log/run.log",
+      "line": 134,
+      "text": "2026-09-05 16:18:12.858\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev2 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=348.8 Generation=2 Produced=1412 Processed=1410 RunId=f922d8f0bf314d03bc6f8604be9d25b6 RunEpoch=1 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "file": "log/run.log",
+      "line": 5827,
+      "text": "2026-09-05 16:24:48.845\tINFO\t程控电源\t电源组 2 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=24 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 5828,
+      "text": "2026-09-05 16:24:48.846\tINFO\t程控电源\t电源组 4 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=24 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 5829,
+      "text": "2026-09-05 16:24:48.847\tINFO\t程控电源\t电源组 1 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=24 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 5830,
+      "text": "2026-09-05 16:24:48.849\tINFO\t程控电源\t电源组 3 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=24 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 16614,
+      "text": "2026-09-05 16:37:59.650\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev1 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=1173.0 Generation=5 Produced=76184 Processed=76170 RunId=c7156f254d374a8b916f3a487fdfd963 RunEpoch=3 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "file": "log/run.log",
+      "line": 22964,
+      "text": "2026-09-05 16:45:36.117\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev2 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=129.0 Generation=5 Produced=121908 Processed=121907 RunId=c7156f254d374a8b916f3a487fdfd963 RunEpoch=3 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "file": "log/run.log",
+      "line": 22966,
+      "text": "2026-09-05 16:45:36.145\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev1 未带电DAQ观察到超过75ms的回调空窗；GapEvent=2 GapIntervalMs=128.9 Generation=5 Produced=121936 Processed=121936 RunId=c7156f254d374a8b916f3a487fdfd963 RunEpoch=3 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23172,
+      "text": "2026-09-05 16:45:52.559\tINFO\tEPB-DO\tDO命令 UTC=2026-09-05T08:45:52.5592787Z MonoTicks=14854084066912 Run=c7156f254d374a8b916f3a487fdfd963 Cycle=31047 Group=2 EPB=5 Batch=1 Phase=800ms PhaseDueUtc=2026-09-05T08:45:32.0215701Z PhaseDeviationMs=20537.709 Stage=RecoveryContractRegistrationFailed Command=OffHighPriority DoCommandResult=True CommandElapsedMs=0.509 CurrentA=0.022523 PhysicalOffStatus=NotMeasured"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23173,
+      "text": "2026-09-05 16:45:52.561\tINFO\tFIELD\tFieldMetric STATE RunId=c7156f254d374a8b916f3a487fdfd963 Device=Dev1 Channel=5 State=StartBlocked Reason=RecoveryContractRegistrationFailed Revision=81 CorrelationId=d54b7fac9f17477ab9cc16bc978df945 RunEpoch=3 Enabled=True Formal=True Timer=False Runner=False Energized=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23209,
+      "text": "2026-09-05 16:45:56.283\tINFO\tFIELD\tFieldMetric STATE RunId=c7156f254d374a8b916f3a487fdfd963 Device=Dev2 Channel=7 State=SystemFault Reason=FormalSlotSafetyBoundaryFailed Revision=79 CorrelationId=c588a5b7695d4eb486676ec09f45d1fa RunEpoch=4 Enabled=True Formal=True Timer=False Runner=False Energized=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23266,
+      "text": "2026-09-05 16:45:56.364\tINFO\t程控电源\t电源组 2 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=7 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23267,
+      "text": "2026-09-05 16:45:56.364\tINFO\t程控电源\t电源组 4 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=7 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23268,
+      "text": "2026-09-05 16:45:56.364\tINFO\t程控电源\t电源组 3 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=7 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23269,
+      "text": "2026-09-05 16:45:56.386\tINFO\t程控电源\t电源组 1 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=7 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23303,
+      "text": "2026-09-05 16:45:59.654\tINFO\t程控电源\t电源组 2 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23304,
+      "text": "2026-09-05 16:45:59.654\tINFO\t程控电源\t电源组 4 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23305,
+      "text": "2026-09-05 16:45:59.655\tINFO\t程控电源\t电源组 3 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/run.log",
+      "line": 23306,
+      "text": "2026-09-05 16:45:59.656\tINFO\t程控电源\t电源组 1 已关闭。Reason=ExternalRecoveryRequired:FormalSlotSafetyBoundaryFailed Slot=80 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/error.log",
+      "line": 11,
+      "text": "2026-09-05 16:24:42.675\tERROR\t落盘\t写盘连续 10000ms 未恢复，已安全停机但保留当前批次继续重试：EPB[7] 圈内DAQ批次序号不连续。Previous=39370 Current=39409。"
+    },
+    {
+      "file": "log/error.log",
+      "line": 12,
+      "text": "2026-09-05 16:24:42.707\tERROR\t落盘\t写盘连续 10000ms 未恢复，已安全停机但保留当前批次继续重试：EPB[4] 圈内DAQ批次序号不连续。Previous=39373 Current=39410。"
+    },
+    {
+      "file": "log/error.log",
+      "line": 13,
+      "text": "2026-09-05 16:24:48.760\tERROR\t周期屏障\tFormalSlotSafetyBoundaryFailed Slot=24 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/error.log",
+      "line": 14,
+      "text": "2026-09-05 16:24:48.761\tERROR\tEPB\t已到达外部恢复边界，当前进程永久撤销上电授权。Reason=FormalSlotSafetyBoundaryFailed Slot=24 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/error.log",
+      "line": 16,
+      "text": "2026-09-05 16:45:46.263\tERROR\t落盘\t写盘连续 10000ms 未恢复，已安全停机但保留当前批次继续重试：EPB[7] 圈内DAQ批次序号不连续。Previous=121907 Current=121914。"
+    },
+    {
+      "file": "log/error.log",
+      "line": 17,
+      "text": "2026-09-05 16:45:46.265\tERROR\t落盘\t写盘连续 10000ms 未恢复，已安全停机但保留当前批次继续重试：EPB[4] 圈内DAQ批次序号不连续。Previous=121921 Current=121928。"
+    },
+    {
+      "file": "log/error.log",
+      "line": 18,
+      "text": "2026-09-05 16:45:52.559\tERROR\tEPB\tRecoveryIncidentCoordinator registration failed: Recovering publication did not commit the complete owner contract. | System.InvalidOperationException: Recovering publication did not commit the complete owner contract.\\r\\n   在 Controller.RecoveryIncidentCoordinator.ExecuteBegin(BeginEntry entry, String operation, Int32[] owned, Func`2 workerFactory, Action`1 publishRecovering, Incident& incident) 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest-v2.16-stability\\\\Controller\\\\RecoveryIncidentCoordinator.cs:行号 494"
+    },
+    {
+      "file": "log/error.log",
+      "line": 19,
+      "text": "2026-09-05 16:45:56.278\tERROR\t周期屏障\tFormalSlotSafetyBoundaryFailed Slot=80 EPB=7 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/error.log",
+      "line": 20,
+      "text": "2026-09-05 16:45:56.279\tERROR\tEPB\t已到达外部恢复边界，当前进程永久撤销上电授权。Reason=FormalSlotSafetyBoundaryFailed Slot=80 EPB=7 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/error.log",
+      "line": 33,
+      "text": "2026-09-05 16:45:59.568\tERROR\t周期屏障\tFormalSlotSafetyBoundaryFailed Slot=80 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/error.log",
+      "line": 34,
+      "text": "2026-09-05 16:45:59.568\tERROR\tEPB\t已到达外部恢复边界，当前进程永久撤销上电授权。Reason=FormalSlotSafetyBoundaryFailed Slot=80 EPB=8 MotorOff=True HydraulicReleased=True Persistence=False"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 16,
+      "text": "2026-09-05 16:24:32.564\tWARN\t落盘\t写盘异常，已进入安全暂停并重试：EPB[4] 圈内DAQ批次序号不连续。Previous=39373 Current=39410。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 17,
+      "text": "2026-09-05 16:24:32.574\tWARN\t落盘\t写盘异常，已进入安全暂停并重试：EPB[7] 圈内DAQ批次序号不连续。Previous=39370 Current=39409。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 82,
+      "text": "2026-09-05 16:45:36.135\tWARN\t落盘\t写盘异常，已进入安全暂停并重试：EPB[4] 圈内DAQ批次序号不连续。Previous=121921 Current=121928。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 83,
+      "text": "2026-09-05 16:45:36.138\tWARN\t落盘\t写盘异常，已进入安全暂停并重试：EPB[7] 圈内DAQ批次序号不连续。Previous=121907 Current=121914。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 103,
+      "text": "2026-09-05 16:45:46.291\tWARN\tAI\tDAQ软件自维护等待重试 Device=Dev2 Failure=1 DelayMs=1000 Code=DaqPersistenceRecoveryTimeout CorrelationId=b1d3e7fd5ef74ce9b2339b71964aaff3 Affected=[7,8,9,12] Reason=写盘连续 10000ms 未恢复，已安全停机但保留当前批次继续重试：EPB[7] 圈内DAQ批次序号不连续。Previous=121907 Current=121914。；健康DAQ组继续运行。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 104,
+      "text": "2026-09-05 16:45:46.298\tWARN\tAI\tDAQ软件自维护等待重试 Device=Dev1 Failure=1 DelayMs=1000 Code=DaqPersistenceRecoveryTimeout CorrelationId=71a9ee3b43534979ba93239204594636 Affected=[4,5] Reason=写盘连续 10000ms 未恢复，已安全停机但保留当前批次继续重试：EPB[4] 圈内DAQ批次序号不连续。Previous=121921 Current=121928。；健康DAQ组继续运行。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 131,
+      "text": "2026-09-05 16:51:23.752\tWARN\tWatchdog\t人工停止 Close Fence 未形成双写耐久回执，将保留关闭事务重试；Mark=IdentityMismatch; Error=DurableCloseFenceIdentityChanged;ExpectedSession=0ccbc780120e4d7db7053446724797f1;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=True;CurrentSession=0ccbc780120e4d7db7053446724797f1;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 138,
+      "text": "2026-09-05 16:51:30.965\tWARN\t液压协调\tStopAll检测到液压组1压力证据陈旧；所有输出保持断能，已只恢复DAQ采样 Channels=[1,2,3,4,5,6]，现在重新确认新鲜压力。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 144,
+      "text": "2026-09-05 16:51:36.131\tWARN\t液压协调\tStopAll检测到液压组2压力证据陈旧；所有输出保持断能，已只恢复DAQ采样 Channels=[7,8,9,10,11,12]，现在重新确认新鲜压力。"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 148,
+      "text": "2026-09-05 16:51:53.290\tWARN\tWatchdog\t监控关闭未能建立耐久Close Fence：DurableCloseFenceIdentityChanged;ExpectedSession=0ccbc780120e4d7db7053446724797f1;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=True;CurrentSession=0ccbc780120e4d7db7053446724797f1;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 149,
+      "text": "2026-09-05 16:51:59.058\tWARN\tWatchdog\t监控关闭未能建立耐久Close Fence：DurableCloseFenceIdentityChanged;ExpectedSession=0ccbc780120e4d7db7053446724797f1;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=True;CurrentSession=0ccbc780120e4d7db7053446724797f1;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 151,
+      "text": "2026-09-05 16:51:59.059\tWARN\tDO性能\tEPB[4] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 152,
+      "text": "2026-09-05 16:51:59.059\tWARN\tDO性能\tEPB[12] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 153,
+      "text": "2026-09-05 16:51:59.059\tWARN\tDO性能\tEPB[9] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 154,
+      "text": "2026-09-05 16:51:59.059\tWARN\tDO性能\tEPB[5] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 155,
+      "text": "2026-09-05 16:51:59.060\tWARN\tDO性能\tEPB[8] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 156,
+      "text": "2026-09-05 16:51:59.060\tWARN\tDO性能\tEPB[7] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 157,
+      "text": "2026-09-05 16:52:01.169\tWARN\tDO性能\tEPB[4] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 158,
+      "text": "2026-09-05 16:52:01.169\tWARN\tDO性能\tEPB[7] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 159,
+      "text": "2026-09-05 16:52:01.169\tWARN\tDO性能\tEPB[8] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 160,
+      "text": "2026-09-05 16:52:01.169\tWARN\tDO性能\tEPB[9] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 161,
+      "text": "2026-09-05 16:52:01.169\tWARN\tDO性能\tEPB[12] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 162,
+      "text": "2026-09-05 16:52:01.169\tWARN\tDO性能\tEPB[5] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 164,
+      "text": "2026-09-05 16:52:01.170\tWARN\tWatchdog\t监控关闭未能建立耐久Close Fence：DurableCloseFenceIdentityChanged;ExpectedSession=0ccbc780120e4d7db7053446724797f1;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=True;CurrentSession=0ccbc780120e4d7db7053446724797f1;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 165,
+      "text": "2026-09-05 16:52:11.545\tWARN\tDO性能\tEPB[4] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 166,
+      "text": "2026-09-05 16:52:11.545\tWARN\tDO性能\tEPB[5] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 167,
+      "text": "2026-09-05 16:52:11.545\tWARN\tDO性能\tEPB[7] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 168,
+      "text": "2026-09-05 16:52:11.545\tWARN\tDO性能\tEPB[8] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 169,
+      "text": "2026-09-05 16:52:11.545\tWARN\tDO性能\tEPB[12] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 170,
+      "text": "2026-09-05 16:52:11.545\tWARN\tDO性能\tEPB[9] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 172,
+      "text": "2026-09-05 16:52:11.545\tWARN\tWatchdog\t监控关闭未能建立耐久Close Fence：DurableCloseFenceIdentityChanged;ExpectedSession=0ccbc780120e4d7db7053446724797f1;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=True;CurrentSession=0ccbc780120e4d7db7053446724797f1;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 173,
+      "text": "2026-09-05 16:52:11.579\tWARN\tDO性能\tEPB[4] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 174,
+      "text": "2026-09-05 16:52:11.579\tWARN\tDO性能\tEPB[5] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 175,
+      "text": "2026-09-05 16:52:11.579\tWARN\tDO性能\tEPB[7] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 176,
+      "text": "2026-09-05 16:52:11.579\tWARN\tDO性能\tEPB[8] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 177,
+      "text": "2026-09-05 16:52:11.579\tWARN\tDO性能\tEPB[9] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 178,
+      "text": "2026-09-05 16:52:11.579\tWARN\tDO性能\tEPB[12] 异步OFF未接纳，已由同步安全兜底确认断电。Stage=StopAllAdmissionRejected"
+    },
+    {
+      "file": "log/warning.log",
+      "line": 180,
+      "text": "2026-09-05 16:52:11.582\tWARN\tWatchdog\t监控关闭未能建立耐久Close Fence：DurableCloseFenceIdentityChanged;ExpectedSession=0ccbc780120e4d7db7053446724797f1;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=True;CurrentSession=0ccbc780120e4d7db7053446724797f1;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+    },
+    {
+      "file": "log/ui-info.log",
+      "line": 150,
+      "text": "[2026-09-05 16:51:53.304] [关闭等待] 数据耐久边界仍未确认，保持窗口与进程并自动重试："
+    },
+    {
+      "file": "log/ui-info.log",
+      "line": 153,
+      "text": "[2026-09-05 16:51:59.069] [关闭等待] 数据耐久边界仍未确认，保持窗口与进程并自动重试："
+    },
+    {
+      "file": "log/ui-info.log",
+      "line": 156,
+      "text": "[2026-09-05 16:52:01.178] [关闭等待] 数据耐久边界仍未确认，保持窗口与进程并自动重试："
+    },
+    {
+      "file": "log/ui-info.log",
+      "line": 160,
+      "text": "[2026-09-05 16:52:11.594] [关闭等待] 数据耐久边界仍未确认，保持窗口与进程并自动重试："
+    },
+    {
+      "file": "log/ui-info.log",
+      "line": 162,
+      "text": "[2026-09-05 16:52:11.656] [关闭等待] 数据耐久边界仍未确认，保持窗口与进程并自动重试："
+    }
+  ]
+}
