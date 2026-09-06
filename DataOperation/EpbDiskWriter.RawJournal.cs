@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Data.SQLite;
 using System.IO;
+using System.Diagnostics;
 using System.Linq;
 using System.Security.Cryptography;
 
@@ -84,35 +85,53 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
     {
         // One FULL commit per device batch rather than one fsync per channel.
         // No index gate is taken here, so the second device cannot invert lock order.
-        lock (_rawJournalGate)
+        // Caller owns all channel gates: eligibility cannot change during this check.
+        var hasFrames = false;
+        for (var i = 0; i < channelCount; i++)
+            if (ShouldStageRawFrame(_states[channels[i].EpbId], boundary, sampleCount))
+            { hasFrames = true; break; }
+        if (!hasFrames) return;
+        var stageStarted = Stopwatch.GetTimestamp();
+        try
         {
-            var beforeBytes = _rawJournalBytes;
-            using var tx = _rawJournal.BeginTransaction();
-            _rawJournalTransaction = tx;
-            try
+            var gateStarted = Stopwatch.GetTimestamp();
+            lock (_rawJournalGate)
             {
-                for (var i = 0; i < channelCount; i++)
+                if (_writeTiming != null) _writeTiming.RawGateWaitMs += ElapsedWriteMs(gateStarted);
+                var beforeBytes = _rawJournalBytes;
+                using var tx = _rawJournal.BeginTransaction();
+                _rawJournalTransaction = tx;
+                try
                 {
-                    var channel = channels[i];
-                    var state = _states[channel.EpbId];
-                    if (!state.CurrentCycle.HasValue || !state.SequenceBoundaryEnabled || sampleCount <= 0 ||
-                        state.ActiveCycleLimitLatched ||
-                        (state.CurrentCycleEndSequence.HasValue && boundary.Sequence > state.CurrentCycleEndSequence.Value) ||
-                        (state.CurrentCycleGeneration == boundary.Generation && boundary.Sequence <= state.CurrentCycleLastSequence) ||
-                        (_policy.MaxActiveCycleRecords > 0 && state.CurrentSampleIndex + sampleCount > _policy.MaxActiveCycleRecords)) continue;
-                    var records = new SampleRecord[sampleCount];
-                    for (var sample = 0; sample < sampleCount; sample++)
-                        records[sample] = new SampleRecord { TimestampBinary = times[sample].ToLocalTime().ToBinary(),
-                            CycleNumber = state.CurrentCycle.Value, SampleIndex = state.CurrentSampleIndex + sample,
-                            EpbCurrent = channel.Currents[sample], GroupPressure = channel.Pressures[sample] };
-                    AppendRawJournal(channel.EpbId, state, records, sampleCount, boundary.Sequence);
+                    for (var i = 0; i < channelCount; i++)
+                    {
+                        var channel = channels[i];
+                        var state = _states[channel.EpbId];
+                        if (!ShouldStageRawFrame(state, boundary, sampleCount)) continue;
+                        var records = new SampleRecord[sampleCount];
+                        for (var sample = 0; sample < sampleCount; sample++)
+                            records[sample] = new SampleRecord { TimestampBinary = times[sample].ToLocalTime().ToBinary(),
+                                CycleNumber = state.CurrentCycle.Value, SampleIndex = state.CurrentSampleIndex + sample,
+                                EpbCurrent = channel.Currents[sample], GroupPressure = channel.Pressures[sample] };
+                        AppendRawJournal(channel.EpbId, state, records, sampleCount, boundary.Sequence);
+                    }
+                    var commitStarted = Stopwatch.GetTimestamp();
+                    try { tx.Commit(); }
+                    finally { if (_writeTiming != null) _writeTiming.RawCommitMs += ElapsedWriteMs(commitStarted); }
                 }
-                tx.Commit();
+                catch { _rawJournalBytes = beforeBytes; throw; }
+                finally { _rawJournalTransaction = null; }
             }
-            catch { _rawJournalBytes = beforeBytes; throw; }
-            finally { _rawJournalTransaction = null; }
         }
+        finally { if (_writeTiming != null) _writeTiming.RawStageMs += ElapsedWriteMs(stageStarted); }
     }
+
+    private bool ShouldStageRawFrame(EpbState state, DeviceBatchBoundary boundary, int sampleCount) =>
+        state.CurrentCycle.HasValue && state.SequenceBoundaryEnabled && sampleCount > 0 &&
+        !state.ActiveCycleLimitLatched &&
+        (!state.CurrentCycleEndSequence.HasValue || boundary.Sequence <= state.CurrentCycleEndSequence.Value) &&
+        (state.CurrentCycleGeneration != boundary.Generation || boundary.Sequence > state.CurrentCycleLastSequence) &&
+        (_policy.MaxActiveCycleRecords <= 0 || state.CurrentSampleIndex + sampleCount <= _policy.MaxActiveCycleRecords);
 
     private bool ValidateOrQuarantineBatch(DeviceBatchBoundary boundary, DateTime[] times,
         EpbChannelDiskBatch channel, int count)
@@ -301,80 +320,102 @@ VALUES(@ch,@cy,@first,@pos,@count,@gen,@seq,@data,@sha);";
         foreach (var receipt in mechanical) TryRecordMechanicalCompletion(receipt.Item1, receipt.Item2, receipt.Item3);
         for (var channel = 1; channel <= EPB_COUNT; channel++)
         {
+                var frames = ReadRawFrames(channel);
+                CheckpointRawJournal(channel, force: true);
+                _states[channel].TotalWritten = RestoreNextWritePosition(channel, _states[channel].CapacityRecords);
+            }
+        }
+
+        private void ApplyRawFrames(int channel, List<RawFrame> frames)
+        {
+                foreach (var frame in frames)
+                {
+                    var records = new SampleRecord[frame.Count];
+                    using var stream = new MemoryStream(frame.Data, writable: false);
+                    using var reader = new BinaryReader(stream);
+                    for (var i = 0; i < frame.Count; i++)
+                        records[i] = new SampleRecord { TimestampBinary = reader.ReadInt64(), CycleNumber = reader.ReadInt32(),
+                            SampleIndex = reader.ReadInt32(), EpbCurrent = reader.ReadDouble(), GroupPressure = reader.ReadDouble() };
+                    var capacity = _states[channel].CapacityRecords;
+                    if (frame.Position < 0 || frame.Position >= capacity || frame.Count > capacity)
+                        throw new InvalidDataException("RawJournalDestinationInvalid");
+                    var first = (int)Math.Min(frame.Count, capacity - frame.Position);
+                    WriteRecordSegment(channel, frame.Position, records, 0, first);
+                    if (first < frame.Count) WriteRecordSegment(channel, 0, records, first, frame.Count - first);
+                }
+        }
+
+        private void CheckpointRawJournal(int channel, bool force)
+        {
+            if (!force && DateTime.UtcNow - _rawCheckpointUtc[channel] < TimeSpan.FromSeconds(1)) return;
+            var checkpointStarted = Stopwatch.GetTimestamp();
+            try
+            {
             var frames = ReadRawFrames(channel);
-            CheckpointRawJournal(channel, force: true);
-            _states[channel].TotalWritten = RestoreNextWritePosition(channel, _states[channel].CapacityRecords);
-        }
-    }
-
-    private void ApplyRawFrames(int channel, List<RawFrame> frames)
-    {
-            foreach (var frame in frames)
+            if (frames.Count == 0) return;
+            // A failed device write can leave staged frames which have never reached MMF.
+            // Closing/aborting must apply those exact destinations before reclaiming WAL.
+            ApplyRawFrames(channel, frames);
+            var state = _states[channel];
+            foreach (var frame in frames.Where(f => state.CurrentCycle == f.Cycle))
             {
-                var records = new SampleRecord[frame.Count];
-                using var stream = new MemoryStream(frame.Data, writable: false);
-                using var reader = new BinaryReader(stream);
-                for (var i = 0; i < frame.Count; i++)
-                    records[i] = new SampleRecord { TimestampBinary = reader.ReadInt64(), CycleNumber = reader.ReadInt32(),
-                        SampleIndex = reader.ReadInt32(), EpbCurrent = reader.ReadDouble(), GroupPressure = reader.ReadDouble() };
-                var capacity = _states[channel].CapacityRecords;
-                if (frame.Position < 0 || frame.Position >= capacity || frame.Count > capacity)
-                    throw new InvalidDataException("RawJournalDestinationInvalid");
-                var first = (int)Math.Min(frame.Count, capacity - frame.Position);
-                WriteRecordSegment(channel, frame.Position, records, 0, first);
-                if (first < frame.Count) WriteRecordSegment(channel, 0, records, first, frame.Count - first);
+                var count = checked(frame.First + frame.Count);
+                if (count > state.CurrentSampleIndex)
+                {
+                    state.TotalWritten += count - state.CurrentSampleIndex;
+                    state.CurrentSampleIndex = count;
+                }
+                if (state.CurrentCycleGeneration == frame.Generation)
+                    state.CurrentCycleLastSequence = Math.Max(state.CurrentCycleLastSequence, frame.Sequence);
             }
-    }
-
-    private void CheckpointRawJournal(int channel, bool force)
-    {
-        if (!force && DateTime.UtcNow - _rawCheckpointUtc[channel] < TimeSpan.FromSeconds(1)) return;
-        var frames = ReadRawFrames(channel);
-        if (frames.Count == 0) return;
-        // A failed device write can leave staged frames which have never reached MMF.
-        // Closing/aborting must apply those exact destinations before reclaiming WAL.
-        ApplyRawFrames(channel, frames);
-        var state = _states[channel];
-        foreach (var frame in frames.Where(f => state.CurrentCycle == f.Cycle))
-        {
-            var count = checked(frame.First + frame.Count);
-            if (count > state.CurrentSampleIndex)
+            var flushStarted = Stopwatch.GetTimestamp();
+            try
             {
-                state.TotalWritten += count - state.CurrentSampleIndex;
-                state.CurrentSampleIndex = count;
+                _views[channel]?.Flush();
+                _ringFiles[channel].Flush(flushToDisk: true);
             }
-            if (state.CurrentCycleGeneration == frame.Generation)
-                state.CurrentCycleLastSequence = Math.Max(state.CurrentCycleLastSequence, frame.Sequence);
-        }
-        _views[channel]?.Flush();
-        _ringFiles[channel].Flush(flushToDisk: true);
-        lock (_dbGate)
-        {
-            using var tx = _conn.BeginTransaction();
-            foreach (var frame in frames)
+            finally { if (_writeTiming != null) _writeTiming.RingFlushMs += ElapsedWriteMs(flushStarted); }
+            var indexStarted = Stopwatch.GetTimestamp();
+            lock (_dbGate)
             {
-                if (frame.Cycle == 0) continue;
-                using var cmd = _conn.CreateCommand();
-                cmd.Transaction = tx;
-                // Never turn an interrupted/invalid cycle into a successful one.
-                cmd.CommandText = "UPDATE epb_cycles SET sample_count=MAX(COALESCE(sample_count,0),@n) WHERE epb_id=@ch AND cycle_number=@cy;";
-                cmd.Parameters.AddWithValue("@ch", channel);
-                cmd.Parameters.AddWithValue("@cy", frame.Cycle);
-                cmd.Parameters.AddWithValue("@n", checked(frame.First + frame.Count));
-                if (cmd.ExecuteNonQuery() != 1) throw new InvalidDataException("RawJournalCycleIdentityMissing");
+                if (_writeTiming != null) _writeTiming.IndexGateWaitMs += ElapsedWriteMs(indexStarted);
+                using var tx = _conn.BeginTransaction();
+                // A checkpoint may contain ~100 frames for one cycle. Its index
+                // needs the maximum committed prefix once, not one UPDATE per frame.
+                foreach (var cycleFrames in frames.Where(frame => frame.Cycle != 0).GroupBy(frame => frame.Cycle))
+                {
+                    using var cmd = _conn.CreateCommand();
+                    cmd.Transaction = tx;
+                    // Never turn an interrupted/invalid cycle into a successful one.
+                    cmd.CommandText = "UPDATE epb_cycles SET sample_count=MAX(COALESCE(sample_count,0),@n) WHERE epb_id=@ch AND cycle_number=@cy;";
+                    cmd.Parameters.AddWithValue("@ch", channel);
+                    cmd.Parameters.AddWithValue("@cy", cycleFrames.Key);
+                    cmd.Parameters.AddWithValue("@n", cycleFrames.Max(frame => checked(frame.First + frame.Count)));
+                    if (cmd.ExecuteNonQuery() != 1) throw new InvalidDataException("RawJournalCycleIdentityMissing");
+                }
+                var commitStarted = Stopwatch.GetTimestamp();
+                try { tx.Commit(); }
+                finally { if (_writeTiming != null) _writeTiming.IndexCommitMs += ElapsedWriteMs(commitStarted); }
             }
-            tx.Commit();
+            var rawStarted = Stopwatch.GetTimestamp();
+            lock (_rawJournalGate)
+            {
+                if (_writeTiming != null) _writeTiming.RawGateWaitMs += ElapsedWriteMs(rawStarted);
+                var pruneStarted = Stopwatch.GetTimestamp();
+                try
+                {
+                    using var cmd = _rawJournal.CreateCommand();
+                    cmd.CommandText = "DELETE FROM raw_frames WHERE channel=@ch AND id<=@id;";
+                    cmd.Parameters.AddWithValue("@ch", channel);
+                    cmd.Parameters.AddWithValue("@id", frames[frames.Count - 1].Id);
+                    cmd.ExecuteNonQuery();
+                    _rawJournalBytes -= frames.Sum(f => (long)f.Data.Length);
+                }
+                finally { if (_writeTiming != null) _writeTiming.RawPruneMs += ElapsedWriteMs(pruneStarted); }
+            }
+            _rawCheckpointUtc[channel] = DateTime.UtcNow;
         }
-        lock (_rawJournalGate)
-        {
-            using var cmd = _rawJournal.CreateCommand();
-            cmd.CommandText = "DELETE FROM raw_frames WHERE channel=@ch AND id<=@id;";
-            cmd.Parameters.AddWithValue("@ch", channel);
-            cmd.Parameters.AddWithValue("@id", frames[frames.Count - 1].Id);
-            cmd.ExecuteNonQuery();
-            _rawJournalBytes -= frames.Sum(f => (long)f.Data.Length);
-        }
-        _rawCheckpointUtc[channel] = DateTime.UtcNow;
+        finally { if (_writeTiming != null) _writeTiming.CheckpointMs += ElapsedWriteMs(checkpointStarted); }
     }
 
     public bool TryRecordMechanicalCompletion(int channel, int cycle, DateTime completedUtc)

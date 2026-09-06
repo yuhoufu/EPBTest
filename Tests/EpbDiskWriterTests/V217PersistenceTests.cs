@@ -11,12 +11,62 @@ namespace EpbDiskWriterTests
     {
         private static void RunV217PersistenceTests()
         {
+            Run("I0046 多帧checkpoint按圈归并仍保留最大耐久前缀", CheckpointCoalescingPreservesPrefix);
+            Run("I0046 写盘阶段诊断隔离且空批次幂等", StorageTimingCannotChangeDurability);
             Run("V217 原始日志修复被清零的环形记录且重放不重复计数", RawJournalReplaysExactPositions);
             Run("V217 断序异常圈终结且同批健康通道继续写入", SequenceGapDoesNotPoisonDeviceQueue);
             Run("V217 未应用日志容量不足保留原证据", RawJournalCapacityPreservesEvidence);
             Run("V217 历史基线加耐久回执且不把圈号当次数", MechanicalBaselineSurvivesCheckpointLag);
             Run("V217 非法数据耐久隔离且健康后继继续", InvalidBatchDoesNotPoisonQueue);
             Run("V217 已耐久未应用批次停止时重放且后圈不覆盖", StagedBatchIsAppliedBeforeAbort);
+        }
+
+        private static void CheckpointCoalescingPreservesPrefix()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using var writer = new EpbDiskWriter(policy);
+                var time = DateTime.UtcNow;
+                writer.BeginCycleAtDaqBoundary(4, 402, time, "Dev1", 1, 0);
+                var channels = new[] { new EpbChannelDiskBatch(4, new[] { 4d }, new[] { 0d }) };
+                for (var sequence = 1; sequence <= 101; sequence++)
+                    writer.WriteDeviceBatch("Dev1", 1, sequence,
+                        new[] { time.AddMilliseconds(sequence) }, channels, 1, 1);
+                writer.CompleteCycle(4, 402, 101, time.AddMilliseconds(102));
+                Assert(Scalar(policy, "SELECT sample_count FROM epb_cycles WHERE epb_id=4 AND cycle_number=402") == 101,
+                    "按圈归并checkpoint丢失最大耐久前缀");
+                var export = Path.Combine(root, "coalesced");
+                writer.ExportCycleAttemptTo(4, 402, export, true, true);
+                AssertCsvCycle(export, 4, 402, 101);
+            });
+        }
+
+        private static void StorageTimingCannotChangeDurability()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                EpbWriteTiming observed = null;
+                policy.WriteTimingSink = value => { observed = value; throw new Exception("诊断故障"); };
+                using var writer = new EpbDiskWriter(policy);
+                var time = DateTime.UtcNow;
+                writer.BeginCycleAtDaqBoundary(4, 401, time, "Dev1", 1, 0);
+                var channels = new[] { new EpbChannelDiskBatch(4, new[] { 4d }, new[] { 0d }) };
+                writer.WriteDeviceBatch("Dev1", 1, 1, new[] { time }, channels, 1, 1);
+                Assert(observed != null && observed.Succeeded && observed.Device == "Dev1" &&
+                       observed.Sequence == 1 && observed.ThreadId > 0 && observed.RawStageMs > 0 &&
+                       observed.RawCommitMs > 0 && observed.CheckpointMs > 0,
+                    "真实写盘阶段或身份缺失");
+                writer.WriteDeviceBatch("Dev1", 1, 1, new[] { time }, channels, 1, 1);
+                Assert(observed.Succeeded && observed.RawStageMs == 0 &&
+                       writer.GetCurrentCycleSampleCount(4) == 1, "重复序列仍提交原始事务或重复记账");
+                var failed = false;
+                try { writer.WriteDeviceBatch("Dev1", 1, 3, new[] { time }, channels, 1, 1); }
+                catch (DaqSequenceGapException) { failed = true; }
+                Assert(failed && !observed.Succeeded && observed.Sequence == 3,
+                    "故障批次被诊断回调错误认定成功");
+            });
         }
 
         private static long Scalar(DataRetentionPolicy policy, string sql)

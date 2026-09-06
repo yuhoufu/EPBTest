@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SQLite;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
@@ -84,6 +85,9 @@ public sealed class DataRetentionPolicy
 
     /// <summary>容量清理警告出口；调用失败绝不能抛回控制链路。</summary>
     public Action<string> RetentionWarningSink { get; set; }
+
+    /// <summary>所有通道锁释放后调用；仅供低开销环形诊断，异常被隔离。</summary>
+    public Action<EpbWriteTiming> WriteTimingSink { get; set; }
 }
 
 public sealed class ActiveCycleDataLimitExceededException : InvalidOperationException
@@ -832,6 +836,10 @@ public sealed partial class EpbDiskWriter : IDisposable
     ///     标记一个通道的“正式试验圈”结束；写入进度将更新为 completed。
     /// </summary>
     public void CompleteCycle(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
+        => MeasureStorageOperation("CompleteCycle", epbId, cycleNumber, () =>
+        { CompleteCycleCore(epbId, cycleNumber, finalSampleCount, endUtc); return true; });
+
+    private void CompleteCycleCore(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
     {
         var s = GetState(epbId);
         lock (s.Gate)
@@ -1379,6 +1387,15 @@ public sealed partial class EpbDiskWriter : IDisposable
         int finalSampleCount,
         DateTime endUtc,
         string status)
+        => MeasureStorageOperation("AbortCycle", epbId, cycleNumber, () =>
+        { AbortCycleCore(epbId, cycleNumber, finalSampleCount, endUtc, status); return true; });
+
+    private void AbortCycleCore(
+        int epbId,
+        int cycleNumber,
+        int finalSampleCount,
+        DateTime endUtc,
+        string status)
     {
         var normalized = string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase)
             ? "canceled"
@@ -1787,12 +1804,24 @@ public sealed partial class EpbDiskWriter : IDisposable
         var lockedStates = ArrayPool<EpbState>.Shared.Rent(channelCount);
         var snapshots = ArrayPool<StateWriteSnapshot>.Shared.Rent(channelCount);
         var acquired = 0;
+        var timingSink = _policy.WriteTimingSink;
+        var priorTiming = _writeTiming;
+        var timing = timingSink == null ? null : new EpbWriteTiming
+        {
+            Device = boundary?.Device, Generation = boundary?.Generation ?? 0,
+            Sequence = boundary?.Sequence ?? 0, SampleCount = sampleCount,
+            ThreadId = Environment.CurrentManagedThreadId
+        };
+        _writeTiming = timing;
+        var totalStarted = Stopwatch.GetTimestamp();
         try
         {
             for (var i = 0; i < channelCount; i++)
             {
                 var state = GetState(channels[i].EpbId);
+                var gateStarted = Stopwatch.GetTimestamp();
                 Monitor.Enter(state.Gate);
+                if (timing != null) timing.ChannelGateWaitMs += ElapsedWriteMs(gateStarted);
                 snapshots[acquired] = new StateWriteSnapshot
                 {
                     TotalWritten = state.TotalWritten,
@@ -1829,8 +1858,10 @@ public sealed partial class EpbDiskWriter : IDisposable
 
             if (needsProgressTransaction)
             {
+                var indexStarted = Stopwatch.GetTimestamp();
                 lock (_dbGate)
                 {
+                    if (timing != null) timing.IndexGateWaitMs += ElapsedWriteMs(indexStarted);
                     Interlocked.Increment(ref _progressCheckpointTransactionCount);
                     using var transaction = _conn.BeginTransaction();
                     _activeBatchTransaction = transaction;
@@ -1852,7 +1883,9 @@ public sealed partial class EpbDiskWriter : IDisposable
                             else
                                 WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
                         }
-                        transaction.Commit();
+                        var commitStarted = Stopwatch.GetTimestamp();
+                        try { transaction.Commit(); }
+                        finally { if (timing != null) timing.IndexCommitMs += ElapsedWriteMs(commitStarted); }
                     }
                     finally
                     {
@@ -1881,6 +1914,7 @@ public sealed partial class EpbDiskWriter : IDisposable
             }
             for (var i = 0; i < channelCount; i++)
                 CheckpointRawJournal(channels[i].EpbId, force: false);
+            if (timing != null) timing.Succeeded = true;
         }
         catch
         {
@@ -1907,6 +1941,13 @@ public sealed partial class EpbDiskWriter : IDisposable
             }
             ArrayPool<EpbState>.Shared.Return(lockedStates, clearArray: false);
             ArrayPool<StateWriteSnapshot>.Shared.Return(snapshots, clearArray: false);
+            _writeTiming = priorTiming;
+            if (timing != null)
+            {
+                timing.TotalMs = ElapsedWriteMs(totalStarted);
+                // Diagnostics cannot hold storage gates or alter the durability result.
+                try { timingSink(timing); } catch { }
+            }
         }
     }
 
@@ -2470,6 +2511,15 @@ public sealed partial class EpbDiskWriter : IDisposable
     /// AbortedBySoftwareRecovery 等终态，但拒绝仍在写入的 running 圈。
     /// </summary>
     public CycleSnapshotEvidence ExportCycleAttemptTo(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        bool saveCsv,
+        bool saveBin)
+        => MeasureStorageOperation("ExportCycleAttempt", epbId, cycleNumber,
+            () => ExportCycleAttemptCore(epbId, cycleNumber, exportDir, saveCsv, saveBin));
+
+    private CycleSnapshotEvidence ExportCycleAttemptCore(
         int epbId,
         int cycleNumber,
         string exportDir,
