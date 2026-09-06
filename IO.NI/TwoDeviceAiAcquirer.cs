@@ -831,6 +831,8 @@ namespace IO.NI
         internal const int DefaultProcessingQueueCapacity = 1024;
         internal const int MaxProcessingQueueCapacity = 4096;
         private readonly int _processingQueueCapacity;
+        internal const int DefaultReadDispatchQueueCapacity = 64;
+        private readonly int _readDispatchQueueCapacity;
         private const int DiagnosticCapacity = 12000;
         private int _queueCountDev1;
         private int _queueCountDev2;
@@ -1852,6 +1854,10 @@ namespace IO.NI
                 (int)ParseDoubleOrDefault(
                     SafeGetAppSetting("DaqProcessingQueueCapacity"),
                     DefaultProcessingQueueCapacity)));
+            _readDispatchQueueCapacity = Math.Max(16, Math.Min(4096,
+                (int)ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqReadDispatchQueueCapacity"),
+                    DefaultReadDispatchQueueCapacity)));
             _queueDev1 = new PreallocatedSpscRing<Item>(_processingQueueCapacity);
             _queueDev2 = new PreallocatedSpscRing<Item>(_processingQueueCapacity);
             _rawPublicationQueueDev1 =
@@ -5755,7 +5761,7 @@ namespace IO.NI
                         _readState2 = state;
                     }
                     state.Dispatcher = new DaqReadDispatcher<SynchronousReadResult>(
-                        "AI-Publish-" + device, 64,
+                        "AI-Publish-" + device, _readDispatchQueueCapacity,
                         frame =>
                         {
                             if (IsCurrentGeneration(device, generation))
@@ -5866,7 +5872,13 @@ namespace IO.NI
                         Interlocked.Exchange(ref state.ReadFaulted, 1);
                         _backgroundTasks.TryRun("ReadDispatchOverflow:" + state.Device, () =>
                             ScheduleDeviceRecovery(state.Device, state.Generation,
-                                new InvalidOperationException("DaqReadDispatchOverflow: rejected raw read; capacity=64")));
+                                new InvalidOperationException(
+                                    "DaqReadDispatchOverflow: rejected raw read; capacity=" +
+                                    _readDispatchQueueCapacity +
+                                    ";HighWater=" + state.Dispatcher.HighWaterDepth +
+                                    ";Depth=" + state.Dispatcher.Depth +
+                                    ";ConsumerStallMs=" + Math.Round(
+                                        state.Dispatcher.ConsumerStallMs, 1))));
                         break;
                     }
                 }

@@ -11,14 +11,35 @@ namespace IO.NI
     {
         private readonly BlockingCollection<T> _queue;
         private readonly Thread _thread;
+        private readonly Stopwatch _consumerClock = Stopwatch.StartNew();
+        // Consumer heartbeat and queue high-water mark exist so an overflow can be
+        // attributed (consumer starved vs. producer burst) instead of only observed.
+        private long _lastDequeueElapsedMs;
+        private int _highWaterDepth;
         internal readonly ManualResetEventSlim Quiesced = new ManualResetEventSlim(false);
         internal int Depth => _queue.Count;
+        internal int HighWaterDepth => _highWaterDepth;
+        internal double ConsumerStallMs
+        {
+            get
+            {
+                var sinceDequeue = _consumerClock.ElapsedMilliseconds - Volatile.Read(ref _lastDequeueElapsedMs);
+                return Depth > 0 ? Math.Max(0, sinceDequeue) : 0.0;
+            }
+        }
         internal DaqReadDispatcher(string name, int capacity, Action<T> consume, Action<Exception> fault)
         {
             _queue = new BlockingCollection<T>(capacity);
             _thread = new Thread(() =>
             {
-                try { foreach (var frame in _queue.GetConsumingEnumerable()) consume(frame); }
+                try
+                {
+                    foreach (var frame in _queue.GetConsumingEnumerable())
+                    {
+                        Volatile.Write(ref _lastDequeueElapsedMs, _consumerClock.ElapsedMilliseconds);
+                        consume(frame);
+                    }
+                }
                 catch (Exception ex) { fault(ex); }
                 finally { _queue.CompleteAdding(); Quiesced.Set(); }
             }) { IsBackground = true, Name = name, Priority = ThreadPriority.AboveNormal };
@@ -26,8 +47,25 @@ namespace IO.NI
         }
         internal bool TryPublish(T frame)
         {
-            try { return _queue.TryAdd(frame); }
-            catch (InvalidOperationException) { return false; }
+            bool accepted;
+            try
+            {
+                accepted = _queue.TryAdd(frame);
+            }
+            catch (InvalidOperationException)
+            {
+                // CompleteAdding 已调用：排队关闭按拒绝处理。
+                return false;
+            }
+            if (!accepted) return false;
+            var depth = _queue.Count;
+            var current = Volatile.Read(ref _highWaterDepth);
+            while (depth > current &&
+                   Interlocked.CompareExchange(ref _highWaterDepth, depth, current) != current)
+            {
+                current = Volatile.Read(ref _highWaterDepth);
+            }
+            return true;
         }
         internal void Complete() => _queue.CompleteAdding();
     }
