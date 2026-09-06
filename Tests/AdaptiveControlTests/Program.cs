@@ -25,6 +25,13 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 2 && args[0].Equals("--i0049-soak", StringComparison.OrdinalIgnoreCase))
+                    return I0049RecoveryTests.RunSoak(args[1]);
+                if (args.Length == 1 && args[0].Equals("--i0049", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += I0049RecoveryTests.RunAll();
+                    return 0;
+                }
                 if (args.Length == 1 && args[0].Equals("--i0046", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += I0046AlignmentTests.RunAll();
@@ -772,6 +779,7 @@ namespace AdaptiveControlTests
                 _passed += ProjectLogStoreTests.RunAll();
                 _passed += V216StabilityTests.RunAll();
                 _passed += V217StabilityTests.RunAll();
+                _passed += I0049RecoveryTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }

@@ -695,7 +695,7 @@ namespace Controller
             int attempt,
             string faultCode = null)
         {
-            if (runId == Guid.Empty ||
+            if (IsEnergizationRevoked || runId == Guid.Empty ||
                 runId != _activeBatchId ||
                 runEpoch != Interlocked.Read(ref _runEpoch))
                 return false;

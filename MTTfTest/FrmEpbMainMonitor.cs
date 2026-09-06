@@ -174,6 +174,7 @@ namespace MTEmbTest
         private readonly EpbMonitorHardwareReleaseOwner _hardwareReleaseOwner =
             new EpbMonitorHardwareReleaseOwner();
         private StopSafetyResult _preparedCloseSafety;
+        private StopSafetyResult _closeStoppedSafety;
         private RuntimeTransportSessionContext _preparedCloseContext;
         private ApplicationCloseReceipt _applicationCloseReceipt;
 
@@ -2829,7 +2830,7 @@ namespace MTEmbTest
                         throw new InvalidOperationException(
                             "人工停止组合终态未完成：" + combined.Error);
                     Interlocked.Exchange(ref _monitorEnergizationAttempted, 0);
-                    SetMonitorLifecycle(EpbMonitorLifecycle.Idle);
+                    if (!_isClosing) SetMonitorLifecycle(EpbMonitorLifecycle.Idle);
                     LogInfo($"停止试验组合终态完成；可以关闭软件或重新开始。" +
                             $"CommandId={stopCommandId}; Session={combined.SessionId}; " +
                             $"Lease={combined.SessionLease}");
@@ -2856,12 +2857,12 @@ namespace MTEmbTest
             finally
             {
                 Interlocked.Exchange(ref _stopUiGuard, 0);
-                if (!IsDisposed && BtnStop != null)
+                if (!IsDisposed && !_isClosing && BtnStop != null)
                 {
                     BtnStop.Enabled = !(_epb?.RequiresProcessRestart ?? false);
                     BtnStop.Cursor = Cursors.Hand;
                 }
-                if (!IsDisposed && BtnStartTest != null)
+                if (!IsDisposed && !_isClosing && BtnStartTest != null)
                 {
                     ApplyBatchPauseState(_epb?.CurrentBatchPauseState ?? BatchPauseState.Idle);
                     if (_epb?.RequiresProcessRestart == true)
@@ -3011,33 +3012,18 @@ namespace MTEmbTest
 
         private async void BeginMonitorCloseSequence()
         {
-            try
+            while (!IsDisposed && !Disposing && Volatile.Read(ref _closingReentry) != 3)
             {
-                var completed = await PrepareAndFinalizeMonitorCloseAsync(
-                    closeAfterPreparation: true);
-                if (!completed)
+                try
                 {
-                    HideCloseOverlay();
-                    _isClosing = false;
-                    Interlocked.Exchange(ref _formClosedFlag, 0);
-                    Interlocked.Exchange(ref _closingReentry, 0);
-                    SetMonitorLifecycle(
-                        _epb?.IsBatchSessionActive == true
-                            ? EpbMonitorLifecycle.Running
-                            : EpbMonitorLifecycle.Idle);
+                    if (await PrepareAndFinalizeMonitorCloseAsync(closeAfterPreparation: true)) return;
                 }
-            }
-            catch (Exception ex)
-            {
-                logger?.Error("实时监控窗口关闭收尾异常，已转入诊断并允许重试：" + ex, "EPB");
-                HideCloseOverlay();
-                _isClosing = false;
-                Interlocked.Exchange(ref _formClosedFlag, 0);
-                Interlocked.Exchange(ref _closingReentry, 0);
-                SetMonitorLifecycle(
-                    _epb?.IsBatchSessionActive == true
-                        ? EpbMonitorLifecycle.Running
-                        : EpbMonitorLifecycle.Idle);
+                catch (Exception ex)
+                {
+                    logger?.Error("实时监控关闭收尾失败，保持关闭状态并自动重试：" + ex, "EPB");
+                    ShowCloseOverlay("关闭尚未完成，将自动重试：" + ex.GetBaseException().Message);
+                }
+                await System.Threading.Tasks.Task.Delay(2000).ConfigureAwait(true);
             }
         }
 
@@ -3065,8 +3051,34 @@ namespace MTEmbTest
                 : StopSource.ApplicationClosing;
         }
 
+        private readonly SemaphoreSlim _monitorCloseGate = new SemaphoreSlim(1, 1);
+
         private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseAsync(
             bool closeAfterPreparation)
+        {
+            await _monitorCloseGate.WaitAsync().ConfigureAwait(true);
+            try
+            {
+                if (_preparedCloseSafety == null &&
+                    !await PrepareMonitorResourcesAsync().ConfigureAwait(true)) return false;
+                if (!closeAfterPreparation) return true;
+                var receipt = await AuthorizeApplicationExitAfterPreparationAsync().ConfigureAwait(true);
+                if (receipt?.CanExit != true)
+                {
+                    ShowCloseOverlay("正在等待 Watchdog 终态或安全交接授权，将自动重试…");
+                    return false;
+                }
+                (MdiParent as Main_Frm)?.CacheApplicationCloseReceipt(receipt);
+                ShowCloseOverlay("资源与关闭授权已完成，正在关闭窗口…");
+                if (_closeOverlayProgress != null) _closeOverlayProgress.Value = 100;
+                Interlocked.Exchange(ref _closingReentry, 3);
+                if (!IsDisposed && !Disposing && IsHandleCreated) BeginInvoke((Action)Close);
+                return true;
+            }
+            finally { _monitorCloseGate.Release(); }
+        }
+
+        private async System.Threading.Tasks.Task<bool> PrepareMonitorResourcesAsync()
         {
                 var idleFastClose = CanUseIdleFastClose();
                 SetMonitorLifecycle(EpbMonitorLifecycle.Stopping);
@@ -3098,7 +3110,11 @@ namespace MTEmbTest
                     ? combinedStop.StopSafety
                     : _manualStopExitReceipt.TryCapture(
                         _epb?.IsBatchSessionActive ?? false);
-                if (idleFastClose)
+                if (_closeStoppedSafety != null)
+                {
+                    safety = _closeStoppedSafety;
+                }
+                else if (idleFastClose)
                 {
                     safety = new StopSafetyResult
                     {
@@ -3191,7 +3207,8 @@ namespace MTEmbTest
                         "避免丢失最后圈或报警证据。后续重试只更新日志，不再重复弹框。";
                     LogInfo("[关闭等待] 数据耐久边界仍未确认，保持窗口与进程并自动重试：" +
                             (safety.PersistenceError ?? "无详细信息"));
-                    ShowCloseOverlay("数据保存尚未完成，修复存储后请再次关闭…");
+                    ShowCloseOverlay("数据保存尚未完成，将自动重试：" +
+                        (safety.PersistenceError ?? "正在等待耐久边界确认"));
                     return false;
                 }
 
@@ -3199,22 +3216,20 @@ namespace MTEmbTest
                     LogInfo("[安全警告] 停机处置已满足退出条件；压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
 
+                _closeStoppedSafety = safety;
+                if (!idleFastClose && !await _epb.ShutdownPersistenceAsync().ConfigureAwait(true))
+                {
+                    ShowCloseOverlay("正在等待最后的数据写入和文件句柄释放，将自动重试…");
+                    return false;
+                }
+
             // Main_Frm's shutdown boundary sends ApplicationClosing as part
             // of ShutdownRuntimeWithReceipt.  Do not publish a second
             // protocol path here; it used to race the retention owner.
 
             // 只执行一次。若上一轮已经完成资源释放、只是在旧 Watchdog 授权门上
             // 返回过 false，本轮必须真正再次发起 Close，不能只返回 true 后让窗口复活。
-            if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0)
-            {
-                if (closeAfterPreparation)
-                {
-                    Interlocked.Exchange(ref _closingReentry, 3);
-                    if (!IsDisposed && !Disposing && IsHandleCreated)
-                        BeginInvoke((Action)Close);
-                }
-                return true;
-            }
+            Interlocked.Exchange(ref _formClosedFlag, 1);
             _isClosing = true;
 
             // StopAll 已经完成物理安全和持久化边界；在窗体直接释放 DAQ/DO/液压
@@ -3223,12 +3238,16 @@ namespace MTEmbTest
             var controlHardwareReleased = false;
             try
             {
-                controlHardwareReleased = ReleaseOwnedControlHardwareOnce();
+                controlHardwareReleased = await System.Threading.Tasks.Task.Run(
+                    () => ReleaseOwnedControlHardwareOnce()).ConfigureAwait(true);
             }
             catch (Exception ex)
             {
                 logger?.Warn("关闭窗口时统一硬件释放失败：" + ex.Message, "EPB");
+                throw;
             }
+            if (!controlHardwareReleased)
+                throw new InvalidOperationException("控制层硬件资源尚未释放，继续等待关闭收口。");
 
             // 1) 解绑曲线可见性事件（避免关闭过程中再次触发）
             try
@@ -3368,11 +3387,12 @@ namespace MTEmbTest
                 catch (Exception ex)
                 {
                     logger?.Error("关闭窗口时DAQ最终Flush失败：" + ex.Message, "DAQ", ex);
+                    throw;
                 }
             }
             catch
             {
-                /* 关闭阶段忽略单次失败 */
+                throw;
             }
 
 
@@ -3410,7 +3430,6 @@ namespace MTEmbTest
                 //    EpbDiskWriter 内部持有 MemoryMappedFile 和 SQLite 连接，如果不 Dispose，
                 //    对应的 EPB*_sliding.dat 文件会一直被当前进程独占，导致下次 new 时打不开。
                 var writer = _diskWriter;
-                _diskWriter = null; // 提前置空，防止后续误用
 
                 if (writer != null)
                 {
@@ -3431,11 +3450,12 @@ namespace MTEmbTest
 
                     // 真正释放文件句柄和内存映射
                     writer.Dispose();
+                    _diskWriter = null;
                 }
             }
             catch
             {
-                /* 关闭阶段忽略单次失败 */
+                throw;
             }
 
             #region 解绑ChannelCycleCompleted事件
@@ -3478,23 +3498,6 @@ namespace MTEmbTest
             _preparedCloseSafety = safety;
             _preparedCloseContext = _preparedCloseContext ??
                                     WatchdogRuntime.CaptureTransportSnapshot()?.Context;
-            if (closeAfterPreparation)
-            {
-                var closeReceipt = await AuthorizeApplicationExitAfterPreparationAsync()
-                    .ConfigureAwait(true);
-                if (closeReceipt?.CanExit != true)
-                {
-                    LogInfo("关闭授权尚未建立：需要完整 Watchdog 终态或已接受的耐久安全交接。");
-                    HideCloseOverlay();
-                    _isClosing = false;
-                    Interlocked.Exchange(ref _closingReentry, 0);
-                    return false;
-                }
-                (MdiParent as Main_Frm)?.CacheApplicationCloseReceipt(closeReceipt);
-                Interlocked.Exchange(ref _closingReentry, 3);
-                if (!IsDisposed && !Disposing && IsHandleCreated)
-                    BeginInvoke((Action)Close);
-            }
             return true;
         }
 

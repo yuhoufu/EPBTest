@@ -3328,7 +3328,17 @@ namespace Controller
                     incidentId);
                 if (result != RecoveryIncidentCoordinator.BeginResult.Created ||
                     createdIncident == null)
+                {
+                    if (result == RecoveryIncidentCoordinator.BeginResult.Rejected)
+                        ObserveNonRecoveryLifecycleTask(Task.Run(() =>
+                            TryEscalateSoftwareRecoveryCircuitOpen(
+                                "RecoveryRegistrationRejected",
+                                $"Operation={operation}; Incident={incidentId:N}; Owner={ownerId:N}; " +
+                                "恢复登记未完成，已回滚并请求安全重建。",
+                                safetyAffected, runId, runEpoch, SoftwareRecoveryEscalationAttempts,
+                                "RecoveryRegistrationRejected")), "RecoveryRegistrationEscalation");
                     return false;
+                }
 
                 lock (_recoveryContractGate)
                     return _activeRecoveryContracts.TryGetValue(
@@ -4313,6 +4323,38 @@ namespace Controller
                    permit.RunEpoch == Interlocked.Read(ref _runEpoch) &&
                    IsChannelEnabled(channel) &&
                    !RequiresProcessRestart;
+        }
+
+        private sealed class RecoveryExecutionRejectedException : InvalidOperationException
+        {
+            internal RecoveryExecutionRejectedException(string message) : base(message) { }
+        }
+
+        internal static string GetExecutionRejoinRejection(
+            bool enabled, bool currentPermit, bool sameEpoch, bool requiresRestart)
+        {
+            if (!enabled) return "ChannelDisabled";
+            if (!sameEpoch) return "RunEpochChanged";
+            if (requiresRestart) return "ProcessRestartRequired";
+            return currentPermit ? string.Empty : "ExecutionPermitRevoked";
+        }
+
+        private void ValidateRecoveryExecutionPermits(
+            IReadOnlyDictionary<int, ChannelExecutionPermit> permits, string stage)
+        {
+            foreach (var pair in permits)
+            {
+                if (IsEnergizationRevoked)
+                    throw new OperationCanceledException("Recovery energization revoked: " + stage);
+                var reason = GetExecutionRejoinRejection(
+                    IsChannelEnabled(pair.Key), _channelExecutionFence.IsCurrent(pair.Value),
+                    pair.Value.RunEpoch == Interlocked.Read(ref _runEpoch), RequiresProcessRestart);
+                if (!string.IsNullOrEmpty(reason))
+                    throw new RecoveryExecutionRejectedException(
+                        $"{stage} {reason} Channel={pair.Key} RunId={_activeBatchId:N} " +
+                        $"PermitEpoch={pair.Value.RunEpoch} PermitGeneration={pair.Value.Generation} " +
+                        $"RunEpoch={Interlocked.Read(ref _runEpoch)}");
+            }
         }
 
         internal static bool IsTerminalExecutionQuiescent(
@@ -7459,11 +7501,19 @@ namespace Controller
                     if (!IsCurrentRecovery(context)) return;
 
                     context.ValidationDetail = "PowerEnableThenMechanicalRelease";
+                    var recoveryPermits = powerRecoveryChannels.ToDictionary(
+                        channel => channel, channel => _channelExecutionFence.Capture(channel));
+                    ValidateRecoveryExecutionPermits(recoveryPermits, "DaqPrePowerEnable");
                     await ExecuteDaqRecoveryRejoinPrerequisitesAsync(
                             powerRecoveryChannels,
                             _powerSupply == null
                                 ? null
-                                : (channels, ct) => _powerSupply.PrepareAndEnableAsync(channels, ct),
+                                : async (channels, ct) =>
+                                {
+                                    ValidateRecoveryExecutionPermits(recoveryPermits, "DaqPowerEnable");
+                                    await _powerSupply.PrepareAndEnableAsync(channels, ct).ConfigureAwait(false);
+                                    ValidateRecoveryExecutionPermits(recoveryPermits, "DaqPostPowerEnable");
+                                },
                             rejoinChannels.Length == 0
                                 ? null
                                 : (_, ct) => EnsureMotorReleasedBeforeFormalRejoinAsync(
@@ -7473,6 +7523,7 @@ namespace Controller
                                     ct),
                             context.Cancellation.Token)
                         .ConfigureAwait(false);
+                    ValidateRecoveryExecutionPermits(recoveryPermits, "DaqPostMechanicalRelease");
                     if (!IsCurrentRecovery(context)) return;
                     foreach (var rejoinedChannel in rejoinChannels)
                         CompleteDaqMechanicalRequalification(
@@ -7766,6 +7817,17 @@ namespace Controller
                         ? "Unknown"
                         : context.ValidationPhase)
                     : context.ValidationDetail;
+                if (ex is RecoveryExecutionRejectedException)
+                {
+                    RollbackDaqRecoveryRejoinSafety(context, phase, ex.Message);
+                    if (!TryEscalateSoftwareRecoveryCircuitOpen(
+                        "DaqExecutionRebuildRequired",
+                        $"Device={context.Device} CorrelationId={context.CorrelationId:N}; {ex.Message}",
+                        context.AffectedChannels, context.RunId, context.RunEpoch,
+                        SoftwareRecoveryEscalationAttempts, "ExecutionRecoveryRequired"))
+                        CompleteCancelledRecovery(context, ex.Message);
+                    return;
+                }
                 if (RequiresImmediateDaqRejoinSafetyRollback(phase))
                 {
                     RollbackDaqRecoveryRejoinSafety(context, phase, ex.Message);
@@ -8247,9 +8309,11 @@ namespace Controller
                 : context.FailureBackoff.Current;
             if (countAsFailure && failureCount >= SoftwareRecoveryEscalationAttempts)
             {
-                // DAQ software maintenance is bounded per incident.  Reaching
-                // the budget is a single SafeIdle/Terminal outcome, not an
-                // instruction to recycle the batch or relaunch the process.
+                if (TryEscalateSoftwareRecoveryCircuitOpen(
+                        "DaqSelfMaintenanceBudgetExhausted", reason,
+                        context.AffectedChannels, context.RunId, context.RunEpoch,
+                        failureCount, code))
+                    return;
                 CompleteCancelledRecovery(
                     context,
                     $"DaqSelfMaintenanceBudgetExhausted Device={context.Device}; " +
@@ -11804,13 +11868,19 @@ namespace Controller
                     // a second core behind an already-running safety action.
                     return CompleteStopRequestForSource(_stopSafetyTask, context.Source);
                 }
+                if (IsFinalExitStopSource(context.Source) &&
+                    TryResumeStopPersistenceForClose(out var retainedClose)) return retainedClose;
+                if (_stopSafetyTask != null && _activeStopSafetyRunner?.HasOrphanCore == true)
+                    return _stopSafetyTask;
                 if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
-                    _lastStopSafetyResult.CanRestartInProcess &&
+                    (_lastStopSafetyResult.CanRestartInProcess ||
+                     IsFinalExitStopSource(context.Source) && _lastStopSafetyResult.CanCloseApplication) &&
                     CanReuseStopResultForSource(
                         _lastStopSafetyResult.Source,
                         context.Source) &&
-                    CaptureLogicalQuiescenceSnapshot().IsQuiescent)
+                    (CaptureLogicalQuiescenceSnapshot().IsQuiescent ||
+                     IsFinalExitStopSource(context.Source) && _lastStopSafetyResult.CanCloseApplication))
                     return CompleteStopRequestForSource(
                         Task.FromResult(_lastStopSafetyResult.Clone(reused: true)), context.Source);
                 var generation = Interlocked.Increment(ref _stopSafetyGeneration);

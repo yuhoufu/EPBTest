@@ -33,6 +33,7 @@
     <Compile Include="WatchdogPolicy.cs" />
     <Compile Include="ContinuousRecoveryPolicy.cs" />
     <Compile Include="PipeExchangeDeadline.cs" />
+    <Compile Include="RecoveryHealthEndpoint.cs" />
     <Compile Include="TakeoverTransactionCoordinator.cs" />
     <Compile Include="SidecarIdentityStateMachine.cs" />
     <Compile Include="SidecarProcessHandleOwner.cs" />

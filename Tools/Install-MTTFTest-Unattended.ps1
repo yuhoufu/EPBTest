@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
+$healthTaskName = 'MTTFTestRecoveryHealth'
 $shortcutName = 'MT EPB 试验系统 V2.17.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
 $runtimeConfigNames = @(
@@ -263,6 +264,22 @@ function Set-UnattendedAcl([string]$Root) {
     if ($LASTEXITCODE -ne 0) { throw "运行状态目录 ACL 设置失败：$LASTEXITCODE" }
 }
 
+function Install-RecoveryHealthTask([string]$Root) {
+    $current = Join-Path $Root 'Current'
+    $keepaliveTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) `
+        -RepetitionInterval ([TimeSpan]::FromMinutes(1))
+    $healthScript = Join-Path $current 'Deployment\Test-MTTFTest-RecoveryHealth.ps1'
+    if (-not (Test-Path -LiteralPath $healthScript)) { throw "缺少健康检查脚本：$healthScript" }
+    $healthAction = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+        -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$healthScript`" -InstallRoot `"$Root`""
+    $healthSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+        -ExecutionTimeLimit ([TimeSpan]::FromSeconds(45)) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $healthTaskName -Action $healthAction `
+        -Trigger @((New-ScheduledTaskTrigger -AtStartup), $keepaliveTrigger) `
+        -Principal (New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest) `
+        -Settings $healthSettings -Force | Out-Null
+}
+
 function Install-ServiceAndAgent([string]$Root) {
     $current = Join-Path $Root 'Current'
     $watchdog = Join-Path $current 'MTTFTest.Watchdog.exe'
@@ -316,6 +333,7 @@ function Install-ServiceAndAgent([string]$Root) {
     Register-ScheduledTask -TaskName $autoStartTaskName -Action $autoStartAction `
         -Trigger $autoStartTrigger -Principal $autoStartPrincipal `
         -Settings $autoStartSettings -Force | Out-Null
+    Install-RecoveryHealthTask $Root
     Start-Service -Name $serviceName
     Start-ScheduledTask -TaskName $taskName
 }
@@ -428,7 +446,7 @@ function Assert-InstalledMainStopped([string]$Root) {
 }
 
 function Stop-InstalledRuntimeTasks([string]$Root) {
-    foreach ($name in @($autoStartTaskName, $taskName)) {
+    foreach ($name in @($autoStartTaskName, $taskName, $healthTaskName)) {
         $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         if ($null -ne $task) {
             Disable-ScheduledTask -TaskName $name | Out-Null
@@ -750,6 +768,23 @@ if ($env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE -eq '1') {
 
 Assert-Administrator
 
+# Serialize installers with the short health task. Failed maintenance remains inhibited until repair.
+$maintenanceMutex = New-Object Threading.Mutex($false, 'Global\MTTFTest.MaintenanceHealth.V1')
+$maintenanceHeld = $false
+try {
+try { $maintenanceHeld = $maintenanceMutex.WaitOne(45000) }
+catch [Threading.AbandonedMutexException] { $maintenanceHeld = $true }
+if (-not $maintenanceHeld) { throw '健康检查/另一安装事务尚未结束，请稍后重试。' }
+function Enter-DeploymentMaintenance {
+    $state = Join-Path $env:ProgramData 'MTTFTest'
+    [void](New-Item -ItemType Directory -Path $state -Force)
+    $marker = Join-Path $state 'maintenance-inhibit.json'
+    if (-not (Test-Path -LiteralPath $marker)) {
+        @{ Mode=$Mode; StartedUtc=[DateTime]::UtcNow.ToString('O'); InstallRoot=$root } |
+            ConvertTo-Json | Set-Content -LiteralPath $marker -Encoding UTF8
+    }
+}
+
 if ($Mode -eq 'Uninstall') {
     $installedExecutable = Join-Path $root 'Current\MTTFTest.exe'
     $installedVersion = ''
@@ -770,6 +805,7 @@ if ($Mode -eq 'Uninstall') {
             if (@(Get-CimInstance Win32_Process -Filter "Name='$critical'" -ErrorAction Stop).Count -gt 0) { throw '请先运行一键停止全部相关进程，完成安全清场后卸载。' }
         }
         Write-OperationStep 1 6 '停止监督服务。'
+        Enter-DeploymentMaintenance
         Stop-Supervisor
         Write-OperationStep 2 6 '停止并删除登录代理和主程序自启动任务。'
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -783,6 +819,10 @@ if ($Mode -eq 'Uninstall') {
             Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
         }
         Write-OperationStep 3 6 '停止安装目录中的主程序和后台组件。'
+        if (Get-ScheduledTask -TaskName $healthTaskName -ErrorAction SilentlyContinue) {
+            Stop-ScheduledTask -TaskName $healthTaskName -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $healthTaskName -Confirm:$false
+        }
         Stop-InstalledSessionAgent $root
         Stop-InstalledProcess $root 'MTTFTest.exe'
         Stop-InstalledProcess $root 'MTTFTest.SafetyAgent.exe'
@@ -808,6 +848,8 @@ if ($Mode -eq 'Uninstall') {
 $source = Resolve-SafeDirectory $SourceDirectory 'SourceDirectory'
 
 if ($Mode -eq 'Configure') {
+    Assert-InstalledMainStopped $root
+    Enter-DeploymentMaintenance
     $current = Join-Path $root 'Current'
     Assert-RequiredProgramFiles $current
     Initialize-RuntimeConfig $current $root
@@ -816,11 +858,14 @@ if ($Mode -eq 'Configure') {
     Assert-Health $root
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
+    Archive-MaintenanceInhibitForInstall
     Write-Host '首次运行环境、登录自启动和快捷方式已配置。'
     return
 }
 
 if ($Mode -eq 'PromoteLastKnownGood') {
+    Assert-InstalledMainStopped $root
+    Enter-DeploymentMaintenance
     Stop-Supervisor
     $current = Join-Path $root 'Current'
     Assert-RequiredProgramFiles $current
@@ -838,6 +883,7 @@ if ($Mode -eq 'PromoteLastKnownGood') {
         if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     }
     Start-Service -Name $serviceName
+    Archive-MaintenanceInhibitForInstall
     Write-Host "LastKnownGood 已由操作人员显式晋升：$(Join-Path $root 'LastKnownGood')"
     return
 }
@@ -854,6 +900,7 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Assert-InstalledMainStopped $root
     Assert-RuntimeIdle $root
     Write-OperationStep 2 9 '停止旧监督服务和运行任务。'
+    Enter-DeploymentMaintenance
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root
     Write-OperationStep 3 9 '确认断能证明、封存旧 schema 5/6 检查点并仅迁移剩余圈数。'
@@ -871,13 +918,17 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Write-OperationStep 6 9 '配置程序目录和 ProgramData 权限。'
     Set-UnattendedAcl $root
     Write-OperationStep 7 9 '安装 schema 7 监督服务、登录代理和自启动任务。'
-    Archive-MaintenanceInhibitForInstall
     Install-ServiceAndAgent $root
     Write-OperationStep 8 9 '检查程序文件、服务和任务状态。'
     Assert-Health $root
     Write-OperationStep 9 9 '创建 Supervisor 启动快捷方式并写入配置标记。'
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
+    Archive-MaintenanceInhibitForInstall
     Write-Host "V$sourceVersion 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
     Write-DeploymentResult $Mode $sourceVersion $root $source
+}
+} finally {
+    if ($maintenanceHeld) { $maintenanceMutex.ReleaseMutex() }
+    $maintenanceMutex.Dispose()
 }

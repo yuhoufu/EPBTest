@@ -2333,11 +2333,7 @@ namespace Controller
             var rejoinPermits = selected.ToDictionary(
                 channel => channel,
                 channel => _channelExecutionFence.Capture(channel));
-            if (rejoinPermits.Any(pair =>
-                    !IsChannelExecutionPermitCurrent(pair.Key, pair.Value)))
-                throw new InvalidOperationException(
-                    $"FormalRejoinRejected StaleExecutionPermit " +
-                    $"Channels=[{string.Join(",", selected)}]");
+            ValidateRecoveryExecutionPermits(rejoinPermits, "FormalRejoinRejected");
 
             await InvokeAfterCycleExecutionQuiescenceAsync(
                     selected,
@@ -2399,11 +2395,7 @@ namespace Controller
             var rejoinPermits = selected.ToDictionary(
                 channel => channel,
                 channel => _channelExecutionFence.Capture(channel));
-            if (rejoinPermits.Any(pair =>
-                    !IsChannelExecutionPermitCurrent(pair.Key, pair.Value)))
-                throw new InvalidOperationException(
-                    $"FormalRejoinRejected StaleExecutionPermit " +
-                    $"Channels=[{string.Join(",", selected)}]");
+            ValidateRecoveryExecutionPermits(rejoinPermits, "FormalRejoinRejected");
 
             // A channel-level warning, hydraulic self-heal or power self-heal may complete while
             // the owning DAQ group is still in its device-level recovery.  Letting that path

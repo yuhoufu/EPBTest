@@ -84,7 +84,7 @@ namespace MTTFTest.Watchdog
         }
     }
 
-    internal sealed class SupervisorServiceRuntime : IDisposable
+    internal sealed partial class SupervisorServiceRuntime : IDisposable
     {
         private static readonly Regex SessionPattern = new Regex(
             @"(?:^|\s)--session\s+(?:\""(?<id>[0-9a-fA-F]{32})\""|(?<id>[0-9a-fA-F]{32}))(?:\s|$)",
@@ -117,6 +117,7 @@ namespace MTTFTest.Watchdog
                 StateDirectory);
             RestorePersistedSessions();
             _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
+            StartHealthSupervision(executableDirectory);
             WriteAudit(
                 "SupervisorStarted",
                 "Schema=" + SupervisorProtocol.SchemaVersion +
@@ -1231,10 +1232,8 @@ namespace MTTFTest.Watchdog
                 !session.MatchesProjectRoot(projectDirectory))
                 throw new InvalidDataException(
                     "SupervisorSafetyAuthorityPathMismatch");
-            if (!string.Equals(authority.Receipt.SafetyAgentExecutablePath,
-                    executable, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(authority.Receipt.SafetyAgentExecutableSha256,
-                    request.ExecutableSha256, StringComparison.Ordinal))
+            if (!IsSafetyAgentExecutableBound(authority.Receipt.SafetyAgentExecutablePath,
+                    authority.Receipt.SafetyAgentExecutableSha256, executable, request.ExecutableSha256))
                 throw new InvalidDataException(
                     "SupervisorSafetyAuthorityExecutableHashMismatch");
             if (authority.InitialReceiptRevision !=
@@ -1250,6 +1249,14 @@ namespace MTTFTest.Watchdog
 
             // SafetyAgent 仍绑定当前 Supervisor 会话、进程和一次性交接凭证；
             // 不再额外绑定版本包槽，避免可写配置导致安全停机本身无法执行。
+        }
+
+        internal static bool IsSafetyAgentExecutableBound(string receiptPath, string receiptHash,
+            string executable, string executableHash)
+        {
+            return !string.IsNullOrWhiteSpace(receiptPath) &&
+                string.Equals(receiptPath, executable, StringComparison.OrdinalIgnoreCase) &&
+                SupervisorProtocol.Sha256Equals(receiptHash, executableHash);
         }
 
         private static string ReadLaunchArgument(string arguments, string name)
@@ -1360,6 +1367,7 @@ namespace MTTFTest.Watchdog
 
         public void Dispose()
         {
+            _healthEndpoint?.Dispose();
             try { _stop.Cancel(); } catch { }
             try { _acceptLoop?.Wait(3000); } catch { }
             foreach (var session in _sessions.Values)
@@ -1373,7 +1381,7 @@ namespace MTTFTest.Watchdog
             _stop.Dispose();
         }
 
-        private sealed class SupervisorOwnedSession : IDisposable
+        private sealed partial class SupervisorOwnedSession : IDisposable
         {
             private readonly object _gate = new object();
             private readonly string _sessionId;
@@ -1500,6 +1508,7 @@ namespace MTTFTest.Watchdog
                     {
                         await Task.Delay(1000, cancellationToken)
                             .ConfigureAwait(false);
+                        Interlocked.Exchange(ref _healthProgressUtcTicks, DateTime.UtcNow.Ticks);
                     }
                     catch (OperationCanceledException)
                     {
@@ -1508,11 +1517,13 @@ namespace MTTFTest.Watchdog
 
                     try
                     {
+                        await CheckHostHealthAsync().ConfigureAwait(false);
                         lock (_gate)
                         {
                             if (cancellationToken.IsCancellationRequested ||
                                 IsCurrentProcessAlive())
                                 continue;
+                            if (File.Exists(WatchdogMaintenancePolicy.InhibitPath)) continue;
                             try { _process?.Dispose(); } catch { }
                             _process = null;
                             _processStartUtcTicks = 0;

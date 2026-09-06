@@ -62,6 +62,45 @@ namespace Controller
         private readonly object _stopSafetyProductionGate = new object();
         private StopSafetyProductionState _stopSafetyProductionState;
 
+        // A late durable completion belongs to the original stopped session. It may authorize
+        // exit, but must never resurrect the expired runner or authorize another trial.
+        private bool TryResumeStopPersistenceForClose(out Task<StopSafetyResult> task)
+        {
+            task = null;
+            var state = Volatile.Read(ref _stopSafetyProductionState);
+            if (_lastStopSafetyResult?.PersistenceBoundaryConfirmed != false ||
+                !IsEnergizationRevoked || IsBatchSessionActive || state?.PersistenceTask == null ||
+                state.Generation != Interlocked.Read(ref _stopSafetyGeneration) ||
+                state.FinalPersistenceBoundaries.Count != 2) return false;
+            lock (state.PersistenceGate)
+            {
+                if (state.ClosePersistenceTask == null || state.ClosePersistenceTask.IsFaulted ||
+                    state.ClosePersistenceTask.IsCanceled ||
+                    state.ClosePersistenceTask.IsCompleted && !state.ClosePersistenceTask.Result.CanCloseApplication)
+                    state.ClosePersistenceTask = Task.Run(async () =>
+                    {
+                        await state.PersistenceTask.ConfigureAwait(false);
+                        while (state.PersistenceTask.Result?.Succeeded != true && IsEnergizationRevoked &&
+                               state.Generation == Interlocked.Read(ref _stopSafetyGeneration))
+                        {
+                            await Task.Delay(2000).ConfigureAwait(false);
+                            _log?.Warn($"StopPersistenceCloseRetry Transaction={state.TransactionId:N}; " +
+                                $"RunId={state.RunId:N}; Error={state.PersistenceTask.Result?.Detail}", "EPB-Safety");
+                            state.PersistenceErrors.Clear();
+                            state.PersistenceTask = ExecuteStopPersistenceStageAsync(state);
+                            await state.PersistenceTask.ConfigureAwait(false);
+                        }
+                        if (!IsEnergizationRevoked || state.Generation != Interlocked.Read(ref _stopSafetyGeneration))
+                            throw new InvalidOperationException("StopPersistenceCloseIdentityChanged");
+                        var result = ExecuteStopVerificationStage(state).Result;
+                        result.RequiresProcessRestart = true;
+                        return await CompleteFinalPersistenceAsync(Task.FromResult(result)).ConfigureAwait(false);
+                    });
+                task = state.ClosePersistenceTask;
+                return true;
+            }
+        }
+
         /// <summary>
         /// Builds the production runner boundary while keeping the legacy
         /// hardware implementation behind an explicit port.  Callers that
@@ -237,7 +276,9 @@ namespace Controller
                 case StopSafetyStage.StopAcquisition:
                     return ExecuteStopAcquisitionStage(state);
                 case StopSafetyStage.ClosePersistenceBoundary:
-                    return await ExecuteStopPersistenceStageAsync(state).ConfigureAwait(false);
+                    lock (state.PersistenceGate)
+                        state.PersistenceTask = state.PersistenceTask ?? ExecuteStopPersistenceStageAsync(state);
+                    return await state.PersistenceTask.ConfigureAwait(false);
                 case StopSafetyStage.VerifyLogicalQuiescence:
                     return ExecuteStopVerificationStage(state);
                 default:
@@ -843,6 +884,7 @@ namespace Controller
                         ? Math.Min(accepted, existing)
                         : accepted;
                     state.PersistenceBoundaries[device] = finalBoundary;
+                    state.FinalPersistenceBoundaries[device] = accepted;
                     if (gap)
                     {
                         state.DataGaps.Add(
@@ -892,7 +934,8 @@ namespace Controller
                 }
                 var boundaries = await WaitForStopPersistenceBoundariesAsync(
                         state.PersistenceBoundaries,
-                        RequiresRecoveredPersistenceStateForStop(state.Context.Source))
+                        RequiresRecoveredPersistenceStateForStop(state.Context.Source),
+                        state.FinalPersistenceBoundaries)
                     .ConfigureAwait(false);
                 foreach (var boundary in boundaries.Where(item => item.Closed))
                 {
@@ -1249,6 +1292,11 @@ namespace Controller
                 new Dictionary<int, Task<bool>>();
             internal Dictionary<string, long> PersistenceBoundaries { get; } =
                 new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            internal Dictionary<string, long> FinalPersistenceBoundaries { get; } =
+                new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            internal object PersistenceGate { get; } = new object();
+            internal Task<StopSafetyPortResult> PersistenceTask { get; set; }
+            internal Task<StopSafetyResult> ClosePersistenceTask { get; set; }
             internal List<string> Errors { get; } = new List<string>();
             internal List<string> OffErrors { get; } = new List<string>();
             internal List<string> DataGaps { get; } = new List<string>();

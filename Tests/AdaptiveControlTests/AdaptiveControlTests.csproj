@@ -100,6 +100,7 @@
     <Compile Include="WatchdogSafetyClosureV39Tests.cs" />
     <Compile Include="V213043RecoveryTests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
+    <Compile Include="I0049RecoveryTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />

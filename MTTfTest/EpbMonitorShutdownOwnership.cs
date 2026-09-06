@@ -82,6 +82,8 @@ namespace MTEmbTest
                         {
                             try { managerFailure?.Invoke(ex); }
                             catch { /* diagnostics must never block the safety fallback */ }
+                            if (ex.Message.StartsWith("HardwareReleaseBlocked", StringComparison.Ordinal))
+                                throw; // Live callbacks still own hardware; fallback is not a release proof.
                             fallbackRelease?.Invoke();
                         }
                     }

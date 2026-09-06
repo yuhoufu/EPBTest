@@ -33,6 +33,33 @@ foreach ($source in $sources) {
     foreach ($file in @($scan.Files)) {
         if ($file.FullName.StartsWith($output.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
         if ($file.Length -gt 20MB -or $file.Length -gt $budget) {
+            if ($file.Extension -in @('.log', '.jsonl') -and $budget -ge 1MB) {
+                $count++; $name = ('{0:D5}-tail-' -f $count) + $file.Name
+                try {
+                    $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open,
+                        [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+                    try {
+                        $length = $stream.Length
+                        $take = [int][Math]::Min(4MB, [Math]::Min($budget, $length))
+                        $offset = [Math]::Max(0, $length - $take)
+                        [void]$stream.Seek($offset, [IO.SeekOrigin]::Begin)
+                        $bytes = New-Object byte[] $take
+                        $read = 0
+                        while ($read -lt $take) {
+                            $n = $stream.Read($bytes, $read, $take - $read)
+                            if ($n -eq 0) { break }; $read += $n
+                        }
+                        $destination = Join-Path $output $name
+                        $target = [IO.File]::Create($destination)
+                        try { $target.Write($bytes, 0, $read) } finally { $target.Dispose() }
+                        $budget -= $read
+                        $index += @{ Source=$file.FullName; Copied=$true; Partial=$true;
+                            Reason='SizeBudgetTail'; SourceBytes=$length; Offset=$offset; Bytes=$read;
+                            File=$name; SHA256=(Get-FileHash -LiteralPath $destination).Hash }
+                    } finally { $stream.Dispose() }
+                } catch { $index += @{Source=$file.FullName; Copied=$false; Reason=$_.Exception.Message} }
+                continue
+            }
             $index += @{ Source=$file.FullName; Copied=$false; Reason='SizeBudget'; Bytes=$file.Length }; continue
         }
         $count++; $name = ('{0:D5}-' -f $count) + $file.Name

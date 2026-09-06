@@ -15,10 +15,9 @@ namespace MTEmbTest
         private ProgressBar _closeOverlayProgress;
         private int _closeOverlayScheduled;
 
-        private async void ScheduleCloseOverlay()
+        private void ScheduleCloseOverlay()
         {
             if (Interlocked.Exchange(ref _closeOverlayScheduled, 1) != 0) return;
-            await Task.Delay(250).ConfigureAwait(true);
             if (Volatile.Read(ref _closingReentry) == 1 && !IsDisposed)
                 ShowCloseOverlay("正在建立安全关闭事务…");
         }
@@ -94,7 +93,7 @@ namespace MTEmbTest
                             ? "正在保存 Raw、SQLite 和最新圈数据…"
                             : progress.Stage < StopSafetyStage.Completed
                                 ? "正在确认逻辑静默与释放 Watchdog…"
-                                : "安全终态已完成，正在关闭窗口…";
+                                : "数据收口已完成，正在释放资源并等待关闭授权…";
             ShowCloseOverlay(text);
             if (_closeOverlayProgress != null)
             {
@@ -106,7 +105,7 @@ namespace MTEmbTest
                             ? 60
                             : progress.Stage < StopSafetyStage.VerifyLogicalQuiescence
                                 ? 75
-                                : progress.Stage < StopSafetyStage.Completed ? 90 : 100;
+                                : progress.Stage < StopSafetyStage.Completed ? 85 : 90;
                 if (value > _closeOverlayProgress.Value)
                     _closeOverlayProgress.Value = value;
             }

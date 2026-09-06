@@ -306,7 +306,8 @@ namespace Controller
 
         private async Task<StopPersistenceBoundaryResult[]> WaitForStopPersistenceBoundariesAsync(
             IReadOnlyDictionary<string, long> boundaries,
-            bool requireRecoveredState)
+            bool requireRecoveredState,
+            IReadOnlyDictionary<string, long> frozenFinalBoundaries = null)
         {
             // The transaction runner owns the only stop-stage deadline.  This
             // persistence helper intentionally has no competing 5/15-second
@@ -317,7 +318,8 @@ namespace Controller
             // 截止后已接纳的抑制尾段推进到明确终态，避免仅验证前缀后遗留后台所有权。
             var finalBoundaries = boundaries.ToDictionary(
                 pair => pair.Key,
-                pair => Math.Max(pair.Value, _acq.GetLastProcessRecycleBoundary(pair.Key)),
+                pair => frozenFinalBoundaries != null ? frozenFinalBoundaries[pair.Key] :
+                    Math.Max(pair.Value, _acq.GetLastProcessRecycleBoundary(pair.Key)),
                 StringComparer.OrdinalIgnoreCase);
             var rawDrainMs = unboundedTimeoutMs;
             var rawPipelineDrained = await _acq.DrainBackgroundPipelinesToBoundariesAsync(

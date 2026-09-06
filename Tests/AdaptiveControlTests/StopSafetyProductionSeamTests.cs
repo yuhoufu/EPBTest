@@ -150,6 +150,17 @@ namespace AdaptiveControlTests
                 "manager失败路径没有只执行一次fallback/失败通知");
 
             var partialInitializationOwner = new EpbMonitorHardwareReleaseOwner();
+            var blockedOwner = new EpbMonitorHardwareReleaseOwner();
+            var blocked = false;
+            try
+            {
+                blockedOwner.Release(() => throw new InvalidOperationException("HardwareReleaseBlocked: worker"),
+                    () => throw new Exception("活跃工作任务不应走直接释放旁路"), null);
+            }
+            catch (InvalidOperationException) { blocked = true; }
+            Assert(blocked && blockedOwner.ReleaseCount == 0 &&
+                blockedOwner.Release(() => { }, null, null) && blockedOwner.ReleaseCount == 1,
+                "后台任务退出前伪报释放完成，或真实退出后不允许重试");
             fallbackCalls = 0;
             Assert(partialInitializationOwner.Release(
                        null,
@@ -945,53 +956,33 @@ namespace AdaptiveControlTests
                 var persistenceTerminal =
                     hangingFixture.Manager.CaptureStopSafetyProgress();
                 var persistenceReentryTask = hangingFixture.Manager.StopAllAsync(NewContext());
-                Assert(SpinWait.SpinUntil(
-                           () => hangingPower.DisableCallCount > persistencePowerCalls &&
-                                 Volatile.Read(ref hangingFlushCallCount) > persistenceFlushes &&
-                                 hangingFixture.Manager.CaptureStopSafetyProgress().TransactionId !=
-                                     persistenceTerminal.TransactionId,
-                           2000),
-                    "旧orphan存在时新请求没有重新提交幂等安全动作。" +
-                    $" DO={writer.BatchWriteCount}/{persistenceWrites};" +
-                    $"PSU={hangingPower.DisableCallCount}/{persistencePowerCalls};" +
-                    $"Flush={Volatile.Read(ref hangingFlushCallCount)}/{persistenceFlushes};" +
-                    $"Progress={hangingFixture.Manager.CaptureStopSafetyProgress().TransactionId}/" +
-                    $"{persistenceTerminal.TransactionId}:" +
-                    hangingFixture.Manager.CaptureStopSafetyProgress().Stage);
+                Assert(persistenceReentryTask.IsCompleted &&
+                       hangingPower.DisableCallCount == persistencePowerCalls &&
+                       Volatile.Read(ref hangingFlushCallCount) == persistenceFlushes &&
+                       hangingFixture.Manager.CaptureStopSafetyProgress().TransactionId == persistenceTerminal.TransactionId,
+                    "停止重入启动了第二个物理事务或改变了冻结边界");
                 var persistenceFinalExitTask = hangingFixture.Manager.StopAllAsync(new StopContext
                 {
                     Source = StopSource.ProgramExit,
                     CorrelationId = Guid.NewGuid().ToString("N"),
                     Reason = "persistence-hang-final-exit"
                 });
+                Assert(!persistenceFinalExitTask.IsCompleted,
+                    "旧数据边界未落盘便放行了关闭");
                 releaseFlush.TrySetResult(true);
-                var persistenceReentry = persistenceReentryTask.GetAwaiter().GetResult();
+                Assert(persistenceFinalExitTask.Wait(10000), "磁盘恢复后未继续完成原关闭边界");
                 var persistenceFinalExit = persistenceFinalExitTask.GetAwaiter().GetResult();
-                Assert(!persistenceReentry.ReusedPreviousResult &&
-                       !persistenceFinalExit.ReusedPreviousResult &&
-                       persistenceReentry.SafetyTransactionId != persistenceTerminal.TransactionId &&
-                       persistenceFinalExit.SafetyTransactionId == persistenceReentry.SafetyTransactionId,
-                    "旧orphan后的新请求未建新代次，或活动请求没有加入同一物理事务。");
-                var orphanSettled = SpinWait.SpinUntil(() =>
-                {
-                    var late = hangingFixture.Manager.CaptureStopSafetyProgress();
-                    return !hangingFixture.Manager.HasOrphanCore &&
-                           late.Stage == StopSafetyStage.Completed &&
-                           !late.Active && !late.TakeoverRequired &&
-                           late.TransactionId == persistenceReentry.SafetyTransactionId;
-                }, 2000);
+                Assert(persistenceFinalExit.CanCloseApplication && persistenceFinalExit.RequiresProcessRestart &&
+                       persistenceFinalExit.SafetyTransactionId == persistenceTerminal.TransactionId &&
+                       hangingPower.DisableCallCount == persistencePowerCalls &&
+                       Volatile.Read(ref hangingFlushCallCount) == persistenceFlushes,
+                    "关闭未复用原事务，或重新访问硬件/重复Flush");
+                Assert(SpinWait.SpinUntil(() => !hangingFixture.Manager.HasOrphanCore, 2000),
+                    "完成后的持久化任务仍被标记为孤儿");
                 var lateTerminal = hangingFixture.Manager.CaptureStopSafetyProgress();
-                Assert(orphanSettled && !hangingFixture.Manager.HasOrphanCore &&
-                       lateTerminal.Stage == StopSafetyStage.Completed &&
-                       !lateTerminal.Active && !lateTerminal.TakeoverRequired &&
-                       lateTerminal.TransactionId == persistenceReentry.SafetyTransactionId,
-                    "旧Persistence orphan迟到回写覆盖了新代安全终态：" +
-                    $"OrphanSettled={orphanSettled};Stage={lateTerminal.Stage};" +
-                    $"Tx={lateTerminal.TransactionId};Generation={lateTerminal.Generation};" +
-                    $"Progress={lateTerminal.ProgressVersion};" +
-                    $"Reason={lateTerminal.TerminalReason};" +
-                    $"Flush={Volatile.Read(ref hangingFlushCallCount)};" +
-                    $"PSU={hangingPower.DisableCallCount}");
+                Assert(lateTerminal.Stage == StopSafetyStage.TimedOut &&
+                       lateTerminal.TransactionId == persistenceTerminal.TransactionId,
+                    "退出专用迟到数据凭证改写了原超时事实");
             }
         }
 

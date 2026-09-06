@@ -28,6 +28,12 @@ namespace MTTFTest.SessionAgent
                 if (!owns) return 0;
                 try
                 {
+                    long busySince = 0;
+                    using (var health = new RecoveryHealthEndpoint(
+                        RecoveryHealthEndpoint.AgentPipe(process.SessionId),
+                        () => Interlocked.Read(ref busySince) == 0 ? DateTime.UtcNow.Ticks : Interlocked.Read(ref busySince),
+                        () => Interlocked.Read(ref busySince) == 0 ? "Listening" : "LaunchExchange"))
+                    {
                     WriteAudit(
                         "SessionAgentStarted",
                         $"Schema={SessionAgentProtocol.SchemaVersion};" +
@@ -37,8 +43,15 @@ namespace MTTFTest.SessionAgent
                         using (var pipe = CreatePipe(process.SessionId))
                         {
                             pipe.WaitForConnection();
-                            Handle(pipe, process.SessionId);
+                            Interlocked.Exchange(ref busySince, DateTime.UtcNow.Ticks);
+                            try
+                            {
+                                using (var deadline = new PipeExchangeDeadline(pipe, 10000))
+                                    Handle(pipe, process.SessionId);
+                            }
+                            finally { Interlocked.Exchange(ref busySince, 0); }
                         }
+                    }
                     }
                 }
                 finally

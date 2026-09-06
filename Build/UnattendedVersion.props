@@ -1,6 +1,6 @@
 ﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <UnattendedProductVersion>2.17.2.0</UnattendedProductVersion>
+    <UnattendedProductVersion>2.17.3.0</UnattendedProductVersion>
     <ApplicationVersion Condition="'$(ApplicationVersion)' == ''">$(UnattendedProductVersion)</ApplicationVersion>
     <_UnattendedVersionAssemblyInfo>$(MSBuildProjectDirectory)\obj\$(Configuration)\UnattendedVersion.g.cs</_UnattendedVersionAssemblyInfo>
   </PropertyGroup>

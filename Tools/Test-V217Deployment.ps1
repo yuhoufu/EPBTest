@@ -25,11 +25,11 @@ function Refresh-FixtureIdentity([string]$Path) {
     $files = @(Get-ChildItem -LiteralPath $Path -File | Where-Object { $_.Name -ne 'build-identity.json' } | ForEach-Object {
         @{ name=$_.Name; bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash }
     })
-    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.17.2.0'} })
+    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.17.3.0'} })
     $map = New-Object 'System.Collections.Generic.SortedDictionary[string,string]' ([StringComparer]::Ordinal)
     foreach ($file in $files) { $map.Add($file.name, (Join-Path $Path $file.name)) }
     @{ gitCommit=('a'*40); packageContentSha256=(Get-DeploymentAggregateHash $map); files=$files; componentIdentities=$components;
-        fileVersion='2.17.2.0'; recoveryArchitectureGeneration='EPB-V2.17'; watchdogSchema=7;
+        fileVersion='2.17.3.0'; recoveryArchitectureGeneration='EPB-V2.17'; watchdogSchema=7;
         releaseStatus='FORMAL_RELEASE'; deploymentApproved=$true } | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $Path 'build-identity.json') -Encoding UTF8
 }
@@ -156,6 +156,32 @@ try {
             } finally { $process.Dispose() }
         }
     } finally { $env:MTTFTEST_QUICKDEPLOY_PARSE_ONLY=$saved }
+    # Materialize actual task definitions, replacing only the OS registration mutation.
+    $healthTaskName = 'MTTFTestRecoveryHealth'
+    $healthRoot = Join-Path $temp 'HealthTaskFixture'
+    $healthDeployment = Join-Path $healthRoot 'Current\Deployment'
+    [void](New-Item -ItemType Directory -Path $healthDeployment -Force)
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-MTTFTest-RecoveryHealth.ps1') -Destination $healthDeployment
+    Import-Module ScheduledTasks -ErrorAction Stop
+    function script:Register-ScheduledTask {
+        param($TaskName, $Action, $Trigger, $Principal, $Settings, [switch]$Force)
+        $script:capturedHealthTask = @{Name=$TaskName; Action=$Action; Trigger=$Trigger;
+            Principal=$Principal; Settings=$Settings}
+    }
+    try {
+        if ((Get-Command Register-ScheduledTask).Definition -notmatch 'capturedHealthTask') {
+            throw '健康任务测试未接管注册边界，拒绝调用真实注册器。'
+        }
+        Install-RecoveryHealthTask $healthRoot
+        $definition = $script:capturedHealthTask
+        Check ($definition.Name -eq $healthTaskName -and $definition.Principal.UserId -in @('SYSTEM','S-1-5-18')) '分钟健康任务使用SYSTEM身份'
+        Check ($definition.Settings.ExecutionTimeLimit -eq 'PT45S' -and
+            [int]$definition.Settings.MultipleInstances -eq 2) '健康任务45秒退出且IgnoreNew禁止并发'
+        Check (@($definition.Trigger | Where-Object { $_.Repetition.Interval -eq 'PT1M' }).Count -eq 1 -and
+            @($definition.Trigger | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' }).Count -eq 1) '健康任务同时包含开机与每分钟触发'
+        Check ($definition.Action.Arguments.Contains('Test-MTTFTest-RecoveryHealth.ps1') -and
+            -not $definition.Action.Arguments.Contains('--launch-main')) '健康任务检查监督服务而不直接拉起试验'
+    } finally { Remove-Item Function:\Register-ScheduledTask }
     Write-Output "PASS V217Deployment $passed/$passed (isolated filesystem; no SCM or hardware mutation)"
 }
 finally {

@@ -1363,10 +1363,21 @@ namespace MTTFTest.Watchdog
 
         private async Task<int> RunAsync()
         {
+            using (var process = Process.GetCurrentProcess())
+                _healthEndpoint = new RecoveryHealthEndpoint(RecoveryHealthEndpoint.HostPipe(process.Id),
+                    () => Interlocked.Read(ref _monitorProgressUtcTicks),
+                    () => _automaticTakeover.ActiveStage.ToString(),
+                    () => $"Session={_args.SessionId};RunId={_journal.LastHeartbeat?.RunId};" +
+                        $"RunEpoch={_journal.LastHeartbeat?.RunEpoch};Reason={_journal.LastReason};" +
+                        $"NextRetryUtcTicks={_journal.SafetyPrerequisiteNextRetryUtcTicks}");
+            Interlocked.Exchange(ref _monitorProgressUtcTicks, DateTime.UtcNow.Ticks);
             // A closing marker cancels trial resume, not an already durable
             // independent shutdown. Resume that owner before retiring the host.
             while (!_stop.IsCancellationRequested && ObserveSafetyHandoffProgress())
+            {
+                Interlocked.Exchange(ref _monitorProgressUtcTicks, DateTime.UtcNow.Ticks);
                 await Task.Delay(250, _stop.Token).ConfigureAwait(false);
+            }
             var startupFenceAction = CaptureCloseFenceAction(
                 activeConnection: false,
                 currentProcessAlive: IsCurrentProcessAlive(),
@@ -2388,6 +2399,9 @@ namespace MTTFTest.Watchdog
             return true;
         }
 
+        private long _monitorProgressUtcTicks;
+        private RecoveryHealthEndpoint _healthEndpoint;
+
         private async Task MonitorAsync(CancellationToken token)
         {
             while (!token.IsCancellationRequested)
@@ -2395,6 +2409,7 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     await Task.Delay(250, token).ConfigureAwait(false);
+                    Interlocked.Exchange(ref _monitorProgressUtcTicks, DateTime.UtcNow.Ticks);
                     if (ObserveSafetyHandoffProgress()) continue;
                     if (ShouldProbeCircuitHalfOpen(IsRecoveryBlocked(), _attached))
                     {
@@ -6773,9 +6788,12 @@ namespace MTTFTest.Watchdog
                  closing.SessionLease != handoff.SessionLease))
                 return false;
 
-            var started = BeginSafetyHandoff(handoff);
-            return started || !handoff.IsTerminal;
+            var started = BeginSafetyHandoff(handoff, out var authorityTerminal);
+            return ShouldWaitForSafetyHandoff(authorityTerminal, started, handoff.IsTerminal);
         }
+
+        internal static bool ShouldWaitForSafetyHandoff(bool authorityTerminal, bool started, bool mirrorTerminal)
+            => !authorityTerminal && (started || !mirrorTerminal);
 
         private bool PreserveReplacementOnLegacyClose()
         {
@@ -7092,6 +7110,12 @@ namespace MTTFTest.Watchdog
 
         private bool BeginSafetyHandoff(WatchdogSafetyHandoffReceipt receipt)
         {
+            return BeginSafetyHandoff(receipt, out _);
+        }
+
+        private bool BeginSafetyHandoff(WatchdogSafetyHandoffReceipt receipt, out bool authorityTerminal)
+        {
+            authorityTerminal = false;
             if (receipt == null || receipt.IsTerminal ||
                 !receipt.IsValidFor(_args.SessionId))
                 return false;
@@ -7137,7 +7161,8 @@ namespace MTTFTest.Watchdog
                         $"State={receipt.State};Revision={receipt.Revision};" +
                         "Project mirror ignored in favor of Supervisor authority.");
                     Interlocked.Exchange(ref _safetyHandoffStarted, 0);
-                    return true;
+                    authorityTerminal = true;
+                    return false;
                 }
             }
 
@@ -8123,6 +8148,7 @@ namespace MTTFTest.Watchdog
 
         public void Dispose()
         {
+            _healthEndpoint?.Dispose();
             try { _unattendedAlarmSink.Dispose(); } catch { }
             try { _transitionWindow.Hide(); } catch { }
             try { _transitionWindow.Dispose(); } catch { }

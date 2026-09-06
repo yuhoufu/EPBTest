@@ -185,10 +185,6 @@ namespace MtEmbTest
 
         internal bool HandleWatchdogMainFormClosing(FormClosingEventArgs e)
         {
-            ArmApplicationExitDeadlineOnce(
-                "MainFormClosing",
-                RuntimeShutdownIntent.ApplicationExit,
-                null);
             if (HasApplicationCloseReceipt)
             {
                 Interlocked.Exchange(ref _watchdogAllowClose, 1);
@@ -317,6 +313,7 @@ namespace MtEmbTest
                 Math.Max(1, totalBudgetSeconds - 1));
             while (DateTime.UtcNow < deadlineUtc)
             {
+                if (HasApplicationCloseReceipt) return;
                 var elapsed = DateTime.UtcNow - requestedUtc;
                 var remainingSeconds = Math.Max(
                     0,
@@ -352,6 +349,7 @@ namespace MtEmbTest
                     .ConfigureAwait(false);
             }
 
+            if (HasApplicationCloseReceipt) return;
             WatchdogRuntime.MarkApplicationExitDeadlineForced(
                 "LocalMainProcess30SecondDeadline:" + reason);
             ProjectLogHub.Write(

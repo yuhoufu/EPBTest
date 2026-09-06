@@ -80,7 +80,7 @@ $identity = [ordered]@{
     schemaVersion = 1
     testOnly = $true
     productionRelease = $false
-    version = '2.17.2.0'
+    version = '2.17.3.0'
     builtUtc = [DateTime]::UtcNow.ToString('O')
     files = @(
         Get-ChildItem -LiteralPath $output -File -Recurse |

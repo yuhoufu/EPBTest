@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 29
+$bundleRevision = 30
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
