@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(msbuild:*)",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet clean:*)",
+      "Bash(dotnet msbuild:*)",
+      "Bash(where:*)",
+      "Bash(git push:*)",
+      "Bash(del:*)",
+      "Bash(rm:*)",
+      "Bash(dir)",
+      "Bash(dir:*)",
+      "Bash(verbosity=normal)",
+      "Bash(find:*)",
+      "Bash(for:*)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(grep:*)",
+      "Bash(done)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

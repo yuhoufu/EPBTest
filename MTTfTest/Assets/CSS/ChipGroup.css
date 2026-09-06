@@ -1,0 +1,80 @@
+﻿.container {
+	color: @ControlText;
+	background-color: @Control;
+	display: flex;
+	flex-direction: column;
+}
+
+.header {
+	padding: 4px 0;
+}
+
+.chip-group {
+	background-color: @Control;
+}
+
+.chip-group-item {
+	display: inline-block;
+	color: @ControlText;
+	background-color: @Control;
+	border: 1px solid @ControlBorder;
+}
+
+	.chip-group-item:hover {
+		background-color: @Highlight/0.5;
+	}
+
+	.chip-group-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.chip-group-item:--selected {
+		background-color: @Highlight;
+	}
+
+
+.content {
+	display: flex;
+	align-items: center;
+	min-height: 16px;
+}
+
+.check {
+	display: none;
+	height: 16px;
+	width: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 2px;
+}
+
+.chip-group-item:--selected .check {
+	display: inline-block;
+}
+
+.caption {
+	display: inline-block;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 2px 8px;
+	margin-right: 2px;
+	margin-bottom: 2px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 4px 12px;
+	margin-right: 4px;
+	margin-bottom: 4px;
+	border-radius: 24px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px 16px;
+	margin-right: 6px;
+	margin-bottom: 6px;
+	border-radius: 32px;
+}

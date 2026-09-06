@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <Nullable>disable</Nullable>
+    <Deterministic>true</Deterministic>
+    <RootNamespace>PowerSupply.Core</RootNamespace>
+    <AssemblyName>PowerSupply.Core</AssemblyName>
+    <PlatformTarget Condition="'$(Configuration)' == 'Release'">x86</PlatformTarget>
+  </PropertyGroup>
+</Project>

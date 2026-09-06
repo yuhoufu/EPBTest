@@ -1,6 +1,7 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <Import Project="..\Build\UnattendedVersion.props" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
@@ -32,11 +33,29 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <LangVersion>9</LangVersion>
+    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
+    <Reference Include="System.Buffers, Version=4.0.2.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Buffers.4.4.0\lib\netstandard2.0\System.Buffers.dll</HintPath>
+    </Reference>
     <Reference Include="System.Core" />
+    <Reference Include="System.Configuration" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="System.Memory, Version=4.0.1.1, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Memory.4.5.3\lib\netstandard2.0\System.Memory.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Numerics" />
+    <Reference Include="System.Numerics.Vectors, Version=4.1.3.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Numerics.Vectors.4.4.0\lib\net46\System.Numerics.Vectors.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe, Version=4.0.4.1, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Runtime.CompilerServices.Unsafe.4.5.2\lib\netstandard2.0\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+    </Reference>
     <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Data" />
@@ -44,10 +63,84 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Adaptive\AdaptiveDecisionTrace.cs" />
+    <Compile Include="Adaptive\EpbAdaptiveControl.cs" />
+    <Compile Include="Adaptive\FormalCycleFaultPolicy.cs" />
+    <Compile Include="Adaptive\FastPathTripClassifier.cs" />
+    <Compile Include="Adaptive\EpbProgramSafetySettings.cs" />
+    <Compile Include="Alarm\AlarmManager.cs" />
+    <Compile Include="Alarm\AlarmSnapshotFileEvidence.cs" />
+    <Compile Include="Alarm\ChannelAlarmStopLatch.cs" />
+    <Compile Include="Alarm\AlarmMessageLocalizer.cs" />
+    <Compile Include="Alarm\WarningSnapshotModels.cs" />
+    <Compile Include="EpbCycleRunner.Adaptive.cs" />
+    <Compile Include="EpbCycleRunner.DoTrace.cs" />
+    <Compile Include="EpbCycleRunner.StartupPositioning.cs" />
+    <Compile Include="Alarm\M7055dSerialClient.cs" />
+    <Compile Include="EpbCycleRunner.Advance.Sync.cs" />
     <Compile Include="EpbCycleRunner.cs" />
+    <Compile Include="FormalBatchSlotCoordinator.cs" />
+    <Compile Include="FaultIsolatedPhaseWork.cs" />
+    <Compile Include="DoControlTrace.cs" />
+    <Compile Include="DaqIncidentLatch.cs" />
+    <Compile Include="IncidentSessionPolicy.cs" />
+    <Compile Include="IncidentSessionManifest.cs" />
+    <Compile Include="IncidentSessionRetention.cs" />
+    <Compile Include="DaqPersistenceCoordinator.cs" />
+    <Compile Include="DaqRecoveryTerminalGate.cs" />
+    <Compile Include="ReleasePackageVerifier.cs" />
+    <Compile Include="RuntimeBuildIdentity.cs" />
+    <Compile Include="RecoveryCoordination.cs" />
+    <Compile Include="RecoveryIncidentCoordinator.cs" />
+    <Compile Include="DaqRecoveryTransaction.cs" />
+    <Compile Include="DaqRecoveryTerminalSupervisor.cs" />
+    <Compile Include="RecoveryAggregateStore.cs" />
+    <Compile Include="RecoveryHeartbeatAggregateSource.cs" />
+    <Compile Include="WatchdogHeartbeatSourceCapture.cs" />
+    <Compile Include="SoftwareSelfHealingLoop.cs" />
+    <Compile Include="ChannelRuntimeStore.cs" />
+    <Compile Include="ChannelRuntimeState.cs" />
+    <Compile Include="ChannelExecutionFence.cs" />
+    <Compile Include="CycleAttemptContext.cs" />
+    <Compile Include="NonCriticalObserver.cs" />
+    <Compile Include="TaskSupervisor.cs" />
+    <Compile Include="RecoveryTaskRegistry.cs" />
+    <Compile Include="BatchStartLifecycleGate.cs" />
+    <Compile Include="ElectricalStaggerPlan.cs" />
+    <Compile Include="GlobalHydraulicSlotCoordinator.cs" />
+    <Compile Include="EmergencyPowerGroupLatch.cs" />
+    <Compile Include="EpbManager.BatchStart.cs" />
+    <Compile Include="EpbManager.CycleAttempts.cs" />
+    <Compile Include="EpbManager.PauseResume.cs" />
+    <Compile Include="EpbManager.PeriodOverrun.cs" />
+    <Compile Include="EpbManager.DaqRecoveryState.cs" />
+    <Compile Include="EpbManager.RecoveryCoordination.cs" />
+    <Compile Include="EpbManager.WarningSnapshots.cs" />
+    <Compile Include="EpbManager.StartupPositioning.cs" />
+    <Compile Include="EpbManager.AdaptiveTrace.cs" />
+    <Compile Include="EpbManager.FieldMetrics.cs" />
+    <Compile Include="EpbManager.TimerRuntimeHealth.cs" />
+    <Compile Include="EpbManager.ExecutionProgress.cs" />
+    <Compile Include="EpbManager.DaqLiveness.cs" />
+    <Compile Include="EpbManager.StopSafetyHardening.cs" />
+    <Compile Include="StopSafetyTransactionRunner.cs" />
+    <Compile Include="EpbManager.StopSafetyOperations.cs" />
+    <Compile Include="StopSafetyWatchdogHeartbeatMapper.cs" />
     <Compile Include="EpbManager.cs" />
+    <Compile Include="DaqRecoveryRejoinGate.cs" />
+    <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />
     <Compile Include="HydraulicGroupCoordinator.cs" />
+    <!-- Explicit include is required because this is a legacy non-SDK project. -->
+    <Compile Include="LatestPairMailbox.cs" />
+    <Compile Include="UiCurveContinuityPolicy.cs" />
+    <Compile Include="UiLogDisplayPolicy.cs" />
+    <Compile Include="PowerSupplyCoordinator.cs" />
+    <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
+    <Compile Include="DataHousekeepingService.cs" />
+    <Compile Include="PressureCalibrationCoordinator.cs" />
+    <Compile Include="StopContext.cs" />
+    <Compile Include="StartupPositioning.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -55,14 +148,27 @@
       <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
       <Name>Config</Name>
     </ProjectReference>
+    <ProjectReference Include="..\PowerSupply.Core\PowerSupply.Core.csproj">
+      <Name>PowerSupply.Core</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\DataOperation\DataOperation.csproj">
+      <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>
+      <Name>DataOperation</Name>
+    </ProjectReference>
     <ProjectReference Include="..\IO.NI\IO.NI.csproj">
-      <Project>{1857B54C-EF87-4239-B3B0-1B1ADF082A2D}</Project>
+      <Project>{1FDE7D08-9014-474C-90C4-A13814D94327}</Project>
       <Name>IO.NI</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Name>Watchdog.Protocol</Name>
     </ProjectReference>
     <ProjectReference Include="..\Timing\Timing.csproj">
       <Project>{3D810EE2-A0EF-4D1F-84CD-2DDCF63FB434}</Project>
       <Name>Timing</Name>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

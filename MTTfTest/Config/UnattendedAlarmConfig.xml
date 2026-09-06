@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Enabled=false 是正常 LocalOnly 模式：仅写本地耐久告警和 Windows Event Log，不创建远程积压或网络线程。 -->
+<UnattendedAlarm Enabled="false"
+                 FailurePolicy="DegradeAndContinue"
+                 Endpoint=""
+                 SecretEnvironmentVariable="EPB_UNATTENDED_WEBHOOK_SECRET"
+                 RequestTimeoutMs="5000"
+                 RetrySeconds="1,5,15,30,60,300"
+                 SpoolMaxBytes="16777216" />

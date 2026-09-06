@@ -1,13 +1,15 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <Import Project="..\Build\UnattendedVersion.props" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{B921A6BD-A621-4FD4-9A47-840865FC82C9}</ProjectGuid>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <RootNamespace>MTEmbTest</RootNamespace>
     <AssemblyName>MTTFTest</AssemblyName>
+    <ApplicationIcon>..\image\epb-icon-candidates\epb-icon-08.ico</ApplicationIcon>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
@@ -24,10 +26,17 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>1.0.0.%2a</ApplicationVersion>
+    <ApplicationVersion>$(UnattendedProductVersion)</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
+    <NuGetPackageImportStamp>
+    </NuGetPackageImportStamp>
+    <GitCommit Condition=" '$(GitCommit)' == '' ">unknown</GitCommit>
+    <GitBranch Condition=" '$(GitBranch)' == '' ">unknown</GitBranch>
+    <GitDirty Condition=" '$(GitDirty)' == '' ">unknown</GitDirty>
+    <BuildUtc Condition=" '$(BuildUtc)' == '' ">unknown</BuildUtc>
+    <ReleaseConfigSha256 Condition=" '$(ReleaseConfigSha256)' == '' ">unknown</ReleaseConfigSha256>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>x86</PlatformTarget>
@@ -40,9 +49,11 @@
     <WarningLevel>4</WarningLevel>
     <Prefer32Bit>false</Prefer32Bit>
     <LangVersion>9</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PlatformTarget>x86</PlatformTarget>
+    <Prefer32Bit>true</Prefer32Bit>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
@@ -54,10 +65,10 @@
   <PropertyGroup>
     <StartupObject />
   </PropertyGroup>
+  <PropertyGroup>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
   <ItemGroup>
-    <Reference Include="AsyncTcpClient">
-      <HintPath>..\image\AsyncTcpClient.dll</HintPath>
-    </Reference>
     <Reference Include="DevExpress.Data.Desktop.v24.2, Version=24.2.5.0, Culture=neutral, PublicKeyToken=b88d1754d700e49a" />
     <Reference Include="DevExpress.Data.v24.2, Version=24.2.5.0, Culture=neutral, PublicKeyToken=b88d1754d700e49a" />
     <Reference Include="DevExpress.Drawing.v24.2, Version=24.2.5.0, Culture=neutral, PublicKeyToken=b88d1754d700e49a" />
@@ -84,6 +95,9 @@
     <Reference Include="System.Configuration" />
     <Reference Include="System.Core" />
     <Reference Include="System.Data.Linq" />
+    <Reference Include="System.Data.SQLite, Version=1.0.119.0, Culture=neutral, PublicKeyToken=db937bc2d44ff139, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\lib\net46\System.Data.SQLite.dll</HintPath>
+    </Reference>
     <Reference Include="System.Design" />
     <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Xml.Linq" />
@@ -113,10 +127,15 @@
     <Compile Include="AxisRangeDialog.Designer.cs">
       <DependentUpon>AxisRangeDialog.cs</DependentUpon>
     </Compile>
-    <Compile Include="ClsEMBControler.cs" />
+    <Compile Include="ClsEPBControler.cs" />
     <Compile Include="ClsGlobe.cs" />
     <Compile Include="ConfigOperation.cs" />
+    <Compile Include="FirstRunBootstrap.cs" />
+    <Compile Include="LaunchCapabilityGate.cs" />
     <Compile Include="FormLoggerAdapter.cs" />
+    <Compile Include="FrmAlarmPanelTest.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FrmDAQCalibrate.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -126,14 +145,33 @@
     <Compile Include="FrmEpbMainMonitor.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="FrmEpbMainMonitor.Designer.cs">
+    <Compile Include="FrmEpbMainMonitor.BatchGuard.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
-    </Compile>
-    <Compile Include="FrmRawPlayBack.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="FrmRawPlayBack.Designer.cs">
-      <DependentUpon>FrmRawPlayBack.cs</DependentUpon>
+    <Compile Include="FrmEpbMainMonitor.CloseOverlay.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmEpbMainMonitor.PauseResume.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmEpbMainMonitor.UnattendedRecovery.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmEpbMainMonitor.WatchdogUi.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmEpbMainMonitor.CycleAccounting.cs" />
+    <Compile Include="FrmEpbMainMonitor.PowerSupply.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmEpbMainMonitor.Designer.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
     </Compile>
     <Compile Include="FrmPlayBack.cs">
       <SubType>Form</SubType>
@@ -141,7 +179,17 @@
     <Compile Include="FrmPlayBack.Designer.cs">
       <DependentUpon>FrmPlayBack.cs</DependentUpon>
     </Compile>
+    <Compile Include="FrmRawPlayBack.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmRawPlayBack.Designer.cs">
+      <DependentUpon>FrmRawPlayBack.cs</DependentUpon>
+    </Compile>
     <Compile Include="FrmTestSetting.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmTestSetting.PressureCalibration.cs">
+      <DependentUpon>FrmTestSetting.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="FrmTestSetting.Designer.cs">
@@ -150,11 +198,40 @@
     <Compile Include="Main_Frm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Main_Frm.UnattendedRecovery.cs">
+      <DependentUpon>Main_Frm.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Main_Frm.WatchdogUi.cs">
+      <DependentUpon>Main_Frm.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="MainWatchdogUiLifecycleAdapter.cs" />
     <Compile Include="Main_Frm.Designer.cs">
       <DependentUpon>Main_Frm.cs</DependentUpon>
     </Compile>
+    <Compile Include="PressureCalibrationHardware.cs" />
+    <Compile Include="Models\EpbRow.cs" />
+    <Compile Include="Models\PressureSetting.cs" />
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="UnattendedRecovery.cs" />
+    <Compile Include="WatchdogRuntime.cs" />
+    <Compile Include="WatchdogRuntime.CallbackPipeline.cs" />
+    <Compile Include="WatchdogRuntime.CallbackPipeline.Testing.cs" />
+    <Compile Include="ShutdownRetention.cs" />
+    <Compile Include="WatchdogRuntime.ShutdownRetentionCoordinator.cs" />
+    <Compile Include="WatchdogRuntime.ShutdownRetention.Testing.cs" />
+    <Compile Include="WinFormsWatchdogPostTarget.cs" />
+    <Compile Include="WinFormsWatchdogUiBindingCore.cs" />
+    <Compile Include="WinFormsWatchdogUiBindingTransaction.cs" />
+    <Compile Include="WinFormsWatchdogUiCloseCoordinator.cs" />
+    <Compile Include="WinFormsWatchdogUiEntryPolicy.cs" />
+    <Compile Include="WinFormsWatchdogUiEntryCoordinator.cs" />
+    <Compile Include="WinFormsWatchdogUiProductionSession.cs" />
+    <Compile Include="WinFormsWatchdogUiResourceOwner.cs" />
+    <Compile Include="EpbMonitorShutdownOwnership.cs" />
+    <Compile Include="WinFormsWatchdogStopHandlerCore.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="AxisRangeDialog.resx">
       <DependentUpon>AxisRangeDialog.cs</DependentUpon>
@@ -165,11 +242,11 @@
     <EmbeddedResource Include="FrmEpbMainMonitor.resx">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
     </EmbeddedResource>
-    <EmbeddedResource Include="FrmRawPlayBack.resx">
-      <DependentUpon>FrmRawPlayBack.cs</DependentUpon>
-    </EmbeddedResource>
     <EmbeddedResource Include="FrmPlayBack.resx">
       <DependentUpon>FrmPlayBack.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="FrmRawPlayBack.resx">
+      <DependentUpon>FrmRawPlayBack.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="FrmTestSetting.resx">
       <DependentUpon>FrmTestSetting.cs</DependentUpon>
@@ -188,6 +265,7 @@
       <DependentUpon>Resources.resx</DependentUpon>
       <DesignTime>True</DesignTime>
     </Compile>
+    <None Include="app.manifest" />
     <None Include="packages.config" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
@@ -197,9 +275,6 @@
       <AutoGen>True</AutoGen>
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
-    </Compile>
-    <Compile Include="Editors\ToggleButton.cs">
-      <SubType>Component</SubType>
     </Compile>
     <Compile Include="Assets\Toolbox\Root.cs" />
     <EmbeddedResource Include="Assets\Toolbox\ToggleButton.bmp" />
@@ -213,8 +288,41 @@
     <Compile Include="Components\Base\CheckItemBase.cs" />
     <EmbeddedResource Include="Assets\HTML\ToggleButton.html" />
     <EmbeddedResource Include="Assets\CSS\ToggleButton.css" />
+    <!-- Legacy non-SDK projects do not glob source files. Keep the local control implementation
+         explicit so the main executable does not accidentally compile against ZlgCanComm's copy. -->
+    <Compile Include="Editors\ToggleButton.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="UIHelpers\LedAutoSizer.cs" />
     <Compile Include="Utilities\HtmlCssAsset.cs" />
+    <Compile Include="Editors\ChipButton.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <EmbeddedResource Include="Assets\Toolbox\ChipButton.bmp" />
+    <EmbeddedResource Include="Assets\HTML\ChipButton.html" />
+    <EmbeddedResource Include="Assets\CSS\ChipButton.css" />
+    <Compile Include="Images\UIElements.cs" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Check.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Close.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Copy.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\DropDown.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Hide.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Info.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Search.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Show.svg" />
+    <Compile Include="Editors\ChipGroup.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <EmbeddedResource Include="Assets\Toolbox\ChipGroup.bmp" />
+    <Compile Include="Editors\Base\DesignerActions.cs" />
+    <Compile Include="Editors\Base\ChipGroupBase.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Editors\Base\ItemBase.cs" />
+    <Compile Include="Editors\Chip.cs" />
+    <Compile Include="Components\Base\ItemsSelector.cs" />
+    <EmbeddedResource Include="Assets\HTML\ChipGroup.html" />
+    <EmbeddedResource Include="Assets\CSS\ChipGroup.css" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
@@ -223,17 +331,28 @@
     <Content Include="Config\AIConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Config\AlarmConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Config\PowerSupplyConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Config\AOConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Config\DOConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Config\TestConfig - 复制%282%29.xml" />
+    <Content Include="Config\TestConfig - 复制%283%29.xml" />
     <Content Include="Config\TestConfig - 复制.xml" />
     <Content Include="Config\TestConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Config\UIConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Config\UnattendedAlarmConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="License-LGPL.txt" />
@@ -249,23 +368,58 @@
       <Project>{3788aca5-1b32-414c-8678-637d8cad9b18}</Project>
       <Name>Controller</Name>
     </ProjectReference>
+    <ProjectReference Include="..\PowerSupply.Core\PowerSupply.Core.csproj">
+      <Name>PowerSupply.Core</Name>
+    </ProjectReference>
     <ProjectReference Include="..\DataOperation\DataOperation.csproj">
       <Project>{fce7fd92-9529-40df-83ab-92b6b4dc469c}</Project>
       <Name>DataOperation</Name>
     </ProjectReference>
     <ProjectReference Include="..\IO.NI\IO.NI.csproj">
-      <Project>{1857b54c-ef87-4239-b3b0-1b1adf082a2d}</Project>
+      <Project>{1fde7d08-9014-474c-90c4-a13814d94327}</Project>
       <Name>IO.NI</Name>
     </ProjectReference>
     <ProjectReference Include="..\Timing\Timing.csproj">
       <Project>{3d810ee2-a0ef-4d1f-84cd-2ddcf63fb434}</Project>
       <Name>Timing</Name>
     </ProjectReference>
-    <ProjectReference Include="..\ZlgCanComm\ZlgCanComm.csproj">
-      <Project>{95cfcfba-a5a3-49b4-8143-ad2ab7e7e03f}</Project>
-      <Name>ZlgCanComm</Name>
+    <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>
+      <Name>Watchdog.Protocol</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Watchdog.Client\Watchdog.Client.csproj">
+      <Project>{4E6B3F5E-7C42-4A1C-9E02-7D9A3D4C8E61}</Project>
+      <Name>Watchdog.Client</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\MTTFTest.Watchdog\MTTFTest.Watchdog.csproj">
+      <Project>{DA67689F-B6CB-4F88-A728-8C405E321AEA}</Project>
+      <Name>MTTFTest.Watchdog</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\MTTFTest.SafetyAgent\MTTFTest.SafetyAgent.csproj">
+      <Project>{2F691519-C5A2-4A90-A05A-9B4E739D7E43}</Project>
+      <Name>MTTFTest.SafetyAgent</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj">
+      <Project>{8F458242-0B7C-42CA-9BAC-5B232024FA14}</Project>
+      <Name>MTTFTest.SessionAgent</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
     </ProjectReference>
   </ItemGroup>
+  <Target Name="CopyWatchdogSidecar" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb')" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyAgent.pdb')" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SafetyAgent\bin\$(Configuration)\MTTFTest.SafetyHardware.pdb')" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SessionAgent\bin\$(Configuration)\MTTFTest.SessionAgent.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.SessionAgent\bin\$(Configuration)\MTTFTest.SessionAgent.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.SessionAgent\bin\$(Configuration)\MTTFTest.SessionAgent.pdb')" />
+  </Target>
   <ItemGroup>
     <BootstrapperPackage Include=".NETFramework,Version=v4.8">
       <Visible>False</Visible>
@@ -280,4 +434,27 @@
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets" Condition="Exists('..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets')" />
+  <Target Name="GenerateAuditableBuildMetadata" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <BuildMetadataSource>$(IntermediateOutputPath)BuildMetadata.g.cs</BuildMetadataSource>
+      <BuildMetadataLines>using System.Reflection%3B%0A[assembly: AssemblyMetadata(&quot;GitCommit&quot;, &quot;$(GitCommit)&quot;)]%0A[assembly: AssemblyMetadata(&quot;GitBranch&quot;, &quot;$(GitBranch)&quot;)]%0A[assembly: AssemblyMetadata(&quot;GitDirty&quot;, &quot;$(GitDirty)&quot;)]%0A[assembly: AssemblyMetadata(&quot;BuildUtc&quot;, &quot;$(BuildUtc)&quot;)]%0A[assembly: AssemblyMetadata(&quot;ConfigSha256&quot;, &quot;$(ReleaseConfigSha256)&quot;)]</BuildMetadataLines>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(BuildMetadataSource)" Lines="$(BuildMetadataLines)" Overwrite="true" Encoding="UTF-8" />
+    <ItemGroup>
+      <Compile Include="$(BuildMetadataSource)" />
+    </ItemGroup>
+  </Target>
+  <!-- 防止无重定向建议时沿用历史 obj 配置，导致 Release 发布遗漏最新安全参数。 -->
+  <Target Name="RemoveStaleGeneratedAppConfig"
+          BeforeTargets="GenerateBindingRedirectsUpdateAppConfig"
+          Condition="'@(SuggestedBindingRedirects)' == '' and Exists('$(_GenerateBindingRedirectsIntermediateAppConfig)')">
+    <Delete Files="$(_GenerateBindingRedirectsIntermediateAppConfig)" />
+  </Target>
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>这台计算机上缺少此项目引用的 NuGet 程序包。使用“NuGet 程序包还原”可下载这些程序包。有关更多信息，请参见 http://go.microsoft.com/fwlink/?LinkID=322105。缺少的文件是 {0}。</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets'))" />
+  </Target>
 </Project>

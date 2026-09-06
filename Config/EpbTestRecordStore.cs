@@ -16,10 +16,9 @@ namespace Config
         private static readonly object _fileLock = new object();
 
         /// <summary>
-        /// 默认配置文件路径：{AppBase}\Config\TestConfig.xml
+        /// 默认配置文件路径：正式安装使用 ProgramData；开发运行使用 {AppBase}\Config。
         /// </summary>
-        public static string DefaultConfigPath =>
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? Environment.CurrentDirectory, "Config", "TestConfig.xml");
+        public static string DefaultConfigPath => RuntimeConfigPaths.GetPath("TestConfig.xml");
 
         /// <summary>
         /// 读取指定路径（或默认路径）下的 &lt;EpbRecords&gt; 节点，返回解析出的记录列表。
@@ -59,11 +58,24 @@ namespace Config
                         var rec = new EpbTestRecord
                         {
                             Id = id,
+                            Enabled = bool.TryParse(n.SelectSingleNode("./Enabled")?.InnerText, out var enabled) && enabled,
                             StartTime = ParseDt(n.SelectSingleNode("./StartTime")?.InnerText),
                             LatestStartTime = ParseDt(n.SelectSingleNode("./LatestStartTime")?.InnerText),
                             RunTime = n.SelectSingleNode("./RunTime")?.InnerText ?? EpbTestRecord.CreateDefault(id).RunTime,
                             TotalCount = int.TryParse(n.SelectSingleNode("./TotalCount")?.InnerText, out var tc) ? tc : 0,
                             RunCount = int.TryParse(n.SelectSingleNode("./RunCount")?.InnerText, out var rc) ? rc : 0,
+                            MechanicalCycleCount = long.TryParse(n.SelectSingleNode("./MechanicalCycleCount")?.InnerText, out var mc) ? mc : 0,
+                            PermanentAlarmLatched = bool.TryParse(n.SelectSingleNode("./PermanentAlarmLatched")?.InnerText, out var latched) && latched,
+                            PermanentAlarmCode = n.SelectSingleNode("./PermanentAlarmCode")?.InnerText ?? string.Empty,
+                            PermanentAlarmReason = n.SelectSingleNode("./PermanentAlarmReason")?.InnerText ?? string.Empty,
+                            PermanentAlarmUtc = ParseDt(n.SelectSingleNode("./PermanentAlarmUtc")?.InnerText),
+                            PermanentAlarmCorrelationId = Guid.TryParse(n.SelectSingleNode("./PermanentAlarmCorrelationId")?.InnerText, out var correlationId) ? correlationId : Guid.Empty,
+                            OperatorFullRelearningRequired = bool.TryParse(n.SelectSingleNode("./OperatorFullRelearningRequired")?.InnerText, out var relearningRequired) && relearningRequired,
+                            OperatorFullRelearningReason = n.SelectSingleNode("./OperatorFullRelearningReason")?.InnerText ?? string.Empty,
+                            OperatorFullRelearningUtc = ParseDt(n.SelectSingleNode("./OperatorFullRelearningUtc")?.InnerText),
+                            OperatorFullRelearningCorrelationId = Guid.TryParse(n.SelectSingleNode("./OperatorFullRelearningCorrelationId")?.InnerText, out var relearningCorrelationId) ? relearningCorrelationId : Guid.Empty,
+                            ConsecutivePeriodOverrunCount = int.TryParse(n.SelectSingleNode("./ConsecutivePeriodOverrunCount")?.InnerText, out var streak) ? Math.Max(0, streak) : 0,
+                            LastPeriodOverrunUtc = ParseDt(n.SelectSingleNode("./LastPeriodOverrunUtc")?.InnerText),
                             Status = Enum.TryParse<EpbTestStatus>(n.SelectSingleNode("./Status")?.InnerText, out var st) ? st : EpbTestStatus.NotStarted
                         };
                         list.Add(rec);
@@ -128,12 +140,25 @@ namespace Config
                     }
 
                     addChild("Id", r.Id.ToString(CultureInfo.InvariantCulture));
+                    addChild("Enabled", r.Enabled ? "True" : "False");
                     addChild("StartTime", r.StartTime.HasValue ? r.StartTime.Value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "");
                     addChild("LatestStartTime", r.LatestStartTime.HasValue ? r.LatestStartTime.Value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "");
                     addChild("RunTime", r.RunTime ?? "");
                     addChild("TotalCount", r.TotalCount.ToString(CultureInfo.InvariantCulture));
                     addChild("RunCount", r.RunCount.ToString(CultureInfo.InvariantCulture));
+                    addChild("MechanicalCycleCount", r.MechanicalCycleCount.ToString(CultureInfo.InvariantCulture));
                     addChild("Status", r.Status.ToString());
+                    addChild("PermanentAlarmLatched", r.PermanentAlarmLatched ? "True" : "False");
+                    addChild("PermanentAlarmCode", r.PermanentAlarmCode ?? string.Empty);
+                    addChild("PermanentAlarmReason", r.PermanentAlarmReason ?? string.Empty);
+                    addChild("PermanentAlarmUtc", r.PermanentAlarmUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+                    addChild("PermanentAlarmCorrelationId", r.PermanentAlarmCorrelationId == Guid.Empty ? string.Empty : r.PermanentAlarmCorrelationId.ToString("N"));
+                    addChild("OperatorFullRelearningRequired", r.OperatorFullRelearningRequired ? "True" : "False");
+                    addChild("OperatorFullRelearningReason", r.OperatorFullRelearningReason ?? string.Empty);
+                    addChild("OperatorFullRelearningUtc", r.OperatorFullRelearningUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+                    addChild("OperatorFullRelearningCorrelationId", r.OperatorFullRelearningCorrelationId == Guid.Empty ? string.Empty : r.OperatorFullRelearningCorrelationId.ToString("N"));
+                    addChild("ConsecutivePeriodOverrunCount", Math.Max(0, r.ConsecutivePeriodOverrunCount).ToString(CultureInfo.InvariantCulture));
+                    addChild("LastPeriodOverrunUtc", r.LastPeriodOverrunUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
 
                     recordsNode.AppendChild(rec);
                 }

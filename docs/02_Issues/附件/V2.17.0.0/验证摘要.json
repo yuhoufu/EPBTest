@@ -1,0 +1,40 @@
+﻿{
+  "sourceCommit": "7170e902d77c8fdbf5cfeaebe6aa98b86235fc26",
+  "package": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641",
+  "bundle": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\deploy\\V2.17.0.0_正式版_7170e902d77c_QUICKDEPLOY_R28",
+  "archive": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\deploy\\V2.17.0.0_正式版_7170e902d77c_QUICKDEPLOY_R28.7z",
+  "archiveBytes": 34177440,
+  "archiveSha256": "75e025ee3cf2a2e9c7168ad35e65db18e4a96dd093625f8414adfca89194dd48",
+  "packageIdentitySha256": "2ecfbaa84aafb11cfe6867285c6f09d578bef212e521256664d4f816e0cfae87",
+  "appConfigSha256": "fda9a93bf4c363d78d3b3286a02a9513beee8b9087fa4163dc7b739f0594c73e",
+  "deliveryHarnessSha256": "e7813e8853d9e5ff297b4b5e28485586a2bdfb1dfe37ad916de98dd9137a8e48",
+  "fieldValidation": "PENDING_USER_HARDWARE_AND_168H",
+  "installedE2E": "NOT_RUN_EXISTING_PRODUCTION_SERVICE",
+  "archiveReconciliation": "4/4 READ_ONLY_HASH_UNCHANGED",
+  "logs": {
+    "build-v217-debug.log": {
+      "sha256": "6ce5ebac24c32c93117688fb8bd9ae07ded7c226692d3e1fd084c1d4fa2afba7",
+      "path": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\build-v217-debug.log"
+    },
+    "v216-debug-final.log": {
+      "sha256": "975db91c6b4e2cc1f1f280aa2d91937f93e9a60ceb14c9b4925268f464aa7a25",
+      "path": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\v216-debug-final.log"
+    },
+    "v217-targeted-final.log": {
+      "sha256": "ae66e2e055facf84ab140ac9cc3bc7176b71263d60f75cf8f773c14e03b0c72b",
+      "path": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\v217-targeted-final.log"
+    },
+    "release-v217-build.log": {
+      "sha256": "8e23d2b01bea675fcfb24426782035ce9590b4e1080e775a93702cadc31a44ef",
+      "path": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\release-v217-build.log"
+    },
+    "bundle-v217-build.log": {
+      "sha256": "87bdd93834bedd86f56cdcc29a3fe35cbc94aa69f930413ebe78e331b5ff564f",
+      "path": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\bundle-v217-build.log"
+    },
+    "delivery-v217-smoke.log": {
+      "sha256": "5d8024726a5b423010a5979838914b11094c3b6a2ca464582053cd0ecf150b17",
+      "path": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\delivery-v217-smoke.log"
+    }
+  }
+}

@@ -1,0 +1,1061 @@
+{
+  "analysis_scope": {
+    "run_start_local": "2026-08-04 20:57:10.863",
+    "fault_time_local": "2026-08-04 21:36:16.203",
+    "source_dataset": "D:\\EPB_Data\\10358-029_2157_backup"
+  },
+  "sampling": {
+    "sample_rate_hz": 2000,
+    "batch_size_samples": 20,
+    "expected_batch_interval_ms": 10.0,
+    "queue_capacity_batches": 64,
+    "queue_time_coverage_lower_bound_ms": 640.0
+  },
+  "processing_lag": {
+    "by_device": {
+      "Dev1": {
+        "queue_depth_batches": {
+          "count": 41,
+          "median": 11.0,
+          "p95": 13.0,
+          "max": 34.0
+        },
+        "oldest_batch_age_ms": {
+          "count": 41,
+          "median": 111.4,
+          "p95": 132.3,
+          "max": 352.2
+        }
+      },
+      "Dev2": {
+        "queue_depth_batches": {
+          "count": 62,
+          "median": 11.0,
+          "p95": 14.0,
+          "max": 34.0
+        },
+        "oldest_batch_age_ms": {
+          "count": 62,
+          "median": 113.25,
+          "p95": 143.04,
+          "max": 353.4
+        }
+      }
+    },
+    "paired_within_50ms": {
+      "count": 40,
+      "dev1_fraction": 0.9756,
+      "pairs": [
+        {
+          "dev1_timestamp": "2026-08-04 21:00:20.392",
+          "dev2_timestamp": "2026-08-04 21:00:20.403",
+          "delta_ms": 11.0,
+          "dev1_age_ms": 110.2,
+          "dev2_age_ms": 105.7
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:00:38.386",
+          "dev2_timestamp": "2026-08-04 21:00:38.384",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 104.8,
+          "dev2_age_ms": 120.4
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:01:54.713",
+          "dev2_timestamp": "2026-08-04 21:01:54.715",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 131.8,
+          "dev2_age_ms": 117.9
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:02:34.133",
+          "dev2_timestamp": "2026-08-04 21:02:34.134",
+          "delta_ms": 1.0,
+          "dev1_age_ms": 100.3,
+          "dev2_age_ms": 117.2
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:02:51.808",
+          "dev2_timestamp": "2026-08-04 21:02:51.810",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 109.6,
+          "dev2_age_ms": 110.4
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:03:49.483",
+          "dev2_timestamp": "2026-08-04 21:03:49.486",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 102.1,
+          "dev2_age_ms": 103.6
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:04:07.511",
+          "dev2_timestamp": "2026-08-04 21:04:07.509",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 112.0,
+          "dev2_age_ms": 111.0
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:04:25.414",
+          "dev2_timestamp": "2026-08-04 21:04:25.416",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 124.5,
+          "dev2_age_ms": 125.0
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:04:47.646",
+          "dev2_timestamp": "2026-08-04 21:04:47.648",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 102.3,
+          "dev2_age_ms": 104.2
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:06:03.689",
+          "dev2_timestamp": "2026-08-04 21:06:03.691",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 111.6,
+          "dev2_age_ms": 113.1
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:06:39.673",
+          "dev2_timestamp": "2026-08-04 21:06:39.671",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 124.1,
+          "dev2_age_ms": 123.2
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:07:19.640",
+          "dev2_timestamp": "2026-08-04 21:07:19.643",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 100.2,
+          "dev2_age_ms": 103.1
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:07:37.645",
+          "dev2_timestamp": "2026-08-04 21:07:37.648",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 128.7,
+          "dev2_age_ms": 130.0
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:07:55.320",
+          "dev2_timestamp": "2026-08-04 21:07:55.314",
+          "delta_ms": 6.0,
+          "dev1_age_ms": 124.3,
+          "dev2_age_ms": 118.5
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:08:35.468",
+          "dev2_timestamp": "2026-08-04 21:08:35.466",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 100.2,
+          "dev2_age_ms": 116.0
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:08:53.646",
+          "dev2_timestamp": "2026-08-04 21:08:53.648",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 108.0,
+          "dev2_age_ms": 125.7
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:09:51.735",
+          "dev2_timestamp": "2026-08-04 21:09:51.738",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 352.2,
+          "dev2_age_ms": 353.4
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:10:09.464",
+          "dev2_timestamp": "2026-08-04 21:10:09.466",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 120.7,
+          "dev2_age_ms": 122.3
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:10:49.807",
+          "dev2_timestamp": "2026-08-04 21:10:49.805",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 101.1,
+          "dev2_age_ms": 100.9
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:12:06.392",
+          "dev2_timestamp": "2026-08-04 21:12:06.390",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 102.6,
+          "dev2_age_ms": 102.5
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:12:23.645",
+          "dev2_timestamp": "2026-08-04 21:12:23.647",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 132.3,
+          "dev2_age_ms": 118.7
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:13:38.930",
+          "dev2_timestamp": "2026-08-04 21:13:38.933",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 110.6,
+          "dev2_age_ms": 111.9
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:14:17.946",
+          "dev2_timestamp": "2026-08-04 21:14:17.944",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 102.1,
+          "dev2_age_ms": 101.9
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:14:53.401",
+          "dev2_timestamp": "2026-08-04 21:14:53.403",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 121.2,
+          "dev2_age_ms": 122.7
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:15:50.986",
+          "dev2_timestamp": "2026-08-04 21:15:50.988",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 118.3,
+          "dev2_age_ms": 104.3
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:17:07.138",
+          "dev2_timestamp": "2026-08-04 21:17:07.141",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 118.9,
+          "dev2_age_ms": 120.4
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:17:25.010",
+          "dev2_timestamp": "2026-08-04 21:17:25.013",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 115.8,
+          "dev2_age_ms": 117.4
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:18:05.279",
+          "dev2_timestamp": "2026-08-04 21:18:05.283",
+          "delta_ms": 4.0,
+          "dev1_age_ms": 115.2,
+          "dev2_age_ms": 101.5
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:18:23.350",
+          "dev2_timestamp": "2026-08-04 21:18:23.352",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 110.2,
+          "dev2_age_ms": 111.6
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:19:03.758",
+          "dev2_timestamp": "2026-08-04 21:19:03.756",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 100.9,
+          "dev2_age_ms": 115.9
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:20:38.035",
+          "dev2_timestamp": "2026-08-04 21:20:38.037",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 120.2,
+          "dev2_age_ms": 120.2
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:20:55.988",
+          "dev2_timestamp": "2026-08-04 21:20:55.986",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 124.9,
+          "dev2_age_ms": 140.0
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:22:09.042",
+          "dev2_timestamp": "2026-08-04 21:22:09.040",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 118.1,
+          "dev2_age_ms": 132.7
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:23:07.476",
+          "dev2_timestamp": "2026-08-04 21:23:07.473",
+          "delta_ms": 3.0,
+          "dev1_age_ms": 109.1,
+          "dev2_age_ms": 124.6
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:23:25.371",
+          "dev2_timestamp": "2026-08-04 21:23:25.373",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 118.4,
+          "dev2_age_ms": 120.3
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:24:05.582",
+          "dev2_timestamp": "2026-08-04 21:24:05.584",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 109.9,
+          "dev2_age_ms": 111.3
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:25:21.423",
+          "dev2_timestamp": "2026-08-04 21:25:21.421",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 103.5,
+          "dev2_age_ms": 119.2
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:25:39.197",
+          "dev2_timestamp": "2026-08-04 21:25:39.199",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 110.5,
+          "dev2_age_ms": 122.9
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:26:35.000",
+          "dev2_timestamp": "2026-08-04 21:26:34.998",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 138.3,
+          "dev2_age_ms": 137.7
+        },
+        {
+          "dev1_timestamp": "2026-08-04 21:34:47.618",
+          "dev2_timestamp": "2026-08-04 21:34:47.616",
+          "delta_ms": 2.0,
+          "dev1_age_ms": 111.4,
+          "dev2_age_ms": 111.2
+        }
+      ]
+    },
+    "events": [
+      {
+        "timestamp": "2026-08-04 20:58:06.932",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 109.3
+      },
+      {
+        "timestamp": "2026-08-04 20:58:16.468",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 103.5
+      },
+      {
+        "timestamp": "2026-08-04 20:58:18.179",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 104.4
+      },
+      {
+        "timestamp": "2026-08-04 20:58:38.894",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 103.1
+      },
+      {
+        "timestamp": "2026-08-04 20:59:02.069",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 112.4
+      },
+      {
+        "timestamp": "2026-08-04 20:59:12.382",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 108.0
+      },
+      {
+        "timestamp": "2026-08-04 20:59:24.411",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 117.8
+      },
+      {
+        "timestamp": "2026-08-04 20:59:35.596",
+        "device": "Dev2",
+        "queue_depth_batches": 17,
+        "oldest_batch_age_ms": 181.8
+      },
+      {
+        "timestamp": "2026-08-04 20:59:36.050",
+        "device": "Dev1",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 108.5
+      },
+      {
+        "timestamp": "2026-08-04 21:00:20.392",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 110.2
+      },
+      {
+        "timestamp": "2026-08-04 21:00:20.403",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 105.7
+      },
+      {
+        "timestamp": "2026-08-04 21:00:38.384",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 120.4
+      },
+      {
+        "timestamp": "2026-08-04 21:00:38.386",
+        "device": "Dev1",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 104.8
+      },
+      {
+        "timestamp": "2026-08-04 21:01:54.713",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 131.8
+      },
+      {
+        "timestamp": "2026-08-04 21:01:54.715",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 117.9
+      },
+      {
+        "timestamp": "2026-08-04 21:02:34.133",
+        "device": "Dev1",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 100.3
+      },
+      {
+        "timestamp": "2026-08-04 21:02:34.134",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 117.2
+      },
+      {
+        "timestamp": "2026-08-04 21:02:51.808",
+        "device": "Dev1",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 109.6
+      },
+      {
+        "timestamp": "2026-08-04 21:02:51.810",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 110.4
+      },
+      {
+        "timestamp": "2026-08-04 21:03:09.533",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 101.8
+      },
+      {
+        "timestamp": "2026-08-04 21:03:49.483",
+        "device": "Dev1",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 102.1
+      },
+      {
+        "timestamp": "2026-08-04 21:03:49.486",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 103.6
+      },
+      {
+        "timestamp": "2026-08-04 21:04:07.509",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 111.0
+      },
+      {
+        "timestamp": "2026-08-04 21:04:07.511",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 112.0
+      },
+      {
+        "timestamp": "2026-08-04 21:04:25.414",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 124.5
+      },
+      {
+        "timestamp": "2026-08-04 21:04:25.416",
+        "device": "Dev2",
+        "queue_depth_batches": 13,
+        "oldest_batch_age_ms": 125.0
+      },
+      {
+        "timestamp": "2026-08-04 21:04:47.646",
+        "device": "Dev1",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 102.3
+      },
+      {
+        "timestamp": "2026-08-04 21:04:47.648",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 104.2
+      },
+      {
+        "timestamp": "2026-08-04 21:06:03.689",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 111.6
+      },
+      {
+        "timestamp": "2026-08-04 21:06:03.691",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 113.1
+      },
+      {
+        "timestamp": "2026-08-04 21:06:39.671",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 123.2
+      },
+      {
+        "timestamp": "2026-08-04 21:06:39.673",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 124.1
+      },
+      {
+        "timestamp": "2026-08-04 21:07:19.640",
+        "device": "Dev1",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 100.2
+      },
+      {
+        "timestamp": "2026-08-04 21:07:19.643",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 103.1
+      },
+      {
+        "timestamp": "2026-08-04 21:07:37.645",
+        "device": "Dev1",
+        "queue_depth_batches": 13,
+        "oldest_batch_age_ms": 128.7
+      },
+      {
+        "timestamp": "2026-08-04 21:07:37.648",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 130.0
+      },
+      {
+        "timestamp": "2026-08-04 21:07:55.314",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 118.5
+      },
+      {
+        "timestamp": "2026-08-04 21:07:55.320",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 124.3
+      },
+      {
+        "timestamp": "2026-08-04 21:08:35.466",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 116.0
+      },
+      {
+        "timestamp": "2026-08-04 21:08:35.468",
+        "device": "Dev1",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 100.2
+      },
+      {
+        "timestamp": "2026-08-04 21:08:53.646",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 108.0
+      },
+      {
+        "timestamp": "2026-08-04 21:08:53.648",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 125.7
+      },
+      {
+        "timestamp": "2026-08-04 21:09:51.735",
+        "device": "Dev1",
+        "queue_depth_batches": 34,
+        "oldest_batch_age_ms": 352.2
+      },
+      {
+        "timestamp": "2026-08-04 21:09:51.738",
+        "device": "Dev2",
+        "queue_depth_batches": 34,
+        "oldest_batch_age_ms": 353.4
+      },
+      {
+        "timestamp": "2026-08-04 21:10:09.464",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 120.7
+      },
+      {
+        "timestamp": "2026-08-04 21:10:09.466",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 122.3
+      },
+      {
+        "timestamp": "2026-08-04 21:10:49.805",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 100.9
+      },
+      {
+        "timestamp": "2026-08-04 21:10:49.807",
+        "device": "Dev1",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 101.1
+      },
+      {
+        "timestamp": "2026-08-04 21:11:48.381",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 104.4
+      },
+      {
+        "timestamp": "2026-08-04 21:12:06.390",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 102.5
+      },
+      {
+        "timestamp": "2026-08-04 21:12:06.392",
+        "device": "Dev1",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 102.6
+      },
+      {
+        "timestamp": "2026-08-04 21:12:23.645",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 132.3
+      },
+      {
+        "timestamp": "2026-08-04 21:12:23.647",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 118.7
+      },
+      {
+        "timestamp": "2026-08-04 21:13:03.430",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 113.4
+      },
+      {
+        "timestamp": "2026-08-04 21:13:21.185",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 108.3
+      },
+      {
+        "timestamp": "2026-08-04 21:13:38.930",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 110.6
+      },
+      {
+        "timestamp": "2026-08-04 21:13:38.933",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 111.9
+      },
+      {
+        "timestamp": "2026-08-04 21:14:17.944",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 101.9
+      },
+      {
+        "timestamp": "2026-08-04 21:14:17.946",
+        "device": "Dev1",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 102.1
+      },
+      {
+        "timestamp": "2026-08-04 21:14:53.401",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 121.2
+      },
+      {
+        "timestamp": "2026-08-04 21:14:53.403",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 122.7
+      },
+      {
+        "timestamp": "2026-08-04 21:15:33.235",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 101.2
+      },
+      {
+        "timestamp": "2026-08-04 21:15:50.986",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 118.3
+      },
+      {
+        "timestamp": "2026-08-04 21:15:50.988",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 104.3
+      },
+      {
+        "timestamp": "2026-08-04 21:16:49.113",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 108.7
+      },
+      {
+        "timestamp": "2026-08-04 21:17:07.138",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 118.9
+      },
+      {
+        "timestamp": "2026-08-04 21:17:07.141",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 120.4
+      },
+      {
+        "timestamp": "2026-08-04 21:17:25.010",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 115.8
+      },
+      {
+        "timestamp": "2026-08-04 21:17:25.013",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 117.4
+      },
+      {
+        "timestamp": "2026-08-04 21:18:05.279",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 115.2
+      },
+      {
+        "timestamp": "2026-08-04 21:18:05.283",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 101.5
+      },
+      {
+        "timestamp": "2026-08-04 21:18:23.350",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 110.2
+      },
+      {
+        "timestamp": "2026-08-04 21:18:23.352",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 111.6
+      },
+      {
+        "timestamp": "2026-08-04 21:19:03.756",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 115.9
+      },
+      {
+        "timestamp": "2026-08-04 21:19:03.758",
+        "device": "Dev1",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 100.9
+      },
+      {
+        "timestamp": "2026-08-04 21:19:39.710",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 101.2
+      },
+      {
+        "timestamp": "2026-08-04 21:20:38.035",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 120.2
+      },
+      {
+        "timestamp": "2026-08-04 21:20:38.037",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 120.2
+      },
+      {
+        "timestamp": "2026-08-04 21:20:55.986",
+        "device": "Dev2",
+        "queue_depth_batches": 14,
+        "oldest_batch_age_ms": 140.0
+      },
+      {
+        "timestamp": "2026-08-04 21:20:55.988",
+        "device": "Dev1",
+        "queue_depth_batches": 13,
+        "oldest_batch_age_ms": 124.9
+      },
+      {
+        "timestamp": "2026-08-04 21:21:23.673",
+        "device": "Dev2",
+        "queue_depth_batches": 14,
+        "oldest_batch_age_ms": 143.2
+      },
+      {
+        "timestamp": "2026-08-04 21:21:51.150",
+        "device": "Dev2",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 108.7
+      },
+      {
+        "timestamp": "2026-08-04 21:22:09.040",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 132.7
+      },
+      {
+        "timestamp": "2026-08-04 21:22:09.042",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 118.1
+      },
+      {
+        "timestamp": "2026-08-04 21:23:07.473",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 124.6
+      },
+      {
+        "timestamp": "2026-08-04 21:23:07.476",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 109.1
+      },
+      {
+        "timestamp": "2026-08-04 21:23:25.371",
+        "device": "Dev1",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 118.4
+      },
+      {
+        "timestamp": "2026-08-04 21:23:25.373",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 120.3
+      },
+      {
+        "timestamp": "2026-08-04 21:24:05.582",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 109.9
+      },
+      {
+        "timestamp": "2026-08-04 21:24:05.584",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 111.3
+      },
+      {
+        "timestamp": "2026-08-04 21:25:21.421",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 119.2
+      },
+      {
+        "timestamp": "2026-08-04 21:25:21.423",
+        "device": "Dev1",
+        "queue_depth_batches": 10,
+        "oldest_batch_age_ms": 103.5
+      },
+      {
+        "timestamp": "2026-08-04 21:25:39.197",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 110.5
+      },
+      {
+        "timestamp": "2026-08-04 21:25:39.199",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 122.9
+      },
+      {
+        "timestamp": "2026-08-04 21:26:34.998",
+        "device": "Dev2",
+        "queue_depth_batches": 13,
+        "oldest_batch_age_ms": 137.7
+      },
+      {
+        "timestamp": "2026-08-04 21:26:35.000",
+        "device": "Dev1",
+        "queue_depth_batches": 14,
+        "oldest_batch_age_ms": 138.3
+      },
+      {
+        "timestamp": "2026-08-04 21:26:53.658",
+        "device": "Dev2",
+        "queue_depth_batches": 9,
+        "oldest_batch_age_ms": 100.9
+      },
+      {
+        "timestamp": "2026-08-04 21:33:22.840",
+        "device": "Dev2",
+        "queue_depth_batches": 15,
+        "oldest_batch_age_ms": 152.4
+      },
+      {
+        "timestamp": "2026-08-04 21:34:26.236",
+        "device": "Dev2",
+        "queue_depth_batches": 12,
+        "oldest_batch_age_ms": 129.5
+      },
+      {
+        "timestamp": "2026-08-04 21:34:47.616",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 111.2
+      },
+      {
+        "timestamp": "2026-08-04 21:34:47.618",
+        "device": "Dev1",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 111.4
+      },
+      {
+        "timestamp": "2026-08-04 21:37:17.512",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 109.7
+      },
+      {
+        "timestamp": "2026-08-04 21:38:08.493",
+        "device": "Dev2",
+        "queue_depth_batches": 11,
+        "oldest_batch_age_ms": 116.7
+      }
+    ]
+  },
+  "last_dev1_cycles": {
+    "EPB4_cycle_748": {
+      "file": "EPB4_Cycle_000748.csv",
+      "rows": 18840,
+      "first_timestamp": "2026-08-04 21:36:00.928842",
+      "last_timestamp": "2026-08-04 21:36:10.348342",
+      "duration_s": 9.4195,
+      "sample_indices_contiguous": true,
+      "timestamps_strictly_increasing": true,
+      "interval_ms": {
+        "count": 18839,
+        "median": 0.5,
+        "p95": 0.5,
+        "max": 0.5
+      },
+      "max_abs_current_a": 14.877,
+      "max_pressure_bar": 70.2
+    },
+    "EPB5_cycle_671": {
+      "file": "EPB5_Cycle_000671.csv",
+      "rows": 18280,
+      "first_timestamp": "2026-08-04 21:36:01.718842",
+      "last_timestamp": "2026-08-04 21:36:10.858342",
+      "duration_s": 9.1395,
+      "sample_indices_contiguous": true,
+      "timestamps_strictly_increasing": true,
+      "interval_ms": {
+        "count": 18279,
+        "median": 0.5,
+        "p95": 0.5,
+        "max": 0.5
+      },
+      "max_abs_current_a": 15.121,
+      "max_pressure_bar": 69.6
+    }
+  },
+  "cycle_index": {
+    "latest_positive_cycle": {
+      "4": {
+        "epb_id": 4,
+        "cycle_number": 748,
+        "start_time": "2026-08-04T21:36:00.8332077+08:00",
+        "end_time": "2026-08-04T21:36:10.2560474+08:00",
+        "sample_count": 18840,
+        "status": "completed"
+      },
+      "5": {
+        "epb_id": 5,
+        "cycle_number": 671,
+        "start_time": "2026-08-04T21:36:01.6232231+08:00",
+        "end_time": "2026-08-04T21:36:10.7572704+08:00",
+        "sample_count": 18280,
+        "status": "completed"
+      },
+      "8": {
+        "epb_id": 8,
+        "cycle_number": 875,
+        "start_time": "2026-08-04T21:38:45.9107464+08:00",
+        "end_time": "2026-08-04T21:38:55.2036233+08:00",
+        "sample_count": 18560,
+        "status": "completed"
+      },
+      "9": {
+        "epb_id": 9,
+        "cycle_number": 878,
+        "start_time": "2026-08-04T21:38:46.7039186+08:00",
+        "end_time": "2026-08-04T21:38:56.1544769+08:00",
+        "sample_count": 18880,
+        "status": "completed"
+      },
+      "10": {
+        "epb_id": 10,
+        "cycle_number": 878,
+        "start_time": "2026-08-04T21:38:45.9107464+08:00",
+        "end_time": "2026-08-04T21:38:56.1020238+08:00",
+        "sample_count": 20360,
+        "status": "completed"
+      },
+      "11": {
+        "epb_id": 11,
+        "cycle_number": 878,
+        "start_time": "2026-08-04T21:38:46.7039186+08:00",
+        "end_time": "2026-08-04T21:38:55.4676811+08:00",
+        "sample_count": 17520,
+        "status": "completed"
+      }
+    },
+    "completed_cycles_started_after_fault": {
+      "4": 0,
+      "5": 0,
+      "8": 10,
+      "9": 11,
+      "10": 10,
+      "11": 11
+    }
+  },
+  "derived": {
+    "queue_full_requires_continued_producer_callbacks": true,
+    "queue_backlog_time_lower_bound_ms": 640.0,
+    "dev1_channels_started_after_fault": 0,
+    "dev2_channels_continued_after_fault": [
+      8,
+      9,
+      10,
+      11
+    ],
+    "alarm_snapshot_created_for_fault": false,
+    "epb5_latest_export_error": "Cycle 667 already existed during export"
+  }
+}

@@ -194,7 +194,7 @@ namespace DataOperation
                         byte currentByte = data[byteIndex];
                         int bitValue = (currentByte >> bitIndexInByte) & 0x01;
 
-                        result = (result << 1) | (ulong)bitValue;
+                        result = (result << 1) | (uint)bitValue;
                         currentBit++;
                     }
                 }
@@ -211,7 +211,7 @@ namespace DataOperation
                     byte currentByte = data[byteIndex];
                     int bitValue = (currentByte >> bitIndexInByte) & 0x01;
 
-                    result = (result << 1) | (ulong)bitValue;
+                    result = (result << 1) | (uint)bitValue;
                 }
             }
 

@@ -1,0 +1,295 @@
+{
+  "generated_utc": "2026-07-31T02:53:53.675401+00:00",
+  "read_only_sources": {
+    "data_root": "\\\\wj-epb\\EPB_Data\\10364-009_V2.4.0.0_1",
+    "program_root": "\\\\wj-epb\\debug\\2.4.0.0"
+  },
+  "logs": {
+    "files": {
+      "error.log": {
+        "line_count": 50,
+        "bytes": 23186
+      },
+      "run.log": {
+        "line_count": 774,
+        "bytes": 125498
+      },
+      "ui-info.log": {
+        "line_count": 38,
+        "bytes": 4194
+      },
+      "warning.log": {
+        "line_count": 8,
+        "bytes": 804
+      }
+    },
+    "fault_code_line_counts": {
+      "DaqSampleStale": 20,
+      "ForwardCurrentRiseStalled": 21,
+      "ForwardLoadRiseNotStarted": 14,
+      "OffCurrentNotCleared": 36,
+      "OpenCircuitOrOutputFault": 6
+    },
+    "unique_hard_fault_events": [
+      {
+        "timestamp": "2026-07-31 10:02:48.020",
+        "channel": 8,
+        "code": "ForwardLoadRiseNotStarted",
+        "values": {
+          "elapsed": 3006.0,
+          "deadline": 3000.0,
+          "I": 1.813
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:02:48.027",
+        "channel": 10,
+        "code": "ForwardLoadRiseNotStarted",
+        "values": {
+          "elapsed": 3007.0,
+          "deadline": 3000.0,
+          "I": 1.368
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:02:48.528",
+        "channel": 11,
+        "code": "OpenCircuitOrOutputFault",
+        "values": {
+          "I": 0.027
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:02:48.826",
+        "channel": 9,
+        "code": "ForwardLoadRiseNotStarted",
+        "values": {
+          "elapsed": 3013.0,
+          "deadline": 3000.0,
+          "I": 0.121
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:03:17.082",
+        "channel": 8,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 1.958,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:03:17.217",
+        "channel": 9,
+        "code": "ForwardCurrentRiseStalled",
+        "values": {}
+      },
+      {
+        "timestamp": "2026-07-31 10:03:17.808",
+        "channel": 10,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 2.02,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:03:18.201",
+        "channel": 11,
+        "code": "OpenCircuitOrOutputFault",
+        "values": {
+          "I": 0.027
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:03:46.945",
+        "channel": 8,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 3.189,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:03:47.046",
+        "channel": 9,
+        "code": "ForwardCurrentRiseStalled",
+        "values": {}
+      },
+      {
+        "timestamp": "2026-07-31 10:03:47.211",
+        "channel": 10,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 1.989,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:03:47.295",
+        "channel": 11,
+        "code": "ForwardCurrentRiseStalled",
+        "values": {}
+      },
+      {
+        "timestamp": "2026-07-31 10:04:01.909",
+        "channel": 8,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 1.878,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:04:01.994",
+        "channel": 9,
+        "code": "ForwardCurrentRiseStalled",
+        "values": {}
+      },
+      {
+        "timestamp": "2026-07-31 10:04:02.277",
+        "channel": 10,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 2.016,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:04:02.363",
+        "channel": 11,
+        "code": "ForwardCurrentRiseStalled",
+        "values": {}
+      },
+      {
+        "timestamp": "2026-07-31 10:04:31.889",
+        "channel": 8,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 1.901,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:04:31.989",
+        "channel": 9,
+        "code": "ForwardCurrentRiseStalled",
+        "values": {}
+      },
+      {
+        "timestamp": "2026-07-31 10:04:32.252",
+        "channel": 10,
+        "code": "OffCurrentNotCleared",
+        "values": {
+          "Current": 2.01,
+          "Threshold": 0.1
+        }
+      },
+      {
+        "timestamp": "2026-07-31 10:04:32.332",
+        "channel": 11,
+        "code": "ForwardCurrentRiseStalled",
+        "values": {}
+      }
+    ],
+    "unique_hard_fault_event_count": 20,
+    "batch_failure_timestamps_clustered_2s": [
+      "2026-07-31 10:02:48.833",
+      "2026-07-31 10:03:22.819",
+      "2026-07-31 10:03:52.224",
+      "2026-07-31 10:04:07.295",
+      "2026-07-31 10:04:37.261"
+    ]
+  },
+  "telemetry": {
+    "file_count": 6,
+    "nonempty_file_count": 5,
+    "files": [
+      {
+        "name": "20260731_100029_14300aab109a4c79bfe985b4d28491d4.csv",
+        "bytes": 218,
+        "row_count": 0,
+        "max_iout_a": null,
+        "true_flag_counts": {},
+        "nonempty_error_count": 0
+      },
+      {
+        "name": "20260731_100239_bc3267977eb0454d885883ece21b500f.csv",
+        "bytes": 20315,
+        "row_count": 142,
+        "max_iout_a": 4.939,
+        "true_flag_counts": {},
+        "nonempty_error_count": 0
+      },
+      {
+        "name": "20260731_100302_d1404d1ea40d47348b4f7d798c6b5b4b.csv",
+        "bytes": 38560,
+        "row_count": 273,
+        "max_iout_a": 16.012,
+        "true_flag_counts": {},
+        "nonempty_error_count": 0
+      },
+      {
+        "name": "20260731_100328_7879d135e88b46098ba5bdcd826f015a.csv",
+        "bytes": 47851,
+        "row_count": 341,
+        "max_iout_a": 23.66,
+        "true_flag_counts": {},
+        "nonempty_error_count": 0
+      },
+      {
+        "name": "20260731_100355_1ab3af76a75c41ebb601bfc32c8f816d.csv",
+        "bytes": 15353,
+        "row_count": 106,
+        "max_iout_a": 23.663,
+        "true_flag_counts": {},
+        "nonempty_error_count": 0
+      },
+      {
+        "name": "20260731_100422_2fe7c6deaf674a809dda7978ba30d6a5.csv",
+        "bytes": 24413,
+        "row_count": 171,
+        "max_iout_a": 23.636,
+        "true_flag_counts": {},
+        "nonempty_error_count": 0
+      }
+    ],
+    "total_rows": 1033,
+    "max_iout_a": 23.663,
+    "max_pout_w": 283.885011,
+    "true_flag_counts": {
+      "CC": 0,
+      "VoltageLimited": 0,
+      "CurrentLimited": 0,
+      "PowerLimited": 0,
+      "ProtectionTripped": 0
+    },
+    "nonempty_error_count": 0
+  },
+  "sqlite": {
+    "path": "\\\\wj-epb\\EPB_Data\\10364-009_V2.4.0.0_1\\index.db",
+    "integrity_check": "ok",
+    "tables": [
+      "epb_cycles",
+      "sqlite_sequence"
+    ],
+    "epb_cycles_total": 0,
+    "status_counts": {},
+    "running_count": 0
+  },
+  "artifacts": {
+    "source_file_suffix_counts": {
+      ".bak": 1,
+      ".csv": 6,
+      ".db": 1,
+      ".db-shm": 1,
+      ".db-wal": 1,
+      ".log": 4,
+      ".xml": 2
+    },
+    "learning_csv_count": 0,
+    "alarm_snapshot_csv_count": 0,
+    "legacy_program_dat_count": 12,
+    "legacy_program_dat_latest_mtime": 1785157909.573699
+  }
+}

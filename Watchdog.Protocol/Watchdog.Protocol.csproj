@@ -1,0 +1,64 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <Import Project="..\Build\UnattendedVersion.props" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>MTTFTest.Watchdog.Protocol</RootNamespace>
+    <AssemblyName>MTTFTest.Watchdog.Protocol</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>9</LangVersion>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols><DebugType>full</DebugType><Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath><PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType><Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath><PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.cs" />
+    <Reference Include="System" /><Reference Include="System.Core" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="WatchdogProtocol.cs" />
+    <Compile Include="StopSafetyHeartbeatProjection.cs" />
+    <Compile Include="WatchdogPolicy.cs" />
+    <Compile Include="ContinuousRecoveryPolicy.cs" />
+    <Compile Include="PipeExchangeDeadline.cs" />
+    <Compile Include="TakeoverTransactionCoordinator.cs" />
+    <Compile Include="SidecarIdentityStateMachine.cs" />
+    <Compile Include="SidecarProcessHandleOwner.cs" />
+    <Compile Include="SupervisorProtocol.cs" />
+    <Compile Include="SupervisorSessionRetirement.cs" />
+    <Compile Include="WatchdogMaintenancePolicy.cs" />
+    <Compile Include="SupervisorSafetyAuthority.cs" />
+    <Compile Include="SessionAgentProtocol.cs" />
+    <Compile Include="PackageSlotDescriptor.cs" />
+    <Compile Include="DurableRelaunchPermit.cs" />
+    <Compile Include="RecoveryFailureProtocol.cs" />
+    <Compile Include="DurableRelaunchCoordinator.cs" />
+    <Compile Include="WatchdogJournalV4Validator.cs" />
+    <Compile Include="WatchdogJournalBootstrap.cs" />
+    <Compile Include="WatchdogJournalStorage.cs" />
+    <Compile Include="WatchdogClosingTombstone.cs" />
+    <Compile Include="WatchdogSafetyReceipts.cs" />
+    <Compile Include="WatchdogSafetyConfigSnapshot.cs" />
+    <Compile Include="RecoveryBootstrapOutcome.cs" />
+    <Compile Include="RecoveryReplacementTransaction.cs" />
+    <Compile Include="DurableJsonFileStore.cs" />
+    <Compile Include="DurableRelaunchFileStore.cs" />
+    <Compile Include="DurableRelaunchAuthorityV4.cs" />
+    <Compile Include="DurableRelaunchAuthorityV4Validator.cs" />
+    <Compile Include="DurableRelaunchAuthorityFileStore.cs" />
+    <Compile Include="DurableRelaunchLaunchProtocol.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

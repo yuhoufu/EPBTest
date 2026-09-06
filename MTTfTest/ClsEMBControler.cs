@@ -9,7 +9,7 @@ using DevExpress.XtraEditors;
 
 namespace MtEmbTest
 {
-
+    
     [Serializable]
     public class ClsEMBControler
     {

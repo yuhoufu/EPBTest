@@ -12,13 +12,9 @@ namespace MtEmbTest
     //全局共享类
     public static class ClsGlobal
     {
-        public static int Voltage;
-        public static int MaxCurrent;
-        public static int MinCurrent;
-        public static int MaxPower;
-        public static int MinPower;
+        // 仅供未绑定事件的历史 UI 方法保持源码兼容；新控制链路不读写此状态。
+        public static int[] PowerStatus = new int[12];
 
-        public static int[] PowerStatus = new int[1] { 0 };
         public static int ClampCount = 0;
         public static int ReleaseCount = 0;
 
@@ -51,23 +47,6 @@ namespace MtEmbTest
         public static double ClampAoVol;
         public static double ReleaseAoVol;
 
-
-        public static short ClampPosition;
-        public static short ClampSpeed;
-        public static byte ClampModReq;
-        public static short ClampTorque;
-        public static byte ClampNormalMode;
-        public static short ClampForce;
-        public static byte ClampEnable;
-        public static ushort ClampForceReq;
-        public static short ReleasePosition;
-        public static short ReleaseSpeed;
-        public static byte ReleaseModeReq;
-        public static short ReleaseTorque;
-        public static byte ReleaseNormalMode;
-        public static short ReleaseForce;
-        public static byte ReleaseEnable;
-        public static ushort ReleaseForceReq;
 
         public static int DRate;
         public static int ARate;
@@ -105,7 +84,7 @@ namespace MtEmbTest
         public static string RR_Recv;
         public static double XDuration;
         public static double FileChangeMinutes;
-        public static double DaqFrequency;
+        public static double DaqFrequency; // 数采的采样率
         public static int SamplesPerChannel;
         public static double CanRecvTimeSpanMillSecs;
 
@@ -126,19 +105,8 @@ namespace MtEmbTest
         public static int SerialSendIntervalSpan;
         public static int DevResetWaitSpan;
 
-        public static string[] PowerServerAdr = new string[1] { "" };
-        public static string[] PowerServerPort = new string[1] { "" };
-
-
         static ClsGlobal()
         {
-            Voltage = 0;
-            MaxCurrent = 0;
-            MinCurrent = 0;
-            MaxPower = 0;
-            MinPower = 0;
-
-
             ClampCount = 0;
             ReleaseCount = 0;
             ClampSpan = 0;
@@ -171,23 +139,6 @@ namespace MtEmbTest
             DataBits = 0;
             StopBit = 0;
 
-
-            ClampPosition = 0;
-            ClampSpeed = 0;
-            ClampModReq = 0;
-            ClampTorque = 0;
-            ClampNormalMode = 0;
-            ClampForce = 0;
-            ClampEnable = 0;
-            ClampForceReq = 0;
-            ReleasePosition = 0;
-            ReleaseSpeed = 0;
-            ReleaseModeReq = 0;
-            ReleaseTorque = 0;
-            ReleaseNormalMode = 0;
-            ReleaseForce = 0;
-            ReleaseEnable = 0;
-            ReleaseForceReq = 0;
 
             DRate = 0;
             ARate = 0;

@@ -1,197 +1,246 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
+﻿using Controller;
+using Config;
+using DataOperation;
+using IO.NI;
+using MTEmbTest;
+using System;
+using System.Collections.Concurrent;
 using System.Drawing;
 using System.Linq;
-using System.Text;
-using System.Windows.Forms;
-using System.Diagnostics;
-using System.IO;
-using NationalInstruments.DAQmx;
-using MTEmbTest;
-using DataOperation;
-using MTEmbTest.Properties;
-using CustomTcpClient;
-using System.IO.Ports;
+using System.Reflection;
 using System.Threading.Tasks;
+using System.Windows.Forms;
+using MTTFTest.Watchdog.Protocol;
 
 namespace MtEmbTest
 {
     public partial class Main_Frm : Form
     {
-        #region  Serial变量
-        private TaskCompletionSource<byte[]> serialResponseTcs;
-        private static SerialPort serialPort;
-        private readonly object _serialPortLock = new object();
-        #endregion
 
-        public bool[] IsPowerConnect = { false};
-        private AsyncTcpClient[] powerClient = new AsyncTcpClient[1];
+        #region 软件配置相关
+
+        public FormLoggerAdapter Logger;
+        private ConcurrentQueue<string> LogInformation = new();
+        private ConcurrentQueue<string> LogError = new();
+        private ConcurrentQueue<string> LogWarn = new();
+        private ConcurrentQueue<byte[]> readyReadBuffer;
+        private const int MaxErrors = 2000;
+        private const int MaxInfos = 2000;
+        private const int MaxWarns = 2000;
+        public GlobalConfig Cfg;
+        private DaqRuntimeSettings _daqRuntimeSettings;
+
+        #endregion
+        
 
         public Main_Frm()
         {
             InitializeComponent();
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            Text = BuildWindowTitle();
             ConfigureMenuStrip();
 
             // 放在程序启动早期（如 Form_Load / Main 里）
-            _ = typeof(Controller.EpbManager).FullName;   // 用 Controller 内真实存在的公开类型名替换
+            _ = typeof(EpbManager).FullName; // 用 Controller 内真实存在的公开类型名替换
+            _ = typeof(TwoDeviceAiAcquirer).FullName; // 解决断电打不到TwoDeviceAiAcquirer中的问题
+
+            _watchdogUiAdapter = new MainWatchdogUiLifecycleAdapter(this);
+            Shown += ShowPreviousForcedExitNoticeOnce;
 
         }
 
-
-
-
-
-
-
-
-
-
-
-        /// <summary>
-        /// 水平平铺所有子窗口
-        /// </summary>
-        /// <param name="sender">界面菜单输入</param>
-        ///  <param name="e">输入事件</param>
-        /// <returns>void</returns>
-        private void TsmHorizon_Click(object sender, EventArgs e)
+        private void ShowPreviousForcedExitNoticeOnce(object sender, EventArgs e)
         {
-            LayoutMdi(MdiLayout.TileHorizontal);
-            TsmHorizon.Checked = true;
-            TsmLayout.Checked = false;
-            TsmVertical.Checked = false;
-        }
-        /// <summary>
-        /// 垂直平铺所有子窗口
-        /// </summary>
-        /// <param name="sender">界面菜单输入</param>
-        ///  <param name="e">输入事件</param>
-        /// <returns>void</returns>
-        private void TsmVertical_Click(object sender, EventArgs e)
-        {
-            LayoutMdi(MdiLayout.TileVertical);
-            TsmHorizon.Checked = false;
-            TsmLayout.Checked = false;
-            TsmVertical.Checked = true;
-        }
-        /// <summary>
-        /// 层叠所有子窗口
-        /// </summary>
-        /// <param name="sender">界面菜单输入</param>
-        ///  <param name="e">输入事件</param>
-        /// <returns>void</returns>
-        private void TsmLayout_Click(object sender, EventArgs e)
-        {
-            LayoutMdi(MdiLayout.Cascade);
-            TsmHorizon.Checked = false;
-            TsmLayout.Checked = true;
-            TsmVertical.Checked = false;
+            WatchdogApplicationExitReceipt previous;
+            if (!WatchdogApplicationExitReceiptStore.TryReadLatestForced(out previous))
+                return;
+            var unresolved = string.Join("、", new[]
+            {
+                previous.MotorsOff ? null : "电机断能",
+                previous.PowerOff ? null : "程控电源关闭",
+                previous.PressureSafe ? null : "压力安全",
+                previous.PersistenceDrained ? null : "数据落盘",
+                previous.LogicalQuiescent ? null : "逻辑静默"
+            }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            ShowMainOperatorMessage(
+                "检测到上次程序因关闭超过30秒被强制结束。" +
+                (string.IsNullOrWhiteSpace(unresolved)
+                    ? "关闭证据已完整记录。"
+                    : "未确认事项：" + unresolved + "。") +
+                "\r\n请先确认设备状态和上一批数据，再开始新试验。",
+                "上次关闭异常",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            try
+            {
+                previous.OperatorNoticeAcknowledgedUtcTicks = DateTime.UtcNow.Ticks;
+                previous.Revision++;
+                previous.Detail = (previous.Detail ?? string.Empty) +
+                                  ";OperatorNoticeAcknowledged";
+                WatchdogApplicationExitReceiptStore.WriteThrough(
+                    string.Empty,
+                    previous);
+            }
+            catch { }
         }
 
-       
-   
-    
-       
-  
-   
-     
+        private DialogResult ShowMainOperatorMessage(
+            string message,
+            string caption = "提示",
+            MessageBoxButtons buttons = MessageBoxButtons.OK,
+            MessageBoxIcon icon = MessageBoxIcon.None)
+        {
+            return ShowMainOperatorMessage(this, message, caption, buttons, icon);
+        }
+
+        private static DialogResult ShowMainOperatorMessage(
+            IWin32Window owner,
+            string message,
+            string caption,
+            MessageBoxButtons buttons,
+            MessageBoxIcon icon)
+        {
+            if (!UnattendedRecoveryCoordinator.IsRecoveryProcessMode)
+                return MessageBox.Show(owner, message, caption, buttons, icon);
+
+            ProjectLogHub.Write(
+                icon == MessageBoxIcon.Error
+                    ? ProjectLogLevel.Error
+                    : ProjectLogLevel.Warning,
+                $"FieldMetric RECOVERY_UI Result=SuppressModalDialog Caption={NormalizeRecoveryUiMetric(caption)} " +
+                $"Buttons={buttons} Message={NormalizeRecoveryUiMetric(message)}",
+                "无人值守恢复");
+
+            switch (buttons)
+            {
+                case MessageBoxButtons.OK:
+                    return DialogResult.OK;
+                case MessageBoxButtons.YesNo:
+                    return DialogResult.No;
+                default:
+                    return DialogResult.Cancel;
+            }
+        }
+
+        private static string NormalizeRecoveryUiMetric(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "-";
+
+            return value
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Replace('\t', ' ')
+                .Replace(' ', '_');
+        }
+
+        private static string BuildWindowTitle()
+        {
+            const string productName = "MT EPB常温疲劳测试";
+            var assembly = typeof(Main_Frm).Assembly;
+            var attributes = assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false);
+            var version = attributes.Length > 0
+                ? ((AssemblyInformationalVersionAttribute)attributes[0]).InformationalVersion
+                : assembly.GetName().Version?.ToString(3);
+
+            return string.IsNullOrWhiteSpace(version)
+                ? productName
+                : $"{productName} V{version}";
+        }
+
         private void Main_Frm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            if (this.MdiChildren.Length > 0)
+            if (HandleWatchdogMainFormClosing(e))
+                return;
+            // A terminal watchdog shutdown receipt authorizes the main form
+            // to close after its child-window coordinator has completed.  The
+            // legacy operator guard must not veto that already-authorized
+            // lifecycle; doing so leaves an empty MDI shell with no monitor.
+            if (WinFormsWatchdogUiCloseCoordinator.ShouldApplyLegacyMdiGuard(
+                    IsWatchdogMainCloseAuthorized,
+                    MdiChildren.Length))
             {
-                MessageBox.Show("可能存在正在运行的试验，请先停止试验，关闭子窗口，再退出程序！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowMainOperatorMessage("可能存在正在运行的试验，请先停止试验，关闭子窗口，再退出程序！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 e.Cancel = true;
             }
 
 
-           
-                if (ClsGlobal.PowerStatus[0] > 0)
-                {
-                    MessageBox.Show("请关闭电源" , "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    e.Cancel = true;
-                }
-            
-
-
-
         }
-
-
-
-
-
-
 
 
         private int GetTestNo()
         {
-            DateTime LastTime = DateTime.Parse(ConfigOperation.SetOneItem("TestDate").ToString());
-            int LastNo = int.Parse(ConfigOperation.SetOneItem("TestNo").ToString());
+            var LastTime = DateTime.Parse(ConfigOperation.SetOneItem("TestDate"));
+            var LastNo = int.Parse(ConfigOperation.SetOneItem("TestNo"));
 
-            if (DateTime.Now.DayOfYear > LastTime.DayOfYear)  //新的一天返回1
-            {
+            if (DateTime.Now.DayOfYear > LastTime.DayOfYear) //新的一天返回1
                 return 0;
-            }
-            else
-            {
-                return LastNo;
-            }
 
+            return LastNo;
         }
 
         private void Main_Frm_Load(object sender, EventArgs e)
         {
+            // 初始化日志系统
+            Logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
+                LogInformation, LogWarn, LogError, this);
+            var buildIdentity = RuntimeBuildIdentity.Capture();
+            var packageMarker = buildIdentity.ReleasePackageVerified
+                ? string.Empty
+                : $" [非受控包:{buildIdentity.ReleasePackageCode}]";
+            Text = $"{BuildWindowTitle()} [PID {buildIdentity.ProcessId}]{packageMarker}";
+            Logger.Info(buildIdentity.ToStartupLogLine(), "启动构建身份");
+            if (!buildIdentity.ReleasePackageVerified)
+                Logger.Warn(
+                    $"当前运行目录未通过发布包身份校验；窗口标题将持续标记为非受控包。" +
+                    $"Code={buildIdentity.ReleasePackageCode} " +
+                    $"Detail={buildIdentity.ReleasePackageDetail}",
+                    "启动构建身份");
+
+            // 加载配置文件
+            Cfg = ConfigLoader.LoadAll(RuntimeConfigPaths.Directory, Logger);
+            PublishCurrentProjectBuildIdentity(buildIdentity);
+            var projectRestore = ConfigLoader.LastProjectRestoreResult;
+            if (projectRestore != null && projectRestore.SelectionFound && !projectRestore.Restored)
+                ShowMainOperatorMessage(
+                    projectRestore.Message + "\r\n\r\n程序将继续使用默认项目；原项目选择记录不会被清除。",
+                    "上次项目暂不可用",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+
+
             try
             {
-
-                ClsGlobal.ClampCount = int.Parse(ConfigOperation.SetOneItem("ClampCount").ToString());
-                ClsGlobal.ReleaseCount = int.Parse(ConfigOperation.SetOneItem("ReleaseCount").ToString());
-                ClsGlobal.PushCount = int.Parse(ConfigOperation.SetOneItem("PushCount").ToString());
-                ClsGlobal.ClampSpan = int.Parse(ConfigOperation.SetOneItem("ClampSpan").ToString());
-                ClsGlobal.ReleaseSpan = int.Parse(ConfigOperation.SetOneItem("ReleaseSpan").ToString());
-                ClsGlobal.PushSpan = int.Parse(ConfigOperation.SetOneItem("PushSpan").ToString());
-                ClsGlobal.ReleaseWaitSpan = int.Parse(ConfigOperation.SetOneItem("ReleaseWaitSpan").ToString());
-                ClsGlobal.IsPushFirst = int.Parse(ConfigOperation.SetOneItem("IsPushFirst").ToString());
-                ClsGlobal.IsLiner = int.Parse(ConfigOperation.SetOneItem("IsLiner").ToString());
-
-
-                ClsGlobal.DRate = int.Parse(ConfigOperation.SetOneItem("DRate").ToString());
-                ClsGlobal.ARate = int.Parse(ConfigOperation.SetOneItem("ARate").ToString());
-                ClsGlobal.CardNo = int.Parse(ConfigOperation.SetOneItem("CardNo").ToString());
-           
-                ClsGlobal.MsgInterval = int.Parse(ConfigOperation.SetOneItem("MsgInterval").ToString());
-                ClsGlobal.ResistorEnabel = int.Parse(ConfigOperation.SetOneItem("ResistorEnabel").ToString());
-                ClsGlobal.Protocol = int.Parse(ConfigOperation.SetOneItem("Protocol").ToString());
-                ClsGlobal.FrameType = int.Parse(ConfigOperation.SetOneItem("FrameType").ToString());
-
-                ClsGlobal.FrameSendType = int.Parse(ConfigOperation.SetOneItem("FrameSendType").ToString());
-                ClsGlobal.FrameExpType = int.Parse(ConfigOperation.SetOneItem("FrameExpType").ToString());
-                ClsGlobal.FrameTimerNo = int.Parse(ConfigOperation.SetOneItem("FrameTimerNo").ToString());
+                ClsGlobal.ClampCount = int.Parse(ConfigOperation.SetOneItem("ClampCount"));
+                ClsGlobal.ReleaseCount = int.Parse(ConfigOperation.SetOneItem("ReleaseCount"));
+                ClsGlobal.PushCount = int.Parse(ConfigOperation.SetOneItem("PushCount"));
+                ClsGlobal.ClampSpan = int.Parse(ConfigOperation.SetOneItem("ClampSpan"));
+                ClsGlobal.ReleaseSpan = int.Parse(ConfigOperation.SetOneItem("ReleaseSpan"));
+                ClsGlobal.PushSpan = int.Parse(ConfigOperation.SetOneItem("PushSpan"));
+                ClsGlobal.ReleaseWaitSpan = int.Parse(ConfigOperation.SetOneItem("ReleaseWaitSpan"));
+                ClsGlobal.IsPushFirst = int.Parse(ConfigOperation.SetOneItem("IsPushFirst"));
+                ClsGlobal.IsLiner = int.Parse(ConfigOperation.SetOneItem("IsLiner"));
 
 
-                ClsGlobal.SendForceScale = short.Parse(ConfigOperation.SetOneItem("SendForceScale").ToString());
-                ClsGlobal.RecvForceScale = double.Parse(ConfigOperation.SetOneItem("RecvForceScale").ToString());
-                ClsGlobal.RecvForceJudgeDelt = double.Parse(ConfigOperation.SetOneItem("RecvForceJudgeDelt").ToString());
-                ClsGlobal.RecvMsgInterval = double.Parse(ConfigOperation.SetOneItem("RecvMsgInterval").ToString());
+                ClsGlobal.DRate = int.Parse(ConfigOperation.SetOneItem("DRate"));
+                ClsGlobal.ARate = int.Parse(ConfigOperation.SetOneItem("ARate"));
+                ClsGlobal.CardNo = int.Parse(ConfigOperation.SetOneItem("CardNo"));
+
+                ClsGlobal.MsgInterval = int.Parse(ConfigOperation.SetOneItem("MsgInterval"));
+                ClsGlobal.ResistorEnabel = int.Parse(ConfigOperation.SetOneItem("ResistorEnabel"));
+                ClsGlobal.Protocol = int.Parse(ConfigOperation.SetOneItem("Protocol"));
+                ClsGlobal.FrameType = int.Parse(ConfigOperation.SetOneItem("FrameType"));
+
+                ClsGlobal.FrameSendType = int.Parse(ConfigOperation.SetOneItem("FrameSendType"));
+                ClsGlobal.FrameExpType = int.Parse(ConfigOperation.SetOneItem("FrameExpType"));
+                ClsGlobal.FrameTimerNo = int.Parse(ConfigOperation.SetOneItem("FrameTimerNo"));
 
 
-                ClsGlobal.ClampPosition = short.Parse(ConfigOperation.SetOneItem("ClampPosition").ToString());
-                ClsGlobal.ClampSpeed = short.Parse(ConfigOperation.SetOneItem("ClampSpeed").ToString());
-                ClsGlobal.ClampModReq = byte.Parse(ConfigOperation.SetOneItem("ClampModReq").ToString());
-                ClsGlobal.ClampTorque = short.Parse(ConfigOperation.SetOneItem("ClampTorque").ToString());
-                ClsGlobal.ClampNormalMode = byte.Parse(ConfigOperation.SetOneItem("ClampNormalMode").ToString());
-                ClsGlobal.ClampForce = short.Parse(ConfigOperation.SetOneItem("ClampForce").ToString());
-                ClsGlobal.ClampEnable = byte.Parse(ConfigOperation.SetOneItem("ClampEnable").ToString());
-                ClsGlobal.ClampForceReq = ushort.Parse(ConfigOperation.SetOneItem("ClampForceReq").ToString());
-                ClsGlobal.ReleasePosition = short.Parse(ConfigOperation.SetOneItem("ReleasePosition").ToString());
-                ClsGlobal.ReleaseSpeed = short.Parse(ConfigOperation.SetOneItem("ReleaseSpeed").ToString());
-                ClsGlobal.ReleaseModeReq = byte.Parse(ConfigOperation.SetOneItem("ReleaseModeReq").ToString());
-                ClsGlobal.ReleaseTorque = short.Parse(ConfigOperation.SetOneItem("ReleaseTorque").ToString());
-                ClsGlobal.ReleaseNormalMode = byte.Parse(ConfigOperation.SetOneItem("ReleaseNormalMode").ToString());
-                ClsGlobal.ReleaseForce = short.Parse(ConfigOperation.SetOneItem("ReleaseForce").ToString());
-                ClsGlobal.ReleaseEnable = byte.Parse(ConfigOperation.SetOneItem("ReleaseEnable").ToString());
-                ClsGlobal.ReleaseForceReq = ushort.Parse(ConfigOperation.SetOneItem("ReleaseForceReq").ToString());
+                ClsGlobal.SendForceScale = short.Parse(ConfigOperation.SetOneItem("SendForceScale"));
+                ClsGlobal.RecvForceScale = double.Parse(ConfigOperation.SetOneItem("RecvForceScale"));
+                ClsGlobal.RecvForceJudgeDelt = double.Parse(ConfigOperation.SetOneItem("RecvForceJudgeDelt"));
+                ClsGlobal.RecvMsgInterval = double.Parse(ConfigOperation.SetOneItem("RecvMsgInterval"));
+
 
                 ClsGlobal.SerialPort = ConfigOperation.SetOneItem("SerialPort");
                 ClsGlobal.Baud = int.Parse(ConfigOperation.SetOneItem("Baud"));
@@ -213,10 +262,15 @@ namespace MtEmbTest
                 ClsGlobal.CanRecvTimeSpanMillSecs = double.Parse(ConfigOperation.SetOneItem("CanRecvTimeSpanMillSecs"));
                 ClsGlobal.XDuration = double.Parse(ConfigOperation.SetOneItem("XDuration"));
                 ClsGlobal.FileChangeMinutes = double.Parse(ConfigOperation.SetOneItem("FileChangeMinutes"));
-                ClsGlobal.DaqFrequency = double.Parse(ConfigOperation.SetOneItem("DaqFrequency"));
-                ClsGlobal.SamplesPerChannel = int.Parse(ConfigOperation.SetOneItem("SamplesPerChannel"));
+                _daqRuntimeSettings = DaqRuntimeSettings.Load(
+                    System.Configuration.ConfigurationManager.AppSettings);
+                WatchdogRuntime.ConfigureDaqRuntimeSettings(_daqRuntimeSettings);
+                // 仅为未迁移的显示/回放兼容代码保留镜像；所有硬件入口显式接收
+                // _daqRuntimeSettings，不再把该全局值作为配置源。
+                ClsGlobal.DaqFrequency = _daqRuntimeSettings.SampleRateHz;
+                ClsGlobal.SamplesPerChannel = _daqRuntimeSettings.SamplesPerChannel;
 
-                ClsGlobal.VppmWorkMode= ConfigOperation.SetOneItem("VppmWorkMode");
+                ClsGlobal.VppmWorkMode = ConfigOperation.SetOneItem("VppmWorkMode");
                 ClsGlobal.DoChannel = ConfigOperation.SetOneItem("DoChannel");
                 ClsGlobal.DIChannel = ConfigOperation.SetOneItem("DIChannel");
                 ClsGlobal.AOChannel = ConfigOperation.SetOneItem("AOChannel");
@@ -247,54 +301,39 @@ namespace MtEmbTest
                 ClsGlobal.ValveMode = int.Parse(ConfigOperation.SetOneItem("ValveMode"));
 
                 ClsGlobal.WaitValveGoBack = int.Parse(ConfigOperation.SetOneItem("WaitValveGoBack"));
-                ClsGlobal.WaitValveChangeFinishSpan =   int.Parse(ConfigOperation.SetOneItem("WaitValveChangeFinishSpan"));
-                ClsGlobal.WaitSpanBeforePush =   int.Parse(ConfigOperation.SetOneItem("WaitSpanBeforePush"));
+                ClsGlobal.WaitValveChangeFinishSpan =
+                    int.Parse(ConfigOperation.SetOneItem("WaitValveChangeFinishSpan"));
+                ClsGlobal.WaitSpanBeforePush = int.Parse(ConfigOperation.SetOneItem("WaitSpanBeforePush"));
                 ClsGlobal.SerialSendIntervalSpan = int.Parse(ConfigOperation.SetOneItem("SerialSendIntervalSpan"));
-                ClsGlobal.DevResetWaitSpan =   int.Parse(ConfigOperation.SetOneItem("DevResetWaitSpan"));
+                ClsGlobal.DevResetWaitSpan = int.Parse(ConfigOperation.SetOneItem("DevResetWaitSpan"));
 
                 ClsGlobal.DaqTimeBias = double.Parse(ConfigOperation.SetOneItem("DaqTimeBias"));
 
-                ClsGlobal.Voltage = int.Parse(ConfigOperation.SetOneItem("Voltage"));
-                ClsGlobal.MaxCurrent = int.Parse(ConfigOperation.SetOneItem("MaxCurrent"));
-                ClsGlobal.MinCurrent = int.Parse(ConfigOperation.SetOneItem("MinCurrent"));
-                ClsGlobal.MaxPower = int.Parse(ConfigOperation.SetOneItem("MaxPower"));
-                ClsGlobal.MinPower = int.Parse(ConfigOperation.SetOneItem("MinPower"));
+                // 无需CAN卡，禁用
+                /*
+                var DbcMsg = DbcParser.ParseDbcFile(Path.Combine(RuntimeConfigPaths.TemplateDirectory, "CAN_V4_3_0.dbc"),
+                    out ClsGlobal.Dbc);
 
-
-                ClsGlobal.PowerServerAdr[0] = ConfigOperation.SetOneItem("Power1ServerAdr");
-                ClsGlobal.PowerServerPort[0] = ConfigOperation.SetOneItem("Power1ServerPort");
-
-
-
-                string DbcMsg = DbcParser.ParseDbcFile(System.Environment.CurrentDirectory + @"\Config\CAN_V4_3_0.dbc",out ClsGlobal.Dbc);
-
-                if(DbcMsg.IndexOf("OK")<0)
-                {
-                    MessageBox.Show(DbcMsg);
-                }
-
-
-
+                if (DbcMsg.IndexOf("OK") < 0) ShowMainOperatorMessage(DbcMsg);*/
             }
 
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message);
+                ShowMainOperatorMessage(ex.Message, "主窗体配置加载失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-
         }
 
 
         public void OpenChildForm(Form FrmChild)
         {
-            bool IsOpen = false;
+            var IsOpen = false;
 
-            foreach (Form frm in this.MdiChildren)
+            foreach (var frm in MdiChildren)
             {
                 if (frm.Name == FrmChild.Name)
                 {
                     frm.Activate();
-                   
+
                     frm.TopMost = true;
                     frm.BringToFront();
                     frm.WindowState = FormWindowState.Maximized;
@@ -302,10 +341,8 @@ namespace MtEmbTest
                     IsOpen = true;
                     break;
                 }
-                else
-                {
-                    frm.TopMost = false;
-                }
+
+                frm.TopMost = false;
             }
 
             if (!IsOpen)
@@ -316,15 +353,13 @@ namespace MtEmbTest
                 FrmChild.TopMost = true;
                 FrmChild.BringToFront();
             }
-
-
         }
 
         public void OpenChildFormNormal(Form FrmChild)
         {
-            bool IsOpen = false;
+            var IsOpen = false;
 
-            foreach (Form frm in this.MdiChildren)
+            foreach (var frm in MdiChildren)
             {
                 if (frm.Name == FrmChild.Name)
                 {
@@ -336,10 +371,8 @@ namespace MtEmbTest
                     IsOpen = true;
                     break;
                 }
-                else
-                {
-                    frm.TopMost = false;
-                }
+
+                frm.TopMost = false;
             }
 
             if (!IsOpen)
@@ -350,77 +383,55 @@ namespace MtEmbTest
                 FrmChild.TopMost = true;
                 FrmChild.BringToFront();
             }
-
-
         }
 
 
         private void TsmSetting_Click(object sender, EventArgs e)
         {
-
-            foreach (Form childForm in this.MdiChildren)
-            {
+            foreach (var childForm in MdiChildren)
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("请关闭实时监视界面!");
+                    ShowMainOperatorMessage("请关闭实时监视界面!");
                     return;
                 }
-            }
 
 
-
-            FrmTestSetting Setting = new FrmTestSetting();
-            int ScrHeight = Screen.PrimaryScreen.Bounds.Height;
-            int ScrWidth = Screen.PrimaryScreen.Bounds.Width;
-            Setting.Height = ScrHeight * 7 / 10;
-            Setting.Width = ScrWidth * 7 / 10;
-
-            int x = (ScrWidth - Setting.Width) / 2;
-            int y = (ScrHeight - Setting.Height) / 2;
-            Setting.Location = new System.Drawing.Point(x, y);
+            var Setting = new FrmTestSetting(Cfg, _daqRuntimeSettings);
+            var screen = Screen.FromControl(this);
+            var workingArea = screen.WorkingArea;
+            float dpiScale;
+            using (var graphics = CreateGraphics())
+                dpiScale = Math.Max(1F, graphics.DpiX / 96F);
+            var margin = Math.Max(16, (int)Math.Round(16 * dpiScale));
+            var width = Math.Min(
+                (int)Math.Round(1415 * dpiScale),
+                Math.Max(800, workingArea.Width - margin * 2));
+            var height = Math.Min(
+                (int)Math.Round(780 * dpiScale),
+                Math.Max(600, workingArea.Height - margin * 2));
+            Setting.StartPosition = FormStartPosition.Manual;
+            Setting.Bounds = new Rectangle(
+                workingArea.Left + (workingArea.Width - width) / 2,
+                workingArea.Top + (workingArea.Height - height) / 2,
+                width,
+                height);
 
 
             Setting.ShowDialog(this);
-
-
-
         }
 
-      
 
         private void TsmCanCommControl_Click(object sender, EventArgs e)
         {
-           
         }
 
         private void TsmDAQ_Click(object sender, EventArgs e)
         {
-           
         }
 
         private void TsmPlayBack_Click(object sender, EventArgs e)
         {
-           
         }
-        private void TsmDAQCalibrate_Click(object sender, EventArgs e)
-        {
-
-            foreach (Form childForm in this.MdiChildren)
-            {
-                if (childForm.Text == "实时监视")
-                {
-                    MessageBox.Show("请关闭实时监视界面!");
-                    return;
-                }
-            }
-
-
-            FrmDAQCalibrate frmDAQCalibrate = new FrmDAQCalibrate();
-            frmDAQCalibrate.Name = "数采卡校准";
-            OpenChildForm(frmDAQCalibrate);
-        }
-
-
 
         private void ConfigureMenuStrip()
         {
@@ -429,88 +440,97 @@ namespace MtEmbTest
 
             // 设置自定义渲染器
             menuStripMain.Renderer = new ToolStripProfessionalRenderer(colorTable);
+            关于ToolStripMenuItem1.Visible = true;
+            关于ToolStripMenuItem1.Text = "运行身份";
+            关于ToolStripMenuItem1.Click += ShowRuntimeBuildIdentity;
         }
-    
 
-    // 自定义颜色表
-    public class CustomMenuColors : ProfessionalColorTable
-    {
-            // 主菜单条背景色（渐变色开始）
-            // public override Color MenuStripGradientBegin => Color.LightBlue;
+        private void PublishCurrentProjectBuildIdentity(RuntimeBuildIdentity identity = null)
+        {
+            if (Cfg?.Test == null) return;
+            var configDirectory = ConfigLoader.GetProjectConfigDir(
+                Cfg.Test.StoreDir,
+                Cfg.Test.TestName);
+            var projectRoot = ConfigLoader.GetProjectRootDir(
+                Cfg.Test.StoreDir,
+                Cfg.Test.TestName);
+            if (string.IsNullOrWhiteSpace(configDirectory) ||
+                string.IsNullOrWhiteSpace(projectRoot))
+            {
+                Logger?.Warn("项目路径无效，未写入运行构建身份。", "启动构建身份");
+                return;
+            }
 
-            public override Color MenuStripGradientBegin => Color.FromArgb(243, 249, 255);
-          
+            var current = identity ?? RuntimeBuildIdentity.Capture();
+            if (current.TryWriteProjectJson(
+                    configDirectory,
+                    Cfg.Test.TestName,
+                    projectRoot,
+                    out var path,
+                    out var error))
+            {
+                Logger?.Info($"已更新项目运行构建身份：{path}", "启动构建身份");
+                return;
+            }
 
+            Logger?.Warn($"写入项目运行构建身份失败：{error}", "启动构建身份");
+        }
 
-        // 主菜单条背景色（渐变色结束）
-        public override Color MenuStripGradientEnd => Color.LightBlue;
-
-            // 下拉菜单项背景色
-            //  public override Color ToolStripDropDownBackground => Color.White;
-
-            public override Color ToolStripDropDownBackground => Color.FromArgb(243, 249, 255);
-
-            // 菜单项选中时的背景色
-            public override Color MenuItemSelected => Color.CornflowerBlue;
-
-        // 菜单项按下时的背景色
-        public override Color MenuItemPressedGradientBegin => Color.SteelBlue;
-    }
+        private void ShowRuntimeBuildIdentity(object sender, EventArgs e)
+        {
+            var identity = RuntimeBuildIdentity.Capture();
+            ShowMainOperatorMessage(
+                this,
+                identity.ToDisplayText(),
+                "当前运行身份",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
 
         private void TsmCharacterPlayBack_Click(object sender, EventArgs e)
         {
-            foreach (Form childForm in this.MdiChildren)
-            {
+            foreach (var childForm in MdiChildren)
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("数据采集中，无法回放!");
+                    ShowMainOperatorMessage("数据采集中，无法回放!");
                     return;
                 }
-            }
 
 
-            FrmPlayBack frmPlayBack = new FrmPlayBack();
+            var frmPlayBack = new FrmPlayBack();
             frmPlayBack.Name = "数据回放";
             OpenChildForm(frmPlayBack);
         }
 
         private void TsmRawPlayBack_Click(object sender, EventArgs e)
         {
-            foreach (Form childForm in this.MdiChildren)
-            {
+            foreach (var childForm in MdiChildren)
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("数据采集中，无法回放!");
+                    ShowMainOperatorMessage("数据采集中，无法回放!");
                     return;
                 }
-            }
 
 
-            FrmRawPlayBack frmPlayBack = new FrmRawPlayBack();
+            var frmPlayBack = new FrmRawPlayBack();
             frmPlayBack.Name = "原始数据回放";
             OpenChildForm(frmPlayBack);
         }
 
         private void TsmRealMinitor_Click(object sender, EventArgs e)
         {
-            foreach (Form childForm in this.MdiChildren)
+            foreach (var childForm in MdiChildren)
             {
-                if (childForm.Text == "数采卡校准")
-                {
-                    MessageBox.Show("请关闭数采卡校准界面!");
-                    return;
-                }
                 if (childForm.Text == "扭矩调节")
                 {
-                    MessageBox.Show("请关闭扭矩调节界面!");
+                    ShowMainOperatorMessage("请关闭扭矩调节界面!");
                     return;
                 }
             }
 
 
-
             //FrmMainMonitor frmRealMonitor = new FrmMainMonitor();
-            FrmEpbMainMonitor frmRealMonitor = new FrmEpbMainMonitor();
+            var frmRealMonitor = new FrmEpbMainMonitor(_daqRuntimeSettings);
             frmRealMonitor.Name = "实时监视";
             OpenChildForm(frmRealMonitor);
         }
@@ -520,14 +540,9 @@ namespace MtEmbTest
         {
             foreach (Form childForm in this.MdiChildren)
             {
-                if (childForm.Text == "数采卡校准")
-                {
-                    MessageBox.Show("请关闭数采卡校准界面!");
-                    return;
-                }
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("请关闭实时监视界面!");
+                    ShowMainOperatorMessage("请关闭实时监视界面!");
                     return;
                 }
             }
@@ -540,62 +555,62 @@ namespace MtEmbTest
         }
         */
 
+#if LEGACY_EMB_POWER
+        // 仅保留为历史源码参考；生产构建不定义 LEGACY_EMB_POWER。
+        // EPB 程控电源必须通过 PowerSupplyCoordinator 的预检、回读和联锁控制。
         private async void TsmPower_Click(object sender, EventArgs e)
         {
             if (TsmPower.Text == "1-OFF")
             {
                 if (!IsPowerConnect[0])
                 {
-                    string ConnectMsg = ConnectToPowerServer(1);
+                    var ConnectMsg = ConnectToPowerServer(1);
                     if (ConnectMsg.IndexOf("OK") < 0)
                     {
-                        MessageBox.Show(ConnectMsg);
+                        ShowMainOperatorMessage(ConnectMsg);
                         return;
                     }
-
                 }
 
-                await System.Threading.Tasks.Task.Delay(1000);
+                await Task.Delay(1000);
 
-                string initMsg = InitPower(1, ClsGlobal.Voltage,
+                var initMsg = InitPower(1, ClsGlobal.Voltage,
                     ClsGlobal.MaxCurrent, ClsGlobal.MinCurrent,
                     ClsGlobal.MaxPower, ClsGlobal.MinPower);
 
                 if (initMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show(initMsg);
+                    ShowMainOperatorMessage(initMsg);
                     return;
                 }
 
-                await System.Threading.Tasks.Task.Delay(1000);
+                await Task.Delay(1000);
 
 
-                string powerMsg = PowerOpen(1);
+                var powerMsg = PowerOpen(1);
                 if (powerMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show("打开电源1失败：" + powerMsg);
+                    ShowMainOperatorMessage("打开电源1失败：" + powerMsg);
                     ClsGlobal.PowerStatus[0] = 0;
                     return;
                 }
 
-                await System.Threading.Tasks.Task.Delay(1000);
+                await Task.Delay(1000);
                 ClsGlobal.PowerStatus[0] = 1;
-              
 
-                string ReadMsg = InitSerialPort();
+
+                var ReadMsg = InitSerialPort();
                 if (ReadMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowMainOperatorMessage(ReadMsg);
                     return;
                 }
 
 
-
-                bool OpenSuccess = await OpenPowerChannel(0, ClsGlobal.SerialPortRetrys);
+                var OpenSuccess = await OpenPowerChannel(0, ClsGlobal.SerialPortRetrys);
                 if (!OpenSuccess)
                 {
-
-                    MessageBox.Show("打开EMB1电源继电器失败！");
+                    ShowMainOperatorMessage("打开EMB1电源继电器失败！");
                     ClsGlobal.PowerStatus[0] = 1;
 
                     return;
@@ -607,36 +622,33 @@ namespace MtEmbTest
             }
             else
             {
-
-                string ReadMsg = InitSerialPort();
+                var ReadMsg = InitSerialPort();
                 if (ReadMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowMainOperatorMessage(ReadMsg);
                     return;
                 }
 
 
-
-                bool OpenSuccess = await ClosePowerChannel(0, ClsGlobal.SerialPortRetrys);
+                var OpenSuccess = await ClosePowerChannel(0, ClsGlobal.SerialPortRetrys);
                 if (!OpenSuccess)
                 {
-
-                    MessageBox.Show("关闭EMB1电源继电器失败！");
+                    ShowMainOperatorMessage("关闭EMB1电源继电器失败！");
                     ClsGlobal.PowerStatus[0] = 2;
                     return;
                 }
 
                 ClsGlobal.PowerStatus[0] = 1;
 
-                string powerMsg = PowerClose(1);
+                var powerMsg = PowerClose(1);
                 if (powerMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show("关闭电源1失败：" + powerMsg);
+                    ShowMainOperatorMessage("关闭电源1失败：" + powerMsg);
                     ClsGlobal.PowerStatus[0] = 1;
                     return;
                 }
 
-                await System.Threading.Tasks.Task.Delay(1000);
+                await Task.Delay(1000);
                 ClsGlobal.PowerStatus[0] = 0;
                 UpdateMenuItem(TsmPower, Resources.P5, "1-OFF");
             }
@@ -657,7 +669,7 @@ namespace MtEmbTest
                 serialPort.StopBits = StopBits.One; // 停止位
 
                 // 订阅数据接收事件
-                serialPort.DataReceived += new SerialDataReceivedEventHandler(SerialPort_DataReceived);
+                serialPort.DataReceived += SerialPort_DataReceived;
 
                 // 打开串口
                 serialPort.Open();
@@ -666,7 +678,7 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
-                //  MessageBox.Show($"打开COM口失败: {ex.Message}");
+                //  ShowMainOperatorMessage($"打开COM口失败: {ex.Message}");
                 //   ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "打开COM口失败: " + ex.Message, "打开COM口");
                 serialPort?.Close();
                 serialPort?.Dispose();
@@ -678,21 +690,17 @@ namespace MtEmbTest
         {
             try
             {
-                SerialPort sp = (SerialPort)sender;
-                int bytesToRead = sp.BytesToRead;
-                byte[] buffer = new byte[bytesToRead];
+                var sp = (SerialPort)sender;
+                var bytesToRead = sp.BytesToRead;
+                var buffer = new byte[bytesToRead];
                 sp.Read(buffer, 0, bytesToRead);
 
-                this.BeginInvoke(new Action(() =>
-                {
-                    serialResponseTcs?.TrySetResult(buffer);
-                }));
+                BeginInvoke(new Action(() => { serialResponseTcs?.TrySetResult(buffer); }));
             }
 
             catch (Exception ex)
             {
-                MessageBox.Show("COM口接收数据出错: " + ex.Message);
-
+                ShowMainOperatorMessage("COM口接收数据出错: " + ex.Message);
             }
         }
 
@@ -705,6 +713,7 @@ namespace MtEmbTest
                     serialPort.DataReceived -= SerialPort_DataReceived;
                     serialPort.Close();
                 }
+
                 serialPort?.Dispose();
             }
         }
@@ -715,10 +724,10 @@ namespace MtEmbTest
             {
                 if (!serialPort.IsOpen)
                 {
-                    string OpenMsg = InitSerialPort();
+                    var OpenMsg = InitSerialPort();
                     if (OpenMsg.IndexOf("OK") < 0)
                     {
-                        MessageBox.Show("打开COM口失败: " + OpenMsg);
+                        ShowMainOperatorMessage("打开COM口失败: " + OpenMsg);
                         return false; // 返回失败结果
                     }
                 }
@@ -726,13 +735,13 @@ namespace MtEmbTest
 
             try
             {
-                byte[] Channel = new byte[2];
+                var Channel = new byte[2];
                 Channel[0] = 0;
                 Channel[1] = ChannelNo;
                 byte[] Status = { 0xff, 0 };
-                byte[] command = ClsSerialCommandMaker.GenerateDoCommand(0x01, 0x05, Channel, Status);
-                int retryCount = 0;
-                bool operationSuccess = false;
+                var command = ClsSerialCommandMaker.GenerateDoCommand(0x01, 0x05, Channel, Status);
+                var retryCount = 0;
+                var operationSuccess = false;
                 while (retryCount < maxRetries && !operationSuccess)
                 {
                     serialPort.Write(command, 0, command.Length);
@@ -742,35 +751,28 @@ namespace MtEmbTest
                     serialResponseTcs = currentTcs;
 
                     var responseTask = currentTcs.Task;
-                    var delayTask = System.Threading.Tasks.Task.Delay(3000);
-                    var completedTask = await System.Threading.Tasks.Task.WhenAny(responseTask, delayTask);
+                    var delayTask = Task.Delay(3000);
+                    var completedTask = await Task.WhenAny(responseTask, delayTask);
 
                     if (completedTask == delayTask)
                     {
-
                         retryCount++;
                         continue;
                     }
 
-                    byte[] response = await responseTask;
+                    var response = await responseTask;
 
                     if (response[0] == command[0] && response[1] == command[1] + 0x80)
-                    {
-
                         retryCount++;
-                    }
                     else
-                    {
-
                         operationSuccess = true;
-                    }
                 }
 
                 if (!operationSuccess)
                 {
-                    string errorMsg = $"已达最大重试次数（{maxRetries}次），操作失败";
+                    var errorMsg = $"已达最大重试次数（{maxRetries}次），操作失败";
 
-                    MessageBox.Show("打开COM口失败: " + errorMsg);
+                    ShowMainOperatorMessage("打开COM口失败: " + errorMsg);
                     SafeDisposeSerialPort();
                     return false; // 返回失败结果
                 }
@@ -779,7 +781,7 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show("COM口通信错误: " + ex.Message);
+                ShowMainOperatorMessage("COM口通信错误: " + ex.Message);
                 SafeDisposeSerialPort();
                 return false; // 返回失败结果
             }
@@ -795,10 +797,10 @@ namespace MtEmbTest
             {
                 if (!serialPort.IsOpen)
                 {
-                    string OpenMsg = InitSerialPort();
+                    var OpenMsg = InitSerialPort();
                     if (OpenMsg.IndexOf("OK") < 0)
                     {
-                        MessageBox.Show("打开COM口失败: " + OpenMsg);
+                        ShowMainOperatorMessage("打开COM口失败: " + OpenMsg);
                         return false; // 返回失败结果
                     }
                 }
@@ -806,14 +808,14 @@ namespace MtEmbTest
 
             try
             {
-                byte[] Channel = new byte[2];
+                var Channel = new byte[2];
                 Channel[0] = 0;
                 Channel[1] = ChannelNo;
                 byte[] Status = { 0, 0 };
-                byte[] command = ClsSerialCommandMaker.GenerateDoCommand(0x01, 0x05, Channel, Status);
+                var command = ClsSerialCommandMaker.GenerateDoCommand(0x01, 0x05, Channel, Status);
 
-                int retryCount = 0;
-                bool operationSuccess = false;
+                var retryCount = 0;
+                var operationSuccess = false;
 
                 while (retryCount < maxRetries && !operationSuccess)
                 {
@@ -823,8 +825,8 @@ namespace MtEmbTest
                     serialResponseTcs = currentTcs;
 
                     var responseTask = currentTcs.Task;
-                    var delayTask = System.Threading.Tasks.Task.Delay(3000);
-                    var completedTask = await System.Threading.Tasks.Task.WhenAny(responseTask, delayTask);
+                    var delayTask = Task.Delay(3000);
+                    var completedTask = await Task.WhenAny(responseTask, delayTask);
 
                     if (completedTask == delayTask)
                     {
@@ -832,23 +834,18 @@ namespace MtEmbTest
                         continue;
                     }
 
-                    byte[] response = await responseTask;
+                    var response = await responseTask;
 
                     if (response[0] == command[0] && response[1] == command[1] + 0x80)
-                    {
-
                         retryCount++;
-                    }
                     else
-                    {
                         operationSuccess = true;
-                    }
                 }
 
                 if (!operationSuccess)
                 {
-                    string errorMsg = $"已达最大重试次数（{maxRetries}次），操作失败";
-                    MessageBox.Show(errorMsg);
+                    var errorMsg = $"已达最大重试次数（{maxRetries}次），操作失败";
+                    ShowMainOperatorMessage(errorMsg);
                     SafeDisposeSerialPort();
                     return false; // 返回失败结果
                 }
@@ -857,7 +854,7 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show("COM口通信错误：" + ex.Message);
+                ShowMainOperatorMessage("COM口通信错误：" + ex.Message);
                 SafeDisposeSerialPort();
                 return false; // 返回失败结果
             }
@@ -868,8 +865,7 @@ namespace MtEmbTest
         }
 
 
-
-        void UpdateMenuItem(ToolStripMenuItem item, Image newImage, string newText)
+        private void UpdateMenuItem(ToolStripMenuItem item, Image newImage, string newText)
         {
             // 确保在主线程操作（如果跨线程需Invoke）
             if (item.GetCurrentParent().InvokeRequired)
@@ -879,43 +875,34 @@ namespace MtEmbTest
                 return;
             }
 
-            item.Image = newImage;  // 更新图片
-            item.Text = newText;    // 更新文本
+            item.Image = newImage; // 更新图片
+            item.Text = newText; // 更新文本
         }
-
-
-
-
 
 
         public string ConnectToPowerServer(int powerIndex)
         {
-
             try
             {
-                powerClient[powerIndex - 1] = new AsyncTcpClient(powerIndex, "PowerClient" + powerIndex.ToString(), 4096);
+                powerClient[powerIndex - 1] = new AsyncTcpClient(powerIndex, "PowerClient" + powerIndex, 4096);
 
-                string ConnMsg = powerClient[powerIndex - 1].ConnectToServer(ClsGlobal.PowerServerAdr[powerIndex - 1], int.Parse(ClsGlobal.PowerServerPort[powerIndex - 1]));
+                var ConnMsg = powerClient[powerIndex - 1].ConnectToServer(ClsGlobal.PowerServerAdr[powerIndex - 1],
+                    int.Parse(ClsGlobal.PowerServerPort[powerIndex - 1]));
 
                 if (ConnMsg.IndexOf("OK") < 0)
                 {
                     IsPowerConnect[powerIndex - 1] = false;
                     return ConnMsg;
                 }
-                else
+
+                powerClient[powerIndex - 1].DataReceived += delegate(object sender1, RecvEventArg e1)
                 {
+                    //创建Cors连接的函数组
+                    powerDataReceived(sender1, e1, powerIndex);
+                };
 
-
-                    powerClient[powerIndex - 1].DataReceived += delegate (object sender1, RecvEventArg e1)
-                    {
-                        //创建Cors连接的函数组
-                        powerDataReceived(sender1, e1, powerIndex);
-                    };
-
-                    IsPowerConnect[powerIndex - 1] = true;
-                    return "OK";
-                }
-
+                IsPowerConnect[powerIndex - 1] = true;
+                return "OK";
             }
             catch (Exception ex)
             {
@@ -934,64 +921,62 @@ namespace MtEmbTest
         {
             try
             {
-
-                string command1 = "SYST: REM" + System.Environment.NewLine;
-                byte[] byteSend1 = System.Text.Encoding.Default.GetBytes(command1);
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend1);
-                System.Threading.Thread.Sleep(100);
-
-
-                string command2 = "FUNC VOLT" + System.Environment.NewLine;
-                byte[] byteSend2 = System.Text.Encoding.Default.GetBytes(command2);
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend2);
-                System.Threading.Thread.Sleep(100);
+                var command1 = "SYST: REM" + Environment.NewLine;
+                var byteSend1 = Encoding.Default.GetBytes(command1);
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend1);
+                Thread.Sleep(100);
 
 
-                string command3 = "VOLT TT" + System.Environment.NewLine;
-                byte[] byteSend3 = System.Text.Encoding.Default.GetBytes(command3.Replace("TT", voltage.ToString()));
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend3);
-                System.Threading.Thread.Sleep(100);
+                var command2 = "FUNC VOLT" + Environment.NewLine;
+                var byteSend2 = Encoding.Default.GetBytes(command2);
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend2);
+                Thread.Sleep(100);
 
 
-                string command4 = "VOLT:SLEW:POS 0.1" + System.Environment.NewLine;
-                byte[] byteSend4 = System.Text.Encoding.Default.GetBytes(command4);
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend4);
-                System.Threading.Thread.Sleep(100);
+                var command3 = "VOLT TT" + Environment.NewLine;
+                var byteSend3 = Encoding.Default.GetBytes(command3.Replace("TT", voltage.ToString()));
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend3);
+                Thread.Sleep(100);
 
 
-                string command5 = "VOLT:SLEW:NEG 0.1" + System.Environment.NewLine;
-                byte[] byteSend5 = System.Text.Encoding.Default.GetBytes(command5);
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend5);
-                System.Threading.Thread.Sleep(100);
+                var command4 = "VOLT:SLEW:POS 0.1" + Environment.NewLine;
+                var byteSend4 = Encoding.Default.GetBytes(command4);
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend4);
+                Thread.Sleep(100);
 
 
-                string command6 = "CURR:LIM TTA" + System.Environment.NewLine;
-                byte[] byteSend6 = System.Text.Encoding.Default.GetBytes(command6.Replace("TT", maxCurrent.ToString()));
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend6);
-                System.Threading.Thread.Sleep(100);
+                var command5 = "VOLT:SLEW:NEG 0.1" + Environment.NewLine;
+                var byteSend5 = Encoding.Default.GetBytes(command5);
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend5);
+                Thread.Sleep(100);
 
 
-                string command7 = "CURR: LIM: NEG TTA" + System.Environment.NewLine;
-                byte[] byteSend7 = System.Text.Encoding.Default.GetBytes(command7.Replace("TT", minCurrent.ToString()));
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend7);
-                System.Threading.Thread.Sleep(100);
-
-                string command8 = "POW: LIM TTW" + System.Environment.NewLine;
-                byte[] byteSend8 = System.Text.Encoding.Default.GetBytes(command8.Replace("TT", maxPower.ToString()));
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend8);
-                System.Threading.Thread.Sleep(100);
+                var command6 = "CURR:LIM TTA" + Environment.NewLine;
+                var byteSend6 = Encoding.Default.GetBytes(command6.Replace("TT", maxCurrent.ToString()));
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend6);
+                Thread.Sleep(100);
 
 
-                string command9 = "POW:LIM:NEG TTW" + System.Environment.NewLine;
-                byte[] byteSend9 = System.Text.Encoding.Default.GetBytes(command9.Replace("TT", minPower.ToString()));
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend9);
+                var command7 = "CURR: LIM: NEG TTA" + Environment.NewLine;
+                var byteSend7 = Encoding.Default.GetBytes(command7.Replace("TT", minCurrent.ToString()));
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend7);
+                Thread.Sleep(100);
+
+                var command8 = "POW: LIM TTW" + Environment.NewLine;
+                var byteSend8 = Encoding.Default.GetBytes(command8.Replace("TT", maxPower.ToString()));
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend8);
+                Thread.Sleep(100);
+
+
+                var command9 = "POW:LIM:NEG TTW" + Environment.NewLine;
+                var byteSend9 = Encoding.Default.GetBytes(command9.Replace("TT", minPower.ToString()));
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend9);
                 return "OK";
             }
             catch (Exception ex)
             {
                 return ex.Message;
             }
-
         }
 
 
@@ -999,9 +984,9 @@ namespace MtEmbTest
         {
             try
             {
-                string command1 = "OUTP 1" + System.Environment.NewLine;
-                byte[] byteSend1 = System.Text.Encoding.Default.GetBytes(command1);
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend1);
+                var command1 = "OUTP 1" + Environment.NewLine;
+                var byteSend1 = Encoding.Default.GetBytes(command1);
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend1);
                 return "OK";
             }
 
@@ -1009,16 +994,15 @@ namespace MtEmbTest
             {
                 return ex.Message;
             }
-
         }
 
         public string PowerClose(int index)
         {
             try
             {
-                string command1 = "OUTP 0" + System.Environment.NewLine;
-                byte[] byteSend1 = System.Text.Encoding.Default.GetBytes(command1);
-                powerClient[index - 1].SendBinaryToServer("PowerClient" + index.ToString(), byteSend1);
+                var command1 = "OUTP 0" + Environment.NewLine;
+                var byteSend1 = Encoding.Default.GetBytes(command1);
+                powerClient[index - 1].SendBinaryToServer("PowerClient" + index, byteSend1);
                 return "OK";
             }
 
@@ -1027,8 +1011,32 @@ namespace MtEmbTest
                 return ex.Message;
             }
         }
+#endif
 
 
+        // 自定义颜色表
+        public class CustomMenuColors : ProfessionalColorTable
+        {
+            // 主菜单条背景色（渐变色开始）
+            // public override Color MenuStripGradientBegin => Color.LightBlue;
+
+            public override Color MenuStripGradientBegin => Color.FromArgb(243, 249, 255);
+
+
+            // 主菜单条背景色（渐变色结束）
+            public override Color MenuStripGradientEnd => Color.LightBlue;
+
+            // 下拉菜单项背景色
+            //  public override Color ToolStripDropDownBackground => Color.White;
+
+            public override Color ToolStripDropDownBackground => Color.FromArgb(243, 249, 255);
+
+            // 菜单项选中时的背景色
+            public override Color MenuItemSelected => Color.CornflowerBlue;
+
+            // 菜单项按下时的背景色
+            public override Color MenuItemPressedGradientBegin => Color.SteelBlue;
+        }
 
     }
 }

@@ -1,2 +1,101 @@
-万向EPBTest
+﻿# 万向 EPBTest
+
+万向 EPB 测试系统：Windows 桌面应用（.NET Framework 4.8 + WinForms），用于控制 12 路 EPB 卡钳进行液压/电控自动化疲劳测试，并进行数据采集、落盘与报警联动。
+
+完整的功能、架构、控制时序、配置、数据格式与维护入口说明见：
+[docs/项目全功能详解.md](docs/项目全功能详解.md)。
+
+安全、数据一致性与工程稳定性的可执行整改任务、迁移规格和验收矩阵见：
+[docs/安全与数据整改实施方案.md](docs/安全与数据整改实施方案.md)。
+
+本轮报警证据、环形落盘恢复、原子导出、双采集卡时钟及历史数据修复说明见：
+[docs/报警与落盘一致性修复说明.md](docs/报警与落盘一致性修复说明.md)。
+
+## 目录速览
+
+- `MTTfTest/`：主界面与交互（`FrmEpbMainMonitor`）。
+- `Controller/`：控制编排（`EpbManager`、`EpbCycleRunner`、液压协调）。
+- `DataOperation/`：数据处理与落盘（`EpbDiskWriter`）。
+- `Config/`：配置加载与运行状态模型（`GlobalConfig`、`EpbTestRecord`）。
+
+## 测试主入口（重要）
+
+本工程“开始试验/批量启动”的控制主入口为：
+
+- `Controller/EpbManager.BatchStart.cs`：`EpbManager.StartBatchSynchronizedAsync(int[] channels, int learnCycles, CancellationToken token)`
+
+UI 侧（WinForms）点击“开始试验”按钮后，会在：
+
+- `MTTfTest/FrmEpbMainMonitor.cs` 中 `await _epb.StartBatchSynchronizedAsync(...)`
+
+> 说明：`Acq_OnEngBatch(...)` / `TwoDeviceAiAcquirer.OnEngBatch` 属于“采集批次→UI 曲线显示”的入口，与“启动测试/批量启动”不是同一条链路。
+
+## 配置文件
+
+配置位于 `MTTfTest/Config/`：
+
+- `TestConfig.xml`：测试参数（周期、目标圈数、电控分组等）。
+- `AIConfig.xml` / `DOConfig.xml` / `AOConfig.xml`：NI 采集与输出通道。
+- `AlarmConfig.xml`：泓格 M-7055D（RS-485）报警灯/蜂鸣器配置与行为参数。
+
+报警系统设计说明：见 [开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md](开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md)
+
+## 日志位置（现场排障常用）
+
+在主界面点击：运行日志 / 警告日志 / 错误日志，会导出到当前运行目录：
+
+- `RunLog.txt`
+- `WarnLog.txt`
+- `ErrorLog.txt`
+
+## 报警快照导出
+
+报警发生时会导出“当前圈 + 前 N-1 圈”（默认 10 圈），并同时导出所有正在运行的通道用于对比。
+
+目录根：`StoreDir\TestName\AlarmSnapshots\yyyyMMdd_HHmmss-EPBxx\EPBxx(_ALARM)\...`
+
+报警圈必须在 `EPBxx_ALARM` 目录中同时存在同通道、同圈号的 CSV 和 BIN。
+只有文件证据完整时，SQLite 圈状态才会封为 `alarm`；导出失败则封为
+`failed`，并在警告日志中记录原因。每次重新启动通道都会重置报警停机锁存，
+确保新运行中的首次报警不会被上一次运行抑制。
+
+## 落盘圈状态（重要口径）
+
+`EpbDiskWriter` 的圈级索引（SQLite `epb_cycles` 表）使用 `status` 字段表示圈的最终状态：
+
+- `running`：圈已开始但尚未封圈（用于快照可选包含）。
+- `completed`：正常封圈。
+- `alarm`：硬报警导致该圈中断；保留故障证据和快照，但不计成功圈。
+- `failed` / `canceled`：未形成完整正向、保持、动态释放过程，不计成功圈。
+
+> 说明：报警停机必须避免遗留 `running` 悬挂圈，否则会导致“落盘圈号/次数”与 UI 计数漂移。
+
+## CSV 与环形落盘
+
+- CSV 列固定为
+  `Timestamp,RelativeTimeSeconds,Cycle,SampleIndex,EpbCurrent,GroupPressure`；
+- `RelativeTimeSeconds` 从当前导出文件首条记录起算，并保证不倒退；
+- 程序重启后根据 SQLite 最后一圈恢复环形文件写游标，避免从文件头覆盖；
+- 导出前校验圈号、样本序号和时间戳；CSV/BIN 成对原子提交；
+- 环形区数据已被覆盖时，会尝试使用既有历史 BIN 快照恢复；
+- 归档只有在 CSV/BIN 均成功后才删除对应圈索引，失败信息写入
+  `export_errors.txt`。
+
+双 NI 采集卡使用共同时间原点，但 Dev1、Dev2 分别推进各自的批次时钟，
+避免共享游标造成回调时间相互叠加和回拨。
+
+## RunCount 权威口径
+
+`EpbTestRecord.RunCount` 在界面启动时会从项目目录下的 `index.db` 查询：
+`COUNT(status='completed')`，确保 UI 与落盘的“成功圈数”始终一致。
+
+- 仅当项目已有 `index.db` 时才回填，避免首次创建项目时把 XML 中的进度意外压成 0。
+- 回填完成后立即写回项目 `Config/TestConfig.xml`，所见即所得。无论任意启动/报警，并未完成的圈都不会被计入。
+- 这个行为让数据库成为 RunCount 的权威口径；UI 迭代和 XML 保存都依赖此数值，而不再依赖运行中的计数事件。
+
+## 参考文档
+
+- [docs/报警与落盘一致性修复说明.md](docs/报警与落盘一致性修复说明.md)
+- [开发日志/新版“数据落盘逻辑”整合说明（含新增需求）_0916_2.md](开发日志/新版“数据落盘逻辑”整合说明（含新增需求）_0916_2.md)
+- [开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md](开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md)
 

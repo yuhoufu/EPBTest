@@ -337,8 +337,8 @@ namespace MTEmbTest
 
                 RtbTestInfo.Clear();
                 RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
-                RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
-                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
+                // RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
+                // RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
                 RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
        
                 RtbTestInfo.AppendText("当前范围: <" + BrakeNo[0].ToString() + "," + BrakeNo[BrakeNo.Length - 1].ToString() + ">\n");
@@ -463,11 +463,11 @@ namespace MTEmbTest
 
                 RtbTestInfo.Clear();
 
-                testConfig.TestSpan = 1.0 / double.Parse(testConfig.TestCycle);
+                // testConfig.TestSpan = 1.0 / double.Parse(testConfig.TestCycle);
 
                 RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
-                RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
-                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
+                // RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
+                // RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
                 RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
 
             }

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  正式启用前必须把 VoltageV/CurrentA/OvpV/OcpA/MinimumOutputVoltageV
+  替换为经现场负责人批准、并通过真实设备回读验证的值。
+  当前故意留空：程序将拒绝启动，避免沿用 EMB 台架的 50V/负电流旧参数。
+-->
+<PowerSupplyConfig Enabled="true"
+                   PollIntervalMs="100"
+                   TelemetryDelayWarnMs="500"
+                   TelemetryCallTimeoutMs="1500"
+                   TelemetryStaleMs="500"
+                   CommunicationAlarmConfirmCycles="8"
+                   CommunicationAlarmMaxMs="120000"
+                   CommunicationRetryMs="500"
+                   CcTripMs="300"
+                   LowVoltageTripMs="300"
+                   NearLimitWarnRatio="0.90"
+                   StartupZeroCurrentA="0.50"
+                   StartupZeroStableMs="300"
+                   StartupVoltageStableMs="300"
+                   StartupZeroTimeoutMs="5000"
+                   ColdStartRelaySettleMs="300">
+  <Supply Id="1" ElectricalGroupId="1" DisplayName="电源1"
+          Host="192.168.1.101" Port="2268" Terminator="\r\n"
+          ExpectedModel="" ExpectedSerial=""
+          VoltageV="12" CurrentA="45" OvpV="33" OcpA="79.2"
+          MinimumOutputVoltageV="6" SetpointTolerance="0.05" />
+  <Supply Id="2" ElectricalGroupId="2" DisplayName="电源2"
+          Host="192.168.1.102" Port="2268" Terminator="\r\n"
+          ExpectedModel="" ExpectedSerial=""
+          VoltageV="12" CurrentA="45" OvpV="33" OcpA="79.2"
+          MinimumOutputVoltageV="6" SetpointTolerance="0.05" />
+  <Supply Id="3" ElectricalGroupId="3" DisplayName="电源3"
+          Host="192.168.1.103" Port="2268" Terminator="\r\n"
+          ExpectedModel="" ExpectedSerial=""
+          VoltageV="12" CurrentA="45" OvpV="33" OcpA="118.8"
+          MinimumOutputVoltageV="6" SetpointTolerance="0.05" />
+  <Supply Id="4" ElectricalGroupId="4" DisplayName="电源4"
+          Host="192.168.1.104" Port="2268" Terminator="\r\n"
+          ExpectedModel="" ExpectedSerial=""
+          VoltageV="12" CurrentA="45" OvpV="33" OcpA="118.8"
+          MinimumOutputVoltageV="6" SetpointTolerance="0.05" />
+</PowerSupplyConfig>

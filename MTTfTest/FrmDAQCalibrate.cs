@@ -1,5 +1,6 @@
 ﻿using DataOperation;
 using MtEmbTest;
+using Config;
 using NationalInstruments.DAQmx;
 using Sunny.UI;
 using System;
@@ -20,6 +21,7 @@ namespace MTEmbTest
 {
     public partial class FrmDAQCalibrate: Form
     {
+        private readonly DaqRuntimeSettings _daqRuntimeSettings;
         [DllImport("user32.dll")]
         public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
 
@@ -63,6 +65,9 @@ namespace MTEmbTest
         private double DaqTimeSpanMilSeconds = 10.0;
 
         private bool IsRunning = false;
+        private readonly CancellationTokenSource _dev1ReconnectCts = new CancellationTokenSource();
+        private System.Threading.Tasks.Task _dev1ReconnectTask;
+        private int _dev1ReconnectStarted;
         private double DaqCurrentTimeOffset = 0.0;
 
         private ConcurrentDictionary<string, double> ParaNameToScale = new ConcurrentDictionary<string, double>();
@@ -129,7 +134,15 @@ namespace MTEmbTest
 
 
         public FrmDAQCalibrate()
+            : this(DaqRuntimeSettings.Load(
+                System.Configuration.ConfigurationManager.AppSettings))
         {
+        }
+
+        internal FrmDAQCalibrate(DaqRuntimeSettings daqRuntimeSettings)
+        {
+            _daqRuntimeSettings = daqRuntimeSettings ??
+                throw new ArgumentNullException(nameof(daqRuntimeSettings));
             InitializeComponent();
             // 创建自定义标题栏
             Panel titleBar = new Panel
@@ -369,7 +382,7 @@ namespace MTEmbTest
         private void FrmDAQCalibrate_Load(object sender, EventArgs e)
         {
 
-           string ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1UsedDaqAIChannels);
+           string ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out Dev1UsedDaqAIChannels);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
@@ -383,7 +396,7 @@ namespace MTEmbTest
             }
 
 
-            ReadMsg = ClsXmlOperation.GetDaqPhyChanelToNameMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out PhyChannelToParaName);
+            ReadMsg = ClsXmlOperation.GetDaqPhyChanelToNameMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out PhyChannelToParaName);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
@@ -399,21 +412,21 @@ namespace MTEmbTest
           
 
 
-            ReadMsg = ClsXmlOperation.GetDaqScaleMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToScale);
+            ReadMsg = ClsXmlOperation.GetDaqScaleMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out ParaNameToScale);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
                 return;
             }
 
-            ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToOffset);
+            ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out ParaNameToOffset);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
                 return;
             }
 
-            ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToZeroValue);
+            ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(RuntimeConfigPaths.GetPath("AIConfig.xml"), "Dev1", out ParaNameToZeroValue);
             if (ReadMsg.IndexOf("OK") < 0)
             {
                 MessageBox.Show(ReadMsg);
@@ -442,10 +455,10 @@ namespace MTEmbTest
                     AIVoltageUnits.Volts);
                 }
                 Dev1analogTask.Timing.ConfigureSampleClock("",
-                           ClsGlobal.DaqFrequency,
+                           _daqRuntimeSettings.SampleRateHz,
                            SampleClockActiveEdge.Rising,
                            SampleQuantityMode.ContinuousSamples,
-                           ClsGlobal.SamplesPerChannel);
+                           _daqRuntimeSettings.SamplesPerChannel);
 
                 // Verify the tasks
                 Dev1analogTask.Control(TaskAction.Verify);
@@ -469,7 +482,7 @@ namespace MTEmbTest
                 Dev1analogReader.SynchronizeCallbacks = true;
 
 
-                Dev1analogReader.BeginReadMultiSample(ClsGlobal.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
+                Dev1analogReader.BeginReadMultiSample(_daqRuntimeSettings.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
 
 
 
@@ -548,20 +561,20 @@ namespace MTEmbTest
                     if (IsRunning)
                     {
                         int DaqDispCurrentNo = ParaNameToActChannel["EMB1_current"]; 
-                        double[] DispCurrentData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispCurrentNo * 8 * ClsGlobal.SamplesPerChannel, DispCurrentData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispCurrentData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispCurrentNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispCurrentData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
                         int DaqDispTorqueNo = ParaNameToActChannel["EMB1_torque"];
-                        double[] DispTorqueData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispTorqueNo * 8 * ClsGlobal.SamplesPerChannel, DispTorqueData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispTorqueData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispTorqueNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispTorqueData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
                         int DaqDispPressureNo = ParaNameToActChannel["EMB1_valveBar"];
-                        double[] DispPressureData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispPressureNo * 8 * ClsGlobal.SamplesPerChannel, DispPressureData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispPressureData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispPressureNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispPressureData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
                         int DaqDispDistanceNo = ParaNameToActChannel["EMB1_distance"];
-                        double[] DispDistanceData = new double[ClsGlobal.SamplesPerChannel];
-                        Buffer.BlockCopy(data, DaqDispDistanceNo * 8 * ClsGlobal.SamplesPerChannel, DispDistanceData, 0, 8 * ClsGlobal.SamplesPerChannel);
+                        double[] DispDistanceData = new double[_daqRuntimeSettings.SamplesPerChannel];
+                        Buffer.BlockCopy(data, DaqDispDistanceNo * 8 * _daqRuntimeSettings.SamplesPerChannel, DispDistanceData, 0, 8 * _daqRuntimeSettings.SamplesPerChannel);
 
 
                         AddToDaqAiDispCache(DaqAiDispDataLens, DispCurrentData, ref DaqAiCurrentDispData);
@@ -579,7 +592,7 @@ namespace MTEmbTest
 
 
 
-                    Dev1analogReader.BeginReadMultiSample(ClsGlobal.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
+                    Dev1analogReader.BeginReadMultiSample(_daqRuntimeSettings.SamplesPerChannel, Dev1analogCallback, Dev1analogTask);
                 }
 
 
@@ -588,52 +601,62 @@ namespace MTEmbTest
             {
                 Dev1StopTask();
                 SafeLogError($"DAQ Dev1 读取数据出错: {ex.Message}");
+                StartDev1ReconnectLoop();
+            }
+        }
 
-                System.Threading.Tasks.Task.Run(() =>
+        private void StartDev1ReconnectLoop()
+        {
+            if (Interlocked.CompareExchange(ref _dev1ReconnectStarted, 1, 0) != 0) return;
+            var token = _dev1ReconnectCts.Token;
+            _dev1ReconnectTask = System.Threading.Tasks.Task.Run(() =>
+            {
+                const int maxRetries = 30;
+                var retryCount = 0;
+                var success = false;
+                try
                 {
-                    const int maxRetries = 30;
-                    int retryCount = 0;
-                    bool success = false;
-
-                    while (retryCount < maxRetries && !success)
+                    while (retryCount < maxRetries && !success && !token.IsCancellationRequested)
                     {
                         retryCount++;
                         try
                         {
-                            if (this.InvokeRequired)
+                            var result = new TaskCompletionSource<bool>(
+                                TaskCreationOptions.RunContinuationsAsynchronously);
+                            if (IsDisposed || Disposing || !IsHandleCreated) break;
+                            BeginInvoke(new Action(() =>
                             {
-                                this.Invoke(new Action(() =>
+                                try
                                 {
-                                    try
-                                    {
-                                        success = Dev1StartDaqAITask();
-                                        if (success)
-                                        {
-                                            SafeLogError($"第 {retryCount} 次重连成功");
-                                        }
-                                    }
-                                    catch (Exception invokeEx)
-                                    {
-                                        SafeLogError($"第 {retryCount} 次重试失败: {invokeEx.Message}");
-                                    }
-                                }));
-                            }
-
-                            if (success) break;
-                            Thread.Sleep(1000);
+                                    var started = Dev1StartDaqAITask();
+                                    if (started) SafeLogError($"第 {retryCount} 次重连成功");
+                                    result.TrySetResult(started);
+                                }
+                                catch (Exception invokeEx)
+                                {
+                                    SafeLogError($"第 {retryCount} 次重试失败: {invokeEx.Message}");
+                                    result.TrySetResult(false);
+                                }
+                            }));
+                            if (!result.Task.Wait(1000) || token.IsCancellationRequested) break;
+                            success = result.Task.Result;
+                            if (!success && token.WaitHandle.WaitOne(1000)) break;
                         }
                         catch (Exception retryEx)
                         {
-                            SafeLogError($"重试过程异常: {retryEx.Message}");
+                            if (!token.IsCancellationRequested)
+                                SafeLogError($"重试过程异常: {retryEx.Message}");
                         }
                     }
 
-                    if (!success)
-                    {
+                    if (!success && !token.IsCancellationRequested)
                         SafeLogError($"采集卡重连失败（共尝试 {maxRetries} 次），请检查硬件连接");
-                    }
-                });
-            }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _dev1ReconnectStarted, 0);
+                }
+            }, token);
         }
 
         private void AddToDaqAiDispCache(int maxLens, double[] Data, ref ConcurrentQueue<double[]> daqAiDispData)
@@ -867,7 +890,7 @@ namespace MTEmbTest
                         ParaNameToZeroValue["EMB1_distance"] = DistanceZeroList.Average();
                         SafeLogError("零位计算完成！" );
 
-                        string SaveMsg = ClsXmlOperation.UpdateZeroDriftInXml(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", ParaNameToZeroValue);
+                        string SaveMsg = ClsXmlOperation.UpdateZeroDriftInXml(RuntimeConfigPaths.GetPath("AIConfig.xml"), ParaNameToZeroValue);
 
                         if (SaveMsg.IndexOf("OK") < 0)
                         {
@@ -1045,9 +1068,8 @@ namespace MTEmbTest
            IsCalcZero = true;            
             ZeroCounter = 0;
 
-            DaqDeltTime = 1.0 / ClsGlobal.DaqFrequency* (double)ClsGlobal.MedianLens;
-
-            ClsGlobal.SamplesPerChannel = (int)(ClsGlobal.DaqFrequency / 1000.0 * TimerCalibrate.Interval);
+            DaqDeltTime = 1.0 / _daqRuntimeSettings.SampleRateHz *
+                          (double)ClsGlobal.MedianLens;
 
             CurrentZeroList.Clear();
             TorqueZeroList.Clear();
@@ -1121,7 +1143,13 @@ namespace MTEmbTest
             {
                 MessageBox.Show("请停止校准！");
                 e.Cancel = true;
+                return;
             }
+
+            _dev1ReconnectCts.Cancel();
+            try { _dev1ReconnectTask?.Wait(1500); }
+            catch (AggregateException) { /* 重连循环已记录具体失败。 */ }
+            _dev1ReconnectCts.Dispose();
         }
     }
 }

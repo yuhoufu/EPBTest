@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{78F9F16B-D842-488F-A418-6AF01F8D4C13}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>AdaptiveControlTests</RootNamespace>
+    <AssemblyName>AdaptiveControlTests</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>9</LangVersion>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <PlatformTarget>x86</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <PlatformTarget>x86</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Data.SQLite, Version=1.0.119.0, Culture=neutral, PublicKeyToken=db937bc2d44ff139, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\lib\net46\System.Data.SQLite.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Buffers">
+      <HintPath>..\..\packages\System.Buffers.4.4.0\lib\netstandard2.0\System.Buffers.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Memory">
+      <HintPath>..\..\packages\System.Memory.4.5.3\lib\netstandard2.0\System.Memory.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe">
+      <HintPath>..\..\packages\System.Runtime.CompilerServices.Unsafe.4.5.2\lib\netstandard2.0\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Windows.Forms" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="V216StabilityTests.cs" />
+    <Compile Include="V217StabilityTests.cs" />
+    <Compile Include="CalibrationMathTests.cs" />
+    <Compile Include="CycleAttemptLifecycleTests.cs" />
+    <Compile Include="DaqPersistenceCoordinatorTests.cs" />
+    <Compile Include="DaqRealtimeControlTests.cs" />
+    <Compile Include="EpbRecordNormalizationTests.cs" />
+    <Compile Include="FormalBatchSlotCoordinatorTests.cs" />
+    <Compile Include="FirstRunBootstrapTests.cs" />
+    <Compile Include="IncidentSessionPolicyTests.cs" />
+    <Compile Include="HydraulicGroupCoordinatorTests.cs" />
+    <Compile Include="PowerSupplyCoordinatorTests.cs" />
+    <Compile Include="PowerSupplyTelemetryRecorderTests.cs" />
+    <Compile Include="HistoricalStorageBudgetTests.cs" />
+    <Compile Include="PreallocatedSpscRingTests.cs" />
+    <Compile Include="ProjectLogStoreTests.cs" />
+    <Compile Include="PswTcpClientTimeoutTests.cs" />
+    <Compile Include="RecoveryCoordinationTests.cs" />
+    <Compile Include="RecoveryHardeningTests.cs" />
+    <Compile Include="RecoveryLifecycleIsolationTests.cs" />
+    <Compile Include="WarningOverlayRecoveryTests.cs" />
+    <Compile Include="RecoveryProductionSeamTests.cs" />
+    <Compile Include="FieldWaveformReplayTests.cs" />
+    <Compile Include="StopWatchdogHardeningTests.cs" />
+    <Compile Include="StopSafetyProductionSeamTests.cs" />
+    <Compile Include="WatchdogTransportHardeningTests.cs" />
+    <Compile Include="WatchdogAttachWaitCoordinatorTests.cs" />
+    <Compile Include="WatchdogCallbackDispatchProductionTests.cs" />
+    <Compile Include="WatchdogStopAllOfferCoordinatorProductionTests.cs" />
+    <Compile Include="WatchdogRuntimeCallbackPipelineProductionTests.cs" />
+    <Compile Include="WatchdogRuntimeShutdownRetentionProductionTests.cs" />
+    <Compile Include="WatchdogClientTransportProductionTests.cs" />
+    <Compile Include="DurableRelaunchCoordinatorTests.cs" />
+    <Compile Include="RecoveryFailureReceiptProtocolTests.cs" />
+    <Compile Include="DurableJsonFileStoreProductionTests.cs" />
+    <Compile Include="WatchdogHostIntegrationTests.cs" />
+    <Compile Include="StrictHostV4ProductionTests.cs" />
+    <!-- Legacy transaction types are test-only migration fixtures.  They are
+         deliberately not part of the production Host assembly. -->
+    <Compile Include="..\..\MTTFTest.Watchdog\CriticalJournalAdapter.cs" Link="LegacyTestOnly\CriticalJournalAdapter.cs" />
+    <Compile Include="..\..\MTTFTest.Watchdog\SystemRelaunchProcessLauncher.cs" Link="LegacyTestOnly\SystemRelaunchProcessLauncher.cs" />
+    <Compile Include="..\..\MTTFTest.Watchdog\HostRelaunchOrchestrator.cs" Link="LegacyTestOnly\HostRelaunchOrchestrator.cs" />
+    <Compile Include="WatchdogJournalStorageTests.cs" />
+    <Compile Include="WatchdogWinFormsUiProductionTests.cs" />
+    <Compile Include="WatchdogSafetyClosureV39Tests.cs" />
+    <Compile Include="V213043RecoveryTests.cs" />
+    <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Fixtures\20260730_reverse_release_curves.csv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Fixtures\20260804_10358-029_startup_positioning.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Fixtures\20260804_10358-029_startup_reverse_release.csv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Fixtures\field_v20_epb10_cycle_-002094.csv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Fixtures\field_v15_epb10_cycle_084529.csv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Fixtures\field_waveform_manifest.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Config\Config.csproj">
+      <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
+      <Name>Config</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\Controller\Controller.csproj">
+      <Project>{3788ACA5-1B32-414C-8678-637D8CAD9B18}</Project>
+      <Name>Controller</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\DataOperation\DataOperation.csproj">
+      <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>
+      <Name>DataOperation</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\IO.NI\IO.NI.csproj">
+      <Project>{1FDE7D08-9014-474C-90C4-A13814D94327}</Project>
+      <Name>IO.NI</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\PowerSupply.Core\PowerSupply.Core.csproj">
+      <Name>PowerSupply.Core</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\Timing\Timing.csproj">
+      <Project>{3D810EE2-A0EF-4D1F-84CD-2DDCF63FB434}</Project>
+      <Name>Timing</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>
+      <Name>MTTFTest.Watchdog.Protocol</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\Watchdog.Client\Watchdog.Client.csproj">
+      <Project>{4E6B3F5E-7C42-4A1C-9E02-7D9A3D4C8E61}</Project>
+      <Name>Watchdog.Client</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\MTTFTest.Watchdog\MTTFTest.Watchdog.csproj">
+      <Project>{DA67689F-B6CB-4F88-A728-8C405E321AEA}</Project>
+      <Name>MTTFTest.Watchdog</Name>
+      <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\MTTFTest.SafetyAgent\MTTFTest.SafetyAgent.csproj">
+      <Project>{2F691519-C5A2-4A90-A05A-9B4E739D7E43}</Project>
+      <Name>MTTFTest.SafetyAgent</Name>
+      <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\MTTFTest.SafetyHardware\MTTFTest.SafetyHardware.csproj">
+      <Project>{E3C70F37-05C0-49FC-902A-66DE352F1F43}</Project>
+      <Name>MTTFTest.SafetyHardware</Name>
+      <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\MTTfTest\MTTfTest.csproj">
+      <Project>{B921A6BD-A621-4FD4-9A47-840865FC82C9}</Project>
+      <Name>MTTFTest</Name>
+      <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
+    </ProjectReference>
+  </ItemGroup>
+  <Target Name="CopyWatchdogSidecarForTests" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)..\..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.exe"
+          DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <!--
+    MTTfTest is a production WinForms host and brings a larger runtime
+    dependency closure than the test compiler sees through its project
+    reference (notably the DevExpress Office/RichEdit/Grid/Layout modules).
+    Copy the complete production output tree after the referenced project has
+    built so a fresh test output is self-contained.  This is deliberately an
+    MSBuild project-to-project copy, not a machine-local/manual setup step.
+  -->
+  <Target Name="CopyMttfTestRuntimeClosure" AfterTargets="Build">
+    <ItemGroup>
+      <MttfTestRuntimeFiles Include="$(ProjectDir)..\..\MTTfTest\bin\$(Configuration)\**\*.*" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(MttfTestRuntimeFiles)"
+      DestinationFiles="@(MttfTestRuntimeFiles-&gt;'$(TargetDir)%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets" Condition="Exists('..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets')" />
+</Project>

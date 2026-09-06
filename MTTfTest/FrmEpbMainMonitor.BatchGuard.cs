@@ -1,0 +1,325 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Controller;
+
+namespace MTEmbTest
+{
+    public partial class FrmEpbMainMonitor
+    {
+        private int _batchStartUiGuard;
+
+        /// <summary>
+        /// 开始/暂停/继续复用入口。按钮只提交状态转换请求，显示状态由控制层事件回写。
+        /// </summary>
+        private async void BtnStartTestGuarded_Click(object sender, EventArgs e)
+        {
+            if (!ProcessRestartUiPolicy.CanStartInProcess(
+                    _epb?.RequiresProcessRestart == true))
+            {
+                ApplyBatchPauseState(_epb.CurrentBatchPauseState);
+                LogInfo(ProcessRestartUiPolicy.GetOperatorMessage(false));
+                return;
+            }
+            try
+            {
+                await HandleBatchStartRequestAsync(
+                        sender,
+                        e,
+                        unattendedRecovery: false,
+                        expectedChannels: null)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                // 人工按钮入口保留可见提示；自动恢复入口由其调用者记录并进入有界
+                // 进程交接，绝不能在无人值守路径弹出需要人工确认的消息框。
+                LogInfo($"开始/暂停/继续操作失败：{ex.Message}");
+                System.Windows.Forms.MessageBox.Show(
+                    ex.Message,
+                    "试验状态转换失败",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Warning);
+            }
+        }
+
+        internal Task<BatchStartResult> StartUnattendedBatchAsync(int[] expectedChannels)
+        {
+            var expected = (expectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (expected.Length == 0)
+                throw new InvalidOperationException("无人值守恢复没有有效的目标通道。");
+            return HandleBatchStartRequestAsync(
+                this,
+                EventArgs.Empty,
+                unattendedRecovery: true,
+                expectedChannels: expected);
+        }
+
+        private async Task<BatchStartResult> HandleBatchStartRequestAsync(
+            object sender,
+            EventArgs e,
+            bool unattendedRecovery,
+            int[] expectedChannels)
+        {
+            if (Interlocked.CompareExchange(ref _batchStartUiGuard, 1, 0) != 0)
+            {
+                if (unattendedRecovery)
+                    throw new InvalidOperationException("无人值守恢复启动入口正被其它操作占用。");
+                LogInfo("开始/暂停操作正在处理中，请勿重复点击。");
+                return null;
+            }
+
+            try
+            {
+                BtnStartTest.Enabled = false;
+                BtnStartTest.Cursor = System.Windows.Forms.Cursors.WaitCursor;
+
+                var pendingStop = _stopSessionReceipt.CaptureTask();
+                if (pendingStop != null)
+                {
+                    BtnStartTest.Text = "正在释放看门狗会话…";
+                    LogInfo("开始请求已加入正在执行的人工停止组合收口；终态完成后自动继续。");
+                    var stopReceipt = await pendingStop.ConfigureAwait(true);
+                    if (stopReceipt == null || !stopReceipt.CanRestart)
+                        throw new InvalidOperationException(
+                            "人工停止组合终态未完成，拒绝创建新试验会话：" +
+                            (stopReceipt?.Error ?? "MissingReceipt"));
+                }
+
+                var requestedState = _epb?.CurrentBatchPauseState ?? Controller.BatchPauseState.Idle;
+                if (requestedState == Controller.BatchPauseState.Running)
+                    BtnStartTest.Text = "正在暂停…";
+                else if (requestedState == Controller.BatchPauseState.Paused)
+                    BtnStartTest.Text = "正在恢复…";
+                else if (requestedState == Controller.BatchPauseState.PauseHolding)
+                    BtnStartTest.Text = "暂停中：恢复校验…";
+
+                if (requestedState == Controller.BatchPauseState.Paused)
+                {
+                    if (unattendedRecovery)
+                        throw new InvalidOperationException(
+                            "自动重启子进程出现非预期 Paused 状态，拒绝把它当作新运行继续。");
+                    var commandId = Guid.NewGuid().ToString("N");
+                    LogInfo($"已接收继续试验命令，正在执行恢复预检。CommandId={commandId}");
+                    PostSafetyStatus("继续命令已接收，正在执行恢复预检…", false);
+                    RevokeManualStopExitAuthorizationBeforeEnergization();
+                    await _epb.ResumeBatchAsync().ConfigureAwait(true);
+                    SetMonitorLifecycle(EpbMonitorLifecycle.Running);
+                    var failedHydraulicGroups = await _epb
+                        .ResumeInfrastructureAlarmGroupsAsync()
+                        .ConfigureAwait(true);
+                    ClearGracefulPauseCheckpoint("SameProcessResumed");
+                    if (failedHydraulicGroups.Length == 0)
+                        LogInfo($"批次已通过恢复预检并继续试验。CommandId={commandId}");
+                    else
+                    {
+                        var groups = string.Join(",", failedHydraulicGroups);
+                        LogInfo(
+                            $"健康液压组已继续运行；液压组[{groups}]维修复核仍失败，" +
+                            "保持整组OFF并持续报警。");
+                        PostSafetyStatus(
+                            $"液压组[{groups}]仍不能建压，故障组保持OFF；健康组继续运行。",
+                            true);
+                    }
+                    return null;
+                }
+
+                if (requestedState == Controller.BatchPauseState.PauseHolding)
+                {
+                    LogInfo("DAQ恢复健康校验尚未完成，保持所有输出关闭，暂不允许继续试验。");
+                    PostSafetyStatus("暂停保持中：等待DAQ健康恢复完成。", false);
+                    return null;
+                }
+
+                if (requestedState == Controller.BatchPauseState.Running)
+                {
+                    if (unattendedRecovery)
+                        throw new InvalidOperationException(
+                            "自动重启子进程已存在 Running 批次，拒绝重复提交恢复启动。");
+                    var commandId = Guid.NewGuid().ToString("N");
+                    LogInfo($"已接收暂停试验命令，等待所有运行卡钳完成当前圈。CommandId={commandId}");
+                    PostSafetyStatus("暂停命令已接收，正在等待当前圈安全结束…", false);
+                    await _epb.PauseBatchGracefullyAsync().ConfigureAwait(true);
+                    SaveGracefulPauseCheckpoint();
+                    LogInfo($"批次已在所有卡钳完成当前圈后安全暂停。CommandId={commandId}");
+                    return null;
+                }
+
+                if (!unattendedRecovery &&
+                    await TryResumePendingGracefulPauseAsync().ConfigureAwait(true))
+                    return null;
+
+                var explicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0;
+
+                // 只要用户再次选择“开始”，就把上一批次的软件问题和仍在收尾的启动任务一并抛弃。
+                // 同一次点击会等待安全清场结束并直接发起新批次，不要求用户稍后再点一次。
+                if ((_epb?.IsBatchSessionActive ?? false) || _batchCts != null)
+                {
+                    LogInfo("收到重新开始请求：正在抛弃旧批次状态并执行安全清场，完成后自动启动。");
+                    try { _batchCts?.Cancel(); }
+                    catch (ObjectDisposedException) { }
+
+                    var safety = await _epb.PrepareForFreshRestartAsync(
+                            new Controller.StopContext
+                            {
+                                Source = Controller.StopSource.ManualUi,
+                                Reason = "用户请求重新开始；抛弃旧批次问题并立即进入新批次",
+                                Initiator = nameof(BtnStartTestGuarded_Click),
+                                CorrelationId = Guid.NewGuid().ToString("N"),
+                                RequestedUtc = DateTime.UtcNow
+                            },
+                            discardHistoricalStopChecks: explicitlyStopped)
+                        .ConfigureAwait(true);
+                    ClearGracefulPauseCheckpoint("FreshRestart");
+                    LogInfo(
+                        safety.PressureSafeConfirmed
+                            ? "旧批次清场完成，正在自动开始新试验。"
+                            : "旧批次电机与电源已确认关闭；压力证据暂缺，不阻碍实时预检和重新开始。");
+                }
+
+                // 新试验不继承上一次报警的面板指示灯、蜂鸣器及内部活动报警集合。
+                // ClearAllAsync 自带报警模块的重装延迟，期间若产生新报警会在延迟后重新输出。
+                if (_alarmManager != null)
+                {
+                    try
+                    {
+                        await _alarmManager.ClearAllAsync().ConfigureAwait(true);
+                        LogInfo("开始新试验前已自动复位上次声光报警。");
+                    }
+                    catch (Exception alarmEx)
+                    {
+                        // 声光报警属于观察/提示设备，清除失败不能成为卡钳重新开始的许可门。
+                        // 新试验中的实时控制保护仍由控制层独立执行并再次发布报警。
+                        LogInfo(
+                            $"上次声光报警复位异常，但不阻碍重新开始：{alarmEx.Message}");
+                    }
+                }
+
+                if (!unattendedRecovery && !WatchdogRuntime.IsAttached)
+                {
+                    try
+                    {
+                        WatchdogRuntime.ConfigureJournalExportPath(
+                            Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName, "WatchdogSessions"));
+                    }
+                    catch (Exception exportPathError)
+                    {
+                        LogInfo("独立看门狗Journal封存路径配置失败；不阻止试验启动：" +
+                            exportPathError.GetBaseException().Message);
+                    }
+                    var watchdogChannels = Enumerable.Range(1, 12)
+                        .Where(channel => EpbGroup[channel - 1]?.CtrlJoinTest?.Checked == true)
+                        .ToArray();
+                    var watchdog = await WatchdogRuntime.StartSessionAsync(watchdogChannels)
+                        .ConfigureAwait(true);
+                    if (watchdog == null || !watchdog.Attached ||
+                        !WatchdogRuntime.IsAttached)
+                        throw new InvalidOperationException(
+                            "Watchdog exact Attached失败；已拒绝启动批次：" +
+                            (watchdog?.Warning ?? "Unknown"));
+                }
+
+                // Both a newly started session and an already-attached
+                // session must pass the same Main-held target/handler Ready
+                // gate.  A stale prior binding is never silently reused for a
+                // different transport identity.
+                if (!WatchdogRuntime.IsAttached)
+                    throw new InvalidOperationException(
+                        "Watchdog exact Attached不可用；已拒绝启动批次。");
+                var uiBinding = await BindWatchdogUiAfterAttachAsync()
+                    .ConfigureAwait(true);
+                if (uiBinding == null || !uiBinding.Accepted || !uiBinding.Ready)
+                    throw new InvalidOperationException(
+                        "Watchdog UI管线未完成Ready绑定；已拒绝启动批次：" +
+                        (uiBinding?.Reason ?? "Unknown"));
+                var entryDecision = WinFormsWatchdogUiEntryPolicy.Evaluate(
+                    unattendedRecovery
+                        ? WinFormsWatchdogUiEntryKind.Recovery
+                        : WinFormsWatchdogUiEntryKind.Normal,
+                    WatchdogRuntime.IsAttached,
+                    uiBinding.Accepted && uiBinding.Ready);
+                if (!entryDecision.Allowed)
+                    throw new InvalidOperationException(
+                        "Watchdog UI入口策略拒绝启动批次：" + entryDecision.Reason);
+                UnattendedRunCheckpointStore.BindWatchdogSession(
+                    WatchdogRuntime.SessionId);
+                WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
+                LogInfo("独立看门狗已就绪。");
+
+                Interlocked.Exchange(ref _monitorEnergizationAttempted, 1);
+                var startTask = WinFormsWatchdogUiEntryCoordinator.StartIfAllowedAsync(
+                    entryDecision,
+                    () => StartNewBatchAsync(unattendedRecovery));
+                TrackBatchStartLifecycle(startTask);
+
+                if (unattendedRecovery)
+                {
+                    var startResult = await startTask.ConfigureAwait(true);
+                    var validationError = EpbManager.ValidateUnattendedBatchStartResult(
+                        expectedChannels,
+                        startResult);
+                    if (!string.IsNullOrWhiteSpace(validationError))
+                        throw new InvalidOperationException(validationError);
+                    Interlocked.Exchange(ref _operatorStopRequested, 0);
+                    return startResult;
+                }
+
+                // 原处理函数是 async void；只等待控制层建立会话，不再占用按钮到整批结束。
+                for (var i = 0; i < 20 && !(_epb?.IsBatchSessionActive ?? false); i++)
+                    await Task.Delay(100).ConfigureAwait(true);
+                if (_epb?.IsBatchSessionActive ?? false)
+                {
+                    Interlocked.Exchange(ref _operatorStopRequested, 0);
+                    SetMonitorLifecycle(EpbMonitorLifecycle.Running);
+                }
+
+                return null;
+            }
+            finally
+            {
+                // 先释放 UI 操作锁，再按控制层最终状态恢复按钮；否则稳定态仍会被
+                // guard 判为不可点击，表现为“继续试验”无悬浮、无手型且点击无效。
+                Interlocked.Exchange(ref _batchStartUiGuard, 0);
+
+                if (!IsDisposed && BtnStartTest != null)
+                    ApplyBatchPauseState(_epb?.CurrentBatchPauseState ?? Controller.BatchPauseState.Idle);
+            }
+        }
+
+        private void TrackBatchStartLifecycle(Task<BatchStartResult> startTask)
+        {
+            if (startTask == null)
+            {
+                Interlocked.Exchange(ref _monitorEnergizationAttempted, 0);
+                return;
+            }
+
+            _ = startTask.ContinueWith(
+                task =>
+                {
+                    if (task.IsFaulted)
+                        LogInfo($"启动后台任务异常：{task.Exception?.GetBaseException().Message}");
+                    var active = _epb?.IsBatchSessionActive == true;
+                    if (!active)
+                        Interlocked.Exchange(ref _monitorEnergizationAttempted, 0);
+                    var lifecycle = MonitorLifecycle;
+                    if (lifecycle == EpbMonitorLifecycle.Stopping ||
+                        lifecycle == EpbMonitorLifecycle.Closed ||
+                        lifecycle == EpbMonitorLifecycle.InitializationFailed)
+                        return;
+                    SetMonitorLifecycle(active
+                        ? EpbMonitorLifecycle.Running
+                        : EpbMonitorLifecycle.Idle);
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+}

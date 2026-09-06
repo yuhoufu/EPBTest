@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>PowerSupplyDebugger</AssemblyName>
+    <RootNamespace>PowerSupplyDebugger</RootNamespace>
+    <Platforms>AnyCPU;x86</Platforms>
+    <PlatformTarget Condition="'$(Configuration)' == 'Release'">x86</PlatformTarget>
+    <RuntimeIdentifier Condition="'$(Configuration)' == 'Release'">win-x86</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(Configuration)' != 'Release'">win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PowerSupply.Core\PowerSupply.Core.csproj" />
+  </ItemGroup>
+
+</Project>

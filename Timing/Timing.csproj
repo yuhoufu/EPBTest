@@ -26,6 +26,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
+    <PlatformTarget>x86</PlatformTarget>
     <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
@@ -48,7 +49,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Config\Config.csproj">
-      <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
+      <Project>{7941d662-f680-489b-972d-f324cbb42a9d}</Project>
       <Name>Config</Name>
     </ProjectReference>
   </ItemGroup>

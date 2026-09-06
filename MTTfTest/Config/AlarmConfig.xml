@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AlarmConfig>
+  <!--
+    泓格 M-7055D（RS-485）报警输出配置：
+    - 本文件用于控制报警灯/蜂鸣器（不走 NI 的 DoController）。
+    - Commands 节点里建议放“现场实测可用”的完整 Hex 帧（含 CRC），避免 CRC/地址差异导致联调成本上升。
+    - 目录位置：MTTfTest/Config/AlarmConfig.xml（运行时从 .\Config\AlarmConfig.xml 读取）。
+  -->
+
+  <!-- 串口参数（通常：115200, 8N1）。Port 改为现场实际 COM 口。 -->
+  <Serial Port="COM8" Baud="115200" DataBits="8" Parity="None" StopBits="1" />
+
+  <Mappings>
+    <!--
+      EPB 通道 -> M-7055D DO 映射：
+      - Channel：EPB 通道号（1..12）
+      - DeviceId：模块地址（示例：1 表示 01，2 表示 02）
+      - Line：DO 线号（0..7）
+      可选覆盖：OvershootAlarmDeltaA（单位 A），用于“峰值超阈值增量”报警判据的单通道覆盖。
+    -->
+    <Epb Channel="1" DeviceId="1" Line="0" />
+    <Epb Channel="2" DeviceId="1" Line="1" />
+    <Epb Channel="3" DeviceId="1" Line="2" />
+    <Epb Channel="4" DeviceId="1" Line="3" />
+    <Epb Channel="5" DeviceId="1" Line="4" />
+    <Epb Channel="6" DeviceId="1" Line="5" />
+    <Epb Channel="7" DeviceId="1" Line="6" />
+    <Epb Channel="8" DeviceId="1" Line="7" />
+
+    <Epb Channel="9" DeviceId="2" Line="0" />
+    <Epb Channel="10" DeviceId="2" Line="1" />
+    <Epb Channel="11" DeviceId="2" Line="2" />
+    <Epb Channel="12" DeviceId="2" Line="3" />
+
+    <!-- 蜂鸣器 DO 映射（通常：任意报警存在且启用蜂鸣器时拉响）。 -->
+    <Buzzer DeviceId="2" Line="4" />
+  </Mappings>
+
+  <Commands>
+    <AllOff>
+      <!--
+        一键全关：写多个线圈（功能码 0x0F）
+        - Hex：完整帧（含 CRC），空格分隔
+        - ExpectResponse：是否等待响应。
+          现场经验：模块2可能无响应，因此可配 false。
+      -->
+      <Device Id="1" Hex="01 0F 00 00 00 08 01 00 FE 95" ExpectResponse="true" />
+      <Device Id="2" Hex="02 0F 00 00 00 08 01 00 BE 80" ExpectResponse="false" />
+    </AllOff>
+
+    <SingleCoil>
+      <!--
+        单点控制：写单个线圈（功能码 0x05）
+        - Cmd/DeviceId/Line：与 Mappings 的地址与 DO 线号一致
+        - OnHex/OffHex：完整帧（含 CRC）。
+      -->
+
+      <!-- Device1: EPB1..EPB8 -> DO0..DO7 -->
+      <Cmd DeviceId="1" Line="0" OnHex="01 05 00 00 FF 00 8C 3A" OffHex="01 05 00 00 00 00 CD CA" />
+      <Cmd DeviceId="1" Line="1" OnHex="01 05 00 01 FF 00 DD FA" OffHex="01 05 00 01 00 00 9C 0A" />
+      <Cmd DeviceId="1" Line="2" OnHex="01 05 00 02 FF 00 2D FA" OffHex="01 05 00 02 00 00 6C 0A" />
+      <Cmd DeviceId="1" Line="3" OnHex="01 05 00 03 FF 00 7C 3A" OffHex="01 05 00 03 00 00 3D CA" />
+      <Cmd DeviceId="1" Line="4" OnHex="01 05 00 04 FF 00 CD FB" OffHex="01 05 00 04 00 00 8C 0B" />
+      <Cmd DeviceId="1" Line="5" OnHex="01 05 00 05 FF 00 9C 3B" OffHex="01 05 00 05 00 00 DD CB" />
+      <Cmd DeviceId="1" Line="6" OnHex="01 05 00 06 FF 00 6C 3B" OffHex="01 05 00 06 00 00 2D CB" />
+      <Cmd DeviceId="1" Line="7" OnHex="01 05 00 07 FF 00 3D FB" OffHex="01 05 00 07 00 00 7C 0B" />
+
+      <!-- Device2: EPB9..EPB12 -> DO0..DO3, Buzzer -> DO4 -->
+      <Cmd DeviceId="2" Line="0" OnHex="02 05 00 00 FF 00 8C 09" OffHex="02 05 00 00 00 00 CD F9" />
+      <Cmd DeviceId="2" Line="1" OnHex="02 05 00 01 FF 00 DD C9" OffHex="02 05 00 01 00 00 9C 39" />
+      <Cmd DeviceId="2" Line="2" OnHex="02 05 00 02 FF 00 2D C9" OffHex="02 05 00 02 00 00 6C 39" />
+      <Cmd DeviceId="2" Line="3" OnHex="02 05 00 03 FF 00 7C 09" OffHex="02 05 00 03 00 00 3D F9" />
+      <Cmd DeviceId="2" Line="4" OnHex="02 05 00 04 FF 00 CD C8" OffHex="02 05 00 04 00 00 8C 38" />
+    </SingleCoil>
+  </Commands>
+
+  <!--
+    行为参数：
+    - BuzzerEnabled：是否允许软件控制蜂鸣器（UI 勾选也会覆盖运行态）
+    - BuzzerOnAnyAlarm：任意 EPB 报警即拉响蜂鸣器
+    - BuzzerDebounceMs：蜂鸣器去抖（避免瞬态误触）
+    - RearmDelayMs：一键全关后的冷却时间；冷却期内允许记录报警，但不立刻重新拉响
+    - TimeoutMs/Retry：串口发送超时与重试次数（尽力策略）
+    - OvershootAlarmDeltaA：快速保护断电线（I >= Thr + Delta 连续3样本即断正向电，不单圈永久报警）
+    - AdaptivePermanentOvershootDeltaA：完整峰值永久报警计数线
+    - AdaptiveOvershootWarningDeltaA：自适应峰值平衡带；单圈超出只软预警
+    - AdaptiveOvershootConfirmCycles：连续多少个正式提交圈超过永久报警计数线才锁存
+    - PeakEvidenceMismatchConfirmCycles：有效且新鲜的快速/完整峰值连续偏差多少圈才升级硬故障
+    - AdaptiveForwardStallConfirmCycles：正向低于合格下限的平台停滞连续多少个正式提交圈才锁存
+    - SnapshotLastNCycles：报警快照导出最近 N 圈（默认 10，且包含当前 running 圈）
+    - SnapshotCooldownMs：同一通道报警快照去抖窗（ms）
+    - SnapshotPostOffTailMs：立即断电后继续保留的电流/压力尾部（ms，0..3000）
+  -->
+  <Behavior
+    BuzzerEnabled="true"
+    BuzzerOnAnyAlarm="true"
+    BuzzerDebounceMs="200"
+    RearmDelayMs="1000"
+    TimeoutMs="200"
+    Retry="2"
+    OvershootAlarmDeltaA="3.0"
+    AdaptivePermanentOvershootDeltaA="2.0"
+    AdaptiveOvershootWarningDeltaA="0.8"
+    AdaptiveOvershootConfirmCycles="8"
+    PeakEvidenceMismatchConfirmCycles="3"
+    AdaptiveForwardStallConfirmCycles="8"
+    GenericFaultConfirmCycles="3"
+    SnapshotLastNCycles="10"
+    SnapshotCooldownMs="2000"
+    SnapshotPostOffTailMs="1000" />
+  <WarningSnapshots
+    Enabled="true"
+    RootDirectory="WarningSnapshots"
+    FullEvidenceEnabled="false"
+    SaveCsv="true"
+    SaveBin="true"
+    HardAlarmLastNCycles="10"
+    HardAlarmIncludeSameElectricalGroup="false"
+    HardAlarmSameGroupLastNCycles="10"
+    SoftWarningRetentionMode="Count"
+    SoftWarningRetainCountPerChannelCode="30"
+    SoftWarningQuotaMb="0"
+    DiskFreeWarningMb="10240"
+    FullEvidenceMinimumIntervalSeconds="600"
+    FullEvidenceQueueCapacity="1"
+    ScalarEvidenceQueueCapacity="4096"
+    SoftWarningMaintenanceWindowCycles="100"
+    SoftWarningMaintenanceRate="0.10"
+    SoftWarningMaintenanceConsecutiveWindows="2" />
+</AlarmConfig>

@@ -396,3 +396,18 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+# Runtime logs and test data
+运行日志/
+DataStore/
+/tmp/
+# Field-operation screenshots are retained locally and must not enter commits.
+**/截图/
+*.csv
+!Tests/AdaptiveControlTests/Fixtures/field_v20_epb10_cycle_-002094.csv
+!Tests/AdaptiveControlTests/Fixtures/field_v15_epb10_cycle_084529.csv
+ErrorLog_*.txt
+RunLog_*.txt
+WarnLog_*.txt
+# Local assistant memory and copyright-registration source materials.
+.workbuddy/
+docs/软著/

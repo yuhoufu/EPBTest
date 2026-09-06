@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{63E8343C-446A-4397-ACFB-708CAFE3823D}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>MTTFTest.UnattendedRecoveryNoHardwareSafetyAgent</RootNamespace>
+    <AssemblyName>MTTFTest.SafetyAgent</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>9</LangVersion>
+  </PropertyGroup>
+  <Import Project="..\..\Build\UnattendedVersion.props" />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols><DebugType>full</DebugType><Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath><PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType><Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath><PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="NoHardwareSafetyAgentProgram.cs" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Project>{E73C3F6B-74EE-45E1-A819-9A402777E862}</Project>
+      <Name>Watchdog.Protocol</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
