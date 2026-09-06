@@ -124,6 +124,17 @@ try {
     Write-MaintenanceJson $jsonPath @{TransactionId='same';CleanupCompleted=$false}
     Write-MaintenanceJson $jsonPath @{TransactionId='same';CleanupCompleted=$true}
     Check ((Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json).CleanupCompleted) '维护事务原子更新'
+    $maintenanceRoot = Join-Path $temp 'ProgramData\MTTFTest'
+    [void](New-Item -ItemType Directory -Path $maintenanceRoot -Force)
+    $maintenancePath = Join-Path $maintenanceRoot 'maintenance-inhibit.json'
+    $unfinishedState = '{"CleanupCompleted":false,"InstallRoot":"D:\\OldInstall\\MTTFTest"}'
+    [IO.File]::WriteAllText($maintenancePath, $unfinishedState, (New-Object Text.UTF8Encoding($true)))
+    Archive-MaintenanceInhibitForInstall $maintenanceRoot
+    Check (-not (Test-Path -LiteralPath $maintenancePath)) '未完成或异目录清场状态不阻断重新安装'
+    $maintenanceArchives = @(Get-ChildItem -LiteralPath (Join-Path $maintenanceRoot 'MaintenanceArchive') -File)
+    Check ($maintenanceArchives.Count -eq 1 -and
+        [IO.File]::ReadAllText($maintenanceArchives[0].FullName, [Text.Encoding]::UTF8).TrimStart([char]0xFEFF) -eq $unfinishedState) `
+        '重新安装前封存旧清场状态供审计'
     foreach ($name in @('Stop-RelatedProcesses.ps1','Export-StabilityEvidence.ps1')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $temp }
     $saved = $env:MTTFTEST_QUICKDEPLOY_PARSE_ONLY
     try {

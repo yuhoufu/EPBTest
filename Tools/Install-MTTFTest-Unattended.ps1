@@ -80,13 +80,23 @@ function Assert-RuntimePrerequisites([string]$Source, [string]$Root) {
     $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($Root))
     $bytes = (Get-ChildItem -LiteralPath $Source -Recurse -File | Measure-Object Length -Sum).Sum
     if ($drive.AvailableFreeSpace -lt (3 * $bytes + 1GB)) { throw '安装卷空间不足，需要包体积三倍加 1 GiB。' }
-    $maintenance = Join-Path $env:ProgramData 'MTTFTest\maintenance-inhibit.json'
-    if (Test-Path -LiteralPath $maintenance) {
-        $state = Read-Utf8JsonFile $maintenance '清场维护事务'
-        if (-not [bool]$state.CleanupCompleted -or [string]$state.InstallRoot -ne $Root) {
-            throw '清场尚未完成或属于另一安装目录，拒绝安装。'
-        }
-    }
+}
+
+function Archive-MaintenanceInhibitForInstall(
+    [string]$StateRoot = (Join-Path $env:ProgramData 'MTTFTest')) {
+    $maintenance = Join-Path $StateRoot 'maintenance-inhibit.json'
+    if (-not (Test-Path -LiteralPath $maintenance -PathType Leaf)) { return }
+
+    # 重新安装/修复已在前面确认主程序退出、旧会话空闲，并停用了
+    # 旧服务与任务。此时旧的维护事务只是过期启动禁止，不应再阻断换包。
+    # 保留原始文件供审计，再由新安装建立服务和任务。
+    $archiveRoot = Join-Path $StateRoot 'MaintenanceArchive'
+    [void](New-Item -ItemType Directory -Path $archiveRoot -Force)
+    $archiveName = 'maintenance-inhibit.preinstall.' +
+        [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '.' +
+        [Guid]::NewGuid().ToString('N') + '.json'
+    Move-Item -LiteralPath $maintenance -Destination (Join-Path $archiveRoot $archiveName)
+    Write-Host '已封存旧清场维护状态；它不再限制重新安装或修复。'
 }
 
 function Stop-Supervisor {
@@ -836,6 +846,7 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Write-OperationStep 6 9 '配置程序目录和 ProgramData 权限。'
     Set-UnattendedAcl $root
     Write-OperationStep 7 9 '安装 schema 7 监督服务、登录代理和自启动任务。'
+    Archive-MaintenanceInhibitForInstall
     Install-ServiceAndAgent $root
     Write-OperationStep 8 9 '检查程序文件、服务和任务状态。'
     Assert-Health $root
@@ -843,10 +854,5 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
     Write-Host "V$sourceVersion 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
-    if (Test-Path -LiteralPath (Join-Path $env:ProgramData 'MTTFTest\maintenance-inhibit.json')) {
-        $global:LASTEXITCODE = 0
-        & (Join-Path $source 'Deployment\Stop-RelatedProcesses.ps1') -Mode Restore -InstallRoot $root
-        if ($LASTEXITCODE -ne 0) { throw '新包已安装，但维护状态恢复受阻；查看 last-maintenance-result.json 后重试。' }
-    }
     Write-DeploymentResult $Mode $sourceVersion $root $source
 }
