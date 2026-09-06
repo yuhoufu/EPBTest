@@ -13489,6 +13489,16 @@ namespace Controller
                    context.Source == StopSource.SystemFault;
         }
 
+        /// <summary>
+        /// 重启清场的圈号注册表显式清扫：Timer/Runner 摘除后正常收尾不会再运行。
+        /// 仍等待耐久恢复的圈身份按 ClearCurrentCycleNumber 守卫保留并告警。
+        /// </summary>
+        internal void SweepCurrentCycleRegistryForRestartQuiescence()
+        {
+            foreach (var channel in _currentCycleNumberByChannel.Keys.ToArray())
+                ClearCurrentCycleNumber(channel);
+        }
+
         private async Task<StopSafetyResult> FinalizeLogicalQuiescenceForRestartAsync(
             StopSafetyResult physicalResult,
             string reason,
@@ -13501,6 +13511,10 @@ namespace Controller
                 try { CancelCyclePauseCts(channel); } catch { }
             foreach (var channel in _stopCtsByChannel.Keys.ToArray())
                 try { CancelStopCts(channel); } catch { }
+            // 停止事务摘除 Timer/Runner 后，正常收尾路径不会再运行，圈号注册表
+            // 必须在此显式清扫，否则 ActiveCycles 残留会让重启不变量永远失败。
+            // 带耐久恢复守卫：仍等待落盘恢复的圈身份保留并告警，交由恢复路径收敛。
+            SweepCurrentCycleRegistryForRestartQuiescence();
             foreach (var channel in _hydraulicParticipants.Keys.ToArray())
                 UnmarkHydraulicParticipant(channel);
 

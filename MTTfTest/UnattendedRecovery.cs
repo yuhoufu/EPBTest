@@ -1434,6 +1434,16 @@ namespace MTEmbTest
 
     internal static class UnattendedRecoveryCoordinator
     {
+        /// <summary>
+        /// 升级到外部接管要求“恢复任务仍在运行”且“存在真实边界”。已完成
+        /// 的恢复永远优先：null/空串边界是健康完成路径；即使轮询恰好捕捉到
+        /// 边界，只要任务随后完成也不得撤销成功的恢复（现场 I0044 竞态）。
+        /// </summary>
+        internal static bool ShouldEscalateToExternalRecovery(
+            bool recoveryCompleted,
+            string boundaryReason) =>
+            !recoveryCompleted && !string.IsNullOrWhiteSpace(boundaryReason);
+
         private sealed class InProcessRecoveryProgressLease
         {
             private long _lastProgressUtcTicks;
@@ -1814,6 +1824,11 @@ namespace MTEmbTest
                         fault,
                         lease,
                         workerCancellation.Token);
+                    // The recovery task's completion is the only source of truth.
+                    // boundaryReason is only meaningful when the loop broke on a
+                    // real boundary while the task is still running; a completion
+                    // squeezed between the last empty poll and the loop condition
+                    // must finish in process, never escalate to external takeover.
                     string boundaryReason = null;
                     while (!recovery.IsCompleted)
                     {
@@ -1832,7 +1847,7 @@ namespace MTEmbTest
                         }
                     }
 
-                    if (boundaryReason == null)
+                    if (!ShouldEscalateToExternalRecovery(recovery.IsCompleted, boundaryReason))
                     {
                         await recovery.ConfigureAwait(false);
                         return;
