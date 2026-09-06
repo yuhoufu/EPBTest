@@ -1,0 +1,11 @@
+{
+  "SourceCommit": "1185a09d62e84b1982c648168b371118d17b9ce4",
+  "OriginalPermitCurrentBeforeRetirement": true,
+  "RevokeSucceeded": true,
+  "OldPermitCurrentAfterRetirement": false,
+  "RecapturedPermitCurrentAfterRetirement": false,
+  "SameDigestOrdinalEquals": false,
+  "SameDigestCaseInsensitiveEquals": true,
+  "Scope": "Actual ChannelExecutionFence in isolation and exact hash predicate; not a hardware/end-to-end test",
+  "Result": "PASS"
+}

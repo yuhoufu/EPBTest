@@ -1,0 +1,12 @@
+{
+  "Checked": 584,
+  "Mismatches": [],
+  "Omitted": [
+    {
+      "Reason": "SizeBudget",
+      "Source": "C:\\ProgramData\\MTTFTest\\Supervisor\\supervisor-audit.log",
+      "Bytes": 71802618,
+      "Copied": false
+    }
+  ]
+}

@@ -1,0 +1,4232 @@
+[
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 1,
+    "Sequence": 1,
+    "Utc": "2026-09-06T12:57:13.3989848Z",
+    "Local": "2026-09-06 20:57:13.398",
+    "Event": "JournalConfigured",
+    "Reason": "WatchdogJournalPolicy RetentionDays=90;RetainSessions=32;MaxTotalBytes=134217728;MaxSessionBytes=16777216;HeartbeatCheckpointSeconds=60;EmergencySpoolMaxBytes=8388608"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 2,
+    "Sequence": 2,
+    "Utc": "2026-09-06T12:57:13.5328297Z",
+    "Local": "2026-09-06 20:57:13.532",
+    "Event": "CrashRecoverySeedCommitted",
+    "Reason": "SeedId=81f08b1cc5dc453a9291043e57ace2d7;Generation=1;Lease=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 3,
+    "Sequence": 3,
+    "Utc": "2026-09-06T12:57:18.6516437Z",
+    "Local": "2026-09-06 20:57:18.651",
+    "Event": "SidecarHelperLaunched",
+    "Reason": "PID=17004;Nonce=0ef0f6f7ecec4a3e89180b922d112c15"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 4,
+    "Sequence": 4,
+    "Utc": "2026-09-06T12:57:18.8010803Z",
+    "Local": "2026-09-06 20:57:18.801",
+    "Event": "AttachSent",
+    "Reason": "MainProcess"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 5,
+    "Sequence": 5,
+    "Utc": "2026-09-06T12:57:18.8335499Z",
+    "Local": "2026-09-06 20:57:18.833",
+    "Event": "Attached",
+    "Reason": "HandshakeCompleted;AuthorityPid=17004;AuthorityStartUtcTicks=639242962386083695"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 6,
+    "Sequence": 6,
+    "Utc": "2026-09-06T12:57:18.8360502Z",
+    "Local": "2026-09-06 20:57:18.836",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=Attached;Sequence=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 7,
+    "Sequence": 7,
+    "Utc": "2026-09-06T12:57:18.8580317Z",
+    "Local": "2026-09-06 20:57:18.858",
+    "Event": "MainUiReady",
+    "Reason": "MainUiWatchdogPipelineReady"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 8,
+    "Sequence": 8,
+    "Utc": "2026-09-06T12:58:45.3258560Z",
+    "Local": "2026-09-06 20:58:45.325",
+    "Event": "StopAllRequested",
+    "Reason": "ExternalRecoveryRequired:Stage=LearningExecutionRebuildRequired Attempt=3 FaultCode=ExecutionRecoveryRequired Channels=[7,8,9,12] Error=采样已恢复；旧学习执行体已撤销，需要安全重建批次并重新学习和资格验证。;CorrelationId=01c5ca0d8c9347acb50a9c1c7f57d785;ExpectedRunId=4fe50c11c023490d8dc1d0ba1def8b97:ce7b9881c5b6476393f2a7c1a71c4c5b"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 9,
+    "Sequence": 9,
+    "Utc": "2026-09-06T12:58:55.9064226Z",
+    "Local": "2026-09-06 20:58:55.906",
+    "Event": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical="
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 10,
+    "Sequence": 10,
+    "Utc": "2026-09-06T12:58:56.0491536Z",
+    "Local": "2026-09-06 20:58:56.049",
+    "Event": "ApplicationExitDeadlineArmFailed",
+    "Reason": "Watchdog safety receipt is invalid."
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 11,
+    "Sequence": 11,
+    "Utc": "2026-09-06T12:58:56.0841631Z",
+    "Local": "2026-09-06 20:58:56.084",
+    "Event": "RecoveryFailureReceiptIgnored",
+    "Reason": "UnknownCorrelation=1dc9e069709342e9a56438cf6f29c2fe"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 12,
+    "Sequence": 12,
+    "Utc": "2026-09-06T12:59:17.3217055Z",
+    "Local": "2026-09-06 20:59:17.321",
+    "Event": "RecoveryFailureReceiptIgnored",
+    "Reason": "UnknownCorrelation=e386e26b744e4ef7b846c1c1abedb876"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 13,
+    "Sequence": 1,
+    "Utc": "2026-09-06T12:59:20.3085190Z",
+    "Local": "2026-09-06 20:59:20.308",
+    "Event": "JournalConfigured",
+    "Reason": "WatchdogJournalPolicy RetentionDays=90;RetainSessions=32;MaxTotalBytes=134217728;MaxSessionBytes=16777216;HeartbeatCheckpointSeconds=60;EmergencySpoolMaxBytes=8388608"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 14,
+    "Sequence": 2,
+    "Utc": "2026-09-06T12:59:20.3259920Z",
+    "Local": "2026-09-06 20:59:20.325",
+    "Event": "AuthoritySeeded",
+    "Reason": "PID=17004"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 15,
+    "Sequence": 3,
+    "Utc": "2026-09-06T12:59:20.3549597Z",
+    "Local": "2026-09-06 20:59:20.354",
+    "Event": "AttachSent",
+    "Reason": "RecoveryProcess"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 16,
+    "Sequence": 4,
+    "Utc": "2026-09-06T12:59:20.4009695Z",
+    "Local": "2026-09-06 20:59:20.400",
+    "Event": "Attached",
+    "Reason": "HandshakeCompleted;AuthorityPid=17004;AuthorityStartUtcTicks=639242962386083695"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 17,
+    "Sequence": 5,
+    "Utc": "2026-09-06T12:59:20.4060074Z",
+    "Local": "2026-09-06 20:59:20.406",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=Attached;Sequence=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 18,
+    "Sequence": 6,
+    "Utc": "2026-09-06T12:59:20.4069927Z",
+    "Local": "2026-09-06 20:59:20.406",
+    "Event": "RecoveryCheckpointValidated",
+    "Reason": "RunId=4fe50c11c023490d8dc1d0ba1def8b97;Revision=52;Source=C:\\Users\\mt\\AppData\\Local\\MTTFTest\\unattended-run-checkpoint.json"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 19,
+    "Sequence": 7,
+    "Utc": "2026-09-06T12:59:26.3575636Z",
+    "Local": "2026-09-06 20:59:26.357",
+    "Event": "MainUiReady",
+    "Reason": "MainUiWatchdogPipelineReady"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 20,
+    "Sequence": 8,
+    "Utc": "2026-09-06T12:59:26.9743945Z",
+    "Local": "2026-09-06 20:59:26.974",
+    "Event": "SafetyPreflightPassed",
+    "Reason": "MotorOff=True;PowerOff=True;PressureSafe=True;Logical=True;AbortedOrphanCycles=0"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 21,
+    "Sequence": 9,
+    "Utc": "2026-09-06T13:02:12.8248646Z",
+    "Local": "2026-09-06 21:02:12.824",
+    "Event": "RecoveryBatchCommitted",
+    "Reason": "RunId=4b3f046017eb45dcaaa92a60ae981c36;RunEpoch=3;Channels=[4,5,7,8,9,12]"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 22,
+    "Sequence": 10,
+    "Utc": "2026-09-06T13:58:32.3497445Z",
+    "Local": "2026-09-06 21:58:32.349",
+    "Event": "WatchdogClosingIdentityMismatch",
+    "Reason": "DurableCloseFenceIdentityChanged;ExpectedSession=b9622b65c70b4b2fbbeec07f1ca8500b;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=True;CurrentSession=b9622b65c70b4b2fbbeec07f1ca8500b;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 23,
+    "Sequence": 11,
+    "Utc": "2026-09-06T13:58:32.3512553Z",
+    "Local": "2026-09-06 21:58:32.351",
+    "Event": "ManualStopIntent",
+    "Reason": "操作员点击停止试验"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 24,
+    "Sequence": 12,
+    "Utc": "2026-09-06T13:58:38.9745251Z",
+    "Local": "2026-09-06 21:58:38.974",
+    "Event": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical="
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 25,
+    "Sequence": 13,
+    "Utc": "2026-09-06T13:58:38.9805205Z",
+    "Local": "2026-09-06 21:58:38.980",
+    "Event": "WatchdogClosingTombstoneReused",
+    "Reason": "State=Closing;StateVersion=1;Generation=1;Lease=1;Intent=SessionClose;Mark=ExactSessionDetached"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 26,
+    "Sequence": 14,
+    "Utc": "2026-09-06T13:58:38.9820287Z",
+    "Local": "2026-09-06 21:58:38.982",
+    "Event": "TransportLost",
+    "Reason": "ReaderLoopClosed:Reader返回EOF。"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 27,
+    "Sequence": 15,
+    "Utc": "2026-09-06T13:58:38.9840195Z",
+    "Local": "2026-09-06 21:58:38.984",
+    "Event": "TransportLost",
+    "Reason": "ReaderLoopClosed:Reader返回EOF。"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 28,
+    "Sequence": 16,
+    "Utc": "2026-09-06T13:58:38.9975335Z",
+    "Local": "2026-09-06 21:58:38.997",
+    "Event": "TransportEvent",
+    "Reason": "WatchdogTransportFailClosed:IdentityRejected:AttachExistingAuthorityOnly权威进程已退出或PID已复用。"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 29,
+    "Sequence": 17,
+    "Utc": "2026-09-06T13:58:38.9975335Z",
+    "Local": "2026-09-06 21:58:38.997",
+    "Event": "TransportEvent",
+    "Reason": "WatchdogTransportFailClosed:IdentityRejected:AttachExistingAuthorityOnly权威进程已退出或PID已复用。"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 30,
+    "Sequence": 18,
+    "Utc": "2026-09-06T13:59:17.3827565Z",
+    "Local": "2026-09-06 21:59:17.382",
+    "Event": "WatchdogClosingIdentityMismatch",
+    "Reason": "DurableCloseFenceIdentityChanged;ExpectedSession=b9622b65c70b4b2fbbeec07f1ca8500b;ExpectedGeneration=1;ExpectedLease=1;ContextStable=True;ContextReferenceExact=True;EngineActive=True;EngineAttached=False;CurrentSession=b9622b65c70b4b2fbbeec07f1ca8500b;CurrentGeneration=1;CurrentLease=1;ActiveLease=1;TombstoneState=Closing;TombstoneVersion=1;TombstoneGeneration=1;TombstoneLease=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 31,
+    "Sequence": 19,
+    "Utc": "2026-09-06T13:59:17.3837511Z",
+    "Local": "2026-09-06 21:59:17.383",
+    "Event": "ManualStopIntent",
+    "Reason": "操作员点击停止试验"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 32,
+    "Sequence": 20,
+    "Utc": "2026-09-06T13:59:17.3847493Z",
+    "Local": "2026-09-06 21:59:17.384",
+    "Event": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical="
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 33,
+    "Sequence": 21,
+    "Utc": "2026-09-06T13:59:46.6499070Z",
+    "Local": "2026-09-06 21:59:46.649",
+    "Event": "ApplicationExitRequested",
+    "Reason": "Intent=5717d4b199784723a734813ecf79910e;PID=10860;Disposition=OperatorExit;Relaunch=Forbidden;PermitGeneration=0;HardDeadlineUtcTicks=639243000166369198;Reason=MainFormClosing"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "client",
+    "Line": 34,
+    "Sequence": 22,
+    "Utc": "2026-09-06T14:00:16.6641837Z",
+    "Local": "2026-09-06 22:00:16.664",
+    "Event": "ForcedDeadlineExit",
+    "Reason": "LocalMainProcess30SecondDeadline:MainFormClosing"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 1,
+    "Sequence": 1,
+    "Utc": "2026-09-06T12:57:18.6996463Z",
+    "Local": "2026-09-06 20:57:18.699",
+    "Event": "Starting",
+    "Reason": "SidecarStarted"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 2,
+    "Sequence": 2,
+    "Utc": "2026-09-06T12:57:18.8210679Z",
+    "Local": "2026-09-06 20:57:18.821",
+    "Event": "Attached",
+    "Reason": "MainProcess"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 3,
+    "Sequence": 3,
+    "Utc": "2026-09-06T12:57:18.8555292Z",
+    "Local": "2026-09-06 20:57:18.855",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 4,
+    "Sequence": 4,
+    "Utc": "2026-09-06T12:57:18.8605314Z",
+    "Local": "2026-09-06 20:57:18.860",
+    "Event": "MainUiReady",
+    "Reason": "MainUiWatchdogPipelineReady"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 5,
+    "Sequence": 5,
+    "Utc": "2026-09-06T12:57:21.7327051Z",
+    "Local": "2026-09-06 20:57:21.732",
+    "Event": "SemanticSnapshotStalledFirstEvidence",
+    "Reason": "Pulse=3;SnapshotRevision=9;SnapshotAgeSeconds=1.041;UiLifecycle=Running;ControlProgress=38"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 6,
+    "Sequence": 6,
+    "Utc": "2026-09-06T12:57:21.8217246Z",
+    "Local": "2026-09-06 20:57:21.821",
+    "Event": "FirstLivenessEvidenceFrozen",
+    "Reason": "D:\\EPB_Data\\10243-028\\WatchdogSessions\\WatchdogEvidence\\session-b9622b65c70b4b2fbbeec07f1ca8500b-first-liveness-20260906125721799.json"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 7,
+    "Sequence": 7,
+    "Utc": "2026-09-06T12:57:22.1664210Z",
+    "Local": "2026-09-06 20:57:22.166",
+    "Event": "FirstLivenessMiniDump",
+    "Reason": "Captured=D:\\EPB_Data\\10243-028\\WatchdogSessions\\dumps\\b9622b65c70b4b2fbbeec07f1ca8500b\\MTTFTest_17204_20260906_125721_827.dmp"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 8,
+    "Sequence": 8,
+    "Utc": "2026-09-06T12:58:18.9138227Z",
+    "Local": "2026-09-06 20:58:18.913",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 9,
+    "Sequence": 9,
+    "Utc": "2026-09-06T12:58:45.3208446Z",
+    "Local": "2026-09-06 20:58:45.320",
+    "Event": "TakeoverRequested",
+    "Reason": "ExternalRecoveryRequired:Stage=LearningExecutionRebuildRequired Attempt=3 FaultCode=ExecutionRecoveryRequired Channels=[7,8,9,12] Error=采样已恢复；旧学习执行体已撤销，需要安全重建批次并重新学习和资格验证。;CorrelationId=01c5ca0d8c9347acb50a9c1c7f57d785;ExpectedRunId=4fe50c11c023490d8dc1d0ba1def8b97;Generation=1;Authority=b9622b65c70b4b2fbbeec07f1ca8500b:17204:639242962078905303:1:"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 10,
+    "Sequence": 10,
+    "Utc": "2026-09-06T12:58:55.9099186Z",
+    "Local": "2026-09-06 20:58:55.909",
+    "Event": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical="
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 11,
+    "Sequence": 11,
+    "Utc": "2026-09-06T12:58:56.4254848Z",
+    "Local": "2026-09-06 20:58:56.425",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=Approved;Revision=1;Detail=Approved recovery permit observed"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 12,
+    "Sequence": 12,
+    "Utc": "2026-09-06T12:59:15.4302207Z",
+    "Local": "2026-09-06 20:59:15.430",
+    "Event": "MiniDumpRequested",
+    "Reason": "PID=17204;Reason=AutomaticTakeover:ExternalRecoveryRequired:Stage=LearningExecutionRebuildRequired Attempt=3 FaultCode=ExecutionRecoveryRequired Channels=[7,8,9,12] Error=采样已恢复；旧学习执行体已撤销，需要安全重建批次并重新学习和资格验证。;CorrelationId=01c5ca0d8c9347acb50a9c1c7f57d785;ExpectedRunId=4fe50c11c023490d8dc1d0ba1def8b97"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 13,
+    "Sequence": 13,
+    "Utc": "2026-09-06T12:59:17.2632711Z",
+    "Local": "2026-09-06 20:59:17.263",
+    "Event": "MiniDump",
+    "Reason": "Captured=D:\\EPB_Data\\10243-028\\WatchdogSessions\\dumps\\b9622b65c70b4b2fbbeec07f1ca8500b\\MTTFTest_17204_20260906_125915_430.dmp"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 14,
+    "Sequence": 14,
+    "Utc": "2026-09-06T12:59:17.3757792Z",
+    "Local": "2026-09-06 20:59:17.375",
+    "Event": "HostTransportConnectionRetired",
+    "Reason": "ConnectionGeneration=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 15,
+    "Sequence": 15,
+    "Utc": "2026-09-06T12:59:17.3838008Z",
+    "Local": "2026-09-06 20:59:17.383",
+    "Event": "PipeDisconnected",
+    "Reason": "无法访问关闭的管道。"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 16,
+    "Sequence": 16,
+    "Utc": "2026-09-06T12:59:17.4673149Z",
+    "Local": "2026-09-06 20:59:17.467",
+    "Event": "OldProcessExitProven",
+    "Reason": "PID=17204;StartUtcTicks=639242962078905303;Observation=Dead;Source=RelaunchAfterExitBegin"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 17,
+    "Sequence": 17,
+    "Utc": "2026-09-06T12:59:17.4897838Z",
+    "Local": "2026-09-06 20:59:17.489",
+    "Event": "PostExitSafetyEvidenceAugmented",
+    "Reason": "PID=17204;StartUtcTicks=639242962078905303;Observation=Dead;PermitGeneration=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 18,
+    "Sequence": 18,
+    "Utc": "2026-09-06T12:59:17.5007567Z",
+    "Local": "2026-09-06 20:59:17.500",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=OldProcessExitProven;Revision=2;Detail=Exact old process exit proven"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 19,
+    "Sequence": 19,
+    "Utc": "2026-09-06T12:59:17.5042856Z",
+    "Local": "2026-09-06 20:59:17.504",
+    "Event": "OldProcessTerminated",
+    "Reason": "ExternalRecoveryRequired:Stage=LearningExecutionRebuildRequired Attempt=3 FaultCode=ExecutionRecoveryRequired Channels=[7,8,9,12] Error=采样已恢复；旧学习执行体已撤销，需要安全重建批次并重新学习和资格验证。;CorrelationId=01c5ca0d8c9347acb50a9c1c7f57d785;ExpectedRunId=4fe50c11c023490d8dc1d0ba1def8b97"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 20,
+    "Sequence": 20,
+    "Utc": "2026-09-06T12:59:17.6115364Z",
+    "Local": "2026-09-06 20:59:17.611",
+    "Event": "CrashRecoverySafetyHandoffCreated",
+    "Reason": "HandoffId=c6e4c87683194fea83c3443b94f6d51c;PermitGeneration=1;OldProcessObservation=Dead"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 21,
+    "Sequence": 21,
+    "Utc": "2026-09-06T12:59:17.7394706Z",
+    "Local": "2026-09-06 20:59:17.739",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=SafetyAgentRunning;Revision=3;Detail=Independent SafetyAgent process started"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 22,
+    "Sequence": 22,
+    "Utc": "2026-09-06T12:59:17.7414653Z",
+    "Local": "2026-09-06 20:59:17.741",
+    "Event": "SafetyHandoffWorkerStarted",
+    "Reason": "PID=19688;Attempt=1;HandoffId=c6e4c87683194fea83c3443b94f6d51c"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 23,
+    "Sequence": 23,
+    "Utc": "2026-09-06T12:59:19.4416285Z",
+    "Local": "2026-09-06 20:59:19.441",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=SafetyCompleted;Revision=4;Detail=SafetyAgent completed all physical safety stages"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 24,
+    "Sequence": 24,
+    "Utc": "2026-09-06T12:59:19.4446174Z",
+    "Local": "2026-09-06 20:59:19.444",
+    "Event": "TakeoverSafetyHandoffCompleted",
+    "Reason": "HandoffId=c6e4c87683194fea83c3443b94f6d51c;PermitGeneration=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 25,
+    "Sequence": 25,
+    "Utc": "2026-09-06T12:59:19.4835995Z",
+    "Local": "2026-09-06 20:59:19.483",
+    "Event": "RecoveryReady",
+    "Reason": "PermitGeneration=1;SafetyOutcome=Completed;ReadyTimestamp=15870153298155;Detail=ExactSafetyHandoffCompleted"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 26,
+    "Sequence": 26,
+    "Utc": "2026-09-06T12:59:19.4960825Z",
+    "Local": "2026-09-06 20:59:19.496",
+    "Event": "RecoveryInitialBackoffSuppressed",
+    "Reason": "Attempt=3;Reason=StopCompleted;SafetyReadyTimestamp=15870153298155"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 27,
+    "Sequence": 27,
+    "Utc": "2026-09-06T12:59:19.5656994Z",
+    "Local": "2026-09-06 20:59:19.565",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=MainLaunchIntent;Revision=5;Detail=Durable main launch intent committed"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 28,
+    "Sequence": 28,
+    "Utc": "2026-09-06T12:59:19.6226484Z",
+    "Local": "2026-09-06 20:59:19.622",
+    "Event": "SupervisorSafetyAuthorityTerminalObserved",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority."
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 29,
+    "Sequence": 29,
+    "Utc": "2026-09-06T12:59:19.7999811Z",
+    "Local": "2026-09-06 20:59:19.799",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=MainStarted;Revision=6;Detail=Main Process.Start and exact identity committed"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 30,
+    "Sequence": 30,
+    "Utc": "2026-09-06T12:59:19.8014849Z",
+    "Local": "2026-09-06 20:59:19.801",
+    "Event": "RecoveryProcessLaunched",
+    "Reason": "PID=10860;Attempt=3;Permit=1"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 31,
+    "Sequence": 31,
+    "Utc": "2026-09-06T12:59:20.3849471Z",
+    "Local": "2026-09-06 20:59:20.384",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=Attached;Revision=7;Detail=Authenticated recovery process attached"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 32,
+    "Sequence": 32,
+    "Utc": "2026-09-06T12:59:20.3869384Z",
+    "Local": "2026-09-06 20:59:20.386",
+    "Event": "Attached",
+    "Reason": "RecoveryProcess"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 33,
+    "Sequence": 33,
+    "Utc": "2026-09-06T12:59:20.4164953Z",
+    "Local": "2026-09-06 20:59:20.416",
+    "Event": "RecoveryCheckpointValidated",
+    "Reason": "RunId=4fe50c11c023490d8dc1d0ba1def8b97;Revision=52;Source=C:\\Users\\mt\\AppData\\Local\\MTTFTest\\unattended-run-checkpoint.json"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 34,
+    "Sequence": 34,
+    "Utc": "2026-09-06T12:59:20.4184869Z",
+    "Local": "2026-09-06 20:59:20.418",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 35,
+    "Sequence": 35,
+    "Utc": "2026-09-06T12:59:26.3600653Z",
+    "Local": "2026-09-06 20:59:26.360",
+    "Event": "MainUiReady",
+    "Reason": "MainUiWatchdogPipelineReady"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 36,
+    "Sequence": 36,
+    "Utc": "2026-09-06T12:59:26.9759007Z",
+    "Local": "2026-09-06 20:59:26.975",
+    "Event": "SafetyPreflightPassed",
+    "Reason": "MotorOff=True;PowerOff=True;PressureSafe=True;Logical=True;AbortedOrphanCycles=0"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 37,
+    "Sequence": 37,
+    "Utc": "2026-09-06T12:59:49.6473725Z",
+    "Local": "2026-09-06 20:59:49.647",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 38,
+    "Sequence": 38,
+    "Utc": "2026-09-06T13:00:19.7090504Z",
+    "Local": "2026-09-06 21:00:19.709",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 39,
+    "Sequence": 39,
+    "Utc": "2026-09-06T13:00:21.1520550Z",
+    "Local": "2026-09-06 21:00:21.152",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 40,
+    "Sequence": 40,
+    "Utc": "2026-09-06T13:00:49.7276940Z",
+    "Local": "2026-09-06 21:00:49.727",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 41,
+    "Sequence": 41,
+    "Utc": "2026-09-06T13:01:19.7532448Z",
+    "Local": "2026-09-06 21:01:19.753",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 42,
+    "Sequence": 42,
+    "Utc": "2026-09-06T13:01:22.0349190Z",
+    "Local": "2026-09-06 21:01:22.034",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 43,
+    "Sequence": 43,
+    "Utc": "2026-09-06T13:01:49.8034304Z",
+    "Local": "2026-09-06 21:01:49.803",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 44,
+    "Sequence": 44,
+    "Utc": "2026-09-06T13:02:12.8378558Z",
+    "Local": "2026-09-06 21:02:12.837",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=PipeMessage;Generation=52;Reason=ContextMissing;DeferredCount=1;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 45,
+    "Sequence": 45,
+    "Utc": "2026-09-06T13:02:13.6551781Z",
+    "Local": "2026-09-06 21:02:13.655",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 46,
+    "Sequence": 46,
+    "Utc": "2026-09-06T13:02:19.8867280Z",
+    "Local": "2026-09-06 21:02:19.886",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 47,
+    "Sequence": 47,
+    "Utc": "2026-09-06T13:02:22.3713700Z",
+    "Local": "2026-09-06 21:02:22.371",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 48,
+    "Sequence": 48,
+    "Utc": "2026-09-06T13:02:49.9816435Z",
+    "Local": "2026-09-06 21:02:49.981",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 49,
+    "Sequence": 49,
+    "Utc": "2026-09-06T13:03:14.0117245Z",
+    "Local": "2026-09-06 21:03:14.011",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=60;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 50,
+    "Sequence": 50,
+    "Utc": "2026-09-06T13:03:20.0705056Z",
+    "Local": "2026-09-06 21:03:20.070",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 51,
+    "Sequence": 51,
+    "Utc": "2026-09-06T13:03:23.1341263Z",
+    "Local": "2026-09-06 21:03:23.134",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 52,
+    "Sequence": 52,
+    "Utc": "2026-09-06T13:03:50.1670944Z",
+    "Local": "2026-09-06 21:03:50.167",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 53,
+    "Sequence": 53,
+    "Utc": "2026-09-06T13:04:14.8504741Z",
+    "Local": "2026-09-06 21:04:14.850",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=120;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 54,
+    "Sequence": 54,
+    "Utc": "2026-09-06T13:04:20.2234093Z",
+    "Local": "2026-09-06 21:04:20.223",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 55,
+    "Sequence": 55,
+    "Utc": "2026-09-06T13:04:23.9736039Z",
+    "Local": "2026-09-06 21:04:23.973",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 56,
+    "Sequence": 56,
+    "Utc": "2026-09-06T13:04:50.2662603Z",
+    "Local": "2026-09-06 21:04:50.266",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 57,
+    "Sequence": 57,
+    "Utc": "2026-09-06T13:05:15.6506975Z",
+    "Local": "2026-09-06 21:05:15.650",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=180;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 58,
+    "Sequence": 58,
+    "Utc": "2026-09-06T13:05:20.3355903Z",
+    "Local": "2026-09-06 21:05:20.335",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 59,
+    "Sequence": 59,
+    "Utc": "2026-09-06T13:05:24.7622099Z",
+    "Local": "2026-09-06 21:05:24.762",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 60,
+    "Sequence": 60,
+    "Utc": "2026-09-06T13:05:50.3745075Z",
+    "Local": "2026-09-06 21:05:50.374",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 61,
+    "Sequence": 61,
+    "Utc": "2026-09-06T13:06:16.3846793Z",
+    "Local": "2026-09-06 21:06:16.384",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=240;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 62,
+    "Sequence": 62,
+    "Utc": "2026-09-06T13:06:20.3925967Z",
+    "Local": "2026-09-06 21:06:20.392",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 63,
+    "Sequence": 63,
+    "Utc": "2026-09-06T13:06:25.5174630Z",
+    "Local": "2026-09-06 21:06:25.517",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 64,
+    "Sequence": 64,
+    "Utc": "2026-09-06T13:06:50.4048532Z",
+    "Local": "2026-09-06 21:06:50.404",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 65,
+    "Sequence": 65,
+    "Utc": "2026-09-06T13:07:17.1811601Z",
+    "Local": "2026-09-06 21:07:17.181",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=300;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 66,
+    "Sequence": 66,
+    "Utc": "2026-09-06T13:07:20.4167485Z",
+    "Local": "2026-09-06 21:07:20.416",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 67,
+    "Sequence": 67,
+    "Utc": "2026-09-06T13:07:26.3096555Z",
+    "Local": "2026-09-06 21:07:26.309",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 68,
+    "Sequence": 68,
+    "Utc": "2026-09-06T13:07:50.4922890Z",
+    "Local": "2026-09-06 21:07:50.492",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 69,
+    "Sequence": 69,
+    "Utc": "2026-09-06T13:08:17.9535692Z",
+    "Local": "2026-09-06 21:08:17.953",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=360;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 70,
+    "Sequence": 70,
+    "Utc": "2026-09-06T13:08:20.5412878Z",
+    "Local": "2026-09-06 21:08:20.541",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 71,
+    "Sequence": 71,
+    "Utc": "2026-09-06T13:08:27.0780887Z",
+    "Local": "2026-09-06 21:08:27.078",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 72,
+    "Sequence": 72,
+    "Utc": "2026-09-06T13:08:50.5627676Z",
+    "Local": "2026-09-06 21:08:50.562",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 73,
+    "Sequence": 73,
+    "Utc": "2026-09-06T13:09:18.7721788Z",
+    "Local": "2026-09-06 21:09:18.772",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=420;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 74,
+    "Sequence": 74,
+    "Utc": "2026-09-06T13:09:20.6165903Z",
+    "Local": "2026-09-06 21:09:20.616",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 75,
+    "Sequence": 75,
+    "Utc": "2026-09-06T13:09:27.8762860Z",
+    "Local": "2026-09-06 21:09:27.876",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 76,
+    "Sequence": 76,
+    "Utc": "2026-09-06T13:09:50.6564697Z",
+    "Local": "2026-09-06 21:09:50.656",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 77,
+    "Sequence": 77,
+    "Utc": "2026-09-06T13:10:19.5124658Z",
+    "Local": "2026-09-06 21:10:19.512",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=480;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 78,
+    "Sequence": 78,
+    "Utc": "2026-09-06T13:10:20.7178143Z",
+    "Local": "2026-09-06 21:10:20.717",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 79,
+    "Sequence": 79,
+    "Utc": "2026-09-06T13:10:28.6058988Z",
+    "Local": "2026-09-06 21:10:28.605",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 80,
+    "Sequence": 80,
+    "Utc": "2026-09-06T13:10:50.7683993Z",
+    "Local": "2026-09-06 21:10:50.768",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 81,
+    "Sequence": 81,
+    "Utc": "2026-09-06T13:11:20.2289969Z",
+    "Local": "2026-09-06 21:11:20.228",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=540;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 82,
+    "Sequence": 82,
+    "Utc": "2026-09-06T13:11:20.8038923Z",
+    "Local": "2026-09-06 21:11:20.803",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 83,
+    "Sequence": 83,
+    "Utc": "2026-09-06T13:11:29.3565190Z",
+    "Local": "2026-09-06 21:11:29.356",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 84,
+    "Sequence": 84,
+    "Utc": "2026-09-06T13:11:50.8251304Z",
+    "Local": "2026-09-06 21:11:50.825",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 85,
+    "Sequence": 85,
+    "Utc": "2026-09-06T13:12:20.8842215Z",
+    "Local": "2026-09-06 21:12:20.884",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 86,
+    "Sequence": 86,
+    "Utc": "2026-09-06T13:12:20.9512825Z",
+    "Local": "2026-09-06 21:12:20.951",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=600;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 87,
+    "Sequence": 87,
+    "Utc": "2026-09-06T13:12:30.0484384Z",
+    "Local": "2026-09-06 21:12:30.048",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 88,
+    "Sequence": 88,
+    "Utc": "2026-09-06T13:12:50.9666481Z",
+    "Local": "2026-09-06 21:12:50.966",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 89,
+    "Sequence": 89,
+    "Utc": "2026-09-06T13:13:21.0172525Z",
+    "Local": "2026-09-06 21:13:21.017",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 90,
+    "Sequence": 90,
+    "Utc": "2026-09-06T13:13:21.7369466Z",
+    "Local": "2026-09-06 21:13:21.736",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=660;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 91,
+    "Sequence": 91,
+    "Utc": "2026-09-06T13:13:30.8603698Z",
+    "Local": "2026-09-06 21:13:30.860",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 92,
+    "Sequence": 92,
+    "Utc": "2026-09-06T13:13:51.2699537Z",
+    "Local": "2026-09-06 21:13:51.269",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=114;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 93,
+    "Sequence": 93,
+    "Utc": "2026-09-06T13:14:21.4434730Z",
+    "Local": "2026-09-06 21:14:21.443",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=114;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 94,
+    "Sequence": 94,
+    "Utc": "2026-09-06T13:14:22.5065664Z",
+    "Local": "2026-09-06 21:14:22.506",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=720;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 95,
+    "Sequence": 95,
+    "Utc": "2026-09-06T13:14:31.6088086Z",
+    "Local": "2026-09-06 21:14:31.608",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 96,
+    "Sequence": 96,
+    "Utc": "2026-09-06T13:14:51.6371817Z",
+    "Local": "2026-09-06 21:14:51.637",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=114;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 97,
+    "Sequence": 97,
+    "Utc": "2026-09-06T13:15:21.8153834Z",
+    "Local": "2026-09-06 21:15:21.815",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=114;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 98,
+    "Sequence": 98,
+    "Utc": "2026-09-06T13:15:23.2024180Z",
+    "Local": "2026-09-06 21:15:23.202",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=780;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 99,
+    "Sequence": 99,
+    "Utc": "2026-09-06T13:15:32.2959755Z",
+    "Local": "2026-09-06 21:15:32.295",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 100,
+    "Sequence": 100,
+    "Utc": "2026-09-06T13:15:52.0699386Z",
+    "Local": "2026-09-06 21:15:52.069",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=114;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 101,
+    "Sequence": 101,
+    "Utc": "2026-09-06T13:16:22.0792790Z",
+    "Local": "2026-09-06 21:16:22.079",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 102,
+    "Sequence": 102,
+    "Utc": "2026-09-06T13:16:24.0140150Z",
+    "Local": "2026-09-06 21:16:24.014",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=840;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 103,
+    "Sequence": 103,
+    "Utc": "2026-09-06T13:16:33.1462164Z",
+    "Local": "2026-09-06 21:16:33.146",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 104,
+    "Sequence": 104,
+    "Utc": "2026-09-06T13:16:52.1269929Z",
+    "Local": "2026-09-06 21:16:52.126",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 105,
+    "Sequence": 105,
+    "Utc": "2026-09-06T13:17:22.1664934Z",
+    "Local": "2026-09-06 21:17:22.166",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 106,
+    "Sequence": 106,
+    "Utc": "2026-09-06T13:17:24.7815573Z",
+    "Local": "2026-09-06 21:17:24.781",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=900;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 107,
+    "Sequence": 107,
+    "Utc": "2026-09-06T13:17:33.9024872Z",
+    "Local": "2026-09-06 21:17:33.902",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 108,
+    "Sequence": 108,
+    "Utc": "2026-09-06T13:17:52.1668926Z",
+    "Local": "2026-09-06 21:17:52.166",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 109,
+    "Sequence": 109,
+    "Utc": "2026-09-06T13:18:22.2014652Z",
+    "Local": "2026-09-06 21:18:22.201",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 110,
+    "Sequence": 110,
+    "Utc": "2026-09-06T13:18:25.5607957Z",
+    "Local": "2026-09-06 21:18:25.560",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=960;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 111,
+    "Sequence": 111,
+    "Utc": "2026-09-06T13:18:34.6728751Z",
+    "Local": "2026-09-06 21:18:34.672",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 112,
+    "Sequence": 112,
+    "Utc": "2026-09-06T13:18:52.2427698Z",
+    "Local": "2026-09-06 21:18:52.242",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 113,
+    "Sequence": 113,
+    "Utc": "2026-09-06T13:19:22.2770593Z",
+    "Local": "2026-09-06 21:19:22.277",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 114,
+    "Sequence": 114,
+    "Utc": "2026-09-06T13:19:26.3021556Z",
+    "Local": "2026-09-06 21:19:26.302",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1020;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 115,
+    "Sequence": 115,
+    "Utc": "2026-09-06T13:19:35.4329410Z",
+    "Local": "2026-09-06 21:19:35.432",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 116,
+    "Sequence": 116,
+    "Utc": "2026-09-06T13:19:52.3042554Z",
+    "Local": "2026-09-06 21:19:52.304",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 117,
+    "Sequence": 117,
+    "Utc": "2026-09-06T13:20:22.3248188Z",
+    "Local": "2026-09-06 21:20:22.324",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 118,
+    "Sequence": 118,
+    "Utc": "2026-09-06T13:20:27.0719110Z",
+    "Local": "2026-09-06 21:20:27.071",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1080;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 119,
+    "Sequence": 119,
+    "Utc": "2026-09-06T13:20:36.1872474Z",
+    "Local": "2026-09-06 21:20:36.187",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 120,
+    "Sequence": 120,
+    "Utc": "2026-09-06T13:20:52.3945959Z",
+    "Local": "2026-09-06 21:20:52.394",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 121,
+    "Sequence": 121,
+    "Utc": "2026-09-06T13:21:22.4198732Z",
+    "Local": "2026-09-06 21:21:22.419",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 122,
+    "Sequence": 122,
+    "Utc": "2026-09-06T13:21:27.8570986Z",
+    "Local": "2026-09-06 21:21:27.857",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1140;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 123,
+    "Sequence": 123,
+    "Utc": "2026-09-06T13:21:36.9860901Z",
+    "Local": "2026-09-06 21:21:36.986",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 124,
+    "Sequence": 124,
+    "Utc": "2026-09-06T13:21:52.4381967Z",
+    "Local": "2026-09-06 21:21:52.438",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 125,
+    "Sequence": 125,
+    "Utc": "2026-09-06T13:22:22.4631835Z",
+    "Local": "2026-09-06 21:22:22.463",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 126,
+    "Sequence": 126,
+    "Utc": "2026-09-06T13:22:28.6356740Z",
+    "Local": "2026-09-06 21:22:28.635",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1200;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 127,
+    "Sequence": 127,
+    "Utc": "2026-09-06T13:22:37.7343758Z",
+    "Local": "2026-09-06 21:22:37.734",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 128,
+    "Sequence": 128,
+    "Utc": "2026-09-06T13:22:52.5149070Z",
+    "Local": "2026-09-06 21:22:52.514",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 129,
+    "Sequence": 129,
+    "Utc": "2026-09-06T13:23:22.5441181Z",
+    "Local": "2026-09-06 21:23:22.544",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 130,
+    "Sequence": 130,
+    "Utc": "2026-09-06T13:23:29.4598553Z",
+    "Local": "2026-09-06 21:23:29.459",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1260;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 131,
+    "Sequence": 131,
+    "Utc": "2026-09-06T13:23:38.5625683Z",
+    "Local": "2026-09-06 21:23:38.562",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 132,
+    "Sequence": 132,
+    "Utc": "2026-09-06T13:23:52.5924341Z",
+    "Local": "2026-09-06 21:23:52.592",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 133,
+    "Sequence": 133,
+    "Utc": "2026-09-06T13:24:22.8552683Z",
+    "Local": "2026-09-06 21:24:22.855",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=114;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 134,
+    "Sequence": 134,
+    "Utc": "2026-09-06T13:24:30.2718599Z",
+    "Local": "2026-09-06 21:24:30.271",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1320;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 135,
+    "Sequence": 135,
+    "Utc": "2026-09-06T13:24:39.3723216Z",
+    "Local": "2026-09-06 21:24:39.372",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 136,
+    "Sequence": 136,
+    "Utc": "2026-09-06T13:24:52.8549707Z",
+    "Local": "2026-09-06 21:24:52.854",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 137,
+    "Sequence": 137,
+    "Utc": "2026-09-06T13:25:22.8930446Z",
+    "Local": "2026-09-06 21:25:22.893",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 138,
+    "Sequence": 138,
+    "Utc": "2026-09-06T13:25:31.0340727Z",
+    "Local": "2026-09-06 21:25:31.034",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1380;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 139,
+    "Sequence": 139,
+    "Utc": "2026-09-06T13:25:40.1674635Z",
+    "Local": "2026-09-06 21:25:40.167",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 140,
+    "Sequence": 140,
+    "Utc": "2026-09-06T13:25:52.9079460Z",
+    "Local": "2026-09-06 21:25:52.907",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 141,
+    "Sequence": 141,
+    "Utc": "2026-09-06T13:26:22.9559188Z",
+    "Local": "2026-09-06 21:26:22.955",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 142,
+    "Sequence": 142,
+    "Utc": "2026-09-06T13:26:31.8560815Z",
+    "Local": "2026-09-06 21:26:31.856",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1440;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 143,
+    "Sequence": 143,
+    "Utc": "2026-09-06T13:26:40.9863280Z",
+    "Local": "2026-09-06 21:26:40.986",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 144,
+    "Sequence": 144,
+    "Utc": "2026-09-06T13:26:53.0175631Z",
+    "Local": "2026-09-06 21:26:53.017",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 145,
+    "Sequence": 145,
+    "Utc": "2026-09-06T13:27:23.0601777Z",
+    "Local": "2026-09-06 21:27:23.060",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 146,
+    "Sequence": 146,
+    "Utc": "2026-09-06T13:27:32.6050611Z",
+    "Local": "2026-09-06 21:27:32.605",
+    "Event": "RecoveryBatchCommitDeferred",
+    "Reason": "Evidence=Heartbeat;Generation=52;Reason=ContextMissing;DeferredCount=1500;NextSummarySeconds=60"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 147,
+    "Sequence": 147,
+    "Utc": "2026-09-06T13:27:41.7277625Z",
+    "Local": "2026-09-06 21:27:41.727",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 148,
+    "Sequence": 148,
+    "Utc": "2026-09-06T13:27:53.1303188Z",
+    "Local": "2026-09-06 21:27:53.130",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 149,
+    "Sequence": 149,
+    "Utc": "2026-09-06T13:27:58.9912010Z",
+    "Local": "2026-09-06 21:27:58.991",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=CheckpointCommitted;Revision=8;Detail=Recovery checkpoint committed"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 150,
+    "Sequence": 150,
+    "Utc": "2026-09-06T13:27:58.9946984Z",
+    "Local": "2026-09-06 21:27:58.994",
+    "Event": "RecoveryBatchCommitted",
+    "Reason": "Evidence=Heartbeat;Generation=52;Generation=52"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 151,
+    "Sequence": 151,
+    "Utc": "2026-09-06T13:28:23.2581593Z",
+    "Local": "2026-09-06 21:28:23.258",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 152,
+    "Sequence": 152,
+    "Utc": "2026-09-06T13:28:42.3346282Z",
+    "Local": "2026-09-06 21:28:42.334",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 153,
+    "Sequence": 153,
+    "Utc": "2026-09-06T13:28:53.3784429Z",
+    "Local": "2026-09-06 21:28:53.378",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 154,
+    "Sequence": 154,
+    "Utc": "2026-09-06T13:29:23.5027428Z",
+    "Local": "2026-09-06 21:29:23.502",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 155,
+    "Sequence": 155,
+    "Utc": "2026-09-06T13:29:42.9744912Z",
+    "Local": "2026-09-06 21:29:42.974",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 156,
+    "Sequence": 156,
+    "Utc": "2026-09-06T13:29:53.6154214Z",
+    "Local": "2026-09-06 21:29:53.615",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 157,
+    "Sequence": 157,
+    "Utc": "2026-09-06T13:30:23.7608269Z",
+    "Local": "2026-09-06 21:30:23.760",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 158,
+    "Sequence": 158,
+    "Utc": "2026-09-06T13:30:43.4830491Z",
+    "Local": "2026-09-06 21:30:43.483",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 159,
+    "Sequence": 159,
+    "Utc": "2026-09-06T13:30:53.8705894Z",
+    "Local": "2026-09-06 21:30:53.870",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 160,
+    "Sequence": 160,
+    "Utc": "2026-09-06T13:31:23.9832698Z",
+    "Local": "2026-09-06 21:31:23.983",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 161,
+    "Sequence": 161,
+    "Utc": "2026-09-06T13:31:44.0754249Z",
+    "Local": "2026-09-06 21:31:44.075",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 162,
+    "Sequence": 162,
+    "Utc": "2026-09-06T13:31:54.0951999Z",
+    "Local": "2026-09-06 21:31:54.095",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 163,
+    "Sequence": 163,
+    "Utc": "2026-09-06T13:32:24.1982303Z",
+    "Local": "2026-09-06 21:32:24.198",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 164,
+    "Sequence": 164,
+    "Utc": "2026-09-06T13:32:44.5975852Z",
+    "Local": "2026-09-06 21:32:44.597",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 165,
+    "Sequence": 165,
+    "Utc": "2026-09-06T13:32:54.3298188Z",
+    "Local": "2026-09-06 21:32:54.329",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 166,
+    "Sequence": 166,
+    "Utc": "2026-09-06T13:33:24.4497288Z",
+    "Local": "2026-09-06 21:33:24.449",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 167,
+    "Sequence": 167,
+    "Utc": "2026-09-06T13:33:45.0616847Z",
+    "Local": "2026-09-06 21:33:45.061",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 168,
+    "Sequence": 168,
+    "Utc": "2026-09-06T13:33:54.5862132Z",
+    "Local": "2026-09-06 21:33:54.586",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 169,
+    "Sequence": 169,
+    "Utc": "2026-09-06T13:34:24.7183856Z",
+    "Local": "2026-09-06 21:34:24.718",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 170,
+    "Sequence": 170,
+    "Utc": "2026-09-06T13:34:45.7136374Z",
+    "Local": "2026-09-06 21:34:45.713",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 171,
+    "Sequence": 171,
+    "Utc": "2026-09-06T13:34:54.8187428Z",
+    "Local": "2026-09-06 21:34:54.818",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 172,
+    "Sequence": 172,
+    "Utc": "2026-09-06T13:35:24.9132251Z",
+    "Local": "2026-09-06 21:35:24.913",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 173,
+    "Sequence": 173,
+    "Utc": "2026-09-06T13:35:46.3208392Z",
+    "Local": "2026-09-06 21:35:46.320",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 174,
+    "Sequence": 174,
+    "Utc": "2026-09-06T13:35:55.0328117Z",
+    "Local": "2026-09-06 21:35:55.032",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 175,
+    "Sequence": 175,
+    "Utc": "2026-09-06T13:36:25.1467924Z",
+    "Local": "2026-09-06 21:36:25.146",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 176,
+    "Sequence": 176,
+    "Utc": "2026-09-06T13:36:46.8915109Z",
+    "Local": "2026-09-06 21:36:46.891",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 177,
+    "Sequence": 177,
+    "Utc": "2026-09-06T13:36:55.2591177Z",
+    "Local": "2026-09-06 21:36:55.259",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 178,
+    "Sequence": 178,
+    "Utc": "2026-09-06T13:37:25.3548170Z",
+    "Local": "2026-09-06 21:37:25.354",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 179,
+    "Sequence": 179,
+    "Utc": "2026-09-06T13:37:47.4348233Z",
+    "Local": "2026-09-06 21:37:47.434",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 180,
+    "Sequence": 180,
+    "Utc": "2026-09-06T13:37:55.4920068Z",
+    "Local": "2026-09-06 21:37:55.492",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 181,
+    "Sequence": 181,
+    "Utc": "2026-09-06T13:38:25.6085018Z",
+    "Local": "2026-09-06 21:38:25.608",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 182,
+    "Sequence": 182,
+    "Utc": "2026-09-06T13:38:47.9413807Z",
+    "Local": "2026-09-06 21:38:47.941",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 183,
+    "Sequence": 183,
+    "Utc": "2026-09-06T13:38:55.7428977Z",
+    "Local": "2026-09-06 21:38:55.742",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 184,
+    "Sequence": 184,
+    "Utc": "2026-09-06T13:39:25.8786968Z",
+    "Local": "2026-09-06 21:39:25.878",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 185,
+    "Sequence": 185,
+    "Utc": "2026-09-06T13:39:48.6038654Z",
+    "Local": "2026-09-06 21:39:48.603",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 186,
+    "Sequence": 186,
+    "Utc": "2026-09-06T13:39:56.0023487Z",
+    "Local": "2026-09-06 21:39:56.002",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 187,
+    "Sequence": 187,
+    "Utc": "2026-09-06T13:40:26.1162649Z",
+    "Local": "2026-09-06 21:40:26.116",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 188,
+    "Sequence": 188,
+    "Utc": "2026-09-06T13:40:49.2695055Z",
+    "Local": "2026-09-06 21:40:49.269",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 189,
+    "Sequence": 189,
+    "Utc": "2026-09-06T13:40:56.2235469Z",
+    "Local": "2026-09-06 21:40:56.223",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 190,
+    "Sequence": 190,
+    "Utc": "2026-09-06T13:41:26.3396620Z",
+    "Local": "2026-09-06 21:41:26.339",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 191,
+    "Sequence": 191,
+    "Utc": "2026-09-06T13:41:49.8861069Z",
+    "Local": "2026-09-06 21:41:49.886",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 192,
+    "Sequence": 192,
+    "Utc": "2026-09-06T13:41:56.4497479Z",
+    "Local": "2026-09-06 21:41:56.449",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 193,
+    "Sequence": 193,
+    "Utc": "2026-09-06T13:42:26.5511940Z",
+    "Local": "2026-09-06 21:42:26.551",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 194,
+    "Sequence": 194,
+    "Utc": "2026-09-06T13:42:50.5130077Z",
+    "Local": "2026-09-06 21:42:50.513",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 195,
+    "Sequence": 195,
+    "Utc": "2026-09-06T13:42:56.6814872Z",
+    "Local": "2026-09-06 21:42:56.681",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 196,
+    "Sequence": 196,
+    "Utc": "2026-09-06T13:43:26.7905566Z",
+    "Local": "2026-09-06 21:43:26.790",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 197,
+    "Sequence": 197,
+    "Utc": "2026-09-06T13:43:51.1227555Z",
+    "Local": "2026-09-06 21:43:51.122",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 198,
+    "Sequence": 198,
+    "Utc": "2026-09-06T13:43:56.9225756Z",
+    "Local": "2026-09-06 21:43:56.922",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 199,
+    "Sequence": 199,
+    "Utc": "2026-09-06T13:44:27.0554843Z",
+    "Local": "2026-09-06 21:44:27.055",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 200,
+    "Sequence": 200,
+    "Utc": "2026-09-06T13:44:51.6951134Z",
+    "Local": "2026-09-06 21:44:51.695",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 201,
+    "Sequence": 201,
+    "Utc": "2026-09-06T13:44:57.1632977Z",
+    "Local": "2026-09-06 21:44:57.163",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 202,
+    "Sequence": 202,
+    "Utc": "2026-09-06T13:45:27.2490934Z",
+    "Local": "2026-09-06 21:45:27.249",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 203,
+    "Sequence": 203,
+    "Utc": "2026-09-06T13:45:52.3217509Z",
+    "Local": "2026-09-06 21:45:52.321",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 204,
+    "Sequence": 204,
+    "Utc": "2026-09-06T13:45:57.3393477Z",
+    "Local": "2026-09-06 21:45:57.339",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 205,
+    "Sequence": 205,
+    "Utc": "2026-09-06T13:46:27.4598142Z",
+    "Local": "2026-09-06 21:46:27.459",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 206,
+    "Sequence": 206,
+    "Utc": "2026-09-06T13:46:52.9443220Z",
+    "Local": "2026-09-06 21:46:52.944",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 207,
+    "Sequence": 207,
+    "Utc": "2026-09-06T13:46:57.5485736Z",
+    "Local": "2026-09-06 21:46:57.548",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 208,
+    "Sequence": 208,
+    "Utc": "2026-09-06T13:47:27.6876953Z",
+    "Local": "2026-09-06 21:47:27.687",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 209,
+    "Sequence": 209,
+    "Utc": "2026-09-06T13:47:53.5240022Z",
+    "Local": "2026-09-06 21:47:53.524",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 210,
+    "Sequence": 210,
+    "Utc": "2026-09-06T13:47:57.8051905Z",
+    "Local": "2026-09-06 21:47:57.805",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 211,
+    "Sequence": 211,
+    "Utc": "2026-09-06T13:48:27.9175998Z",
+    "Local": "2026-09-06 21:48:27.917",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 212,
+    "Sequence": 212,
+    "Utc": "2026-09-06T13:48:54.0911339Z",
+    "Local": "2026-09-06 21:48:54.091",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 213,
+    "Sequence": 213,
+    "Utc": "2026-09-06T13:48:58.0530754Z",
+    "Local": "2026-09-06 21:48:58.053",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 214,
+    "Sequence": 214,
+    "Utc": "2026-09-06T13:49:28.1654115Z",
+    "Local": "2026-09-06 21:49:28.165",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 215,
+    "Sequence": 215,
+    "Utc": "2026-09-06T13:49:54.7150974Z",
+    "Local": "2026-09-06 21:49:54.715",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 216,
+    "Sequence": 216,
+    "Utc": "2026-09-06T13:49:58.2723364Z",
+    "Local": "2026-09-06 21:49:58.272",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 217,
+    "Sequence": 217,
+    "Utc": "2026-09-06T13:50:28.3990438Z",
+    "Local": "2026-09-06 21:50:28.399",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 218,
+    "Sequence": 218,
+    "Utc": "2026-09-06T13:50:55.3395510Z",
+    "Local": "2026-09-06 21:50:55.339",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 219,
+    "Sequence": 219,
+    "Utc": "2026-09-06T13:50:58.5176609Z",
+    "Local": "2026-09-06 21:50:58.517",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 220,
+    "Sequence": 220,
+    "Utc": "2026-09-06T13:51:28.6385380Z",
+    "Local": "2026-09-06 21:51:28.638",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 221,
+    "Sequence": 221,
+    "Utc": "2026-09-06T13:51:55.9835954Z",
+    "Local": "2026-09-06 21:51:55.983",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 222,
+    "Sequence": 222,
+    "Utc": "2026-09-06T13:51:58.7636049Z",
+    "Local": "2026-09-06 21:51:58.763",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 223,
+    "Sequence": 223,
+    "Utc": "2026-09-06T13:52:28.8612166Z",
+    "Local": "2026-09-06 21:52:28.861",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 224,
+    "Sequence": 224,
+    "Utc": "2026-09-06T13:52:56.5540111Z",
+    "Local": "2026-09-06 21:52:56.554",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 225,
+    "Sequence": 225,
+    "Utc": "2026-09-06T13:52:59.0133907Z",
+    "Local": "2026-09-06 21:52:59.013",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 226,
+    "Sequence": 226,
+    "Utc": "2026-09-06T13:53:29.1436104Z",
+    "Local": "2026-09-06 21:53:29.143",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 227,
+    "Sequence": 227,
+    "Utc": "2026-09-06T13:53:57.1661233Z",
+    "Local": "2026-09-06 21:53:57.166",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 228,
+    "Sequence": 228,
+    "Utc": "2026-09-06T13:53:59.2608073Z",
+    "Local": "2026-09-06 21:53:59.260",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 229,
+    "Sequence": 229,
+    "Utc": "2026-09-06T13:54:29.4151887Z",
+    "Local": "2026-09-06 21:54:29.415",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 230,
+    "Sequence": 230,
+    "Utc": "2026-09-06T13:54:57.6979235Z",
+    "Local": "2026-09-06 21:54:57.697",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 231,
+    "Sequence": 231,
+    "Utc": "2026-09-06T13:54:59.5272288Z",
+    "Local": "2026-09-06 21:54:59.527",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 232,
+    "Sequence": 232,
+    "Utc": "2026-09-06T13:55:29.6168210Z",
+    "Local": "2026-09-06 21:55:29.616",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 233,
+    "Sequence": 233,
+    "Utc": "2026-09-06T13:55:58.3160687Z",
+    "Local": "2026-09-06 21:55:58.316",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 234,
+    "Sequence": 234,
+    "Utc": "2026-09-06T13:55:59.7169607Z",
+    "Local": "2026-09-06 21:55:59.716",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 235,
+    "Sequence": 235,
+    "Utc": "2026-09-06T13:56:29.7977963Z",
+    "Local": "2026-09-06 21:56:29.797",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 236,
+    "Sequence": 236,
+    "Utc": "2026-09-06T13:56:58.9787914Z",
+    "Local": "2026-09-06 21:56:58.978",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 237,
+    "Sequence": 237,
+    "Utc": "2026-09-06T13:56:59.8829531Z",
+    "Local": "2026-09-06 21:56:59.882",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 238,
+    "Sequence": 238,
+    "Utc": "2026-09-06T13:57:29.9603050Z",
+    "Local": "2026-09-06 21:57:29.960",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 239,
+    "Sequence": 239,
+    "Utc": "2026-09-06T13:57:59.7753082Z",
+    "Local": "2026-09-06 21:57:59.775",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 240,
+    "Sequence": 240,
+    "Utc": "2026-09-06T13:58:00.0087071Z",
+    "Local": "2026-09-06 21:58:00.008",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 241,
+    "Sequence": 241,
+    "Utc": "2026-09-06T13:58:30.0477878Z",
+    "Local": "2026-09-06 21:58:30.047",
+    "Event": "SupervisorSafetyAuthorityTerminalObservedSummary",
+    "Reason": "State=Completed;Revision=8;Project mirror ignored in favor of Supervisor authority.;SuppressedCount=113;WindowMs=30000"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 242,
+    "Sequence": 242,
+    "Utc": "2026-09-06T13:58:32.3547754Z",
+    "Local": "2026-09-06 21:58:32.354",
+    "Event": "ManualStopIntent",
+    "Reason": "操作员点击停止试验"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 243,
+    "Sequence": 243,
+    "Utc": "2026-09-06T13:58:38.9750330Z",
+    "Local": "2026-09-06 21:58:38.975",
+    "Event": "PhysicalStopConfirmed",
+    "Reason": "ManualStopPhysicalSafetyConfirmed"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 244,
+    "Sequence": 244,
+    "Utc": "2026-09-06T13:58:38.9770245Z",
+    "Local": "2026-09-06 21:58:38.977",
+    "Event": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical="
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 245,
+    "Sequence": 245,
+    "Utc": "2026-09-06T13:58:38.9785287Z",
+    "Local": "2026-09-06 21:58:38.978",
+    "Event": "HostTransportConnectionRetired",
+    "Reason": "ConnectionGeneration=2"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 246,
+    "Sequence": 246,
+    "Utc": "2026-09-06T13:58:38.9785287Z",
+    "Local": "2026-09-06 21:58:38.978",
+    "Event": "PipeDisconnected",
+    "Reason": "无法访问关闭的管道。"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 247,
+    "Sequence": 1,
+    "Utc": "2026-09-06T13:58:39.5959908Z",
+    "Local": "2026-09-06 21:58:39.595",
+    "Event": "Starting",
+    "Reason": "SidecarStarted"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 248,
+    "Sequence": 2,
+    "Utc": "2026-09-06T14:00:16.9081907Z",
+    "Local": "2026-09-06 22:00:16.908",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 249,
+    "Sequence": 3,
+    "Utc": "2026-09-06T14:00:21.9446179Z",
+    "Local": "2026-09-06 22:00:21.944",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 250,
+    "Sequence": 4,
+    "Utc": "2026-09-06T14:00:36.9809895Z",
+    "Local": "2026-09-06 22:00:36.980",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 251,
+    "Sequence": 5,
+    "Utc": "2026-09-06T14:01:07.0423342Z",
+    "Local": "2026-09-06 22:01:07.042",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 252,
+    "Sequence": 6,
+    "Utc": "2026-09-06T14:01:37.0847682Z",
+    "Local": "2026-09-06 22:01:37.084",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 253,
+    "Sequence": 7,
+    "Utc": "2026-09-06T14:02:07.1386088Z",
+    "Local": "2026-09-06 22:02:07.138",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 254,
+    "Sequence": 8,
+    "Utc": "2026-09-06T14:02:37.1933026Z",
+    "Local": "2026-09-06 22:02:37.193",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 255,
+    "Sequence": 9,
+    "Utc": "2026-09-06T14:03:07.2540105Z",
+    "Local": "2026-09-06 22:03:07.254",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 256,
+    "Sequence": 10,
+    "Utc": "2026-09-06T14:03:37.2923946Z",
+    "Local": "2026-09-06 22:03:37.292",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 257,
+    "Sequence": 11,
+    "Utc": "2026-09-06T14:04:07.3506230Z",
+    "Local": "2026-09-06 22:04:07.350",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 258,
+    "Sequence": 12,
+    "Utc": "2026-09-06T14:04:37.3992654Z",
+    "Local": "2026-09-06 22:04:37.399",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 259,
+    "Sequence": 13,
+    "Utc": "2026-09-06T14:05:07.4549132Z",
+    "Local": "2026-09-06 22:05:07.454",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 260,
+    "Sequence": 14,
+    "Utc": "2026-09-06T14:05:37.4945216Z",
+    "Local": "2026-09-06 22:05:37.494",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 261,
+    "Sequence": 15,
+    "Utc": "2026-09-06T14:06:07.5436216Z",
+    "Local": "2026-09-06 22:06:07.543",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 262,
+    "Sequence": 16,
+    "Utc": "2026-09-06T14:06:37.5852069Z",
+    "Local": "2026-09-06 22:06:37.585",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 263,
+    "Sequence": 17,
+    "Utc": "2026-09-06T14:07:07.6274629Z",
+    "Local": "2026-09-06 22:07:07.627",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 264,
+    "Sequence": 18,
+    "Utc": "2026-09-06T14:07:37.6802406Z",
+    "Local": "2026-09-06 22:07:37.680",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 265,
+    "Sequence": 19,
+    "Utc": "2026-09-06T14:08:07.7306157Z",
+    "Local": "2026-09-06 22:08:07.730",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 266,
+    "Sequence": 20,
+    "Utc": "2026-09-06T14:08:37.7805618Z",
+    "Local": "2026-09-06 22:08:37.780",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 267,
+    "Sequence": 21,
+    "Utc": "2026-09-06T14:09:07.8330490Z",
+    "Local": "2026-09-06 22:09:07.833",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 268,
+    "Sequence": 22,
+    "Utc": "2026-09-06T14:09:37.8820570Z",
+    "Local": "2026-09-06 22:09:37.882",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 269,
+    "Sequence": 23,
+    "Utc": "2026-09-06T14:10:07.9239041Z",
+    "Local": "2026-09-06 22:10:07.923",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 270,
+    "Sequence": 24,
+    "Utc": "2026-09-06T14:10:37.9695105Z",
+    "Local": "2026-09-06 22:10:37.969",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 271,
+    "Sequence": 25,
+    "Utc": "2026-09-06T14:11:08.0110909Z",
+    "Local": "2026-09-06 22:11:08.011",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 272,
+    "Sequence": 26,
+    "Utc": "2026-09-06T14:11:38.0590783Z",
+    "Local": "2026-09-06 22:11:38.059",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 273,
+    "Sequence": 27,
+    "Utc": "2026-09-06T14:12:08.0996701Z",
+    "Local": "2026-09-06 22:12:08.099",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 274,
+    "Sequence": 28,
+    "Utc": "2026-09-06T14:12:38.1420933Z",
+    "Local": "2026-09-06 22:12:38.142",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 275,
+    "Sequence": 29,
+    "Utc": "2026-09-06T14:13:08.1821967Z",
+    "Local": "2026-09-06 22:13:08.182",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 276,
+    "Sequence": 30,
+    "Utc": "2026-09-06T14:13:38.2449696Z",
+    "Local": "2026-09-06 22:13:38.244",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 277,
+    "Sequence": 31,
+    "Utc": "2026-09-06T14:14:08.2786745Z",
+    "Local": "2026-09-06 22:14:08.278",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 278,
+    "Sequence": 32,
+    "Utc": "2026-09-06T14:14:38.3232060Z",
+    "Local": "2026-09-06 22:14:38.323",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 279,
+    "Sequence": 33,
+    "Utc": "2026-09-06T14:15:08.3730146Z",
+    "Local": "2026-09-06 22:15:08.373",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 280,
+    "Sequence": 34,
+    "Utc": "2026-09-06T14:15:38.4122200Z",
+    "Local": "2026-09-06 22:15:38.412",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 281,
+    "Sequence": 35,
+    "Utc": "2026-09-06T14:16:08.4614651Z",
+    "Local": "2026-09-06 22:16:08.461",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 282,
+    "Sequence": 36,
+    "Utc": "2026-09-06T14:16:38.5087233Z",
+    "Local": "2026-09-06 22:16:38.508",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 283,
+    "Sequence": 37,
+    "Utc": "2026-09-06T14:17:08.5586024Z",
+    "Local": "2026-09-06 22:17:08.558",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 284,
+    "Sequence": 38,
+    "Utc": "2026-09-06T14:17:38.6110123Z",
+    "Local": "2026-09-06 22:17:38.611",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 285,
+    "Sequence": 39,
+    "Utc": "2026-09-06T14:18:08.6654492Z",
+    "Local": "2026-09-06 22:18:08.665",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 286,
+    "Sequence": 40,
+    "Utc": "2026-09-06T14:18:39.1828699Z",
+    "Local": "2026-09-06 22:18:39.182",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 287,
+    "Sequence": 41,
+    "Utc": "2026-09-06T14:19:09.2241875Z",
+    "Local": "2026-09-06 22:19:09.224",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 288,
+    "Sequence": 42,
+    "Utc": "2026-09-06T14:19:39.2683955Z",
+    "Local": "2026-09-06 22:19:39.268",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 289,
+    "Sequence": 43,
+    "Utc": "2026-09-06T14:20:09.3068820Z",
+    "Local": "2026-09-06 22:20:09.306",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 290,
+    "Sequence": 44,
+    "Utc": "2026-09-06T14:20:39.3412914Z",
+    "Local": "2026-09-06 22:20:39.341",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "b9622b65c70b4b2fbbeec07f1ca8500b",
+    "Source": "sidecar",
+    "Line": 291,
+    "Sequence": 45,
+    "Utc": "2026-09-06T14:21:09.3976250Z",
+    "Local": "2026-09-06 22:21:09.397",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityStateMismatch:SupervisorSafetyAuthorityStateMismatch"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 1,
+    "Sequence": 1,
+    "Utc": "2026-09-06T14:00:50.9426501Z",
+    "Local": "2026-09-06 22:00:50.942",
+    "Event": "JournalConfigured",
+    "Reason": "WatchdogJournalPolicy RetentionDays=90;RetainSessions=32;MaxTotalBytes=134217728;MaxSessionBytes=16777216;HeartbeatCheckpointSeconds=60;EmergencySpoolMaxBytes=8388608"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 2,
+    "Sequence": 2,
+    "Utc": "2026-09-06T14:00:51.0710352Z",
+    "Local": "2026-09-06 22:00:51.071",
+    "Event": "CrashRecoverySeedCommitted",
+    "Reason": "SeedId=1574dd4f4c8249a2a72685930fac1404;Generation=1;Lease=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 3,
+    "Sequence": 3,
+    "Utc": "2026-09-06T14:00:56.1992534Z",
+    "Local": "2026-09-06 22:00:56.199",
+    "Event": "SidecarHelperLaunched",
+    "Reason": "PID=13300;Nonce=af47550941e74ff594e75b1fdf14ab38"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 4,
+    "Sequence": 4,
+    "Utc": "2026-09-06T14:00:56.3656192Z",
+    "Local": "2026-09-06 22:00:56.365",
+    "Event": "AttachSent",
+    "Reason": "MainProcess"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 5,
+    "Sequence": 5,
+    "Utc": "2026-09-06T14:00:56.4020911Z",
+    "Local": "2026-09-06 22:00:56.402",
+    "Event": "Attached",
+    "Reason": "HandshakeCompleted;AuthorityPid=13300;AuthorityStartUtcTicks=639243000561484172"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 6,
+    "Sequence": 6,
+    "Utc": "2026-09-06T14:00:56.4040832Z",
+    "Local": "2026-09-06 22:00:56.404",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=Attached;Sequence=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 7,
+    "Sequence": 7,
+    "Utc": "2026-09-06T14:00:56.4265688Z",
+    "Local": "2026-09-06 22:00:56.426",
+    "Event": "MainUiReady",
+    "Reason": "MainUiWatchdogPipelineReady"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 8,
+    "Sequence": 8,
+    "Utc": "2026-09-06T14:17:54.3899400Z",
+    "Local": "2026-09-06 22:17:54.389",
+    "Event": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 9,
+    "Sequence": 9,
+    "Utc": "2026-09-06T14:17:54.3919319Z",
+    "Local": "2026-09-06 22:17:54.391",
+    "Event": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 10,
+    "Sequence": 10,
+    "Utc": "2026-09-06T14:17:54.4014290Z",
+    "Local": "2026-09-06 22:17:54.401",
+    "Event": "TransportLost",
+    "Reason": "HeartbeatLoop:周期Heartbeat发送失败。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 11,
+    "Sequence": 11,
+    "Utc": "2026-09-06T14:17:54.4014290Z",
+    "Local": "2026-09-06 22:17:54.401",
+    "Event": "TransportLost",
+    "Reason": "HeartbeatLoop:周期Heartbeat发送失败。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 12,
+    "Sequence": 12,
+    "Utc": "2026-09-06T14:17:54.6611891Z",
+    "Local": "2026-09-06 22:17:54.661",
+    "Event": "AttachSent",
+    "Reason": "MainProcess"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 13,
+    "Sequence": 14,
+    "Utc": "2026-09-06T14:17:54.6741840Z",
+    "Local": "2026-09-06 22:17:54.674",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=Attached;Sequence=1006"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 14,
+    "Sequence": 13,
+    "Utc": "2026-09-06T14:17:54.6741840Z",
+    "Local": "2026-09-06 22:17:54.674",
+    "Event": "Attached",
+    "Reason": "HandshakeCompleted;AuthorityPid=13300;AuthorityStartUtcTicks=639243000561484172"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 15,
+    "Sequence": 15,
+    "Utc": "2026-09-06T14:17:54.6811777Z",
+    "Local": "2026-09-06 22:17:54.681",
+    "Event": "TransportEvent",
+    "Reason": "WatchdogReconnected:同一Session重连成功。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 16,
+    "Sequence": 16,
+    "Utc": "2026-09-06T14:17:54.6821752Z",
+    "Local": "2026-09-06 22:17:54.682",
+    "Event": "TransportEvent",
+    "Reason": "WatchdogReconnected:同一Session重连成功。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 17,
+    "Sequence": 17,
+    "Utc": "2026-09-06T14:17:54.6821752Z",
+    "Local": "2026-09-06 22:17:54.682",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=ImmediateStateSnapshot;Sequence=1007"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 18,
+    "Sequence": 18,
+    "Utc": "2026-09-06T14:17:54.6891709Z",
+    "Local": "2026-09-06 22:17:54.689",
+    "Event": "ImmediateStateSnapshot",
+    "Reason": "ReconnectSuccess"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 19,
+    "Sequence": 19,
+    "Utc": "2026-09-06T14:18:34.7232677Z",
+    "Local": "2026-09-06 22:18:34.723",
+    "Event": "StopAllRequested",
+    "Reason": "ResponsiveApplicationControlRepair:ChannelTerminalResourcesActive:EPB=7;AgeSeconds=5.1;Timer=True;Runner=True;Energized=False;State=SystemFault;ExpectedTimer=False;ExpectedRunner=False;ContractRevision=3;RunId=a70ae1c5dc0f402a9e253e277e0f7552;RunEpoch=1:0691d2961a2d46edbf2610525bdb26ca"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 20,
+    "Sequence": 20,
+    "Utc": "2026-09-06T14:18:42.3022990Z",
+    "Local": "2026-09-06 22:18:42.302",
+    "Event": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical=LifecycleBusy=False Session=False Batch=00000000000000000000000000000000 Timers=0(Active=0,Cache=0) Runners=0(Active=0,Cache=0) Energized=0 StopCts=0 CycleCts=0 Participants=0 Leases=1 DaqRecovery=0 ActiveCycles=0 SoftwareRecovery=0 RecoveryOwners=0 Contracts=0 RegistryLeases=0 Hydraulics=[Hydraulic=1 Epoch=2 Admission=Open Generations=0 Operations=0 Leases=0 Gate=Available Pending=[] Rebuilds=0 | Hydraulic=2 Epoch=1 Admission=Open Generations=0 Operations=0 Leases=0 Gate=Available Pending=[] Rebuilds=0]"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 21,
+    "Sequence": 21,
+    "Utc": "2026-09-06T14:18:42.3462949Z",
+    "Local": "2026-09-06 22:18:42.346",
+    "Event": "RecoveryFailureReceiptIgnored",
+    "Reason": "UnknownCorrelation=14251323c88a48c5b120236c193b7b81"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 22,
+    "Sequence": 22,
+    "Utc": "2026-09-06T14:18:42.3653115Z",
+    "Local": "2026-09-06 22:18:42.365",
+    "Event": "ApplicationExitRequested",
+    "Reason": "Intent=967304421a164bfda746c67a47a8661d;PID=17384;Disposition=TakeoverReplacementExit;Relaunch=PreserveApprovedPermit;PermitGeneration=1;HardDeadlineUtcTicks=639243011523487956;Reason=WatchdogStopAllCompleted:0691d2961a2d46edbf2610525bdb26ca"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 23,
+    "Sequence": 23,
+    "Utc": "2026-09-06T14:18:42.4614252Z",
+    "Local": "2026-09-06 22:18:42.461",
+    "Event": "WatchdogClosingTombstone",
+    "Reason": "StateVersion=1;Generation=1;Lease=1;Intent=ApplicationClosing"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 24,
+    "Sequence": 24,
+    "Utc": "2026-09-06T14:18:44.2990181Z",
+    "Local": "2026-09-06 22:18:44.299",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=WatchdogLogicalSourceRefreshRequested:WatchdogLogicalSourceStale:Version=2942;CapturedUtcTicks=639243011212367088;WallClockAgeSeconds=3.1;MonotonicAgeSeconds=2.4;Sequence=1055"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 25,
+    "Sequence": 25,
+    "Utc": "2026-09-06T14:18:44.8280745Z",
+    "Local": "2026-09-06 22:18:44.828",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1056"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 26,
+    "Sequence": 26,
+    "Utc": "2026-09-06T14:18:45.0948673Z",
+    "Local": "2026-09-06 22:18:45.094",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1057"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 27,
+    "Sequence": 27,
+    "Utc": "2026-09-06T14:18:45.3551420Z",
+    "Local": "2026-09-06 22:18:45.355",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1058"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 28,
+    "Sequence": 28,
+    "Utc": "2026-09-06T14:18:45.6218971Z",
+    "Local": "2026-09-06 22:18:45.621",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1059"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 29,
+    "Sequence": 29,
+    "Utc": "2026-09-06T14:18:45.8861873Z",
+    "Local": "2026-09-06 22:18:45.886",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1060"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 30,
+    "Sequence": 30,
+    "Utc": "2026-09-06T14:18:46.1484674Z",
+    "Local": "2026-09-06 22:18:46.148",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1061"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 31,
+    "Sequence": 31,
+    "Utc": "2026-09-06T14:18:46.4142390Z",
+    "Local": "2026-09-06 22:18:46.414",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1062"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 32,
+    "Sequence": 32,
+    "Utc": "2026-09-06T14:18:46.6825539Z",
+    "Local": "2026-09-06 22:18:46.682",
+    "Event": "HeartbeatRefreshSent",
+    "Reason": "Trigger=HeartbeatSuspect;Sequence=1063"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 33,
+    "Sequence": 33,
+    "Utc": "2026-09-06T14:18:47.6942427Z",
+    "Local": "2026-09-06 22:18:47.694",
+    "Event": "TransportLost",
+    "Reason": "WatchdogHeartbeatAckTimeout:AckAgeMs=5908;AuthorityAlive=True"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 34,
+    "Sequence": 34,
+    "Utc": "2026-09-06T14:18:47.6942427Z",
+    "Local": "2026-09-06 22:18:47.694",
+    "Event": "TransportLost",
+    "Reason": "WatchdogHeartbeatAckTimeout:AckAgeMs=5908;AuthorityAlive=True"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 35,
+    "Sequence": 35,
+    "Utc": "2026-09-06T14:18:54.4833377Z",
+    "Local": "2026-09-06 22:18:54.483",
+    "Event": "SafetyHandoffRequested",
+    "Reason": "HandoffId=1121c475cdf54ec88d5579c14d4ad34c;Revision=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "client",
+    "Line": 36,
+    "Sequence": 36,
+    "Utc": "2026-09-06T14:18:54.7706856Z",
+    "Local": "2026-09-06 22:18:54.770",
+    "Event": "GracefulCompleted",
+    "Reason": "MainAndChildWindowsReleased"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 1,
+    "Sequence": 1,
+    "Utc": "2026-09-06T14:00:56.2421988Z",
+    "Local": "2026-09-06 22:00:56.242",
+    "Event": "Starting",
+    "Reason": "SidecarStarted"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 2,
+    "Sequence": 2,
+    "Utc": "2026-09-06T14:00:56.3890969Z",
+    "Local": "2026-09-06 22:00:56.389",
+    "Event": "Attached",
+    "Reason": "MainProcess"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 3,
+    "Sequence": 3,
+    "Utc": "2026-09-06T14:00:56.4240661Z",
+    "Local": "2026-09-06 22:00:56.424",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 4,
+    "Sequence": 4,
+    "Utc": "2026-09-06T14:00:56.4295580Z",
+    "Local": "2026-09-06 22:00:56.429",
+    "Event": "MainUiReady",
+    "Reason": "MainUiWatchdogPipelineReady"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 5,
+    "Sequence": 5,
+    "Utc": "2026-09-06T14:00:59.2904725Z",
+    "Local": "2026-09-06 22:00:59.290",
+    "Event": "SemanticSnapshotStalledFirstEvidence",
+    "Reason": "Pulse=3;SnapshotRevision=9;SnapshotAgeSeconds=1.004;UiLifecycle=Running;ControlProgress=52"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 6,
+    "Sequence": 6,
+    "Utc": "2026-09-06T14:00:59.3814930Z",
+    "Local": "2026-09-06 22:00:59.381",
+    "Event": "FirstLivenessEvidenceFrozen",
+    "Reason": "D:\\EPB_Data\\10243-028\\WatchdogSessions\\WatchdogEvidence\\session-cb1bfc8241cd4c018975b0c05ad2974f-first-liveness-20260906140059357.json"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 7,
+    "Sequence": 7,
+    "Utc": "2026-09-06T14:00:59.7221312Z",
+    "Local": "2026-09-06 22:00:59.722",
+    "Event": "FirstLivenessMiniDump",
+    "Reason": "Captured=D:\\EPB_Data\\10243-028\\WatchdogSessions\\dumps\\cb1bfc8241cd4c018975b0c05ad2974f\\MTTFTest_17384_20260906_140059_386.dmp"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 8,
+    "Sequence": 8,
+    "Utc": "2026-09-06T14:01:57.3701720Z",
+    "Local": "2026-09-06 22:01:57.370",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 9,
+    "Sequence": 9,
+    "Utc": "2026-09-06T14:02:58.1890179Z",
+    "Local": "2026-09-06 22:02:58.189",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 10,
+    "Sequence": 10,
+    "Utc": "2026-09-06T14:03:58.9039344Z",
+    "Local": "2026-09-06 22:03:58.903",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 11,
+    "Sequence": 11,
+    "Utc": "2026-09-06T14:04:59.0039379Z",
+    "Local": "2026-09-06 22:04:59.003",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 12,
+    "Sequence": 12,
+    "Utc": "2026-09-06T14:05:59.8141118Z",
+    "Local": "2026-09-06 22:05:59.814",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 13,
+    "Sequence": 13,
+    "Utc": "2026-09-06T14:07:00.6289491Z",
+    "Local": "2026-09-06 22:07:00.628",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 14,
+    "Sequence": 14,
+    "Utc": "2026-09-06T14:08:01.4571958Z",
+    "Local": "2026-09-06 22:08:01.457",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 15,
+    "Sequence": 15,
+    "Utc": "2026-09-06T14:09:02.2867782Z",
+    "Local": "2026-09-06 22:09:02.286",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 16,
+    "Sequence": 16,
+    "Utc": "2026-09-06T14:10:03.0853018Z",
+    "Local": "2026-09-06 22:10:03.085",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 17,
+    "Sequence": 17,
+    "Utc": "2026-09-06T14:11:03.9172061Z",
+    "Local": "2026-09-06 22:11:03.917",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 18,
+    "Sequence": 18,
+    "Utc": "2026-09-06T14:12:04.6983648Z",
+    "Local": "2026-09-06 22:12:04.698",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 19,
+    "Sequence": 19,
+    "Utc": "2026-09-06T14:13:05.4755751Z",
+    "Local": "2026-09-06 22:13:05.475",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 20,
+    "Sequence": 20,
+    "Utc": "2026-09-06T14:14:06.2157722Z",
+    "Local": "2026-09-06 22:14:06.215",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 21,
+    "Sequence": 21,
+    "Utc": "2026-09-06T14:15:06.9224310Z",
+    "Local": "2026-09-06 22:15:06.922",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 22,
+    "Sequence": 22,
+    "Utc": "2026-09-06T14:16:07.4799295Z",
+    "Local": "2026-09-06 22:16:07.479",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 23,
+    "Sequence": 23,
+    "Utc": "2026-09-06T14:17:08.3112345Z",
+    "Local": "2026-09-06 22:17:08.311",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 24,
+    "Sequence": 24,
+    "Utc": "2026-09-06T14:17:54.3979312Z",
+    "Local": "2026-09-06 22:17:54.397",
+    "Event": "HostTransportConnectionRetired",
+    "Reason": "ConnectionGeneration=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 25,
+    "Sequence": 25,
+    "Utc": "2026-09-06T14:17:54.4004351Z",
+    "Local": "2026-09-06 22:17:54.400",
+    "Event": "PipeDisconnected",
+    "Reason": "无法访问关闭的管道。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 26,
+    "Sequence": 26,
+    "Utc": "2026-09-06T14:17:54.6696917Z",
+    "Local": "2026-09-06 22:17:54.669",
+    "Event": "AttachedReconnect",
+    "Reason": "SameAuthority;ConnectionGeneration=2"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 27,
+    "Sequence": 27,
+    "Utc": "2026-09-06T14:17:54.6866713Z",
+    "Local": "2026-09-06 22:17:54.686",
+    "Event": "AttachedReconnectValidated",
+    "Reason": "FreshHeartbeat;ConnectionGeneration=2"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 28,
+    "Sequence": 28,
+    "Utc": "2026-09-06T14:18:09.4027366Z",
+    "Local": "2026-09-06 22:18:09.402",
+    "Event": "HeartbeatCheckpoint",
+    "Reason": "Periodic"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 29,
+    "Sequence": 29,
+    "Utc": "2026-09-06T14:18:34.7207652Z",
+    "Local": "2026-09-06 22:18:34.720",
+    "Event": "ResponsiveApplicationControlRepairRequested",
+    "Reason": "ChannelTerminalResourcesActive:EPB=7;AgeSeconds=5.1;Timer=True;Runner=True;Energized=False;State=SystemFault;ExpectedTimer=False;ExpectedRunner=False;ContractRevision=3;RunId=a70ae1c5dc0f402a9e253e277e0f7552;RunEpoch=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 30,
+    "Sequence": 30,
+    "Utc": "2026-09-06T14:18:42.3058106Z",
+    "Local": "2026-09-06 22:18:42.305",
+    "Event": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical=LifecycleBusy=False Session=False Batch=00000000000000000000000000000000 Timers=0(Active=0,Cache=0) Runners=0(Active=0,Cache=0) Energized=0 StopCts=0 CycleCts=0 Participants=0 Leases=1 DaqRecovery=0 ActiveCycles=0 SoftwareRecovery=0 RecoveryOwners=0 Contracts=0 RegistryLeases=0 Hydraulics=[Hydraulic=1 Epoch=2 Admission=Open Generations=0 Operations=0 Leases=0 Gate=Available Pending=[] Rebuilds=0 | Hydraulic=2 Epoch=1 Admission=Open Generations=0 Operations=0 Leases=0 Gate=Available Pending=[] Rebuilds=0]"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 31,
+    "Sequence": 31,
+    "Utc": "2026-09-06T14:18:42.3613025Z",
+    "Local": "2026-09-06 22:18:42.361",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=Approved;Revision=1;Detail=Approved recovery permit observed"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 32,
+    "Sequence": 32,
+    "Utc": "2026-09-06T14:18:42.3688199Z",
+    "Local": "2026-09-06 22:18:42.368",
+    "Event": "ApplicationExitRequested",
+    "Reason": "967304421a164bfda746c67a47a8661d"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 33,
+    "Sequence": 33,
+    "Utc": "2026-09-06T14:18:42.3758268Z",
+    "Local": "2026-09-06 22:18:42.375",
+    "Event": "TakeoverReplacementExitObserved",
+    "Reason": "Intent=967304421a164bfda746c67a47a8661d;Transaction=0691d2961a2d46edbf2610525bdb26ca;PermitGeneration=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 34,
+    "Sequence": 34,
+    "Utc": "2026-09-06T14:18:42.6924380Z",
+    "Local": "2026-09-06 22:18:42.692",
+    "Event": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=8;Transaction=0691d2961a2d46edbf2610525bdb26ca;PermitGeneration=1;Action=PreserveApprovedPermit"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 35,
+    "Sequence": 35,
+    "Utc": "2026-09-06T14:18:44.2965177Z",
+    "Local": "2026-09-06 22:18:44.296",
+    "Event": "WatchdogLogicalSourceRefreshRequested",
+    "Reason": "WatchdogLogicalSourceStale:Version=2942;CapturedUtcTicks=639243011212367088;WallClockAgeSeconds=3.1;MonotonicAgeSeconds=2.4"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 36,
+    "Sequence": 36,
+    "Utc": "2026-09-06T14:18:44.8270768Z",
+    "Local": "2026-09-06 22:18:44.827",
+    "Event": "HeartbeatSuspect",
+    "Reason": "HeartbeatAgeSeconds=3.049"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 37,
+    "Sequence": 37,
+    "Utc": "2026-09-06T14:18:47.6942427Z",
+    "Local": "2026-09-06 22:18:47.694",
+    "Event": "HostTransportConnectionRetired",
+    "Reason": "ConnectionGeneration=2"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 38,
+    "Sequence": 38,
+    "Utc": "2026-09-06T14:18:47.6942427Z",
+    "Local": "2026-09-06 22:18:47.694",
+    "Event": "PipeDisconnected",
+    "Reason": "无法访问关闭的管道。"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 39,
+    "Sequence": 39,
+    "Utc": "2026-09-06T14:18:47.7388929Z",
+    "Local": "2026-09-06 22:18:47.738",
+    "Event": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=9;Transaction=0691d2961a2d46edbf2610525bdb26ca;PermitGeneration=1;Action=PreserveApprovedPermit"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 40,
+    "Sequence": 40,
+    "Utc": "2026-09-06T14:18:47.7503876Z",
+    "Local": "2026-09-06 22:18:47.750",
+    "Event": "HeartbeatUiProbe",
+    "Reason": "HeartbeatAgeSeconds=5.965;Probe=WindowMissing;Failures=2;Detail=VisibleTopLevelWindowMissing"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 41,
+    "Sequence": 41,
+    "Utc": "2026-09-06T14:18:48.8128731Z",
+    "Local": "2026-09-06 22:18:48.812",
+    "Event": "HeartbeatUnresponsiveConfirmed",
+    "Reason": "HeartbeatAgeSeconds=7.029;Probe=WindowMissing;Failures=3;Detail=VisibleTopLevelWindowMissing"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 42,
+    "Sequence": 42,
+    "Utc": "2026-09-06T14:18:48.8163658Z",
+    "Local": "2026-09-06 22:18:48.816",
+    "Event": "TakeoverRequested",
+    "Reason": "StopSafetySupervisor:StopSafetyHeartbeatUnresponsive;Generation=1;Authority=cb1bfc8241cd4c018975b0c05ad2974f:17384:639243000293779397:1:UnknownRun"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 43,
+    "Sequence": 43,
+    "Utc": "2026-09-06T14:18:49.3583842Z",
+    "Local": "2026-09-06 22:18:49.358",
+    "Event": "ResponsiveControlRepairSuppressedDuringStop",
+    "Reason": "Transaction=9e5caec9b9be40088e0ff69f4ef98897;Stage=ClosePersistenceBoundary;LogicalResidue=False;InconsistentRecovery=False;FormalProgressStalled=False;ChannelSupervisionFailed=True"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 44,
+    "Sequence": 44,
+    "Utc": "2026-09-06T14:18:53.0743345Z",
+    "Local": "2026-09-06 22:18:53.074",
+    "Event": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=13;Transaction=0691d2961a2d46edbf2610525bdb26ca;PermitGeneration=1;Action=PreserveApprovedPermit"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 45,
+    "Sequence": 45,
+    "Utc": "2026-09-06T14:18:53.3412225Z",
+    "Local": "2026-09-06 22:18:53.341",
+    "Event": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=17;Transaction=0691d2961a2d46edbf2610525bdb26ca;PermitGeneration=1;Action=PreserveApprovedPermit"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 46,
+    "Sequence": 46,
+    "Utc": "2026-09-06T14:18:54.4039283Z",
+    "Local": "2026-09-06 22:18:54.403",
+    "Event": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=21;Transaction=0691d2961a2d46edbf2610525bdb26ca;PermitGeneration=1;Action=PreserveApprovedPermit"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 47,
+    "Sequence": 47,
+    "Utc": "2026-09-06T14:18:54.6987192Z",
+    "Local": "2026-09-06 22:18:54.698",
+    "Event": "SafetyHandoffAccepted",
+    "Reason": "HandoffId=1121c475cdf54ec88d5579c14d4ad34c;Revision=2"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 48,
+    "Sequence": 48,
+    "Utc": "2026-09-06T14:18:54.8828405Z",
+    "Local": "2026-09-06 22:18:54.882",
+    "Event": "OldProcessExitProven",
+    "Reason": "PID=17384;StartUtcTicks=639243000293779397;Observation=Dead;Source=RelaunchAfterExitBegin"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 49,
+    "Sequence": 49,
+    "Utc": "2026-09-06T14:18:54.9257241Z",
+    "Local": "2026-09-06 22:18:54.925",
+    "Event": "PostExitSafetyEvidenceAugmented",
+    "Reason": "PID=17384;StartUtcTicks=639243000293779397;Observation=Dead;PermitGeneration=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 50,
+    "Sequence": 50,
+    "Utc": "2026-09-06T14:18:54.9383492Z",
+    "Local": "2026-09-06 22:18:54.938",
+    "Event": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=OldProcessExitProven;Revision=2;Detail=Exact old process exit proven"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 51,
+    "Sequence": 51,
+    "Utc": "2026-09-06T14:18:55.0265816Z",
+    "Local": "2026-09-06 22:18:55.026",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 52,
+    "Sequence": 52,
+    "Utc": "2026-09-06T14:18:56.0758320Z",
+    "Local": "2026-09-06 22:18:56.075",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 53,
+    "Sequence": 53,
+    "Utc": "2026-09-06T14:19:01.1065881Z",
+    "Local": "2026-09-06 22:19:01.106",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 54,
+    "Sequence": 54,
+    "Utc": "2026-09-06T14:19:12.3934397Z",
+    "Local": "2026-09-06 22:19:12.393",
+    "Event": "TakeoverReplacementOldProcessExited",
+    "Reason": "Intent=967304421a164bfda746c67a47a8661d;PermitGeneration=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 55,
+    "Sequence": 55,
+    "Utc": "2026-09-06T14:19:16.1478148Z",
+    "Local": "2026-09-06 22:19:16.147",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 56,
+    "Sequence": 56,
+    "Utc": "2026-09-06T14:19:46.1833979Z",
+    "Local": "2026-09-06 22:19:46.183",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 57,
+    "Sequence": 57,
+    "Utc": "2026-09-06T14:20:16.2225074Z",
+    "Local": "2026-09-06 22:20:16.222",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 58,
+    "Sequence": 58,
+    "Utc": "2026-09-06T14:20:25.0048831Z",
+    "Local": "2026-09-06 22:20:25.004",
+    "Event": "RecoverySafetyPrerequisiteBlocked",
+    "Reason": "PermitGeneration=1;Outcome=TimedOut;FailureCount=1;MainLaunchBudgetConsumed=False;Detail=PermitGeneration=1;TimeoutSeconds=90;AuthoritySource=Supervisor;LastAuthorityReadFailure="
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 59,
+    "Sequence": 59,
+    "Utc": "2026-09-06T14:20:25.0118756Z",
+    "Local": "2026-09-06 22:20:25.011",
+    "Event": "SafetyPrerequisiteRetryScheduled",
+    "Reason": "PermitGeneration=1;Attempt=1;DelaySeconds=1;Outcome=TimedOut"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 60,
+    "Sequence": 60,
+    "Utc": "2026-09-06T14:20:26.0320911Z",
+    "Local": "2026-09-06 22:20:26.032",
+    "Event": "OldProcessExitProven",
+    "Reason": "PID=17384;StartUtcTicks=639243000293779397;Observation=Dead;Source=ApplicationExitReceipt:967304421a164bfda746c67a47a8661d"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 61,
+    "Sequence": 61,
+    "Utc": "2026-09-06T14:20:26.0390871Z",
+    "Local": "2026-09-06 22:20:26.039",
+    "Event": "PostExitSafetyEvidenceAugmented",
+    "Reason": "PID=17384;StartUtcTicks=639243000293779397;Observation=Dead;PermitGeneration=1"
+  },
+  {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 62,
+    "Sequence": 62,
+    "Utc": "2026-09-06T14:20:46.2694555Z",
+    "Local": "2026-09-06 22:20:46.269",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  }
+]

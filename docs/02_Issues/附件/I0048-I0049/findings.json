@@ -1,0 +1,31 @@
+{
+  "BuildVersion": "V2.17.2.0",
+  "BuildCommit": "1185a09d62e84b1982c648168b371118d17b9ce4",
+  "MainSha256": "8094f890533e0de65eb5fdbb46eef8a4bbab7bcd025eadd2c9a14f926c6201c1",
+  "ReceiptSafetyAgentHash": "485469f428a1d5ef5e55b15ecaae8279dafb89fc9ef9f1c893472217029e5cac",
+  "BuildIdentitySafetyAgentHash": "485469f428a1d5ef5e55b15ecaae8279dafb89fc9ef9f1c893472217029e5cac",
+  "RequestHashFormat": "485469F428A1D5EF5E55B15ECAAE8279DAFB89FC9EF9F1C893472217029E5CAC",
+  "OrdinalComparison": false,
+  "DigestComparison": true,
+  "WorkerFailureCount": 7,
+  "FirstWorkerFailure": {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 51,
+    "Sequence": 51,
+    "Utc": "2026-09-06T14:18:55.0265816Z",
+    "Local": "2026-09-06 22:18:55.026",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  },
+  "LastWorkerFailure": {
+    "Session": "cb1bfc8241cd4c018975b0c05ad2974f",
+    "Source": "sidecar",
+    "Line": 62,
+    "Sequence": 62,
+    "Utc": "2026-09-06T14:20:46.2694555Z",
+    "Local": "2026-09-06 22:20:46.269",
+    "Event": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyAuthorityExecutableHashMismatch:SupervisorSafetyAuthorityExecutableHashMismatch"
+  }
+}

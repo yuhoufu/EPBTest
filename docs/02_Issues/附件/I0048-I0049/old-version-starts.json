@@ -1,0 +1,17 @@
+[
+  {
+    "Source": "run.20260904.001.log",
+    "Line": 1,
+    "Text": "2026-09-04 19:18:42.736\tINFO\t启动构建身份\tProductVersion=V2.14.2.11 AssemblyVersion=2.14.2.11 PID=20948 Bitness=32 ExecutablePath=\"C:\\\\Program Files (x86)\\\\MTTFTest\\\\Current\\\\MTTFTest.exe\" ExeSha256=9158a6cf57cfd6329d3f8dc3dd254f5e35a0d8c8b9fe48cd43b9a3919837a8ba ConfigSha256=d3442350a04b2dd466ef8cdec6ce855d4b4b304c51c294cdc9738ce65c62bda0 ReleaseConfigSha256=unknown GitCommit=unknown GitDirty=unknown BuildUtc=unknown PackageVerified=True PackageCode=OperatorManaged PackageFiles=0"
+  },
+  {
+    "Source": "run.20260905.001.log",
+    "Line": 12067,
+    "Text": "2026-09-05 00:14:47.471\tINFO\t启动构建身份\tProductVersion=V2.14.2.11 AssemblyVersion=2.14.2.11 PID=12120 Bitness=32 ExecutablePath=\"C:\\\\Program Files (x86)\\\\MTTFTest\\\\Current\\\\MTTFTest.exe\" ExeSha256=9158a6cf57cfd6329d3f8dc3dd254f5e35a0d8c8b9fe48cd43b9a3919837a8ba ConfigSha256=d3442350a04b2dd466ef8cdec6ce855d4b4b304c51c294cdc9738ce65c62bda0 ReleaseConfigSha256=unknown GitCommit=unknown GitDirty=unknown BuildUtc=unknown PackageVerified=True PackageCode=OperatorManaged PackageFiles=0"
+  },
+  {
+    "Source": "run.20260905.001.log",
+    "Line": 53690,
+    "Text": "2026-09-05 02:21:45.087\tINFO\t启动构建身份\tProductVersion=V2.14.2.11 AssemblyVersion=2.14.2.11 PID=11872 Bitness=32 ExecutablePath=\"C:\\\\Program Files (x86)\\\\MTTFTest\\\\Current\\\\MTTFTest.exe\" ExeSha256=9158a6cf57cfd6329d3f8dc3dd254f5e35a0d8c8b9fe48cd43b9a3919837a8ba ConfigSha256=d3442350a04b2dd466ef8cdec6ce855d4b4b304c51c294cdc9738ce65c62bda0 ReleaseConfigSha256=unknown GitCommit=unknown GitDirty=unknown BuildUtc=unknown PackageVerified=True PackageCode=OperatorManaged PackageFiles=0"
+  }
+]
