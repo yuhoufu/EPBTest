@@ -1,0 +1,795 @@
+{
+  "archive": "D:\\EPB_Data\\Backups\\10243-028_V2.17.1.0_I0046_0906_1358",
+  "head": "fb498bab39cac75151058a7bff85ad41fa3b5d96",
+  "method": "nearest-rank percentiles of recorded snapshots, not per-batch or time-weighted; local UTC+08",
+  "source_sha256": {
+    "log/run.log": "3052ff3cbb95cd6c9776f9d6d43812a14ce67a2388be700c0c84b5f7362f0567",
+    "log/warning.log": "b339341fdd2f51d8d31e22e41529c38f204fdbd0b271babb74b02c87c6d2f2d3",
+    "log/error.log": "8902106bfabd35eaacae6b2390947161ec1479dd27f0982c37983d875c2b1fe8",
+    "log/ui-info.log": "2ead23dbe44752364d37794a151d92ca2e8f68dbd19aa33d5c1410c2a3b83d6e",
+    "IncidentSnapshots/Incident-Session-6e47525ef2d3a452b2a8548b77d73cae/00-trigger-DEV1-001-054717_084/daq_timing.csv": "14d9e1c2cfc8334dfa1fed9804a485ddad6f08ccd2e65e376a78a352888bc8cc",
+    "IncidentSnapshots/Incident-Session-cf315c18c51ad950bd1fa09e7b8aadcd/00-trigger-DEV2-001-054717_083/daq_timing.csv": "833985bdae6a2713a8077c7b40e9091bb24f8dc03e15987f81ac62d86dc723d6",
+    "WatchdogSessions/session-3910e3aab18a45398f23547d32e7fe7e.client-events.jsonl": "e416a617e7b6e37f5bad2ac134d84b62337d79b0b858b2bd38480df4e3ddf32e",
+    "WatchdogSessions/session-3910e3aab18a45398f23547d32e7fe7e.sidecar-events.jsonl": "dd0a53e73b7ff49d604c68292f89d29fb39fbd6ff70fdd686cc2919cfb1f0bf8"
+  },
+  "windows": {
+    "resumed": {
+      "start_local": "13:31:12.754",
+      "end_local": "13:47:10.092",
+      "devices": {
+        "Dev1": {
+          "PersistenceDepth": {
+            "n": 472,
+            "min": 0.0,
+            "max": 9.0,
+            "p50": 0.0,
+            "p95": 2.0,
+            "p99": 5.0,
+            "zero_count": 363
+          },
+          "PersistenceOldestMs": {
+            "n": 472,
+            "min": 0.0,
+            "max": 82.983,
+            "p50": 0.0,
+            "p95": 20.492,
+            "p99": 52.099,
+            "zero_count": 242
+          },
+          "CallbackAgeMs": {
+            "n": 472,
+            "min": 0.62,
+            "max": 14.112,
+            "p50": 3.754,
+            "p95": 9.245,
+            "p99": 11.481,
+            "zero_count": 0
+          },
+          "ControlProcessedAgeMs": {
+            "n": 472,
+            "min": 0.452,
+            "max": 13.943,
+            "p50": 3.498,
+            "p95": 8.742,
+            "p99": 11.33,
+            "zero_count": 0
+          }
+        },
+        "Dev2": {
+          "PersistenceDepth": {
+            "n": 472,
+            "min": 0.0,
+            "max": 10.0,
+            "p50": 0.0,
+            "p95": 3.0,
+            "p99": 6.0,
+            "zero_count": 330
+          },
+          "PersistenceOldestMs": {
+            "n": 472,
+            "min": 0.0,
+            "max": 112.028,
+            "p50": 2.66,
+            "p95": 20.319,
+            "p99": 67.269,
+            "zero_count": 191
+          },
+          "CallbackAgeMs": {
+            "n": 472,
+            "min": 0.57,
+            "max": 14.089,
+            "p50": 3.803,
+            "p95": 9.325,
+            "p99": 11.57,
+            "zero_count": 0
+          },
+          "ControlProcessedAgeMs": {
+            "n": 472,
+            "min": 0.459,
+            "max": 13.982,
+            "p50": 3.563,
+            "p95": 8.807,
+            "p99": 11.377,
+            "zero_count": 0
+          }
+        }
+      }
+    },
+    "formal": {
+      "start_local": "13:33:57.106",
+      "end_local": "13:47:10.092",
+      "devices": {
+        "Dev1": {
+          "PersistenceDepth": {
+            "n": 391,
+            "min": 0.0,
+            "max": 6.0,
+            "p50": 0.0,
+            "p95": 1.0,
+            "p99": 5.0,
+            "zero_count": 308
+          },
+          "PersistenceOldestMs": {
+            "n": 391,
+            "min": 0.0,
+            "max": 57.283,
+            "p50": 0.0,
+            "p95": 10.569,
+            "p99": 49.513,
+            "zero_count": 201
+          },
+          "CallbackAgeMs": {
+            "n": 391,
+            "min": 0.62,
+            "max": 14.112,
+            "p50": 3.767,
+            "p95": 9.281,
+            "p99": 12.104,
+            "zero_count": 0
+          },
+          "ControlProcessedAgeMs": {
+            "n": 391,
+            "min": 0.452,
+            "max": 13.943,
+            "p50": 3.533,
+            "p95": 9.121,
+            "p99": 11.951,
+            "zero_count": 0
+          }
+        },
+        "Dev2": {
+          "PersistenceDepth": {
+            "n": 391,
+            "min": 0.0,
+            "max": 6.0,
+            "p50": 0.0,
+            "p95": 2.0,
+            "p99": 5.0,
+            "zero_count": 283
+          },
+          "PersistenceOldestMs": {
+            "n": 391,
+            "min": 0.0,
+            "max": 65.373,
+            "p50": 2.653,
+            "p95": 18.875,
+            "p99": 53.548,
+            "zero_count": 159
+          },
+          "CallbackAgeMs": {
+            "n": 391,
+            "min": 0.57,
+            "max": 14.089,
+            "p50": 3.827,
+            "p95": 9.347,
+            "p99": 12.348,
+            "zero_count": 0
+          },
+          "ControlProcessedAgeMs": {
+            "n": 391,
+            "min": 0.459,
+            "max": 13.982,
+            "p50": 3.576,
+            "p95": 9.0,
+            "p99": 11.98,
+            "zero_count": 0
+          }
+        }
+      }
+    }
+  },
+  "incident_rows": [
+    {
+      "line": 273,
+      "time": "2026-09-06 13:30:15.690",
+      "Device": "Dev1",
+      "Persisted": "2212",
+      "Accepted": "2212",
+      "PersistenceDepth": "0",
+      "PersistenceOldestMs": "0.000",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 274,
+      "time": "2026-09-06 13:30:15.690",
+      "Device": "Dev2",
+      "Persisted": "2211",
+      "Accepted": "2211",
+      "PersistenceDepth": "0",
+      "PersistenceOldestMs": "0.000",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 324,
+      "time": "2026-09-06 13:30:17.717",
+      "Device": "Dev1",
+      "Persisted": "2369",
+      "Accepted": "2415",
+      "PersistenceDepth": "45",
+      "PersistenceOldestMs": "439.267",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 325,
+      "time": "2026-09-06 13:30:17.717",
+      "Device": "Dev2",
+      "Persisted": "2368",
+      "Accepted": "2414",
+      "PersistenceDepth": "45",
+      "PersistenceOldestMs": "454.648",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 406,
+      "time": "2026-09-06 13:30:19.739",
+      "Device": "Dev1",
+      "Persisted": "2449",
+      "Accepted": "2616",
+      "PersistenceDepth": "166",
+      "PersistenceOldestMs": "1663.767",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 407,
+      "time": "2026-09-06 13:30:19.739",
+      "Device": "Dev2",
+      "Persisted": "2411",
+      "Accepted": "2616",
+      "PersistenceDepth": "204",
+      "PersistenceOldestMs": "2038.681",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 439,
+      "time": "2026-09-06 13:30:21.768",
+      "Device": "Dev1",
+      "Persisted": "2517",
+      "Accepted": "2820",
+      "PersistenceDepth": "256",
+      "PersistenceOldestMs": "3022.116",
+      "ProcessingDepth": "45"
+    },
+    {
+      "line": 440,
+      "time": "2026-09-06 13:30:21.768",
+      "Device": "Dev2",
+      "Persisted": "2449",
+      "Accepted": "2819",
+      "PersistenceDepth": "256",
+      "PersistenceOldestMs": "3692.036",
+      "ProcessingDepth": "112"
+    },
+    {
+      "line": 14160,
+      "time": "2026-09-06 13:47:10.092",
+      "Device": "Dev1",
+      "Persisted": "96703",
+      "Accepted": "96703",
+      "PersistenceDepth": "0",
+      "PersistenceOldestMs": "0.000",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 14161,
+      "time": "2026-09-06 13:47:10.092",
+      "Device": "Dev2",
+      "Persisted": "96696",
+      "Accepted": "96698",
+      "PersistenceDepth": "1",
+      "PersistenceOldestMs": "2.892",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 14241,
+      "time": "2026-09-06 13:47:13.583",
+      "Device": "Dev1",
+      "Persisted": "96949",
+      "Accepted": "97051",
+      "PersistenceDepth": "101",
+      "PersistenceOldestMs": "1019.181",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 14242,
+      "time": "2026-09-06 13:47:13.583",
+      "Device": "Dev2",
+      "Persisted": "96841",
+      "Accepted": "97046",
+      "PersistenceDepth": "204",
+      "PersistenceOldestMs": "2053.236",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 14273,
+      "time": "2026-09-06 13:47:15.975",
+      "Device": "Dev1",
+      "Persisted": "97291",
+      "Accepted": "97291",
+      "PersistenceDepth": "0",
+      "PersistenceOldestMs": "0.000",
+      "ProcessingDepth": "0"
+    },
+    {
+      "line": 14274,
+      "time": "2026-09-06 13:47:15.975",
+      "Device": "Dev2",
+      "Persisted": "97286",
+      "Accepted": "97286",
+      "PersistenceDepth": "0",
+      "PersistenceOldestMs": "0.000",
+      "ProcessingDepth": "0"
+    }
+  ],
+  "timings": {
+    "IncidentSnapshots/Incident-Session-6e47525ef2d3a452b2a8548b77d73cae/00-trigger-DEV1-001-054717_084/daq_timing.csv": {
+      "kinds": {
+        "Persistence": 1001,
+        "Callback": 999,
+        "Processing": 999,
+        "Lag": 6
+      },
+      "baseline_utc": "[05:47:07,05:47:10.5)",
+      "baseline_write_call_ms": {
+        "n": 341,
+        "min": 0.691,
+        "max": 34.777,
+        "p50": 2.45,
+        "p95": 7.956,
+        "p99": 17.213,
+        "zero_count": 0
+      },
+      "slowest_writes": [
+        {
+          "TimestampUtc": "2026-09-06T05:47:11.5101714Z",
+          "Device": "Dev1",
+          "ProcessingMs": "720.867",
+          "PersistenceWaitMs": "936.494",
+          "QueueDepth": "92"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:13.7093130Z",
+          "Device": "Dev1",
+          "ProcessingMs": "346.999",
+          "PersistenceWaitMs": "1145.190",
+          "QueueDepth": "114"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:10.7899544Z",
+          "Device": "Dev1",
+          "ProcessingMs": "215.802",
+          "PersistenceWaitMs": "215.816",
+          "QueueDepth": "21"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:12.6004511Z",
+          "Device": "Dev1",
+          "ProcessingMs": "132.823",
+          "PersistenceWaitMs": "1006.415",
+          "QueueDepth": "101"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:11.8795110Z",
+          "Device": "Dev1",
+          "ProcessingMs": "65.544",
+          "PersistenceWaitMs": "992.601",
+          "QueueDepth": "100"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:12.4185461Z",
+          "Device": "Dev1",
+          "ProcessingMs": "54.305",
+          "PersistenceWaitMs": "888.328",
+          "QueueDepth": "88"
+        }
+      ],
+      "nonzero_sqlite_or_ring_fields": 0
+    },
+    "IncidentSnapshots/Incident-Session-cf315c18c51ad950bd1fa09e7b8aadcd/00-trigger-DEV2-001-054717_083/daq_timing.csv": {
+      "kinds": {
+        "Persistence": 1001,
+        "Callback": 999,
+        "Processing": 999,
+        "Lag": 4
+      },
+      "baseline_utc": "[05:47:07,05:47:10.5)",
+      "baseline_write_call_ms": {
+        "n": 340,
+        "min": 0.82,
+        "max": 53.482,
+        "p50": 3.705,
+        "p95": 8.905,
+        "p99": 25.376,
+        "zero_count": 0
+      },
+      "slowest_writes": [
+        {
+          "TimestampUtc": "2026-09-06T05:47:11.3517164Z",
+          "Device": "Dev2",
+          "ProcessingMs": "793.994",
+          "PersistenceWaitMs": "794.013",
+          "QueueDepth": "79"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:13.7302910Z",
+          "Device": "Dev2",
+          "ProcessingMs": "367.459",
+          "PersistenceWaitMs": "2199.772",
+          "QueueDepth": "220"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:11.5136690Z",
+          "Device": "Dev2",
+          "ProcessingMs": "161.805",
+          "PersistenceWaitMs": "955.610",
+          "QueueDepth": "94"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:12.6364192Z",
+          "Device": "Dev2",
+          "ProcessingMs": "141.403",
+          "PersistenceWaitMs": "1545.670",
+          "QueueDepth": "154"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:11.8585358Z",
+          "Device": "Dev2",
+          "ProcessingMs": "82.945",
+          "PersistenceWaitMs": "1143.583",
+          "QueueDepth": "112"
+        },
+        {
+          "TimestampUtc": "2026-09-06T05:47:12.4010633Z",
+          "Device": "Dev2",
+          "ProcessingMs": "77.181",
+          "PersistenceWaitMs": "1357.197",
+          "QueueDepth": "135"
+        }
+      ],
+      "nonzero_sqlite_or_ring_fields": 0
+    }
+  },
+  "events": {
+    "session-3910e3aab18a45398f23547d32e7fe7e.client-events.jsonl": [
+      {
+        "line": 3,
+        "Utc": "2026-09-06T05:31:12.5174522Z",
+        "EventType": "SidecarHelperLaunched",
+        "Reason": "PID=22792",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 8,
+        "Utc": "2026-09-06T05:47:12.9101058Z",
+        "EventType": "TransportEvent",
+        "Reason": "Send:命名管道写入超时。",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 9,
+        "Utc": "2026-09-06T05:47:12.9121013Z",
+        "EventType": "TransportEvent",
+        "Reason": "Send:命名管道写入超时。",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 10,
+        "Utc": "2026-09-06T05:47:13.0209824Z",
+        "EventType": "TransportLost",
+        "Reason": "SendWriteFailed:命名管道写入超时。",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 11,
+        "Utc": "2026-09-06T05:47:13.0209824Z",
+        "EventType": "TransportLost",
+        "Reason": "SendWriteFailed:命名管道写入超时。",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 12,
+        "Utc": "2026-09-06T05:47:13.8583723Z",
+        "EventType": "AttachSent",
+        "Reason": "MainProcess",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 13,
+        "Utc": "2026-09-06T05:47:13.8784182Z",
+        "EventType": "HeartbeatRefreshSent",
+        "Reason": "Trigger=Attached;Sequence=949",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 14,
+        "Utc": "2026-09-06T05:47:13.8784182Z",
+        "EventType": "Attached",
+        "Reason": "HandshakeCompleted;AuthorityPid=22792;AuthorityStartUtcTicks=639242694724697922",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 15,
+        "Utc": "2026-09-06T05:47:13.8844658Z",
+        "EventType": "TransportEvent",
+        "Reason": "WatchdogReconnected:同一Session重连成功。",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 16,
+        "Utc": "2026-09-06T05:47:13.8844658Z",
+        "EventType": "TransportEvent",
+        "Reason": "WatchdogReconnected:同一Session重连成功。",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 17,
+        "Utc": "2026-09-06T05:47:13.8844658Z",
+        "EventType": "HeartbeatRefreshSent",
+        "Reason": "Trigger=ImmediateStateSnapshot;Sequence=950",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 18,
+        "Utc": "2026-09-06T05:47:13.8889310Z",
+        "EventType": "ImmediateStateSnapshot",
+        "Reason": "ReconnectSuccess",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 19,
+        "Utc": "2026-09-06T05:47:16.8673433Z",
+        "EventType": "StopAllRequested",
+        "Reason": "PowerOffUnconfirmedTimeout:c5ad319c9a274180bed0fa6e6d15a45f",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 20,
+        "Utc": "2026-09-06T05:47:23.7453004Z",
+        "EventType": "StopCompleted",
+        "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical=",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 21,
+        "Utc": "2026-09-06T05:47:23.7827734Z",
+        "EventType": "RecoveryFailureReceiptIgnored",
+        "Reason": "UnknownCorrelation=cc1eed84f4d54cfd9f60a8d95486668d",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 22,
+        "Utc": "2026-09-06T05:47:23.8082498Z",
+        "EventType": "ApplicationExitRequested",
+        "Reason": "Intent=421c20b68528416e9dbd12132f27a338;PID=11276;Disposition=TakeoverReplacementExit;Relaunch=PreserveApprovedPermit;PermitGeneration=1;HardDeadlineUtcTicks=639242704737942604;Reason=WatchdogStopAllCompleted:c5ad319c9a274180bed0fa6e6d15a45f",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 23,
+        "Utc": "2026-09-06T05:47:23.8362468Z",
+        "EventType": "WatchdogClosingTombstone",
+        "Reason": "StateVersion=1;Generation=1;Lease=1;Intent=ApplicationClosing",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 24,
+        "Utc": "2026-09-06T05:47:23.9516194Z",
+        "EventType": "WatchdogClosingTombstoneReused",
+        "Reason": "State=Closing;StateVersion=2;Generation=1;Lease=1;Intent=SessionClose;Mark=Marked",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      },
+      {
+        "line": 25,
+        "Utc": "2026-09-06T05:47:23.9771131Z",
+        "EventType": "TransportShutdownReceipt",
+        "Reason": "SessionDetached=True;AllResourcesReleased=True;AllWorkersTerminal=True;OwnedHandlesBefore=0;OwnedHandlesAfter=0;LaunchReservationTerminal=True;RetainedLaunchTerminal=True",
+        "ManualStopRequested": false,
+        "RelaunchState": ""
+      }
+    ],
+    "session-3910e3aab18a45398f23547d32e7fe7e.sidecar-events.jsonl": [
+      {
+        "line": 23,
+        "Utc": "2026-09-06T05:47:12.9175920Z",
+        "EventType": "HostTransportConnectionRetired",
+        "Reason": "ConnectionGeneration=1",
+        "ManualStopRequested": false,
+        "RelaunchState": "None"
+      },
+      {
+        "line": 24,
+        "Utc": "2026-09-06T05:47:12.9200914Z",
+        "EventType": "PipeDisconnected",
+        "Reason": "无法访问关闭的管道。",
+        "ManualStopRequested": false,
+        "RelaunchState": "None"
+      },
+      {
+        "line": 25,
+        "Utc": "2026-09-06T05:47:13.8699104Z",
+        "EventType": "AttachedReconnect",
+        "Reason": "SameAuthority;ConnectionGeneration=2",
+        "ManualStopRequested": false,
+        "RelaunchState": "None"
+      },
+      {
+        "line": 26,
+        "Utc": "2026-09-06T05:47:13.8864273Z",
+        "EventType": "AttachedReconnectValidated",
+        "Reason": "FreshHeartbeat;ConnectionGeneration=2",
+        "ManualStopRequested": false,
+        "RelaunchState": "None"
+      },
+      {
+        "line": 27,
+        "Utc": "2026-09-06T05:47:16.8618538Z",
+        "EventType": "TakeoverRequested",
+        "Reason": "PowerOffUnconfirmedTimeout;Generation=1;Authority=3910e3aab18a45398f23547d32e7fe7e:11276:639242694539639110:1:81e36b154d124051954940b6bf76c4bd",
+        "ManualStopRequested": false,
+        "RelaunchState": "None"
+      },
+      {
+        "line": 28,
+        "Utc": "2026-09-06T05:47:23.7478001Z",
+        "EventType": "StopCompleted",
+        "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical=",
+        "ManualStopRequested": false,
+        "RelaunchState": "None"
+      },
+      {
+        "line": 29,
+        "Utc": "2026-09-06T05:47:23.7967621Z",
+        "EventType": "RecoveryReplacementAdvanced",
+        "Reason": "PermitGeneration=1;State=Approved;Revision=1;Detail=Approved recovery permit observed",
+        "ManualStopRequested": false,
+        "RelaunchState": "Approved"
+      },
+      {
+        "line": 30,
+        "Utc": "2026-09-06T05:47:23.8117473Z",
+        "EventType": "ApplicationExitRequested",
+        "Reason": "421c20b68528416e9dbd12132f27a338",
+        "ManualStopRequested": false,
+        "RelaunchState": "Approved"
+      },
+      {
+        "line": 31,
+        "Utc": "2026-09-06T05:47:23.8167699Z",
+        "EventType": "TakeoverReplacementExitObserved",
+        "Reason": "Intent=421c20b68528416e9dbd12132f27a338;Transaction=c5ad319c9a274180bed0fa6e6d15a45f;PermitGeneration=1",
+        "ManualStopRequested": false,
+        "RelaunchState": "Approved"
+      },
+      {
+        "line": 32,
+        "Utc": "2026-09-06T05:47:23.9621210Z",
+        "EventType": "TakeoverCancelled",
+        "Reason": "Reason=ApplicationClosing;Generation=1;CorrelationId=c5ad319c9a274180bed0fa6e6d15a45f;Stage=StopRequested",
+        "ManualStopRequested": true,
+        "RelaunchState": "Approved"
+      },
+      {
+        "line": 33,
+        "Utc": "2026-09-06T05:47:23.9646255Z",
+        "EventType": "ApplicationClosing",
+        "Reason": "RuntimeShutdown",
+        "ManualStopRequested": true,
+        "RelaunchState": "Approved"
+      },
+      {
+        "line": 34,
+        "Utc": "2026-09-06T05:47:23.9656216Z",
+        "EventType": "HostTransportConnectionRetired",
+        "Reason": "ConnectionGeneration=2",
+        "ManualStopRequested": true,
+        "RelaunchState": "Approved"
+      },
+      {
+        "line": 35,
+        "Utc": "2026-09-06T05:47:23.9656216Z",
+        "EventType": "PipeDisconnected",
+        "Reason": "无法访问关闭的管道。",
+        "ManualStopRequested": true,
+        "RelaunchState": "Approved"
+      }
+    ]
+  },
+  "config_comparison": {
+    "6ed4d47": {
+      "count": 159,
+      "sha256_crlf": "5318b939efc0ee7fd7b0f88b221257a0816df9f4304a599fb3ec0c299833340e"
+    },
+    "3a954943": {
+      "count": 159,
+      "sha256_crlf": "fda9a93bf4c363d78d3b3286a02a9513beee8b9087fa4163dc7b739f0594c73e"
+    },
+    "c67bbff": {
+      "count": 159,
+      "sha256_crlf": "fda9a93bf4c363d78d3b3286a02a9513beee8b9087fa4163dc7b739f0594c73e"
+    }
+  },
+  "changed_appsettings": {
+    "DaqLivenessSuspectThresholdMs": {
+      "old": "1500",
+      "deployed": "100"
+    },
+    "DaqLivenessTripThresholdMs": {
+      "old": "5000",
+      "deployed": "250"
+    },
+    "DaqLivenessWarnThresholdMs": {
+      "old": "250",
+      "deployed": "75"
+    }
+  },
+  "commits_after_deployed": [
+    "fb498ba fix(recovery,deploy): Disarm空态不落盘且换代校验放行空未授权检查点",
+    "48b9573 docs: 补充I0043-I0044退出原因概念区分与旧版回执核查",
+    "c67bbff docs: 落地I0045升级链断裂根因与修复GLM文档",
+    "3c000c8 fix(diskwriter,controller): 未开圈幂等终止并补全清场不变量诊断",
+    "fac7d60 fix(recovery): 外部接管请求可验证送达并在未送达时降级自重启",
+    "9648b78 test: 补齐测试宿主DAQ会话配置并修复UI套件环境缺口",
+    "4285f8e feat(ui): 完成次数标签直接显示有效正式圈数"
+  ],
+  "warning_lag_count_second_run_before_pause": 57,
+  "run_liveness_records": [
+    {
+      "line": 47,
+      "text": "2026-09-06 13:29:52.960\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=Configured IntervalMs=20 WarnMs=75 SuspectMs=100 TripMs=250 PowerOffProofA=0.500 PowerOffProofMaxAgeMs=1000 ProcessId=15680"
+    },
+    {
+      "line": 136,
+      "text": "2026-09-06 13:30:08.488\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev1 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=339.8 Generation=2 Produced=1459 Processed=1458 RunId=7b4c3a63e016481e9ecb8374a017411d RunEpoch=1 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "line": 137,
+      "text": "2026-09-06 13:30:08.488\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev2 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=339.8 Generation=2 Produced=1459 Processed=1457 RunId=7b4c3a63e016481e9ecb8374a017411d RunEpoch=1 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "line": 846,
+      "text": "2026-09-06 13:31:02.489\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=Configured IntervalMs=20 WarnMs=75 SuspectMs=100 TripMs=250 PowerOffProofA=0.500 PowerOffProofMaxAgeMs=1000 ProcessId=11276"
+    },
+    {
+      "line": 949,
+      "text": "2026-09-06 13:31:17.059\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev1 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=298.4 Generation=2 Produced=1370 Processed=1369 RunId=81e36b154d124051954940b6bf76c4bd RunEpoch=1 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "line": 950,
+      "text": "2026-09-06 13:31:17.064\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=ObservedUnenergizedGap Device=Dev2 未带电DAQ观察到超过75ms的回调空窗；GapEvent=1 GapIntervalMs=298.4 Generation=2 Produced=1369 Processed=1368 RunId=81e36b154d124051954940b6bf76c4bd RunEpoch=1 WarnMs=75 Energized=false RecoveryActive=false"
+    },
+    {
+      "line": 3182,
+      "text": "2026-09-06 13:33:57.105\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS Result=Configured IntervalMs=20 WarnMs=75 SuspectMs=100 TripMs=250 ProcessId=11276 RunId=81e36b154d124051954940b6bf76c4bd RunEpoch=1"
+    }
+  ],
+  "log_token_counts": {
+    "DAQ_FRESHNESS_SAFETY_CUTOFF": {
+      "run": 0,
+      "warning": 0,
+      "error": 0,
+      "ui-info": 0
+    },
+    "DaqReadDispatchOverflow": {
+      "run": 0,
+      "warning": 0,
+      "error": 0,
+      "ui-info": 0
+    }
+  }
+}
