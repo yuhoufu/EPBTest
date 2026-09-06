@@ -1127,6 +1127,45 @@ namespace Controller
             }
         }
 
+        /// <summary>
+        /// 停止路径专用。生产者已冻结后不会再有新批次，“恢复必须由连续新鲜写入
+        /// 证明”的收敛条件永远无法满足，拥塞锁存会把 Depth=0 的已排空队列永久
+        /// 冻结为 Failed/Closed=False。在无未解决写故障、无数据丢弃、队列确实
+        /// 排空且无在途写入的前提下，确认停止期排空终态并复位拥塞锁存。
+        /// </summary>
+        internal bool TryConfirmDrainedTerminalForStop(string device)
+        {
+            var q = GetQueue(device);
+            if (Volatile.Read(ref q.UnresolvedWriteFailure) != 0) return false;
+            if (Interlocked.Read(ref q.DiscardedGenerationBatchCount) != 0 ||
+                Interlocked.Read(ref q.OverCapacityDroppedBatchCount) != 0)
+                return false;
+            // Depth=0 与最后一批写完成之间存在在途窗口；停止路径有界等待其收口，
+            // 避免把瞬态在途误判为未排空而重新引入 Closed=False 升级链。
+            var deadline = Stopwatch.GetTimestamp() +
+                           (long)(2.0 * Stopwatch.Frequency);
+            while (Volatile.Read(ref q.WriteInFlight) != 0 ||
+                   Volatile.Read(ref q.Count) != 0)
+            {
+                if (Stopwatch.GetTimestamp() >= deadline) return false;
+                Thread.Sleep(20);
+            }
+            if (Volatile.Read(ref q.PauseLatched) == 0 &&
+                Volatile.Read(ref q.FailureTimedOut) == 0)
+                return true;
+            var hadFailureTimedOut = Volatile.Read(ref q.FailureTimedOut) != 0;
+            Interlocked.Exchange(ref q.PauseLatched, 0);
+            Interlocked.Exchange(ref q.QueueFullLatched, 0);
+            Interlocked.Exchange(ref q.FailureTimedOut, 0);
+            Interlocked.Exchange(ref q.WriteStallLatched, 0);
+            Publish(null, q, DaqPersistenceState.Recovered,
+                "DaqPersistenceDrainedTerminalForStop",
+                $"{NormalizeDevice(device)} 停止路径队列已完全排空且无数据丢失，拥塞锁存按排空终态收敛" +
+                (hadFailureTimedOut ? "（含已解除的写恢复超时锁存）。" : "。"),
+                GetCorrelation(q));
+            return true;
+        }
+
         private void Publish(
             DaqDiskBatch batch,
             DeviceQueue q,

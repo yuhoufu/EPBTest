@@ -333,6 +333,7 @@ namespace Controller
         private readonly ConcurrentDictionary<int, FormalBatchParticipantLease> _formalParticipantLeases =
             new ConcurrentDictionary<int, FormalBatchParticipantLease>();
         private readonly int _globalFormalSlotAdmissionWindowMs;
+        private int _globalFormalAdmissionWindowLogged;
         private readonly ConcurrentDictionary<
             GlobalHydraulicSlotKey,
             IReadOnlyDictionary<int, IReadOnlyList<int>>> _globalHydraulicParticipantSnapshots =
@@ -378,6 +379,11 @@ namespace Controller
 
         /// <summary>全部液压资格完成后到首批电机放行的共同调度裕量。</summary>
         public int GlobalMotorAnchorGuardMs { get; set; } = 30;
+
+        /// <summary>
+        /// 正式槽准入窗在覆盖错峰相位跨度之外追加的到达抖动余量。
+        /// </summary>
+        public int GlobalFormalSlotAdmissionStaggerMarginMs { get; set; } = 250;
 
         private CancellationToken GetBatchSessionTokenOr(CancellationToken fallback)
         {
@@ -484,11 +490,29 @@ namespace Controller
                 .Select(candidate => staggerPlan.Get(candidate).PhaseMs)
                 .DefaultIfEmpty(0)
                 .Max();
+            // 错峰相位是每通道固定偏移（PhaseMs=batchOrdinal*staggerMs），计划内
+            // 通道的到达跨度因此按设计横跨整个相位带。固定 300ms 窗口小于该跨度
+            // 时，后到通道会在每个槽被确定性排除（现场 I0044）；有效窗口必须覆盖
+            // 计划跨度。未在窗口内到达的通道仍不得准入——它可能未通过 DAQ/电源预检。
+            var phases = staggerPlan.Assignments.Values
+                .Select(assignment => assignment.PhaseMs)
+                .ToArray();
+            var phaseSpanMs = phases.Length == 0 ? 0 : phases.Max() - phases.Min();
+            var effectiveAdmissionWindowMs = Math.Max(
+                _globalFormalSlotAdmissionWindowMs,
+                phaseSpanMs + GlobalFormalSlotAdmissionStaggerMarginMs);
+            if (effectiveAdmissionWindowMs > _globalFormalSlotAdmissionWindowMs &&
+                Interlocked.CompareExchange(ref _globalFormalAdmissionWindowLogged, 1, 0) == 0)
+                _log?.Info(
+                    $"GlobalFormalSlotAdmissionWindow effective={effectiveAdmissionWindowMs}ms " +
+                    $"configured={_globalFormalSlotAdmissionWindowMs}ms " +
+                    $"phaseSpanMs={phaseSpanMs} margin={GlobalFormalSlotAdmissionStaggerMarginMs}ms",
+                    "液压协调");
             var admission = await _globalHydraulicSlots.JoinFormalAsync(
                     key,
                     hydraulicId,
                     channel,
-                    _globalFormalSlotAdmissionWindowMs,
+                    effectiveAdmissionWindowMs,
                     pressureBuildPlannedUtc,
                     wallClockAnchorUtc,
                     PeriodMs,
@@ -4394,7 +4418,12 @@ namespace Controller
                     learningPhaseCancellation.Cancel();
                     foreach (var member in stopCtsByChannel)
                     {
-                        member.Value.Cancel();
+                        // The captured CTS may be concurrently detached and disposed
+                        // by the stop-transaction cleanup worker; cancellation here
+                        // is best effort and must never throw.
+                        try { member.Value.Cancel(); }
+                        catch (ObjectDisposedException) { }
+                        catch (InvalidOperationException) { }
                         try { CommandEpbOffHighPriority(member.Key, "LearningMemberDeadline"); } catch { }
                     }
                     QueueExecutionProgressEvidence("LearningMemberDeadline Run=" + learningRunId);

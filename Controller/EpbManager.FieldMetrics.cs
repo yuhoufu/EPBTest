@@ -343,6 +343,15 @@ namespace Controller
             var persistenceQueueDrained = await _persistence.DrainAsync(remainingDrainMs)
                 .ConfigureAwait(false);
 
+            // 停止后生产者已冻结，拥塞锁存无法再通过“新批次完成写入”收敛。在
+            // 排空且无未解决写故障、无数据丢弃时确认停止期排空终态，避免
+            // Depth=0 但 State=Failed/Closed=False 的永久不收口（现场 I0043）。
+            if (requireRecoveredState)
+            {
+                foreach (var pair in boundaries)
+                    _persistence.TryConfirmDrainedTerminalForStop(pair.Key);
+            }
+
             var results = boundaries.Select(pair =>
             {
                 var persistence = _persistence.GetSnapshot(pair.Key);
