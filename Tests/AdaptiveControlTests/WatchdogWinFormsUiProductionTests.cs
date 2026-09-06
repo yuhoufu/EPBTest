@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Config;
 using Controller;
 using MTEmbTest;
 using MtEmbTest;
@@ -733,6 +734,9 @@ namespace AdaptiveControlTests
             {
                 try { WatchdogRuntime.ShutdownRuntimeWithReceipt(); } catch { }
                 WatchdogRuntime.ConfigureJournalExportPath(journal);
+                // 测试宿主没有 exe.config；会话启动校验的 DAQ 参数经内部 seam 配置。
+                WatchdogRuntime.ConfigureDaqRuntimeSettings(
+                    new DaqRuntimeSettings(2000, 20));
                 WatchdogRuntime.SetHeartbeatProvider(() => new WatchdogHeartbeat
                 {
                     Phase = "UiGlobalExact"
