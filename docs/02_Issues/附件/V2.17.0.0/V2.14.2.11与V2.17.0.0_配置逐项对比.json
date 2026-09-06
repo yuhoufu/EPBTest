@@ -1,0 +1,1512 @@
+﻿{
+  "date": "2026-09-06",
+  "oldFieldArchive": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258",
+  "oldExecutableSha256": "9158a6cf57cfd6329d3f8dc3dd254f5e35a0d8c8b9fe48cd43b9a3919837a8ba",
+  "oldExecutableSourceCommit": "unknown; 6ed4d47 is source reference only",
+  "newCandidate": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641",
+  "newSourceCommit": "7170e902d77c8fdbf5cfeaebe6aa98b86235fc26",
+  "oldRuntimeSafety": "DaqWarnMs=250;DaqSuspectMs=1500;DaqTripMs=5000;FormalAdmissionMs=300;OrphanGraceMs=10000;NoProgressMs=60000;MaxTotalMs=300000;PowerOffProofA=0.500;PowerOffProofMaxAgeMs=1000",
+  "appSettingsOldReferenceCount": 159,
+  "appSettingsNewCount": 159,
+  "appSettingsDiff": [
+    {
+      "key": "DaqLivenessSuspectThresholdMs",
+      "oldReference": "1500",
+      "newCandidate": "100"
+    },
+    {
+      "key": "DaqLivenessTripThresholdMs",
+      "oldReference": "5000",
+      "newCandidate": "250"
+    },
+    {
+      "key": "DaqLivenessWarnThresholdMs",
+      "oldReference": "250",
+      "newCandidate": "75"
+    }
+  ],
+  "xmlDiff": [
+    {
+      "name": "AIConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\WatchdogSessions\\safety-handoff-005ad43b17b948f3bc2c4cab6d91f0ae\\ConfigSnapshot\\AIConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\AIConfig.xml",
+      "oldSha256": "0a55427f7fc4e5285bdf55587ff7eeda9420f0fba33e078af639f661d942db9e",
+      "newSha256": "0a55427f7fc4e5285bdf55587ff7eeda9420f0fba33e078af639f661d942db9e",
+      "differences": []
+    },
+    {
+      "name": "AlarmConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\WatchdogSessions\\safety-handoff-005ad43b17b948f3bc2c4cab6d91f0ae\\ConfigSnapshot\\AlarmConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\AlarmConfig.xml",
+      "oldSha256": "0a9f57046fe42a15ec993a94ed5f8990c8fd70aad890de0082b888f6222a260d",
+      "newSha256": "2ff48034888b778814d6659b2ed9f69e3dd1746aee48a1c3ba9a3e7d536dd0bd",
+      "differences": []
+    },
+    {
+      "name": "AOConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\WatchdogSessions\\safety-handoff-005ad43b17b948f3bc2c4cab6d91f0ae\\ConfigSnapshot\\AOConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\AOConfig.xml",
+      "oldSha256": "8dc6b5afaa52d945dbfafb04e3d4e6d040ef758429bdf5fc1de60f1c6e9f3843",
+      "newSha256": "8dc6b5afaa52d945dbfafb04e3d4e6d040ef758429bdf5fc1de60f1c6e9f3843",
+      "differences": []
+    },
+    {
+      "name": "DOConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\WatchdogSessions\\safety-handoff-005ad43b17b948f3bc2c4cab6d91f0ae\\ConfigSnapshot\\DOConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\DOConfig.xml",
+      "oldSha256": "4a4d855f743a17cd6e71df4af4c9b228be1d8167ded079735407c2b955a55601",
+      "newSha256": "4a4d855f743a17cd6e71df4af4c9b228be1d8167ded079735407c2b955a55601",
+      "differences": []
+    },
+    {
+      "name": "PowerSupplyConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\WatchdogSessions\\safety-handoff-005ad43b17b948f3bc2c4cab6d91f0ae\\ConfigSnapshot\\PowerSupplyConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\PowerSupplyConfig.xml",
+      "oldSha256": "11edf4f25cc4837b15c0911b94d87fc77635e4836f1cd9af5451b943ee854f48",
+      "newSha256": "31b2ab1cfacf4afecd8c6ff36194784aa247e9bd6288ce8fa2e114047bb5f70d",
+      "differences": []
+    },
+    {
+      "name": "TestConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\Config\\TestConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\TestConfig.xml",
+      "oldSha256": "dd1101fa581bcb8a7117a573865bb8934d21d76cf0ab431a7130d2be9c639eb9",
+      "newSha256": "5537dfc0a1639e022bee6e0908b9e2d82d39e038059e602e1eabba9d25b36f68",
+      "differences": [
+        {
+          "path": "TestConfig/Basic/TestName",
+          "old": "10243-028",
+          "new": "10358-029"
+        },
+        {
+          "path": "TestConfig/Basic/TestTarget",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=10]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=10]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=10]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=10]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=10]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=11]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=11]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=11]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=11]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=11]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=12]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=12]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=12]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=12]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=12]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=1]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=1]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=1]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=1]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=1]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=2]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=2]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=2]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=2]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=2]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=3]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=3]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=3]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=3]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=3]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=4]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=4]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=4]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=4]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=4]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=5]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=5]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=5]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=5]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=5]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=6]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=6]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=6]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=6]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=6]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=7]/ForwardA",
+          "old": "13",
+          "new": "15"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=7]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=7]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=7]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=7]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=7]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=8]/ForwardA",
+          "old": "13",
+          "new": "15"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=8]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=8]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=8]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=8]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=8]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=9]/ForwardA",
+          "old": "13",
+          "new": "15"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=9]/FwdOnLimitMs",
+          "old": "3000",
+          "new": "5000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=9]/HoldMs",
+          "old": "5000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=9]/PreReleaseKeepMs",
+          "old": "100",
+          "new": "500"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=9]/RevDecayRigidMaxMs",
+          "old": "3000",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/EpbCycleRunnerConfig/Record[Channel=9]/RevEmptyFixedMs",
+          "old": "4000",
+          "new": "2000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/LatestStartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/MechanicalCycleCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/StartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=10]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/LatestStartTime",
+          "old": "2026-09-01 10:20:42",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/MechanicalCycleCount",
+          "old": "9021",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/RunCount",
+          "old": "8870",
+          "new": "0"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/RunTime",
+          "old": "1.11:44:35",
+          "new": "0.00:00:00"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/StartTime",
+          "old": "2026-08-30 14:25:27",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=11]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/Enabled",
+          "old": "True",
+          "new": "False"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/LatestStartTime",
+          "old": "2026-09-05 22:57:56",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/MechanicalCycleCount",
+          "old": "32399",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/RunCount",
+          "old": "31844",
+          "new": "0"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/RunTime",
+          "old": "5.08:21:45",
+          "new": "0.00:00:00"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/StartTime",
+          "old": "2026-08-30 14:25:27",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/Status",
+          "old": "Running",
+          "new": "NotStarted"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=12]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/Enabled",
+          "old": "False",
+          "new": "True"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/LatestStartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/MechanicalCycleCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/StartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=1]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/LatestStartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/MechanicalCycleCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/StartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=2]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/LatestStartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/MechanicalCycleCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/StartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=3]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/Enabled",
+          "old": "True",
+          "new": "False"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/LatestStartTime",
+          "old": "2026-09-05 22:58:10",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/MechanicalCycleCount",
+          "old": "32509",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/RunCount",
+          "old": "31960",
+          "new": "0"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/RunTime",
+          "old": "5.08:50:16",
+          "new": "0.00:00:00"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/StartTime",
+          "old": "2026-08-30 14:25:27",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/Status",
+          "old": "Running",
+          "new": "NotStarted"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=4]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/Enabled",
+          "old": "True",
+          "new": "False"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/LatestStartTime",
+          "old": "2026-09-05 22:57:56",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/MechanicalCycleCount",
+          "old": "32493",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/RunCount",
+          "old": "31940",
+          "new": "0"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/RunTime",
+          "old": "5.08:51:52",
+          "new": "0.00:00:00"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/StartTime",
+          "old": "2026-08-30 14:25:27",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/Status",
+          "old": "Running",
+          "new": "NotStarted"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=5]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/LatestStartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/MechanicalCycleCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/StartTime",
+          "old": "2026-09-05 20:52:16",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=6]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/Enabled",
+          "old": "True",
+          "new": "False"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/LatestStartTime",
+          "old": "2026-09-05 22:58:09",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/MechanicalCycleCount",
+          "old": "32381",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/RunCount",
+          "old": "31839",
+          "new": "0"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/RunTime",
+          "old": "5.08:12:48",
+          "new": "0.00:00:00"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/StartTime",
+          "old": "2026-08-30 14:46:27",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/Status",
+          "old": "Running",
+          "new": "NotStarted"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=7]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/Enabled",
+          "old": "True",
+          "new": "False"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/LatestStartTime",
+          "old": "2026-09-05 22:58:09",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/MechanicalCycleCount",
+          "old": "32423",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/RunCount",
+          "old": "31870",
+          "new": "0"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/RunTime",
+          "old": "5.08:20:36",
+          "new": "0.00:00:00"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/StartTime",
+          "old": "2026-08-30 14:25:27",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/Status",
+          "old": "Running",
+          "new": "NotStarted"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=8]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/ConsecutivePeriodOverrunCount",
+          "old": "0",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/Enabled",
+          "old": "True",
+          "new": "False"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/LastPeriodOverrunUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/LatestStartTime",
+          "old": "2026-09-05 22:58:10",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/MechanicalCycleCount",
+          "old": "32414",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/OperatorFullRelearningCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/OperatorFullRelearningReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/OperatorFullRelearningRequired",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/OperatorFullRelearningUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/PermanentAlarmCode",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/PermanentAlarmCorrelationId",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/PermanentAlarmLatched",
+          "old": "False",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/PermanentAlarmReason",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/PermanentAlarmUtc",
+          "old": "",
+          "new": null
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/RunCount",
+          "old": "31860",
+          "new": "0"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/RunTime",
+          "old": "5.08:20:52",
+          "new": "0.00:00:00"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/StartTime",
+          "old": "2026-08-30 14:25:27",
+          "new": "2026-08-07 17:22:54"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/Status",
+          "old": "Running",
+          "new": "NotStarted"
+        },
+        {
+          "path": "TestConfig/EpbRecords/Record[Id=9]/TotalCount",
+          "old": "200000",
+          "new": "100000"
+        },
+        {
+          "path": "TestConfig/Hydraulics/Hydraulic[Id=1]/HoldDropConfirmMs",
+          "old": "100",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/Hydraulics/Hydraulic[Id=1]/HoldDropToleranceBar",
+          "old": "5",
+          "new": "10"
+        },
+        {
+          "path": "TestConfig/Hydraulics/Hydraulic[Id=1]/PressureThresholdBar",
+          "old": "70",
+          "new": "100"
+        },
+        {
+          "path": "TestConfig/Hydraulics/Hydraulic[Id=2]/HoldDropConfirmMs",
+          "old": "100",
+          "new": "1000"
+        },
+        {
+          "path": "TestConfig/Hydraulics/Hydraulic[Id=2]/HoldDropToleranceBar",
+          "old": "5",
+          "new": "10"
+        },
+        {
+          "path": "TestConfig/Hydraulics/Hydraulic[Id=2]/PressureThresholdBar",
+          "old": "40",
+          "new": "100"
+        }
+      ]
+    },
+    {
+      "name": "UIConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\WatchdogSessions\\safety-handoff-005ad43b17b948f3bc2c4cab6d91f0ae\\ConfigSnapshot\\UiConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\UIConfig.xml",
+      "oldSha256": "c5c4a5dd4c2cd9468e31a3eb3952bdd4d49f7e5078c9e6a168f8e31982b22cd1",
+      "newSha256": "c6da2d2e7ce6bf609db8106a2c6187033f8b199fdfdb1eb3aaf144e5af282916",
+      "differences": [
+        {
+          "path": "UiConfig/FrmEpbMainMonitor/Controls/Control[Name=CheckEpbA10]/@Checked",
+          "old": "false",
+          "new": "true"
+        },
+        {
+          "path": "UiConfig/FrmEpbMainMonitor/Controls/Control[Name=CheckEpbA11]/@Checked",
+          "old": "false",
+          "new": "true"
+        },
+        {
+          "path": "UiConfig/FrmEpbMainMonitor/Controls/Control[Name=CheckEpbA12]/@Checked",
+          "old": "true",
+          "new": "false"
+        },
+        {
+          "path": "UiConfig/FrmEpbMainMonitor/Controls/Control[Name=CheckEpbA7]/@Checked",
+          "old": "true",
+          "new": "false"
+        },
+        {
+          "path": "UiConfig/FrmEpbMainMonitor/Controls/Control[Name=CheckEpbA8]/@Checked",
+          "old": "true",
+          "new": "false"
+        }
+      ]
+    },
+    {
+      "name": "UnattendedAlarmConfig.xml",
+      "oldSource": "D:\\EPB_Data\\Backups\\10243-028_V2.14.2.11_I0040_0905_2258\\WatchdogSessions\\safety-handoff-005ad43b17b948f3bc2c4cab6d91f0ae\\ConfigSnapshot\\UnattendedAlarmConfig.xml",
+      "newSource": "D:\\Github\\wanxiang\\EPBTest-v2.17-stability\\artifacts\\releases\\V2.17.0.0-7170e902d77c-20260905_191641\\Config\\UnattendedAlarmConfig.xml",
+      "oldSha256": "2836bd9047a4bfcf705341cd5a788b880053d1ccb48441a1401ad92d0d396ed2",
+      "newSha256": "0bd381690c5d4cf2c3280704c2033b63598b7f669e7af3f61e23eae9c0210462",
+      "differences": []
+    }
+  ],
+  "method": "XML leaf text and attributes; comments and whitespace ignored; project TestConfig from final archive; other XML from hash-verified handoff snapshot. Read only."
+}
