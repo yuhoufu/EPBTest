@@ -67,6 +67,7 @@
     <Compile Include="PreallocatedSpscRingTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />
     <Compile Include="PswTcpClientTimeoutTests.cs" />
+    <Compile Include="RecoveryClosureV2171Tests.cs" />
     <Compile Include="RecoveryCoordinationTests.cs" />
     <Compile Include="RecoveryHardeningTests.cs" />
     <Compile Include="RecoveryLifecycleIsolationTests.cs" />

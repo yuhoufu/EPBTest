@@ -179,7 +179,7 @@ namespace AdaptiveControlTests
                                journal,
                                context.SessionId,
                                out var progressOnly) &&
-                           progressOnly.SchemaVersion == 3 &&
+                           progressOnly.SchemaVersion == SupervisorProtocol.SchemaVersion &&
                            progressOnly.ControllerStopStage ==
                            (int)StopSafetyStage.Completed &&
                             progressOnly.ControllerProgressVersion == 7 &&
@@ -259,7 +259,7 @@ namespace AdaptiveControlTests
                                context.SessionId,
                                out var tombstone) &&
                            tombstone.State == WatchdogClosingTombstoneState.Terminal &&
-                            tombstone.SchemaVersion == 3 &&
+                            tombstone.SchemaVersion == SupervisorProtocol.SchemaVersion &&
                             tombstone.FinalSafetyResultCommitted &&
                            tombstone.StateVersion >= 4 &&
                            string.Equals(

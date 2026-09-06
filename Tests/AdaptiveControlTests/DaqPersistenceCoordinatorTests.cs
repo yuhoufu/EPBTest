@@ -85,6 +85,75 @@ namespace AdaptiveControlTests
             RejectedEnqueueAndDisposeTimeoutPreserveCallerOwnership();
         }
 
+        /// <summary>
+        /// I0043 现场形态回归：拥塞锁存 Failed 后生产者冻结、队列真实排空，
+        /// Depth=0 但 State=Failed 使停止边界永久 Closed=False。修复后由
+        /// TryConfirmDrainedTerminalForStop 在无未解决写故障、无数据丢弃时
+        /// 收敛为停止期排空终态。
+        /// </summary>
+        internal static void DrainedTerminalConvergesStopBoundaryAfterQueueFull()
+        {
+            var recorder = new BlockingRecorder(100);
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                2, 1, 0, 1000, 100, 2000, 50);
+            var states = new ConcurrentQueue<DaqPersistenceStateChanged>();
+            coordinator.StateChanged += states.Enqueue;
+
+            var producer = Task.Run(() =>
+            {
+                for (var sequence = 1; sequence <= 6; sequence++)
+                    coordinator.Enqueue(NewBatch("Dev1", sequence));
+            });
+            WaitUntil(
+                () => states.Any(x => x.State == DaqPersistenceState.Failed &&
+                                      x.Code == "DaqPersistenceQueueFull"),
+                2000, "未复现容量满 QueueFull 锁存，用例场景不成立");
+            producer.Wait(8000);
+            WaitUntil(() => coordinator.GetSnapshot("Dev1").QueueDepth == 0, 6000,
+                "排空等待超时");
+
+            // requiredFreshBatches=50：无新批次写入时恢复评估凑不齐新鲜计数，
+            // 锁存保持 Failed——与现场 Depth=0 但 State=Failed 一致。
+            var before = coordinator.GetSnapshot("Dev1");
+            Assert(before.State == DaqPersistenceState.Failed,
+                "排空后锁存未保持 Failed，用例未复现现场形态：State=" + before.State);
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
+                    6, 6, before.Sequence, before.QueueDepth,
+                    before.State, true, before.DurabilityBlocked,
+                    before.DiscardedGenerationBatchCount,
+                    before.OverCapacityDroppedBatchCount),
+                "修复前排空但锁存的队列已能闭合，用例失去回归意义");
+
+            Assert(coordinator.TryConfirmDrainedTerminalForStop("Dev1"),
+                "无未解决写故障且已排空的队列被拒绝确认停止期排空终态");
+            var after = coordinator.GetSnapshot("Dev1");
+            Assert(after.State == DaqPersistenceState.Recovered,
+                "确认排空终态后状态未收敛为 Recovered：" + after.State);
+            Assert(EpbManager.IsStopPersistenceBoundaryClosed(
+                    6, 6, after.Sequence, after.QueueDepth,
+                    after.State, true, after.DurabilityBlocked,
+                    after.DiscardedGenerationBatchCount,
+                    after.OverCapacityDroppedBatchCount),
+                "确认排空终态后停止边界仍未闭合");
+
+            // 负例：未解决写故障必须拒绝确认（fail-closed），不得伪装数据完整。
+            var gated = new GatedFailureRecorder();
+            using var failing = new DaqPersistenceCoordinator(
+                () => gated,
+                Config.NullLogger.Instance,
+                8, 2, 1, 1000, 100, 1500, 50);
+            var failingStates = new ConcurrentQueue<DaqPersistenceStateChanged>();
+            failing.StateChanged += failingStates.Enqueue;
+            failing.Enqueue(NewBatch("Dev2", 1));
+            WaitUntil(
+                () => failingStates.Any(x => x.State == DaqPersistenceState.Paused),
+                3000, "写盘异常未进入安全暂停，负例场景不成立");
+            Assert(!failing.TryConfirmDrainedTerminalForStop("Dev2"),
+                "存在未解决写故障时仍确认了排空终态，可能伪装数据丢失为完整");
+        }
+
         internal static void GenerationChangePreservesAcceptedFifo()
         {
             var recorder = new GatedFailureRecorder();

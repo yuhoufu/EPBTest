@@ -288,6 +288,21 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--v2171-recovery-closure", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryClosureV2171Tests.RunAll();
+                    _passed += RecoveryClosureV2171Tests.RunProductionAcceptanceTakeover();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--v2171-recovery-closure-operator", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryClosureV2171Tests.RunProductionAcceptanceOperator();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--watchdog-winforms-ui", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += WatchdogWinFormsUiProductionTests.RunAll();
@@ -533,6 +548,7 @@ namespace AdaptiveControlTests
                 _passed += StopWatchdogHardeningTests.RunAll();
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
                 _passed += FormalBatchSlotCoordinatorTests.RunAll();
+                _passed += RecoveryClosureV2171Tests.RunAll();
                 _passed += FirstRunBootstrapTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
@@ -723,6 +739,7 @@ namespace AdaptiveControlTests
                 Run("UI十万条日志生产保持512有界且50行批量消费", UiLogFloodStaysBoundedAndBatched);
                 Run("持久化积压低水位后自动恢复", DaqPersistenceCoordinatorTests.PauseAndRecoverAfterLowWater);
                 Run("持久化硬容量背压保留全部批次且只发布一次故障", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
+                Run("停止路径排空终态收敛且拒绝未解决写故障", DaqPersistenceCoordinatorTests.DrainedTerminalConvergesStopBoundaryAfterQueueFull);
                 Run("DAQ代次切换不丢弃已接收持久化FIFO", DaqPersistenceCoordinatorTests.GenerationChangePreservesAcceptedFifo);
                 Run("磁盘50至1500ms暂停均不反压生产且单次暂停后恢复", DaqPersistenceCoordinatorTests.DiskPauseMatrixRemainsBoundedAndRecovers);
                 Run("写盘超时保留原批次且存储恢复后按序补写", DaqPersistenceCoordinatorTests.RecoveryTimeoutRetainsBatchUntilStorageReturns);
