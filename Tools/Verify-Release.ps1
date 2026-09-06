@@ -199,8 +199,8 @@ if ($actualAssemblyName -ne $expectedAssemblyName -or
 if ($identity.platform -ne 'x86') {
     throw "identity 平台不是 x86：$($identity.platform)"
 }
-if ($expectedProductVersion -ne '2.17.0.0') {
-    throw "无人值守正式版必须统一为 2.17.0.0：$expectedProductVersion"
+if ($expectedProductVersion -ne '2.17.1.0') {
+    throw "无人值守正式版必须统一为 2.17.1.0：$expectedProductVersion"
 }
 if ((Get-RequiredJsonProperty $identity 'watchdogSchema' 'identity') -ne 7) {
     throw "identity.watchdogSchema 不是 7：$($identity.watchdogSchema)"
