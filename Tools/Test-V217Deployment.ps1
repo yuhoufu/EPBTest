@@ -182,6 +182,34 @@ try {
         Check ($definition.Action.Arguments.Contains('Test-MTTFTest-RecoveryHealth.ps1') -and
             -not $definition.Action.Arguments.Contains('--launch-main')) '健康任务检查监督服务而不直接拉起试验'
     } finally { Remove-Item Function:\Register-ScheduledTask }
+    $healthAst = [Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $PSScriptRoot 'Test-MTTFTest-RecoveryHealth.ps1'), [ref]$null, [ref]$null)
+    $queryFunction = $healthAst.Find({ param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Get-RecoverySupervisorIdentity'
+    }, $true)
+    Invoke-Expression $queryFunction.Extent.Text
+    function script:Invoke-BoundedSupervisorSc { param($Verb) return $script:fakeScStatus }
+    function script:Get-ItemProperty { param($LiteralPath, $Name)
+        if ($LiteralPath -ne 'HKLM:\SYSTEM\CurrentControlSet\Services\MTTFTestSupervisor' -or $Name -ne 'ImagePath') {
+            throw 'Unexpected registry query in health fixture'
+        }
+        return @{ ImagePath='"C:\Test\Current\MTTFTest.Watchdog.exe"' }
+    }
+    try {
+        $script:fakeScStatus = "SERVICE_NAME: MTTFTestSupervisor`n STATE : 4 RUNNING`n PID : 12345`n"
+        $queried = Get-RecoverySupervisorIdentity
+        Check ($queried.ProcessId -eq 12345 -and $queried.State -eq 'Running') '有界SCM查询保留准确运行PID'
+        Check ($queried.PathName -eq '"C:\Test\Current\MTTFTest.Watchdog.exe"') '有界SCM查询保留配置可执行路径'
+        $script:fakeScStatus = " STATE : 1 STOPPED`n PID : 0`n"
+        $queried = Get-RecoverySupervisorIdentity
+        Check ($queried.ProcessId -eq 0 -and $queried.State -eq 'Stopped') 'SCM停止状态不复用旧PID'
+        $script:fakeScStatus = 'unparseable service query'
+        Expect-Failure { Get-RecoverySupervisorIdentity } 'SCM身份无法解析时禁止猜测进程'
+    } finally {
+        Remove-Item Function:\Invoke-BoundedSupervisorSc
+        Remove-Item Function:\Get-ItemProperty
+    }
     Write-Output "PASS V217Deployment $passed/$passed (isolated filesystem; no SCM or hardware mutation)"
 }
 finally {
