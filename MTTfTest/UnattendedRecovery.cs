@@ -1912,9 +1912,20 @@ namespace MTEmbTest
                         ProjectLogLevel.Error,
                         "同进程恢复已取消并完成有界安全交接，现撤销当前进程上电授权并交由独立 Watchdog 接管。",
                         "无人值守恢复");
-                    WatchdogRuntime.RequestExternalRecovery(
-                        externalReason +
-                        ";CorrelationId=" + (fault?.CorrelationId.ToString("N") ?? string.Empty));
+                    if (!WatchdogRuntime.RequestExternalRecovery(
+                            externalReason +
+                            ";CorrelationId=" + (fault?.CorrelationId.ToString("N") ?? string.Empty)))
+                    {
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Error,
+                            "外部恢复接管请求未能送达独立 Watchdog；降级为进程自重启序列。",
+                            "无人值守恢复");
+                        await RestartAsync(
+                                reason,
+                                fault?.CorrelationId.ToString("N") ?? Guid.NewGuid().ToString("N"),
+                                fault?.RunId.ToString("N"))
+                            .ConfigureAwait(false);
+                    }
                 }
             }
             finally
@@ -2236,6 +2247,7 @@ namespace MTEmbTest
             if (Interlocked.CompareExchange(ref _restartStarted, 1, 0) != 0) return;
             if (WatchdogRuntime.IsAttached)
             {
+                var requested = false;
                 try
                 {
                     ProjectLogHub.Write(
@@ -2243,14 +2255,21 @@ namespace MTEmbTest
                         $"进程内恢复已到达外部接管边界，交由独立 Watchdog 整批恢复。" +
                         $"CorrelationId={correlationId};Reason={reason}",
                         "独立看门狗");
-                    WatchdogRuntime.RequestExternalRecovery(
+                    requested = WatchdogRuntime.RequestExternalRecovery(
                         $"{reason};CorrelationId={correlationId};ExpectedRunId={expectedRunId}");
-                    return;
+                    if (!requested)
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Error,
+                            "外部恢复接管请求未能送达独立 Watchdog（会话上下文已分离或通道不可用）；" +
+                            "必须降级为进程自重启序列，升级链不得在最后一步静默断裂。",
+                            "独立看门狗");
                 }
                 finally
                 {
                     Interlocked.Exchange(ref _restartStarted, 0);
                 }
+                if (requested) return;
+                // 接管请求未送达：继续执行下方进程自重启序列，保证“退出后必回来”。
             }
             var handoffCommitted = false;
             var checkpointAtStart = UnattendedRunCheckpointStore.Load();

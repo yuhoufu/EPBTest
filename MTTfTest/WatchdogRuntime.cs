@@ -2149,7 +2149,7 @@ namespace MTEmbTest
             return PublishDurableStopMarker(context);
         }
 
-        internal static void RequestExternalRecovery(string reason) => SendSimple(WatchdogMessageType.ExternalRecoveryRequired, reason);
+        internal static bool RequestExternalRecovery(string reason) => SendSimple(WatchdogMessageType.ExternalRecoveryRequired, reason);
 
         internal static void NotifyMainUiReady(string reason)
         {
@@ -3883,11 +3883,11 @@ namespace MTEmbTest
                 context.SessionLease);
         }
 
-        private static void SendSimple(string type, string reason)
+        private static bool SendSimple(string type, string reason)
         {
             var context = CaptureContext();
-            if (context == null) return;
-            Send(new WatchdogMessage { Type = type, SessionId = context.SessionId, Reason = reason, CorrelationId = Guid.NewGuid().ToString("N") });
+            if (context == null) return false;
+            return Send(new WatchdogMessage { Type = type, SessionId = context.SessionId, Reason = reason, CorrelationId = Guid.NewGuid().ToString("N") });
         }
 
         private static void RaiseTransportLost(RuntimeTransportSessionContext context, string reason, string detail)
