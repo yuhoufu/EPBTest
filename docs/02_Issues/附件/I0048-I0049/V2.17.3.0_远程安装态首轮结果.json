@@ -1,0 +1,65 @@
+﻿{
+    "schemaVersion":  1,
+    "version":  "2.17.3.0",
+    "startedUtc":  "2026-09-06T16:01:05.2122157Z",
+    "account":  "MT-20251206JXCQ\\mt",
+    "package":  "C:\\EPB-I0049-Validation\\Package",
+    "tests":  [
+                  {
+                      "name":  "InitialSupervisorLaunch",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:01:11.1668913Z",
+                      "detail":  "PID=21280;StartUtcTicks=639243072656917920"
+                  },
+                  {
+                      "name":  "KillSupervisorAndRecover",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:01:16.6799327Z",
+                      "detail":  "PID=20328;StartUtcTicks=639243072652556750;NewPID=1316"
+                  },
+                  {
+                      "name":  "KillSessionAgentAndRecover",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:02:05.0797555Z",
+                      "detail":  "PID=2008;StartUtcTicks=639243072655607935;NewPID=22376"
+                  },
+                  {
+                      "name":  "MotorOffWithin250ms",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:02:05.7151553Z",
+                      "detail":  "ElapsedMs=28.9"
+                  },
+                  {
+                      "name":  "KillSafetyAgentAndResumeAuthority",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:02:11.9501021Z",
+                      "detail":  "PID=15292;StartUtcTicks=639243073256032837;ProofElapsedMs=6232"
+                  },
+                  {
+                      "name":  "IndependentSafetyProofWithin30Seconds",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:02:11.9501021Z",
+                      "detail":  "ElapsedMs=6867"
+                  },
+                  {
+                      "name":  "RecoveryFirstCycleCommitted",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:02:12.3338178Z",
+                      "detail":  "NewPID=22464;ElapsedMs=7253"
+                  },
+                  {
+                      "name":  "ExactlyOneMainProcess",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:02:12.3407942Z",
+                      "detail":  "Count=1"
+                  },
+                  {
+                      "name":  "ExactlyOneEffectivePermit",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:02:12.3437842Z",
+                      "detail":  "Count=1"
+                  }
+              ],
+    "passed":  true,
+    "completedUtc":  "2026-09-06T16:02:12.3447809Z"
+}

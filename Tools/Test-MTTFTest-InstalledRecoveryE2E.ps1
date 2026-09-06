@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
-$taskName = 'MTTFTestSessionAgentE2E'
+$taskName = 'MTTFTestSessionAgent'
 $package = [IO.Path]::GetFullPath($PackageDirectory)
 $programDataRoot = Join-Path $env:ProgramData 'MTTFTest'
 $e2eRoot = Join-Path $programDataRoot 'UnattendedRecoveryE2E'
@@ -128,6 +128,38 @@ function Stop-ExactProcess([Diagnostics.Process]$Process) {
     return "PID=$pidValue;StartUtcTicks=$startTicks"
 }
 
+# Suspending the exact retained handle injects a live-but-unresponsive process,
+# unlike Kill, and exercises the production health probe and replacement path.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class EpbRecoveryE2EProcessFault
+{
+    [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr handle);
+    [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr handle);
+}
+'@
+
+function Wait-ReplacementAfterHang([Diagnostics.Process]$Process,
+        [string]$Name, [string]$Path, [int]$TimeoutSeconds) {
+    [void]$Process.Handle
+    $previousPid = $Process.Id
+    if ([EpbRecoveryE2EProcessFault]::NtSuspendProcess($Process.Handle) -ne 0) {
+        throw "无法注入无响应故障 PID=$previousPid"
+    }
+    try {
+        return Wait-Until {
+            @(Get-ExactProcess $Name $Path | Where-Object { $_.Id -ne $previousPid }) |
+                Select-Object -First 1
+        } $TimeoutSeconds "$Name 无响应后未替换 PID=$previousPid"
+    }
+    finally {
+        if (-not $Process.HasExited) {
+            [void][EpbRecoveryE2EProcessFault]::NtResumeProcess($Process.Handle)
+        }
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
     $createdProgramData = $true
@@ -191,7 +223,7 @@ try {
     } 20 'SessionAgent 未启动。'
 
     $launcher = Start-Process -FilePath $watchdog `
-        -ArgumentList @('--launch-main') -PassThru -Wait
+        -ArgumentList @('--launch-main') -WindowStyle Hidden -PassThru -Wait
     if ($launcher.ExitCode -ne 0) {
         throw "Supervisor launcher 失败：Exit=$($launcher.ExitCode)"
     }
@@ -206,6 +238,37 @@ try {
     Add-Result 'InitialSupervisorLaunch' $true (
         "PID=$($initialMain.Id);StartUtcTicks=" +
         $initialMain.StartTime.ToUniversalTime().Ticks)
+
+    $supervisorPid = [int](Get-CimInstance Win32_Service -Filter "Name='$serviceName'").ProcessId
+    $hostProcess = @(Get-ExactProcess 'MTTFTest.Watchdog' $watchdog |
+        Where-Object { $_.Id -ne $supervisorPid }) | Select-Object -First 1
+    $oldHostPid = $hostProcess.Id
+    Stop-ExactProcess $hostProcess | Out-Null
+    $hostProcess = Wait-Until {
+        @(Get-ExactProcess 'MTTFTest.Watchdog' $watchdog |
+            Where-Object { $_.Id -ne $supervisorPid -and $_.Id -ne $oldHostPid }) |
+            Select-Object -First 1
+    } 30 'sidecar 退出后未恢复持久化监督身份。'
+    Add-Result 'KillSidecarAndRestoreOwnership' $true "OldPID=$oldHostPid;NewPID=$($hostProcess.Id)"
+    $oldHostPid = $hostProcess.Id
+    # Exclude the running service when waiting for its sidecar replacement.
+    [void]$hostProcess.Handle
+    if ([EpbRecoveryE2EProcessFault]::NtSuspendProcess($hostProcess.Handle) -ne 0) {
+        throw '无法注入 sidecar 无响应故障。'
+    }
+    try {
+        $healthyHost = Wait-Until {
+            @(Get-ExactProcess 'MTTFTest.Watchdog' $watchdog |
+                Where-Object { $_.Id -ne $supervisorPid -and $_.Id -ne $oldHostPid }) |
+                Select-Object -First 1
+        } 90 'sidecar 无响应后未由 Supervisor 恢复。'
+        Add-Result 'HangSidecarAndRestoreOwnership' $true "OldPID=$oldHostPid;NewPID=$($healthyHost.Id)"
+    }
+    finally {
+        if (-not $hostProcess.HasExited) {
+            [void][EpbRecoveryE2EProcessFault]::NtResumeProcess($hostProcess.Handle)
+        }
+    }
 
     $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
     $oldServicePid = [int]$service.ProcessId
@@ -232,6 +295,10 @@ try {
             -Encoding UTF8
     Add-Result 'KillSessionAgentAndRecover' $true (
         "$agentIdentity;NewPID=$($newAgent.Id)")
+
+    $hungAgentPid = $newAgent.Id
+    $healthyAgent = Wait-ReplacementAfterHang $newAgent 'MTTFTest.SessionAgent' $sessionAgent 90
+    Add-Result 'HangSessionAgentAndRecover' $true "OldPID=$hungAgentPid;NewPID=$($healthyAgent.Id)"
 
     $mainKilledUtc = [DateTime]::UtcNow
     $oldMainPid = $initialMain.Id

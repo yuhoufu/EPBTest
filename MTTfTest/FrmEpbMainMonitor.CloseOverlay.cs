@@ -82,7 +82,20 @@ namespace MTEmbTest
 
         private void UpdateCloseOverlay(StopSafetyProgressSnapshot progress)
         {
-            if (progress == null || Volatile.Read(ref _closingReentry) != 1) return;
+            if (progress == null || IsDisposed || Disposing || Volatile.Read(ref _closingReentry) != 1) return;
+            if (InvokeRequired)
+            {
+                var snapshot = progress.Clone();
+                try { BeginInvoke((Action)(() => UpdateCloseOverlay(snapshot))); } catch { }
+                return;
+            }
+            if (progress.TimedOut || progress.Stage == StopSafetyStage.TimedOut)
+            {
+                var reason = string.IsNullOrWhiteSpace(progress.Detail)
+                    ? progress.TerminalReason : progress.Detail;
+                ShowCloseOverlay("关闭尚未完成，正在等待安全收尾或交接：" + reason);
+                return;
+            }
             var text = progress.Stage < StopSafetyStage.StartPowerDisable
                 ? "正在停止全部电机…"
                 : progress.Stage < StopSafetyStage.ReleaseHydraulics
