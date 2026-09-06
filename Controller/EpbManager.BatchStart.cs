@@ -1099,7 +1099,13 @@ namespace Controller
                     throw new InvalidOperationException(
                     "重新开始清场未通过物理安全与软件逻辑不变量。" +
                     $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
-                    $"Pressure={safety.PressureError}; Logical={safety.LogicalError}");
+                    $"Pressure={safety.PressureError}; Logical={safety.LogicalError};" +
+                    $" Flags=Physical={safety.PhysicalSafetyConfirmed}," +
+                    $"Motor={safety.MotorOffCommandSucceeded},Power={safety.PowerOffConfirmed}," +
+                    $"Pressure={safety.PressureSafeConfirmed}," +
+                    $"Persistence={safety.PersistenceBoundaryConfirmed}," +
+                    $"Logical={safety.LogicalQuiescenceConfirmed}," +
+                    $"RequiresRestart={safety.RequiresProcessRestart},TimedOut={safety.TimedOut}");
                 }
 
                 if (!safety.CanRestartInProcess)

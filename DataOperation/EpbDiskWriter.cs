@@ -1393,6 +1393,9 @@ public sealed partial class EpbDiskWriter : IDisposable
         var s = GetState(epbId);
         lock (s.Gate)
         {
+            // 该圈从未在写盘器开圈（或已被收口清空）时没有可作废的终态；
+            // 幂等返回，避免人工停止/恢复清场路径对未开圈幂等终止报错。
+            if (s.CurrentCycle == null) return;
             EnsureCurrentCycleIdentity(s, epbId, cycleNumber, "AbortCycle");
             MarkCycleAborted(epbId, cycleNumber, finalSampleCount, endUtc, normalized);
             s.CurrentCycle = null;
