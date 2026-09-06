@@ -30,6 +30,32 @@ namespace MTTFTest.Watchdog.Protocol
 
     public static class WatchdogExitDispositionPolicy
     {
+        public static bool ShouldPreserveReplacementOnLegacyClose(
+            bool manualStopRequested,
+            bool sessionRevoked,
+            WatchdogApplicationExitReceipt receipt,
+            WatchdogClosingTombstone closing,
+            int currentProcessId,
+            long currentProcessStartUtcTicks,
+            bool permitMatches)
+        {
+            // 普通关闭不是撤销已批准替换的权威。显式人工停止/撤权始终优先。
+            return !manualStopRequested && !sessionRevoked && permitMatches &&
+                   receipt != null && closing != null &&
+                   receipt.IsValidFor(receipt.SessionId) &&
+                   closing.IsValidFor(receipt.SessionId) &&
+                   receipt.PreservesApprovedPermit && closing.PreservesApprovedPermit &&
+                   currentProcessId > 0 && currentProcessStartUtcTicks > 0 &&
+                   receipt.MainProcessId == currentProcessId &&
+                   receipt.MainProcessStartUtcTicks == currentProcessStartUtcTicks &&
+                   receipt.SessionGeneration == closing.SessionGeneration &&
+                   receipt.SessionLease == closing.SessionLease &&
+                   receipt.TakeoverTransactionId == closing.TakeoverTransactionId &&
+                   receipt.RelaunchPermitGeneration == closing.RelaunchPermitGeneration &&
+                   receipt.RelaunchPermitId == closing.RelaunchPermitId &&
+                   receipt.RelaunchPermitNonceSha256 == closing.RelaunchPermitNonceSha256;
+        }
+
         public static WatchdogExitDisposition ResolveApplicationExit(
             bool preserveApprovedPermit,
             WatchdogExitDisposition durableClosingDisposition)

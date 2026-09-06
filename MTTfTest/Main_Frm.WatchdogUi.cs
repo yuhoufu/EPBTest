@@ -395,6 +395,17 @@ namespace MtEmbTest
             catch { }
         }
 
+        internal Task<RuntimeShutdownReceipt> ShutdownWatchdogForMonitorCloseAsync(
+            string reason,
+            RuntimeShutdownIntent shutdownIntent,
+            bool idle)
+        {
+            // 子窗体授权属于同一个主进程退出事务，不能先以 SessionClose
+            // 终止 sidecar，再由主窗体补发已经失去接管所有者的替换退出。
+            return GetOrCreateWatchdogShutdownTask(
+                reason, shutdownIntent, idle ? TimeSpan.FromSeconds(2) : (TimeSpan?)null);
+        }
+
         internal Task<RuntimeShutdownReceipt> ShutdownWatchdogSessionAndReleaseUiAsync(
             string reason)
         {
@@ -437,6 +448,10 @@ namespace MtEmbTest
         {
             lock (_watchdogExitGate)
             {
+                shutdownIntent = ResolveSharedShutdownIntent(
+                    shutdownIntent,
+                    Volatile.Read(ref _watchdogOwnedExitRequested) != 0,
+                    (RuntimeShutdownIntent)Volatile.Read(ref _watchdogExitIntent));
                 if (_watchdogShutdownTask != null)
                 {
                     if (!_watchdogShutdownTask.IsCompleted)
@@ -465,6 +480,15 @@ namespace MtEmbTest
                     retryWindow);
                 return _watchdogShutdownTask;
             }
+        }
+
+        internal static RuntimeShutdownIntent ResolveSharedShutdownIntent(
+            RuntimeShutdownIntent requested, bool ownedExitRequested,
+            RuntimeShutdownIntent ownedExitIntent)
+        {
+            return requested == RuntimeShutdownIntent.SessionClose && ownedExitRequested
+                ? ownedExitIntent
+                : requested;
         }
 
         private async Task<RuntimeShutdownReceipt> CompleteSharedWatchdogShutdownAsync(
@@ -565,7 +589,8 @@ namespace MtEmbTest
             var applicationReceipts = monitors.Length == 0
                 ? Array.Empty<ApplicationCloseReceipt>()
                 : await Task.WhenAll(monitors.Select(
-                        monitor => monitor.AuthorizeApplicationExitAfterPreparationAsync()))
+                        monitor => monitor.AuthorizeApplicationExitAfterPreparationAsync(
+                            (RuntimeShutdownIntent)Volatile.Read(ref _watchdogExitIntent))))
                     .ConfigureAwait(true);
             if (applicationReceipts.Any(item => item?.CanExit != true))
             {

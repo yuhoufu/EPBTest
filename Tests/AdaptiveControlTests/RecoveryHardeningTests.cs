@@ -377,10 +377,13 @@ namespace AdaptiveControlTests
                 IsFresh = false
             };
             var liveness = new DaqLivenessDeviceState();
+            Assert(!liveness.Observe(true, true, false, freshness, 100, 1000, 2000).Trip &&
+                   !liveness.Observe(true, true, false, freshness, 100, 1000, 2000).Trip,
+                "存活监督提前于三次确认触发");
             var productionDecision = liveness.Observe(
                 true, true, false, freshness, 100, 1000, 2000);
             Assert(productionDecision.Trip && productionDecision.Code == "DaqCallbackStale",
-                "生产DAQ存活判据未在硬截止首次观察时立即识别停摆");
+                "生产DAQ存活判据未在第三次确认时识别停摆");
             Assert(!liveness.Observe(
                        true, true, true, freshness, 100, 1000, 2000).Trip,
                 "生产DAQ判据在已有恢复上下文时重复触发");

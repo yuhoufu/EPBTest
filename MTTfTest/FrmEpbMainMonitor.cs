@@ -1061,6 +1061,7 @@ namespace MTEmbTest
                     LearningStorageLevel = programStorage.Learning,
                     HistoricalEnabled = programStorage.HistoricalEnabled,
                     HistoricalRetainCyclesPerChannel = programStorage.HistoricalRetainCyclesPerChannel,
+                    WriteTimingSink = timing => twoDeviceAiAcquirer?.RecordStorageWriteTiming(timing),
                     RetentionWarningSink = message => logger?.Warn(message, "Storage")
                 };
                 _diskWriter = new EpbDiskWriter(policy);
@@ -3498,7 +3499,8 @@ namespace MTEmbTest
         }
 
         internal async System.Threading.Tasks.Task<ApplicationCloseReceipt>
-            AuthorizeApplicationExitAfterPreparationAsync()
+            AuthorizeApplicationExitAfterPreparationAsync(
+                RuntimeShutdownIntent shutdownIntent = RuntimeShutdownIntent.SessionClose)
         {
             if (_applicationCloseReceipt?.CanExit == true)
                 return _applicationCloseReceipt;
@@ -3533,12 +3535,9 @@ namespace MTEmbTest
             if (EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(safety))
             {
                 if (main != null)
-                    shutdown = await (safety.PowerDisposition ==
-                                      PowerShutdownDisposition.NotRequiredNoActiveTrial
-                            ? main.ShutdownIdleWatchdogSessionAndReleaseUiAsync(
-                                "IdleMonitorCloseCompleted")
-                            : main.ShutdownWatchdogSessionAndReleaseUiAsync(
-                                "MonitorCloseCompleted"))
+                    shutdown = await main.ShutdownWatchdogForMonitorCloseAsync(
+                            "MonitorCloseCompleted", shutdownIntent,
+                            safety.PowerDisposition == PowerShutdownDisposition.NotRequiredNoActiveTrial)
                         .ConfigureAwait(true);
             }
             if (shutdown?.IsCloseAuthorized == true)

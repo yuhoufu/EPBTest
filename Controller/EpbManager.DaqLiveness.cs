@@ -161,13 +161,6 @@ namespace Controller
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
             }
 
-            // A reset crossing the snapshot is not a measurement of elapsed
-            // time. Control admission still rejects IsFresh=false; the next
-            // coherent observation decides whether an actual DAQ trip is due.
-            if (freshness.RejectionReason == "SnapshotGenerationChanged")
-                return new DaqLivenessDecision(false, "DaqSnapshotRetry",
-                    "DAQ快照读取跨代，保持上电准入关闭并等待一致快照。", warn: true);
-
             if (_generation != freshness.Generation)
             {
                 _generation = freshness.Generation;
@@ -199,40 +192,26 @@ namespace Controller
                         recoveredGap: true);
             }
 
-            var observedAgeMs = Math.Max(
-                freshness.CallbackAgeMs,
-                Math.Max(
-                    freshness.SampleAgeMs,
-                    Math.Max(
-                        freshness.ControlEnqueueAgeMs,
-                        freshness.ControlProcessedAgeMs)));
-            var readerLagged = freshness.ReaderLagState ==
-                                    DaqReaderLagState.Backlog ||
-                               freshness.ReaderLagState ==
-                                    DaqReaderLagState.Draining ||
-                               freshness.ReaderLagState ==
-                                    DaqReaderLagState.Stale;
-
-            if (observedAgeMs < suspectMs && !readerLagged)
+            if (freshness.CallbackAgeMs < suspectMs)
             {
                 _suspect = false;
                 _tripConfirmations = 0;
             }
 
-            if (observedAgeMs < warnMs && !readerLagged)
+            if (freshness.CallbackAgeMs < warnMs)
             {
                 _warned = false;
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
             }
 
-            if (observedAgeMs < suspectMs)
+            if (freshness.CallbackAgeMs < suspectMs)
             {
                 var emit = !_warned;
                 _warned = true;
                 return new DaqLivenessDecision(
                     false,
                     emit ? "DaqLivenessWarn" : string.Empty,
-                    emit ? $"DAQ数据年龄={observedAgeMs:F1}ms。" : string.Empty,
+                    emit ? $"DAQ回调年龄={freshness.CallbackAgeMs:F1}ms。" : string.Empty,
                     warn: emit);
             }
 
@@ -249,22 +228,16 @@ namespace Controller
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
             }
 
-            if (observedAgeMs >= tripMs)
-                _tripConfirmations = 1;
+            if (freshness.CallbackAgeMs >= tripMs)
+                _tripConfirmations++;
             else
                 _tripConfirmations = 0;
-            var trip = _tripConfirmations >= 1;
+            var trip = _tripConfirmations >= 3;
             return new DaqLivenessDecision(
                 trip,
                 trip ? "DaqCallbackStale" : "DaqLivenessSuspect",
-                $"CallbackAge={freshness.CallbackAgeMs:F1}ms " +
-                $"SampleAge={freshness.SampleAgeMs:F1}ms " +
-                $"ControlEnqueueAge={freshness.ControlEnqueueAgeMs:F1}ms " +
-                $"ControlProcessedAge={freshness.ControlProcessedAgeMs:F1}ms " +
-                $"ObservedAge={observedAgeMs:F1}ms Rejection={freshness.RejectionReason} " +
-                $"BufferedSamples={freshness.BufferedSamples} " +
-                $"ReaderLag={freshness.ReaderLagState} Generation={freshness.Generation} " +
-                $"Produced={freshness.LastProducedSequence} Confirmations={_tripConfirmations}/1",
+                $"CallbackAge={freshness.CallbackAgeMs:F1}ms Generation={freshness.Generation} " +
+                $"Produced={freshness.LastProducedSequence} Confirmations={_tripConfirmations}/3",
                 warn: !_warned,
                 suspect: true,
                 tripConfirmations: _tripConfirmations);

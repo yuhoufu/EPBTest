@@ -233,8 +233,8 @@ namespace AdaptiveControlTests
             var old = now - Stopwatch.Frequency;
             var snapshot = new DaqFreshnessSnapshot { CallbackAgeMs = 1000, ControlEnqueueAgeMs = 1000 };
             new DaqControlPublication(Batch(1, old), old).Apply(snapshot, 1, now, 100);
-            Assert(!snapshot.IsFresh && new DaqLivenessDeviceState().Observe(true, true, false,
-                snapshot, 75, 100, 250).Trip, "真实1秒采样陈旧未保护");
+            Assert(!snapshot.IsFresh && !new DaqLivenessDeviceState().Observe(true, true, false,
+                snapshot, 250, 1500, 5000).Trip, "控制数据仍须拒绝陈旧样本，存活监督应按旧版阈值观察");
             new DaqControlPublication(Batch(1, now), now).Apply(snapshot, 2, now, 100);
             Assert(!snapshot.IsFresh && snapshot.RejectionReason == "GenerationMismatch", "旧代次允许上电");
             new DaqControlPublication(Batch(1, now), now + 1).Apply(snapshot, 1, now, 100);
