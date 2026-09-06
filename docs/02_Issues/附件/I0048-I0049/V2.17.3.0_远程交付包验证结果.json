@@ -1,0 +1,15 @@
+﻿{
+    "packageVerified":  true,
+    "outerFilesVerified":  134,
+    "installedMarkerVerified":  true,
+    "maintenanceWhatIf":  true,
+    "maintenanceStatus":  true,
+    "maintenanceStatusBlocked":  null,
+    "allChecksPassed":  true,
+    "evidenceExport":  true,
+    "evidenceComplete":  true,
+    "evidenceProblems":  0,
+    "scmMutationPerformed":  false,
+    "hardwareTestPerformed":  false,
+    "sourceIdentitySha256":  "1BC3EB7DAE7D80203190EF8DF327087263A70A11DFD7E256D611D921FACB0E6E"
+}

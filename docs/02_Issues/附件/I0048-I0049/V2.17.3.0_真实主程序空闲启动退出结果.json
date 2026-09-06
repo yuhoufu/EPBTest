@@ -1,0 +1,16 @@
+﻿{
+    "startedUtc":  "2026-09-06T17:15:35.6185144Z",
+    "installedMain":  "C:\\Program Files (x86)\\MTTFTest\\Current\\MTTFTest.exe",
+    "version":  "2.17.3.0",
+    "hardwareTestPerformed":  false,
+    "trialStarted":  false,
+    "launchPassed":  true,
+    "idleClosePassed":  true,
+    "processId":  10008,
+    "processStartTicks":  639243117358120048,
+    "windowTitle":  "MT EPB常温疲劳测试 V2.17.3.0 [PID 10008]",
+    "screenshotUnavailable":  "使用“3”个参数调用“CopyFromScreen”时发生异常:“句柄无效。”",
+    "idleCloseMilliseconds":  55,
+    "mainExitCode":  null,
+    "completedUtc":  "2026-09-06T17:15:39.3171696Z"
+}

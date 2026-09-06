@@ -1,0 +1,52 @@
+﻿{
+    "passed":  true,
+    "host":  "MT-20251206JXCQ",
+    "hardwareTestPerformed":  false,
+    "completedUtc":  "2026-09-06T17:11:19.6028638Z",
+    "failure":  null,
+    "tests":  [
+                  {
+                      "name":  "InstalledMinuteTaskDefinition",
+                      "passed":  true,
+                      "utc":  "2026-09-06T17:08:18.8114172Z",
+                      "detail":  "SYSTEM;Boot+PT1M;IgnoreNew;PT45S"
+                  },
+                  {
+                      "name":  "InstalledSupervisorHealthProbe",
+                      "passed":  true,
+                      "utc":  "2026-09-06T17:08:18.9432114Z",
+                      "detail":  "PID=5756"
+                  },
+                  {
+                      "name":  "NaturalMinuteRestartsStoppedSupervisor",
+                      "passed":  true,
+                      "utc":  "2026-09-06T17:09:18.5759423Z",
+                      "detail":  "OldPID=5756;NewPID=18920;Seconds=59.3712033"
+                  },
+                  {
+                      "name":  "MinuteReplacesUnresponsiveSupervisor",
+                      "passed":  true,
+                      "utc":  "2026-09-06T17:10:25.5637432Z",
+                      "detail":  "OldPID=18920;NewPID=7128;Seconds=35.9636249"
+                  },
+                  {
+                      "name":  "InstalledSupervisorRestoresUnresponsiveAgent",
+                      "passed":  true,
+                      "utc":  "2026-09-06T17:11:07.9456328Z",
+                      "detail":  "OldPID=12368;NewPID=10448"
+                  },
+                  {
+                      "name":  "MaintenancePreventsServiceRestart",
+                      "passed":  true,
+                      "utc":  "2026-09-06T17:11:14.2885526Z",
+                      "detail":  "Stopped service remains stopped while persisted inhibit exists."
+                  },
+                  {
+                      "name":  "RepeatedHealthCheckNoMainOrDuplicateAgent",
+                      "passed":  true,
+                      "utc":  "2026-09-06T17:11:19.5998734Z",
+                      "detail":  "Main=0;SessionAgent=1"
+                  }
+              ],
+    "schemaVersion":  1
+}

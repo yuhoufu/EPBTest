@@ -1,0 +1,9 @@
+﻿{
+    "installRootRemoved":  true,
+    "healthTaskRemoved":  true,
+    "programDataPreserved":  true,
+    "serviceRemoved":  true,
+    "backup":  "C:\\EPB-I0049-Validation\\installed-root-before-uninstall.7z",
+    "utc":  "2026-09-06T17:04:11.9531259Z",
+    "maintenancePreserved":  true
+}

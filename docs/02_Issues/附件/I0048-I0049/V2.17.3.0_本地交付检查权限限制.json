@@ -1,0 +1,15 @@
+﻿{
+    "packageVerified":  true,
+    "outerFilesVerified":  134,
+    "installedMarkerVerified":  true,
+    "maintenanceWhatIf":  true,
+    "maintenanceStatus":  false,
+    "maintenanceStatusBlocked":  "IdentityBlocked: 无法读取 MTTFTest.Watchdog.exe PID=36568 的路径。",
+    "allChecksPassed":  false,
+    "evidenceExport":  true,
+    "evidenceComplete":  false,
+    "evidenceProblems":  1,
+    "scmMutationPerformed":  false,
+    "hardwareTestPerformed":  false,
+    "sourceIdentitySha256":  "1BC3EB7DAE7D80203190EF8DF327087263A70A11DFD7E256D611D921FACB0E6E"
+}
