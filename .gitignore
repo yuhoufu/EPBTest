@@ -411,3 +411,6 @@ WarnLog_*.txt
 # Local assistant memory and copyright-registration source materials.
 .workbuddy/
 docs/软著/
+
+# ZCode 本地会话产物。
+.zcode/
