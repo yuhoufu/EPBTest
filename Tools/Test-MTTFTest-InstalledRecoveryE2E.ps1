@@ -262,6 +262,10 @@ try {
                 Where-Object { $_.Id -ne $supervisorPid -and $_.Id -ne $oldHostPid }) |
                 Select-Object -First 1
         } 90 'sidecar 无响应后未由 Supervisor 恢复。'
+        Wait-Until {
+            (Get-Content -LiteralPath $mainEvents -Raw).Contains(
+                'HandshakeCompleted;AuthorityPid=' + $healthyHost.Id + ';')
+        } 30 'sidecar 已替换，但主程序没有完成新权威的精确握手。' | Out-Null
         Add-Result 'HangSidecarAndRestoreOwnership' $true "OldPID=$oldHostPid;NewPID=$($healthyHost.Id)"
     }
     finally {

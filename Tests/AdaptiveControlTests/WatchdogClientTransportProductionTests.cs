@@ -118,6 +118,10 @@ namespace AdaptiveControlTests
         internal static int RunPublicReconnectLifecycleOnly()
         {
             var passed = 0;
+            Run("生产Engine已退出权威重连前重新取得许可身份而不接受陌生Attached",
+                DeadAuthorityRebindsBeforeConnecting, ref passed);
+            Run("生产Engine连接期间权威退出时拒绝未绑定握手并重新授权",
+                AuthorityExitsDuringAttachedRetriesBinding, ref passed);
             Run("生产Engine public同Session真实断链/单一reconnect/同authority",
                 SameSessionTransportFailureUsesSingleReconnect, ref passed);
             Run("生产Engine public重连耗尽attempt上限/一次SafeDegraded",
@@ -131,6 +135,73 @@ namespace AdaptiveControlTests
             Run("生产Engine精确会话断管后返回ExactSessionDetached且ABA仍拒绝",
                 ExactSessionDetachedIsDistinctFromIdentityMismatch, ref passed);
             return passed;
+        }
+
+        internal static void DeadAuthorityRebindsBeforeConnecting()
+        {
+            using (var harness = TestHarness.Create(LaunchMode.Success))
+            {
+                harness.Engine.BeginSession(harness.Options, harness.Callbacks);
+                Assert(harness.Engine.StartAsync().Wait(10000), "初次连接失败");
+                var before = harness.Snapshot();
+                using (var process = Process.GetProcessById(before.AuthorityProcessId))
+                {
+                    Assert(process.StartTime.ToUniversalTime().Ticks == before.AuthorityProcessStartUtcTicks,
+                        "测试权威身份已变化");
+                    process.Kill();
+                    Assert(process.WaitForExit(5000), "旧权威未退出");
+                }
+                harness.Engine.ScheduleReconnect(0);
+                Assert(WaitUntil(() =>
+                {
+                    var current = harness.Snapshot();
+                    return current.IsAttached && current.HasAuthority &&
+                           current.AuthorityProcessId != before.AuthorityProcessId;
+                }, 15000), "旧权威退出后未重新绑定：" + harness.ServerStats);
+                var after = harness.Snapshot();
+                Assert(harness.Launcher.LaunchCount == 2 && !after.TransportFailClosed &&
+                       after.ActiveSessionLease == before.ActiveSessionLease && !after.HasPending,
+                    "重新绑定必须复用当前会话并通过授权启动入口");
+            }
+        }
+
+        internal static void AuthorityExitsDuringAttachedRetriesBinding()
+        {
+            using (var harness = TestHarness.Create(LaunchMode.Success))
+            {
+                harness.Engine.BeginSession(harness.Options, harness.Callbacks);
+                Assert(harness.Engine.StartAsync().Wait(10000), "初次连接失败");
+                var before = harness.Snapshot();
+                harness.BeforeNextAttached(response =>
+                {
+                    using (var old = Process.GetProcessById(before.AuthorityProcessId))
+                    {
+                        Assert(old.StartTime.ToUniversalTime().Ticks == before.AuthorityProcessStartUtcTicks,
+                            "故障注入前旧权威已变化");
+                        old.Kill();
+                        Assert(old.WaitForExit(5000), "旧权威未退出");
+                    }
+                    // A live, structurally valid but unbound response must never
+                    // be promoted. The next authorized launch supplies the identity.
+                    using (var stranger = Process.GetCurrentProcess())
+                    {
+                        response.SidecarProcessId = stranger.Id;
+                        response.SidecarProcessStartUtcTicks = response.SidecarStartUtcTicks =
+                            response.StartUtcTicks = stranger.StartTime.ToUniversalTime().Ticks;
+                        response.SidecarInstanceNonce = response.InstanceNonce = Guid.NewGuid().ToString("N");
+                    }
+                });
+                harness.Engine.ScheduleReconnect(0);
+                Assert(WaitUntil(() =>
+                {
+                    var current = harness.Snapshot();
+                    return current.IsAttached && current.HasAuthority &&
+                           current.AuthorityProcessId == harness.Launcher.LastProcessId &&
+                           current.AuthorityProcessId != before.AuthorityProcessId;
+                }, 15000), "连接期间权威替换未重新授权：" + harness.ServerStats);
+                Assert(harness.Launcher.LaunchCount == 2 && !harness.Snapshot().TransportFailClosed,
+                    "必须拒绝陌生响应并通过一次新的授权启动绑定");
+            }
         }
 
         private static void ExactSessionDetachedIsDistinctFromIdentityMismatch()
@@ -3535,6 +3606,7 @@ namespace AdaptiveControlTests
 
             internal void SetAttachedMutation(AttachedMutation mutation) =>
                 _server.SetAttachedMutation(mutation);
+            internal void BeforeNextAttached(Action<WatchdogMessage> action) => _server.BeforeAttached = action;
 
             internal Task<bool> PrepareDelayedHeartbeatAck(long ackSequence) =>
                 _server.PrepareDelayedHeartbeatAck(ackSequence);
@@ -4111,6 +4183,7 @@ namespace AdaptiveControlTests
 
         private sealed class PipeServer : IDisposable
         {
+            internal Action<WatchdogMessage> BeforeAttached;
             private readonly GatePipeFactory _factory;
             private AttachedMutation _mutation;
             private readonly object _gate = new object();
@@ -4384,12 +4457,12 @@ namespace AdaptiveControlTests
             {
                 lock (_gate)
                 {
-                    if (_loop != null) return;
-                    _pipeName = pipeName;
-                    _sessionId = ExtractSession(pipeName);
                     _sidecarProcessId = sidecarProcessId;
                     _sidecarStartUtcTicks = sidecarStartUtcTicks;
                     _nonce = nonce;
+                    if (_loop != null) return;
+                    _pipeName = pipeName;
+                    _sessionId = ExtractSession(pipeName);
                     _factory.Enable();
                     _current = CreateServer();
                     _serverGeneration = 1;
@@ -4705,6 +4778,7 @@ namespace AdaptiveControlTests
                         response.InstanceNonce = Guid.NewGuid().ToString("N");
                         break;
                 }
+                Interlocked.Exchange(ref BeforeAttached, null)?.Invoke(response);
                 return response;
             }
 

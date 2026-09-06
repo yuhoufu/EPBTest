@@ -1,0 +1,83 @@
+﻿{
+    "schemaVersion":  1,
+    "version":  "2.17.3.0",
+    "startedUtc":  "2026-09-06T16:22:21.8413135Z",
+    "account":  "MT-20251206JXCQ\\mt",
+    "package":  "C:\\EPB-I0049-Validation\\PackageV4",
+    "tests":  [
+                  {
+                      "name":  "InitialSupervisorLaunch",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:22:27.8303390Z",
+                      "detail":  "PID=20724;StartUtcTicks=639243085423652110"
+                  },
+                  {
+                      "name":  "KillSidecarAndRestoreOwnership",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:22:28.3279132Z",
+                      "detail":  "OldPID=9796;NewPID=5976"
+                  },
+                  {
+                      "name":  "HangSidecarAndRestoreOwnership",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:23:06.5601473Z",
+                      "detail":  "OldPID=5976;NewPID=5728"
+                  },
+                  {
+                      "name":  "KillSupervisorAndRecover",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:23:12.0059182Z",
+                      "detail":  "PID=14064;StartUtcTicks=639243085419326196;NewPID=3160"
+                  },
+                  {
+                      "name":  "KillSessionAgentAndRecover",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:23:22.0395836Z",
+                      "detail":  "PID=8128;StartUtcTicks=639243085422519956;NewPID=20848"
+                  },
+                  {
+                      "name":  "HangSessionAgentAndRecover",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:23:59.2649226Z",
+                      "detail":  "OldPID=20848;NewPID=20620"
+                  },
+                  {
+                      "name":  "MotorOffWithin250ms",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:23:59.8868405Z",
+                      "detail":  "ElapsedMs=27.9"
+                  },
+                  {
+                      "name":  "KillSafetyAgentAndResumeAuthority",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:24:06.1434492Z",
+                      "detail":  "PID=18652;StartUtcTicks=639243086397142386;ProofElapsedMs=6256"
+                  },
+                  {
+                      "name":  "IndependentSafetyProofWithin30Seconds",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:24:06.1444458Z",
+                      "detail":  "ElapsedMs=6878"
+                  },
+                  {
+                      "name":  "RecoveryFirstCycleCommitted",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:24:06.3881179Z",
+                      "detail":  "NewPID=7912;ElapsedMs=7122"
+                  },
+                  {
+                      "name":  "ExactlyOneMainProcess",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:24:06.3931012Z",
+                      "detail":  "Count=1"
+                  },
+                  {
+                      "name":  "ExactlyOneEffectivePermit",
+                      "passed":  true,
+                      "utc":  "2026-09-06T16:24:06.3960911Z",
+                      "detail":  "Count=1"
+                  }
+              ],
+    "passed":  true,
+    "completedUtc":  "2026-09-06T16:24:06.4010743Z"
+}

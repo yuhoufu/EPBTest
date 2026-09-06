@@ -1047,7 +1047,7 @@ namespace MTTFTest.Watchdog
                 Accepted = true,
                 ProcessId = identity.ProcessId,
                 ProcessStartUtcTicks = identity.ProcessStartUtcTicks,
-                Detail = "SupervisorOwnedSessionHost"
+                Detail = SupervisorProtocol.SessionHostBinding(identity.InstanceNonce)
             };
         }
 
@@ -1396,6 +1396,7 @@ namespace MTTFTest.Watchdog
             private string _mainExecutablePath;
             private string _mainExecutableSha256;
             private string _projectDirectory;
+            private string _instanceNonce;
             private Task _monitorTask;
             private string _stateDirectory;
 
@@ -1604,6 +1605,7 @@ namespace MTTFTest.Watchdog
                 _mainExecutablePath = record.MainExecutablePath;
                 _mainExecutableSha256 = record.MainExecutableSha256;
                 _projectDirectory = record.ProjectDirectory;
+                _instanceNonce = ReadLaunchArgument(record.Arguments, "--sidecar-instance-nonce");
             }
 
             private void StartFromRecord(
@@ -1630,6 +1632,7 @@ namespace MTTFTest.Watchdog
                 _mainExecutablePath = record.MainExecutablePath;
                 _mainExecutableSha256 = record.MainExecutableSha256;
                 _projectDirectory = record.ProjectDirectory;
+                _instanceNonce = ReadLaunchArgument(record.Arguments, "--sidecar-instance-nonce");
                 record.State = "Started";
                 record.ProcessId = process.Id;
                 record.ProcessStartUtcTicks = _processStartUtcTicks;
@@ -1762,7 +1765,8 @@ namespace MTTFTest.Watchdog
                 return new SupervisorProcessIdentity
                 {
                     ProcessId = _process.Id,
-                    ProcessStartUtcTicks = _processStartUtcTicks
+                    ProcessStartUtcTicks = _processStartUtcTicks,
+                    InstanceNonce = _instanceNonce
                 };
             }
 
@@ -1820,6 +1824,7 @@ namespace MTTFTest.Watchdog
         {
             internal int ProcessId;
             internal long ProcessStartUtcTicks;
+            internal string InstanceNonce;
         }
 
         /// <summary>

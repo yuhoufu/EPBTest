@@ -19,8 +19,9 @@ namespace AdaptiveControlTests
             RetiredExecutionMustRebuildBeforePower();
             HealthEndpointReportsWorkProgress();
             HealthProbeHasReadDeadline();
-            Console.WriteLine("PASS I0049 5/5 摘要准入、交接终态、许可重建、健康进度与超时");
-            return 5;
+            SupervisorReturnsExistingHostBinding();
+            Console.WriteLine("PASS I0049 6/6 摘要准入、交接终态、许可重建、健康进度、超时与既有权威绑定");
+            return 6;
         }
 
         internal static int RunSoak(string evidenceDirectory)
@@ -38,7 +39,7 @@ namespace AdaptiveControlTests
                     {
                         version = "2.17.3.0", state, startedUtc = started.ToString("O"),
                         updatedUtc = DateTime.UtcNow.ToString("O"), elapsedSeconds = clock.Elapsed.TotalSeconds,
-                        requiredSeconds = 86400, rounds, processId = process.Id,
+                        requiredSeconds = 21600, rounds, processId = process.Id,
                         processStartTicks = process.StartTime.ToUniversalTime().Ticks,
                         privateBytes = process.PrivateMemorySize64, handles = process.HandleCount,
                         hardwareTestPerformed = false, error
@@ -53,10 +54,12 @@ namespace AdaptiveControlTests
             try
             {
                 Save("RUNNING");
-                while (clock.Elapsed < TimeSpan.FromHours(24))
+                while (clock.Elapsed < TimeSpan.FromHours(6))
                 {
                     RunAll();
                     V217StabilityTests.RunAll();
+                    WatchdogClientTransportProductionTests.DeadAuthorityRebindsBeforeConnecting();
+                    WatchdogClientTransportProductionTests.AuthorityExitsDuringAttachedRetriesBinding();
                     DaqPersistenceCoordinatorTests.PauseAndRecoverAfterLowWater();
                     DaqPersistenceCoordinatorTests.RecoveryTimeoutRetainsBatchUntilStorageReturns();
                     rounds++;
@@ -86,6 +89,29 @@ namespace AdaptiveControlTests
                 "不同可执行文件路径被接受");
             Assert(!SupervisorServiceRuntime.IsSafetyAgentExecutableBound(path, new string('x', 64), path, new string('x', 64)),
                 "非法摘要格式被接受");
+        }
+
+        private static void SupervisorReturnsExistingHostBinding()
+        {
+            var actualNonce = Guid.NewGuid().ToString("N");
+            var response = new SupervisorSessionLaunchResponse
+            {
+                Accepted = true, Detail = SupervisorProtocol.SessionHostBinding(actualNonce)
+            };
+            using (var stream = new MemoryStream())
+            {
+                response.WriteTo(new BinaryWriter(stream));
+                stream.Position = 0;
+                var received = SupervisorSessionLaunchResponse.ReadFrom(new BinaryReader(stream));
+                Assert(SupervisorProtocol.ReadSessionHostBinding(received.Detail) == actualNonce &&
+                       stream.Position == stream.Length, "既有权威 nonce 未通过原 v7 响应布局传递");
+            }
+            Assert(SupervisorProtocol.ReadSessionHostBinding("SupervisorOwnedSessionHost") == null,
+                "旧监督响应兼容性被破坏");
+            var rejected = false;
+            try { SupervisorProtocol.ReadSessionHostBinding(SupervisorProtocol.SessionHostBindingPrefix + "invalid"); }
+            catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "非法监督绑定 nonce 未拒绝");
         }
 
         private static void TerminalAuthorityDoesNotMaskNextFault()

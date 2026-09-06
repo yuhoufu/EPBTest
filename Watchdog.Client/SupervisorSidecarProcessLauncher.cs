@@ -83,6 +83,7 @@ namespace MTTFTest.Watchdog.Client
                 var connect = Task.Run(() => pipe.Connect(1500), cancellationToken);
                 await connect.ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
+                using (var deadline = new PipeExchangeDeadline(pipe, 10000))
                 using (var writer = new BinaryWriter(
                            pipe,
                            new UTF8Encoding(false),
@@ -111,6 +112,7 @@ namespace MTTFTest.Watchdog.Client
                     (response?.Detail ?? string.Empty));
 
             cancellationToken.ThrowIfCancellationRequested();
+            var authorizedNonce = SupervisorProtocol.ReadSessionHostBinding(response.Detail);
             var process = Process.GetProcessById(response.ProcessId);
             try
             {
@@ -122,7 +124,8 @@ namespace MTTFTest.Watchdog.Client
                 return new SidecarProcessLaunchResult
                 {
                     Process = process,
-                    Owner = new SidecarProcessHandleOwner(process)
+                    Owner = new SidecarProcessHandleOwner(process),
+                    AuthorizedInstanceNonce = authorizedNonce
                 };
             }
             catch

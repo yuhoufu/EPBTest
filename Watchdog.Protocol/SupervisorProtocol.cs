@@ -8,6 +8,26 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class SupervisorProtocol
     {
+        // Optional binding metadata in the existing diagnostic field keeps the
+        // v7 binary layout compatible. It is returned by the authenticated
+        // Supervisor exchange, never learned from an unsolicited Attached.
+        public const string SessionHostBindingPrefix = "SupervisorOwnedSessionHost;InstanceNonce=";
+        public static string SessionHostBinding(string nonce)
+        {
+            if (!WatchdogProcessIdentityPolicy.IsValidChallengeNonce(nonce))
+                throw new InvalidDataException("SupervisorHostNonceInvalid");
+            return SessionHostBindingPrefix + nonce;
+        }
+        public static string ReadSessionHostBinding(string detail)
+        {
+            if (detail == null || !detail.StartsWith(SessionHostBindingPrefix, StringComparison.Ordinal))
+                return null; // Older supervisors retain the requested launch nonce.
+            var nonce = detail.Substring(SessionHostBindingPrefix.Length);
+            if (!WatchdogProcessIdentityPolicy.IsValidChallengeNonce(nonce))
+                throw new InvalidDataException("SupervisorHostBindingInvalid");
+            return nonce;
+        }
+
         /// <summary>Compare validated SHA-256 bytes, never their display casing.</summary>
         public static bool Sha256Equals(string left, string right)
         {

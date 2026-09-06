@@ -2682,6 +2682,9 @@ namespace MTTFTest.Watchdog.Client
                 {
                     var launchProcessId = launch.Process.Id;
                     var startTicks = launch.Process.StartTime.ToUniversalTime().Ticks;
+                    var bindingNonce = launch.AuthorizedInstanceNonce ?? reservation.InstanceNonce;
+                    if (!WatchdogProcessIdentityPolicy.IsValidChallengeNonce(bindingNonce))
+                        throw new IOException("Supervisor returned an invalid helper binding nonce.");
                     lock (_gate)
                     {
                         if (!ReferenceEquals(_launchReservation, reservation) ||
@@ -2700,7 +2703,7 @@ namespace MTTFTest.Watchdog.Client
                             startTicks,
                             options.SessionId,
                             options.SessionGeneration,
-                            reservation.InstanceNonce,
+                            bindingNonce,
                             out _,
                             out var rejection))
                         {
@@ -2714,7 +2717,7 @@ namespace MTTFTest.Watchdog.Client
                                 startTicks,
                                 options.SessionId,
                                 options.SessionGeneration,
-                                reservation.InstanceNonce);
+                                bindingNonce);
                             _pending = bound;
                             launch = null;
                         }
@@ -2929,7 +2932,13 @@ namespace MTTFTest.Watchdog.Client
                             var attachedFailure = new WatchdogConnectException(failureKind, error);
                             FailAttached(attachedFailure,
                                 connectionGeneration, sessionGeneration, sessionLease, connectionIdentity);
-                            EnterTransportFailClosed(sessionLease, failureKind, error);
+                            // A proven-dead bound helper can be replaced while
+                            // ConnectAsync is awaiting the pipe. Reject this
+                            // handshake and retry through the authorized launcher;
+                            // do not promote the unbound replacement or latch a
+                            // permanent identity fault for the dead helper.
+                            if (failureKind != WatchdogConnectFailureKind.PipeUnavailable)
+                                EnterTransportFailClosed(sessionLease, failureKind, error);
                             return;
                         }
                         TaskCompletionSource<bool> completion = null;
@@ -3472,6 +3481,17 @@ namespace MTTFTest.Watchdog.Client
                 rejection = "Attached Sidecar PID不可验证：" + ex.GetBaseException().Message;
                 return false;
             }
+            PendingHelper boundPending;
+            SidecarIdentityStateMachine.AuthoritySnapshot boundAuthority;
+            lock (_gate)
+            {
+                boundPending = _pending;
+                boundAuthority = _identity.Authority;
+            }
+            var boundIdentityDead = boundPending != null
+                ? IsProcessIdentityConfirmedDead(boundPending.ProcessId, boundPending.StartUtcTicks)
+                : boundAuthority != null && IsProcessIdentityConfirmedDead(
+                    boundAuthority.ProcessId, boundAuthority.ProcessStartUtcTicks);
             lock (_gate)
             {
                 if (!IsCurrentConnectionLocked(
@@ -3489,7 +3509,16 @@ namespace MTTFTest.Watchdog.Client
                     expectedSession,
                     sessionGeneration,
                     out rejection);
-                if (!accepted) failureKind = WatchdogConnectFailureKind.IdentityRejected;
+                if (!accepted)
+                {
+                    var sameBinding = ReferenceEquals(_pending, boundPending) &&
+                        ReferenceEquals(_identity.Authority, boundAuthority);
+                    failureKind = boundIdentityDead && sameBinding
+                        ? WatchdogConnectFailureKind.PipeUnavailable
+                        : WatchdogConnectFailureKind.IdentityRejected;
+                    if (failureKind == WatchdogConnectFailureKind.PipeUnavailable)
+                        rejection = "BoundSidecarExitedBeforeAttached; retry authorized identity binding";
+                }
                 return accepted;
             }
         }
@@ -3503,10 +3532,24 @@ namespace MTTFTest.Watchdog.Client
                 return;
             if (!CloseCurrentTransportForWorker(sessionLease, reconnectTaskIdentity)) return;
             WatchdogClientTransportOptions options;
+            bool hadBoundIdentity;
             lock (_gate)
             {
                 if (!IsCurrentReconnectWorkerLocked(workerGeneration, sessionLease, reconnectTaskIdentity)) return;
                 options = _options;
+                hadBoundIdentity = _pending != null || _identity.HasAuthority;
+            }
+            // Supervisor may have replaced a dead/hung helper before the pipe
+            // becomes available. Clear only a positively dead exact identity,
+            // then obtain the replacement PID/start/nonce through the existing
+            // authorized launcher. Never adopt an unsolicited Attached identity.
+            if (hadBoundIdentity && !IsAuthorityAlive() && !IsPendingAlive() &&
+                options?.LaunchPolicy == WatchdogLaunchPolicy.LaunchIfPipeUnavailable)
+            {
+                if (!IsCurrentReconnectWorker(workerGeneration, sessionLease, reconnectTaskIdentity) ||
+                    ObserveStopMarker(sessionLease) || IsClosing || IsSafeDegraded) return;
+                await LaunchSidecarIfAuthorized(sessionLease, options.LaunchPolicy).ConfigureAwait(false);
+                if (!IsCurrentReconnectWorker(workerGeneration, sessionLease, reconnectTaskIdentity)) return;
             }
             try
             {

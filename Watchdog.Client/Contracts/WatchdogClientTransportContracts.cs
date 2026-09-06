@@ -322,6 +322,7 @@ namespace MTTFTest.Watchdog.Client
     {
         public Process Process { get; internal set; }
         public SidecarProcessHandleOwner Owner { get; internal set; }
+        public string AuthorizedInstanceNonce { get; internal set; }
 
         public void Dispose()
         {
