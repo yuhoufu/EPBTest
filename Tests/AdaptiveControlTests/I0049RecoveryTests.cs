@@ -20,8 +20,11 @@ namespace AdaptiveControlTests
             HealthEndpointReportsWorkProgress();
             HealthProbeHasReadDeadline();
             SupervisorReturnsExistingHostBinding();
-            Console.WriteLine("PASS I0049 6/6 摘要准入、交接终态、许可重建、健康进度、超时与既有权威绑定");
-            return 6;
+            StatusWriteRecoversAfterReaderReleases();
+            StatusWriteTimesOutWithoutDestroyingPreviousState();
+            StatusReaderAllowsAtomicReplacement();
+            Console.WriteLine("PASS I0049 9/9 摘要准入、交接终态、许可重建、健康进度、超时、既有权威绑定与状态文件占用");
+            return 9;
         }
 
         internal static int RunSoak(string evidenceDirectory)
@@ -45,10 +48,9 @@ namespace AdaptiveControlTests
                         hardwareTestPerformed = false, error
                     });
                     var path = Path.Combine(root, "soak-status.json");
-                    var temp = path + ".tmp";
-                    File.WriteAllText(temp, json);
-                    if (File.Exists(path)) File.Replace(temp, path, null);
-                    else File.Move(temp, path);
+                    WriteStatusAtomically(path, json, TimeSpan.FromSeconds(5), ex =>
+                        Console.WriteLine("SOAK_STATUS_RETRY utc={0:O} hresult=0x{1:X8} path={2} reason={3}",
+                            DateTime.UtcNow, ex.HResult, path, ex.Message));
                 }
             }
             try
@@ -71,7 +73,114 @@ namespace AdaptiveControlTests
                 Save("PASSED");
                 return 0;
             }
-            catch (Exception ex) { Save("FAILED", ex.ToString()); throw; }
+            catch (Exception ex)
+            {
+                // Reporting failure must never replace the original test failure.
+                Console.Error.WriteLine("SOAK_FAILURE " + ex);
+                try { Save("FAILED", ex.ToString()); }
+                catch (Exception reportingError) { Console.Error.WriteLine("SOAK_FAILURE_REPORT " + reportingError); }
+                throw;
+            }
+        }
+
+        private static void WriteStatusAtomically(string path, string json, TimeSpan budget, Action<IOException> onRetry)
+        {
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            var timer = Stopwatch.StartNew();
+            try
+            {
+                File.WriteAllText(temp, json);
+                while (true)
+                {
+                    try
+                    {
+                        if (File.Exists(path)) File.Replace(temp, path, null);
+                        else File.Move(temp, path);
+                        return;
+                    }
+                    catch (IOException ex)
+                    {
+                        if (timer.Elapsed >= budget)
+                            throw new IOException("Soak status atomic publish exceeded retry budget: " + path, ex);
+                        onRetry?.Invoke(ex);
+                        Thread.Sleep((int)Math.Min(100, Math.Max(1, (budget - timer.Elapsed).TotalMilliseconds)));
+                    }
+                }
+            }
+            finally
+            {
+                try { if (File.Exists(temp)) File.Delete(temp); }
+                catch (Exception cleanupError) { Console.Error.WriteLine("SOAK_STATUS_TEMP_CLEANUP " + cleanupError); }
+            }
+        }
+
+        private static void StatusWriteRecoversAfterReaderReleases()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "I0049-status-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var path = Path.Combine(root, "status.json");
+            try
+            {
+                WriteStatusAtomically(path, "old", TimeSpan.FromSeconds(1), null);
+                var retries = 0;
+                using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    WriteStatusAtomically(path, "new", TimeSpan.FromSeconds(2), ex =>
+                    {
+                        retries++;
+                        Assert(File.ReadAllText(path) == "old", "重试前必须保留原状态");
+                        reader.Dispose();
+                    });
+                }
+                Assert(retries > 0 && File.ReadAllText(path) == "new", "读者释放后应自动完成原子替换");
+                Assert(Directory.GetFiles(root, "*.tmp").Length == 0, "成功后不应遗留临时文件");
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
+        private static void StatusWriteTimesOutWithoutDestroyingPreviousState()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "I0049-status-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var path = Path.Combine(root, "status.json");
+            try
+            {
+                File.WriteAllText(path, "old");
+                var timer = Stopwatch.StartNew();
+                IOException failure = null;
+                using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    try { WriteStatusAtomically(path, "new", TimeSpan.FromMilliseconds(200), null); }
+                    catch (IOException ex) { failure = ex; }
+                }
+                Assert(failure?.InnerException is IOException, "持续占用应报告真实 IO 原因");
+                Assert(timer.Elapsed < TimeSpan.FromSeconds(3), "持续占用不能无限等待");
+                Assert(File.ReadAllText(path) == "old", "失败不能删除或截断原状态");
+                Assert(Directory.GetFiles(root, "*.tmp").Length == 0, "失败后应清理临时文件");
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
+        private static void StatusReaderAllowsAtomicReplacement()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "I0049-status-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var path = Path.Combine(root, "status.json");
+            try
+            {
+                File.WriteAllText(path, "old");
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                using (var reader = new StreamReader(stream))
+                {
+                    var retries = 0;
+                    WriteStatusAtomically(path, "new", TimeSpan.FromSeconds(1), ex => retries++);
+                    Assert(retries == 0, "共享删除的读者不应阻塞原子替换");
+                    Assert(reader.ReadToEnd() == "old" && File.ReadAllText(path) == "new",
+                        "在途读者及新读者应分别读取完整快照");
+                }
+            }
+            finally { Directory.Delete(root, true); }
         }
 
         private static void Assert(bool condition, string message)
