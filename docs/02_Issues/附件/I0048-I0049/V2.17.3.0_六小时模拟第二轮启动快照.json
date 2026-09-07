@@ -1,0 +1,227 @@
+{
+  "status": {
+    "version": "2.17.3.0",
+    "state": "RUNNING",
+    "startedUtc": "2026-09-07T00:11:13.4187145Z",
+    "updatedUtc": "2026-09-07T00:11:56.5535723Z",
+    "elapsedSeconds": 43.135047199999995,
+    "requiredSeconds": 21600,
+    "rounds": 2,
+    "processId": 38524,
+    "processStartTicks": 639243366730814339,
+    "privateBytes": 36360192,
+    "handles": 648,
+    "hardwareTestPerformed": false,
+    "error": null
+  },
+  "identity": {
+    "sourceCommit": "f5cd4ac33aae1f8662881c72721f98f38d381ce5",
+    "configuration": "Debug x86",
+    "requiredSeconds": 21600,
+    "processId": 38524,
+    "processStartTicks": 639243366730814339,
+    "files": [
+      {
+        "name": "AdaptiveControlTests.exe",
+        "sha256": "F47B1E97DAA80200C26FA73055966491BC8E498BAA10E67D0C1EB36D91DF1B54"
+      },
+      {
+        "name": "AsyncTcpClient.dll",
+        "sha256": "20E8F1E7020B682D2EB0F2D8E0070A82438F36833A814B5D389A89BE50BC5B28"
+      },
+      {
+        "name": "Config.dll",
+        "sha256": "B5286D4D8B11A136CD3A2C4D9C5EE45110E9BF54B5981EEB64A0C602D9294B22"
+      },
+      {
+        "name": "Controller.dll",
+        "sha256": "9707336DDED3C54442B720DF988A2FD58C0DCFAED49B93474F19673519FB6BE1"
+      },
+      {
+        "name": "DataOperation.dll",
+        "sha256": "7610B75F7D8D8B90E56DF383117E6E31E826D6B8D13421BE0F6AA8EB32F9728F"
+      },
+      {
+        "name": "DevExpress.Data.Desktop.v24.2.dll",
+        "sha256": "2A1E663D6AE8026A2D77852AA81C7E82FC4ACE72EFD941D8F80C1537E8BF2850"
+      },
+      {
+        "name": "DevExpress.Data.v24.2.dll",
+        "sha256": "FCC9411B22485FA4D2A5FB5EC0C7F7940129DD1E8305B7DD9B3DF72939950BCC"
+      },
+      {
+        "name": "DevExpress.Drawing.v24.2.dll",
+        "sha256": "41A21B5305CAB65FFBA357F373F40CE91499DEF1BC38D55A81CB698F7C367BB5"
+      },
+      {
+        "name": "DevExpress.Mvvm.v24.2.dll",
+        "sha256": "D8B84976BBF691068DB416B402A1FC7F07593A3D24690EEF701B4F837278F681"
+      },
+      {
+        "name": "DevExpress.Office.v24.2.Core.dll",
+        "sha256": "A23693297B9115ACB0EB5DBACC9767BE3ADA3FF16CFCF6CFC7CECFE29A8338EB"
+      },
+      {
+        "name": "DevExpress.Pdf.v24.2.Core.dll",
+        "sha256": "4CE851C18C8300FC6808EFE07B9A77B4FBFE0A9F919F30E557B414B29982528F"
+      },
+      {
+        "name": "DevExpress.Pdf.v24.2.Drawing.dll",
+        "sha256": "F50E193FD4F428D72ED2AC769E4CD2375EAB453D89FB5921D021976B602846A0"
+      },
+      {
+        "name": "DevExpress.Printing.v24.2.Core.dll",
+        "sha256": "E0A613B95A03414A2E33E966E90D798AD350AF477E681CA767F93EC6C05791F5"
+      },
+      {
+        "name": "DevExpress.RichEdit.v24.2.Core.dll",
+        "sha256": "E51A5389AB888B3FF337FF47142843E290D9A2BAD4F568B097E0168EADF9096A"
+      },
+      {
+        "name": "DevExpress.Sparkline.v24.2.Core.dll",
+        "sha256": "6555513E1E7AFC9F1B3B0407942B8A11ADC7B6DF55AB7B61E0E8156B377C55EA"
+      },
+      {
+        "name": "DevExpress.Utils.v24.2.dll",
+        "sha256": "C9DA0CD9A8B85AC1601A7AB03974C2AD4FCF832AF9CAE441CEE44DAA650D8D29"
+      },
+      {
+        "name": "DevExpress.XtraBars.v24.2.dll",
+        "sha256": "D3A40EED55B8F5CA889895F210D1CDFF5C279315EA346F99D1C8857E23A1C373"
+      },
+      {
+        "name": "DevExpress.XtraEditors.v24.2.dll",
+        "sha256": "DED844E749E1B8928D7B30861E29C26696F4DEEFEC60302A245AF074578F7530"
+      },
+      {
+        "name": "DevExpress.XtraGrid.v24.2.dll",
+        "sha256": "1CC7194C1F812EC14B3809C20639E659A47F384FC3AB04D2FDDED99E87AAC417"
+      },
+      {
+        "name": "DevExpress.XtraLayout.v24.2.dll",
+        "sha256": "8C9B510167A4313572D9F8501CFEDE11CB55BF3171A8A6118DBC8DA3B8D6A5D2"
+      },
+      {
+        "name": "DevExpress.XtraPrinting.v24.2.dll",
+        "sha256": "2D8316423B60D0DD96960641D8D5F1B3D384513D8CDD83D0491672AB9835570A"
+      },
+      {
+        "name": "DevExpress.XtraTreeList.v24.2.dll",
+        "sha256": "C7DFC290B2076A20F1D6CE01F0DF2D35B3A2C4646DCC55300B4E219E2DABBB20"
+      },
+      {
+        "name": "Dia2Lib.dll",
+        "sha256": "6C4CAC68010FE032218EFE5E9FCF46EEF9F77BFAA5F3BD33F03C5FF77D5A8FAC"
+      },
+      {
+        "name": "IO.NI.dll",
+        "sha256": "546417956F5AB751E7A015AA247240C80E7D96BE752B4B9B6C344C02D93C364D"
+      },
+      {
+        "name": "Microsoft.Diagnostics.FastSerialization.dll",
+        "sha256": "DCE0E3F64905E2BBD12D55880A83A96889EF1F3C9F4F83AB35E59CEFFE7E4131"
+      },
+      {
+        "name": "Microsoft.Diagnostics.Tracing.TraceEvent.dll",
+        "sha256": "EDCFB5FC9340F82053586938762D76B5DFB1D1AAD9801DF3898883F427F36C5C"
+      },
+      {
+        "name": "MTTFTest.EngineHost.exe",
+        "sha256": "2729E9E94846988A4E5FA7C10958BAB51F0C0DDDBE6D562466ADDDF6900ACD42"
+      },
+      {
+        "name": "MTTFTest.exe",
+        "sha256": "8A6623C63076C4ECA3A0558607777692B74F2378596F462036AE38FC07FD178F"
+      },
+      {
+        "name": "MTTFTest.Recovery.Kernel.dll",
+        "sha256": "78639849AB1E298FA8EF03BFC9498FCBB5328FBA62119E993C966228425BA91D"
+      },
+      {
+        "name": "MTTFTest.SafetyAgent.exe",
+        "sha256": "9CC8FD31A3BBA29EE14889E7CAA7870CA66EE33BFA3D2864004C2E6F7BF54411"
+      },
+      {
+        "name": "MTTFTest.SafetyHardware.dll",
+        "sha256": "652D86E630C38E7041031D4090B7C6E16CD423A9836E18FD1C5B1B3548A2A717"
+      },
+      {
+        "name": "MTTFTest.SessionAgent.exe",
+        "sha256": "D355B633EF75C57996A0F6E21942569F00F4D04C7612F4A759E6F1B53F9B887F"
+      },
+      {
+        "name": "MTTFTest.Watchdog.Client.dll",
+        "sha256": "963822AA9D8919CEB578D344E9F028D8D1ED1D148A8654D6B88C3AF0AF4C8AD5"
+      },
+      {
+        "name": "MTTFTest.Watchdog.exe",
+        "sha256": "CCC8931129CD97E1CBD332F9B69B86E70FEE0788543B73E9D1C96A5BB4133C38"
+      },
+      {
+        "name": "MTTFTest.Watchdog.Protocol.dll",
+        "sha256": "19214062B9F5137457395ED7606583FD1AD57FAD4D159AE0CECE760E2B3BAB46"
+      },
+      {
+        "name": "NationalInstruments.Common.dll",
+        "sha256": "024E9BAD2331221EBE9752DF0DCB39DC5E2B4EB02CE5258FB3A56DEE0996DD4A"
+      },
+      {
+        "name": "NationalInstruments.DAQmx.dll",
+        "sha256": "B40F81159F9F6DB7D17066A2BA6DF62522A4DDC8546CF2DA1F5FEE7D8BCAF320"
+      },
+      {
+        "name": "OSExtensions.dll",
+        "sha256": "8CEE77653448156D7FDF2CE8371CA830F3208321C77FE3E224ED58ADAAC406DA"
+      },
+      {
+        "name": "PowerSupply.Core.dll",
+        "sha256": "DB180BB813C85672248D60A8564BD93D6303C88C8B53248EAEF0AE73B2D8873C"
+      },
+      {
+        "name": "SunnyUI.Common.dll",
+        "sha256": "725CFC038292A597DBF9E4510C09368855B44DD78904E4DF786F28005980BEDD"
+      },
+      {
+        "name": "SunnyUI.dll",
+        "sha256": "82C4E5B29D19734095605BA83738A06F8D955273CC1E70AD6259C512DCA1DE10"
+      },
+      {
+        "name": "System.Buffers.dll",
+        "sha256": "9444B5A41A816B193C033BEC199D74CDFC8298ED8300A3C39A4E953DEC137494"
+      },
+      {
+        "name": "System.Data.SQLite.dll",
+        "sha256": "77DAC4E1AA63161D6AFF363030A801945D6B8D5B823A6B460B2C2BE9EC38D3B7"
+      },
+      {
+        "name": "System.Memory.dll",
+        "sha256": "41B5E1A4C59ABDB1CE1467F58C3D9FD06D39DFF4FC61D500A2410FECE8037F4B"
+      },
+      {
+        "name": "System.Numerics.Vectors.dll",
+        "sha256": "A044D77EDB6E8DB4053BF67CC671E7687C226C1B9B0963A81EBE359CE79DFDF7"
+      },
+      {
+        "name": "System.Runtime.CompilerServices.Unsafe.dll",
+        "sha256": "1AD2DD7225D5162A0FD3A3B337A1949448520E3130A4BC8E010EC02F76097500"
+      },
+      {
+        "name": "Timing.dll",
+        "sha256": "487EEA9A2DCA51B6B8B32C3A10205D5ADFC80E679AACA17A01D563D102E12F92"
+      },
+      {
+        "name": "TraceReloggerLib.dll",
+        "sha256": "6830C0F1D3F3C17719181E73DD5CFA8CCBB3F3C575329D2120576545103467B5"
+      },
+      {
+        "name": "Utils.dll",
+        "sha256": "F87BE27F636C26D9DCC06543D47DFCC7823B8C9EB731D1CF5689F55571BBF821"
+      },
+      {
+        "name": "ZedGraph.dll",
+        "sha256": "25FC9DEF11BB77772CBAD751A59DA5A69EEEFFDB91FFC40FB3638E77595C263A"
+      }
+    ]
+  },
+  "previousRun": "i0049-soak-6h FAILED 7718.578秒，不合并计时"
+}
