@@ -1,0 +1,74 @@
+{
+  "status": {
+    "version": "2.17.3.0",
+    "state": "PASSED",
+    "startedUtc": "2026-09-07T00:11:13.4187145Z",
+    "updatedUtc": "2026-09-07T06:11:02.2091719Z",
+    "elapsedSeconds": 21600.573805199998,
+    "requiredSeconds": 21600,
+    "rounds": 582,
+    "processId": 38524,
+    "processStartTicks": 639243366730814339,
+    "privateBytes": 40599552,
+    "handles": 614,
+    "hardwareTestPerformed": false,
+    "error": null
+  },
+  "sourceCommit": "f5cd4ac33aae1f8662881c72721f98f38d381ce5",
+  "checkedUtc": "2026-09-07T06:18:20.6235396Z",
+  "processPresentAtCheck": false,
+  "i0049PassCount": 582,
+  "v217PassCount": 582,
+  "retryEvents": [
+    {
+      "utc": "2026-09-07T00:25:05.0978114Z",
+      "hresult": "0x80070497"
+    },
+    {
+      "utc": "2026-09-07T02:28:19.3638780Z",
+      "hresult": "0x80070497"
+    },
+    {
+      "utc": "2026-09-07T04:04:22.9901551Z",
+      "hresult": "0x80070497"
+    },
+    {
+      "utc": "2026-09-07T04:33:04.9213961Z",
+      "hresult": "0x80070497"
+    },
+    {
+      "utc": "2026-09-07T04:34:16.7914483Z",
+      "hresult": "0x80070497"
+    },
+    {
+      "utc": "2026-09-07T04:40:15.9173621Z",
+      "hresult": "0x80070497"
+    },
+    {
+      "utc": "2026-09-07T05:08:21.7328712Z",
+      "hresult": "0x80070497"
+    }
+  ],
+  "files": [
+    {
+      "name": "soak-status.json",
+      "bytes": 338,
+      "sha256": "CC7810D0F1F567A8CD113B7B68BB0D31873F55E813EF9345577D4F735251DC79"
+    },
+    {
+      "name": "stdout.log",
+      "bytes": 191431,
+      "sha256": "66C02583B82A8A532A2D7DC00D12AB587FB73C35545E4CE9BFD9E3B4D5E3BAF4"
+    },
+    {
+      "name": "stderr.log",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    },
+    {
+      "name": "runtime-identity.json",
+      "bytes": 7345,
+      "sha256": "39F7CAF0EA0E4DED41EA99908D42C40135029A1B1CFF9E0877CDE62391578544"
+    }
+  ]
+}
