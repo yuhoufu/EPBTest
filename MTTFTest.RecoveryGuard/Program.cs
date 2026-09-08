@@ -116,6 +116,16 @@ namespace MTTFTest.RecoveryGuard
         private static int Execute(RecoveryControlStore store, Dictionary<string, string> options)
         {
             var settings = ReadSettings(options);
+            RecoveryCommissioningScope commissioning = null;
+            if (options.ContainsKey("commission-until-utc"))
+            {
+                var expiry = DateTime.ParseExact(Required(options, "commission-until-utc"), "O",
+                    CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+                commissioning = new RecoveryCommissioningScope(Required(options, "commission-installation"),
+                    Required(options, "commission-authorization"), long.Parse(Required(options, "commission-intent-version"),
+                        CultureInfo.InvariantCulture), DateTime.UtcNow, expiry, settings.Mode);
+                commissioning.Demand(store.Read(), DateTime.UtcNow);
+            }
             // The production service uses the installation authority. Never
             // pair an arbitrary test root with the real Supervisor transport.
             if (settings.Mode != RecoveryGuardMode.ObserveOnly && !string.Equals(store.Root.TrimEnd('\\'),
@@ -141,9 +151,17 @@ namespace MTTFTest.RecoveryGuard
                     var engine = new RecoveryExecutionEngine(store, settings, owner, actions, () => DateTime.UtcNow, probe,
                         () => File.Exists(Path.Combine(Path.GetDirectoryName(store.Root), "maintenance-inhibit.json")) ||
                             File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                                "MTTFTestRecoveryGuard", "maintenance-inhibit.json")));
+                                "MTTFTestRecoveryGuard", "maintenance-inhibit.json")), commissioning);
                     using (var cancellation = new CancellationTokenSource())
                     {
+                        if (commissioning != null)
+                        {
+                            commissioning.Demand(store.Read(), DateTime.UtcNow);
+                            cancellation.CancelAfter(commissioning.ExpiresUtc - DateTime.UtcNow);
+                            var started = new { SchemaVersion = 1, Commissioning = true,
+                                ProductionAcceptance = false, ExpiresUtc = commissioning.ExpiresUtc.ToString("O") };
+                            WriteJournal(options, started); Print(started);
+                        }
                         ConsoleCancelEventHandler cancel = (sender, args) => { args.Cancel = true; cancellation.Cancel(); };
                         Console.CancelKeyPress += cancel;
                         try
@@ -171,7 +189,8 @@ namespace MTTFTest.RecoveryGuard
             var options = new Dictionary<string, string>(StringComparer.Ordinal);
             var allowed = new HashSet<string>(new[]
             {
-                "check", "execute", "status", "stop", "register", "validate-settings", "root", "settings", "journal", "bench", "main", "authorization", "intent-version"
+                "check", "execute", "status", "stop", "register", "validate-settings", "root", "settings", "journal", "bench", "main", "authorization", "intent-version",
+                "commission-until-utc", "commission-installation", "commission-authorization", "commission-intent-version"
             }, StringComparer.Ordinal);
             var commands = 0;
             for (var i = 0; i < args.Length; i++)
@@ -192,6 +211,11 @@ namespace MTTFTest.RecoveryGuard
                 }
             }
             if (commands != 1) throw new ArgumentException("ExactlyOneCommandRequired");
+            var commissioningOptions = 0;
+            foreach (var key in options.Keys)
+                if (key.StartsWith("commission-", StringComparison.Ordinal)) commissioningOptions++;
+            if (commissioningOptions != 0 && (commissioningOptions != 4 || !options.ContainsKey("execute")))
+                throw new ArgumentException("CommissioningRequiresExecuteAndCompleteScope");
             return options;
         }
 
@@ -236,6 +260,18 @@ namespace MTTFTest.RecoveryGuard
         private static string Required(Dictionary<string, string> options, string key) =>
             options.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
                 ? value : throw new ArgumentException("MissingOption:" + key);
-        private static void Print(object value) => Console.WriteLine(new JavaScriptSerializer().Serialize(value));
+        private static void Print(object value)
+        {
+            // JSON is a machine interface. Escaping non-ASCII characters avoids
+            // Windows PowerShell/OEM code-page conversion corrupting paths.
+            var json = new JavaScriptSerializer().Serialize(value);
+            var portable = new System.Text.StringBuilder(json.Length);
+            foreach (var character in json)
+            {
+                if (character > 127) portable.Append("\\u").Append(((int)character).ToString("x4", CultureInfo.InvariantCulture));
+                else portable.Append(character);
+            }
+            Console.WriteLine(portable.ToString());
+        }
     }
 }

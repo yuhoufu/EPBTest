@@ -29,6 +29,9 @@ function Read-VerifiedPackage([string]$Root) {
         (-not $commissioning -and -not $automatic)) { throw '独立包身份或交付阶段不受支持。' }
     $required = @('MTTFTest.RecoveryGuard.exe', 'MTTFTest.RecoveryControl.dll', 'guard-settings.json', 'Install-MTTFTest-RecoveryGuard.ps1')
     if ($identity.schemaVersion -ge 2) { $required += @('MTTFTest.RecoveryGuard.pdb', 'MTTFTest.RecoveryControl.pdb', 'README.md') }
+    if ($identity.supervisedCommissioningAvailable -eq $true) {
+        $required += @('Invoke-MTTFTest-RecoveryGuardCommissioning.ps1','Verify-Release.ps1')
+    }
     if ($automatic) {
         $required += @('RecoveryGuard-Acceptance.ps1', 'acceptance-report.json', 'observe-base-identity.json')
         $report = Get-Content -LiteralPath (Join-Path $Root 'acceptance-report.json') -Raw -Encoding UTF8 | ConvertFrom-Json

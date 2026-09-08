@@ -18,6 +18,29 @@ namespace RecoveryGuardTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--commissioning-scope")
+                {
+                    Run("Commissioning is bounded and cannot inherit another authorization", CommissioningScope);
+                    Run("Commissioning expiry fences action dispatch", CommissioningExpiry);
+                    Run("Late commissioning responses cannot advance a transaction", CommissioningLateAction);
+                    Console.WriteLine("PASS " + _passed + "/" + _passed);
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--interrupted-launch")
+                {
+                    Run("Killed reservation owner cannot create a second launch", InterruptedLaunchOwner);
+                    Console.WriteLine("PASS " + _passed + "/" + _passed);
+                    return 0;
+                }
+                if (args.Length == 3 && args[0] == "--reserve-and-wait")
+                {
+                    var store = new RecoveryControlStore(args[1]);
+                    var now = new DateTime(long.Parse(args[2]), DateTimeKind.Utc);
+                    store.ReserveLaunch(store.Read().Token(), Guid.NewGuid().ToString("N"), now, now.AddMinutes(1));
+                    File.WriteAllText(Path.Combine(args[1], "reserved.ready"), "committed");
+                    Thread.Sleep(30000);
+                    return 0;
+                }
                 if (args.Length == 3 && args[0] == "--race-reserve")
                 {
                     var store = new RecoveryControlStore(args[1]);
@@ -64,6 +87,10 @@ namespace RecoveryGuardTests
                 Run("Expiry and consumption cannot both win", ReservationExpiryRace);
                 Run("Concurrent launch requests yield one reservation", ConcurrentLaunch);
                 Run("Different processes share the same launch transaction", CrossProcessLaunch);
+                Run("Killed reservation owner cannot create a second launch", InterruptedLaunchOwner);
+                Run("Commissioning is bounded and cannot inherit another authorization", CommissioningScope);
+                Run("Commissioning expiry fences action dispatch", CommissioningExpiry);
+                Run("Late commissioning responses cannot advance a transaction", CommissioningLateAction);
                 Run("Latest authority damage cannot revive a backup", CorruptAuthority);
                 Run("A commit interrupted after head write fails closed", InterruptedCommit);
                 Run("Known authority rollback is rejected", AuthorityRollback);
@@ -933,6 +960,117 @@ namespace RecoveryGuardTests
                 Throws(() => f.Store.Read(), "Invalid");
             }
         }
+        private static void CommissioningScope()
+        {
+            using (var f = new Fixture())
+            {
+                var state = f.Store.Read();
+                var scope = new RecoveryCommissioningScope(state.InstallationId, state.Intent.AuthorizationId,
+                    state.Intent.IntentVersion, f.Now, f.Now.AddMinutes(15), RecoveryGuardMode.RecoverExited);
+                scope.Demand(state, f.Now);
+                scope.Demand(state, f.Now.AddMinutes(15).AddTicks(-1));
+                Throws(() => scope.Demand(state, f.Now.AddMinutes(15)), "ExpiredOrClockReversed");
+                Throws(() => scope.Demand(state, f.Now.AddTicks(-1)), "ExpiredOrClockReversed");
+                Throws(() => new RecoveryCommissioningScope(state.InstallationId, state.Intent.AuthorizationId,
+                    state.Intent.IntentVersion, f.Now, f.Now.AddMinutes(16), RecoveryGuardMode.RecoverExited), "Invalid");
+                Throws(() => new RecoveryCommissioningScope(state.InstallationId, state.Intent.AuthorizationId,
+                    state.Intent.IntentVersion, f.Now, f.Now.AddMinutes(1), RecoveryGuardMode.RecoverStalled), "Invalid");
+                var other = Clone(state);
+                other.Intent.AuthorizationId = Guid.NewGuid().ToString("N");
+                Throws(() => scope.Demand(other, f.Now), "Revoked");
+                other = Clone(state); other.InstallationId = Guid.NewGuid().ToString("N");
+                Throws(() => scope.Demand(other, f.Now), "Revoked");
+                other = Clone(state); other.Intent.IntentVersion++;
+                Throws(() => scope.Demand(other, f.Now), "Revoked");
+                f.Stop();
+                Throws(() => scope.Demand(f.Store.Read(), f.Now), "Revoked");
+            }
+        }
+
+        private static void CommissioningExpiry()
+        {
+            using (var f = new Fixture())
+            {
+                f.Claim(); f.Advance(RecoveryStage.SafeStop);
+                f.Settings.Mode = RecoveryGuardMode.RecoverExited;
+                var state = f.Store.Read();
+                var scope = new RecoveryCommissioningScope(state.InstallationId, state.Intent.AuthorizationId,
+                    state.Intent.IntentVersion, f.Now, f.Now.AddSeconds(1), f.Settings.Mode);
+                var actions = new ExecutionActions { Handler = (context, token) => throw new Exception("expired commissioning dispatched") };
+                var engine = new RecoveryExecutionEngine(f.Store, f.Settings, f.Owner, actions, () => f.Now,
+                    process => ProcessObservation.Exited, () => { f.Now = f.Now.AddSeconds(1); return false; }, scope);
+                Throws(() => Step(engine), "ExpiredOrClockReversed");
+                Check(actions.Calls == 0, "expired scope dispatched to Supervisor");
+                Check(f.Store.Read().Transaction.Stage == RecoveryStage.SafeStop,
+                    "expiry must retain unresolved transaction rather than report successful recovery");
+            }
+        }
+
+        private static void CommissioningLateAction()
+        {
+            using (var f = new Fixture())
+            {
+                f.Claim(); f.Advance(RecoveryStage.SafeStop);
+                f.Settings.Mode = RecoveryGuardMode.RecoverExited;
+                var state = f.Store.Read();
+                var scope = new RecoveryCommissioningScope(state.InstallationId, state.Intent.AuthorizationId,
+                    state.Intent.IntentVersion, f.Now, f.Now.AddSeconds(1), f.Settings.Mode);
+                var actions = new ExecutionActions { Handler = (context, token) =>
+                {
+                    f.Now = f.Now.AddSeconds(1);
+                    return Task.FromResult(new RecoveryActionResult
+                    { Outcome = RecoveryActionOutcome.Completed, Evidence = "late fixture response" });
+                } };
+                var engine = new RecoveryExecutionEngine(f.Store, f.Settings, f.Owner, actions, () => f.Now,
+                    process => ProcessObservation.Exited, () => false, scope);
+                Throws(() => Step(engine), "ExpiredOrClockReversed");
+                Check(actions.Calls == 1 && f.Store.Read().Transaction.Stage == RecoveryStage.SafeStop,
+                    "late response advanced expired commissioning");
+            }
+        }
+
+        private static void InterruptedLaunchOwner()
+        {
+            using (var f = new Fixture())
+            {
+                f.ReadyLaunch();
+                using (var child = Process.Start(new ProcessStartInfo
+                {
+                    FileName = typeof(Program).Assembly.Location,
+                    Arguments = "--reserve-and-wait \"" + f.Root + "\" " + f.Now.Ticks,
+                    UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
+                }))
+                {
+                    try
+                    {
+                        var ready = Path.Combine(f.Root, "reserved.ready");
+                        Check(SpinWait.SpinUntil(() => File.Exists(ready) || child.HasExited, 15000) &&
+                              File.Exists(ready) && !child.HasExited, "reservation child did not commit");
+                        child.Kill();
+                        Check(child.WaitForExit(3000), "test child failed to exit");
+                        var reopened = new RecoveryControlStore(f.Root);
+                        Check(reopened.Read().Launches.Count == 1, "committed launch lost with process");
+                        Throws(() => reopened.ReserveLaunch(reopened.Read().Token(), Guid.NewGuid().ToString("N"),
+                            f.Now, f.Now.AddMinutes(1)), "InFlight");
+                        Check(reopened.Read().Launches.Count == 1, "interrupted owner caused duplicate launch");
+                        var reserved = reopened.Read().Launches.Single();
+                        f.Stop();
+                        var afterStop = new RecoveryControlStore(f.Root);
+                        Check(afterStop.Read().Intent.DesiredState == RecoveryDesiredState.Stopped,
+                            "operator stop lost after reopening authority");
+                        Throws(() => afterStop.ConsumeLaunch(reserved.Authorization, reserved.OperationId, f.Now),
+                            "Revoked");
+                        Check(afterStop.Read().Launches.All(item => item.State != "Consumed"),
+                            "late owner consumed launch after operator stop");
+                    }
+                    finally
+                    {
+                        if (!child.HasExited) { child.Kill(); child.WaitForExit(3000); }
+                    }
+                }
+            }
+        }
+
         private static void CrossProcessLaunch()
         {
             using (var f = new Fixture())

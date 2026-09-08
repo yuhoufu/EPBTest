@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Configuration = 'Debug',
     [string]$OutputRoot = ''
@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ($Configuration -notin @('Debug', 'Release')) { throw 'Configuration must be Debug or Release.' }
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) { $OutputRoot = Join-Path $repo 'artifacts' }
-$testRoot = Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ('recoveryguard-isolation-' + [Guid]::NewGuid().ToString('N'))
+$testRoot = Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ('recoveryguard-isolation-中文 路径-' + [Guid]::NewGuid().ToString('N'))
 $isolatedPackage = Join-Path $testRoot 'IndependentGuard'
 $isolatedAuthority = Join-Path $testRoot 'ControlState'
 $missingBusiness = Join-Path $testRoot 'MissingBusiness\MTTFTest.exe'
@@ -62,6 +62,7 @@ $check = Invoke-IsolatedGuard 'check-with-no-business-dlls' @('--check', '--root
 if ($check.Decision.Code -ne 'Unarmed') { throw 'Missing business must not invent an armed trial.' }
 $status = Invoke-IsolatedGuard 'status-with-business-absent' @('--status', '--root', $isolatedAuthority) 0
 if ($status.InstallationId -ne $registered.InstallationId) { throw 'Registration changed while checking.' }
+if ($status.MainExecutablePath -cne $missingBusiness) { throw 'CLI corrupted the Unicode business path.' }
 $retry = Invoke-IsolatedGuard 'register-idempotent' @('--register', '--root', $isolatedAuthority, '--bench', 'isolated-test', '--main', $missingBusiness) 0
 if ($retry.Revision -ne $status.Revision) { throw 'Installation retry rewrote existing authority.' }
 $journal = Join-Path $testRoot 'journal'
@@ -82,6 +83,21 @@ $invalidSettings = Join-Path $testRoot 'invalid-settings.json'
 $executionSettings = Join-Path $testRoot 'execution-settings.json'
 [IO.File]::WriteAllText($executionSettings, '{"Mode":1}', (New-Object Text.UTF8Encoding($false)))
 [void](Invoke-IsolatedGuard 'execution-test-root-cannot-contact-production' @('--execute', '--root', $isolatedAuthority, '--settings', $executionSettings) 2)
+$beforeCommissioning = (Get-FileHash (Join-Path $isolatedAuthority 'control-state.json')).Hash
+$scope = @('--commission-until-utc', [DateTime]::UtcNow.AddMinutes(1).ToString('O'),
+    '--commission-installation', $registered.InstallationId, '--commission-authorization', 'not-authorized',
+    '--commission-intent-version', '1')
+$rejected = Invoke-IsolatedGuard 'commissioning-unarmed-refused' (@('--execute', '--root', $isolatedAuthority,
+    '--settings', $executionSettings) + $scope) 2
+if ($rejected.Error -ne 'CommissioningScopeRevoked') { throw 'Unarmed commissioning rejection missing' }
+$rejected = Invoke-IsolatedGuard 'commissioning-check-refused' (@('--check', '--root', $isolatedAuthority) + $scope) 2
+if ($rejected.Error -ne 'CommissioningRequiresExecuteAndCompleteScope') { throw 'Commissioning scan must not register an executor' }
+$rejected = Invoke-IsolatedGuard 'commissioning-partial-scope-refused' @('--execute', '--root', $isolatedAuthority,
+    '--commission-authorization', 'not-authorized') 2
+if ($rejected.Error -ne 'CommissioningRequiresExecuteAndCompleteScope') { throw 'Partial commissioning scope accepted' }
+if ((Get-FileHash (Join-Path $isolatedAuthority 'control-state.json')).Hash -ne $beforeCommissioning) {
+    throw 'Rejected commissioning mutated authority'
+}
 [IO.File]::WriteAllText($invalidSettings, '{"SchemaVersion":99}', (New-Object Text.UTF8Encoding($false)))
 [void](Invoke-IsolatedGuard 'unsupported-settings-refused' @('--check', '--root', $isolatedAuthority, '--settings', $invalidSettings) 2)
 [IO.File]::WriteAllText((Join-Path $isolatedAuthority 'control-state.json'), '{broken', (New-Object Text.UTF8Encoding($false)))

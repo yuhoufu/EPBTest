@@ -13,6 +13,7 @@ function Get-GuardPackageSourceSnapshot([string]$Repository) {
     foreach ($relative in @('Build/UnattendedVersion.props', 'Tools/Install-MTTFTest-RecoveryGuard.ps1',
         'Tools/RecoveryGuard-Acceptance.ps1', 'Tools/New-MTTFTest-RecoveryGuardAutomaticPackage.ps1',
         'Tools/RecoveryGuard-Archive.ps1',
+        'Tools/Invoke-MTTFTest-RecoveryGuardCommissioning.ps1', 'Tools/Verify-Release.ps1',
         'Tools/New-MTTFTest-RecoveryGuardPackage.ps1', 'docs/RecoveryGuard_安装包使用说明.md',
         'MTTFTest.RecoveryGuard/guard-settings.example.json')) { [void]$paths.Add($relative) }
     foreach ($project in @('MTTFTest.RecoveryGuard/MTTFTest.RecoveryGuard.csproj', 'RecoveryControl/RecoveryControl.csproj')) {
@@ -94,6 +95,9 @@ if ($null -ne $sharedSource) {
 }
 Copy-Item -LiteralPath (Join-Path $repo 'MTTFTest.RecoveryGuard\guard-settings.example.json') -Destination (Join-Path $output 'guard-settings.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-MTTFTest-RecoveryGuard.ps1') -Destination $output
+foreach ($helper in @('Invoke-MTTFTest-RecoveryGuardCommissioning.ps1','Verify-Release.ps1')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $helper) -Destination $output
+}
 Copy-Item -LiteralPath (Join-Path $repo 'docs\RecoveryGuard_安装包使用说明.md') -Destination (Join-Path $output 'README.md')
 $afterSnapshot = Get-GuardPackageSourceSnapshot $repo
 if ($afterSnapshot.fingerprint -cne $sourceSnapshot.fingerprint) { throw '打包期间源码或安装输入发生变化，拒绝生成混合版本清单。' }
@@ -103,6 +107,7 @@ $files = @(Get-ChildItem -LiteralPath $output -File | Sort-Object Name | ForEach
 $identity = [ordered]@{
     schemaVersion = 2; product = 'MTTFTest.RecoveryGuard'; version = $version
     configuration = $Configuration; deliveryStage = 'ObserveOnlyCommissioning'; automaticExecutionReady = $false
+    supervisedCommissioningAvailable = $true
     gitCommit = [string](& git -C $repo rev-parse HEAD)
     gitDirty = [bool](@(& git -C $repo status --porcelain).Count)
     sourceSnapshot = $sourceSnapshot; builtFromVerifiedInputs = -not [bool]$SkipBuild

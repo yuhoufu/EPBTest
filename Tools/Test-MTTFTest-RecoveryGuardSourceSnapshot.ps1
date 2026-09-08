@@ -21,7 +21,8 @@ foreach ($file in $baseline.files) {
 $copied = Get-GuardPackageSourceSnapshot $root
 if ($copied.fingerprint -cne $baseline.fingerprint) { throw 'Snapshot depends on checkout location' }
 $passed = 1
-foreach ($relative in @('MTTFTest.RecoveryGuard/Program.cs', 'docs/RecoveryGuard_安装包使用说明.md')) {
+foreach ($relative in @('MTTFTest.RecoveryGuard/Program.cs', 'docs/RecoveryGuard_安装包使用说明.md',
+    'Tools/Invoke-MTTFTest-RecoveryGuardCommissioning.ps1', 'Tools/Verify-Release.ps1')) {
     $target = Join-Path $root $relative
     [IO.File]::AppendAllText($target, "`n// snapshot fixture change")
     if ((Get-GuardPackageSourceSnapshot $root).fingerprint -ceq $baseline.fingerprint) { throw "Missed input change $relative" }

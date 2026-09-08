@@ -45,10 +45,12 @@ namespace MTTFTest.RecoveryGuard
         private readonly Func<DateTime> _utcNow;
         private readonly Func<RecoveryProcessIdentity, ProcessObservation> _probe;
         private readonly Func<bool> _maintenance;
+        private readonly RecoveryCommissioningScope _commissioning;
 
         internal RecoveryExecutionEngine(RecoveryControlStore store, RecoveryGuardSettings settings,
             RecoveryProcessIdentity owner, IRecoveryExecutionActions actions, Func<DateTime> utcNow,
-            Func<RecoveryProcessIdentity, ProcessObservation> probe, Func<bool> maintenance)
+            Func<RecoveryProcessIdentity, ProcessObservation> probe, Func<bool> maintenance,
+            RecoveryCommissioningScope commissioning = null)
         {
             settings.Validate();
             if (owner?.IsValid() != true || actions == null || actions.MaximumCallSeconds < 1 ||
@@ -62,6 +64,7 @@ namespace MTTFTest.RecoveryGuard
             _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
             _probe = probe ?? throw new ArgumentNullException(nameof(probe));
             _maintenance = maintenance ?? throw new ArgumentNullException(nameof(maintenance));
+            _commissioning = commissioning;
         }
 
         internal async Task RunAsync(Action<RecoveryExecutionStep> report, CancellationToken cancellationToken)
@@ -89,11 +92,13 @@ namespace MTTFTest.RecoveryGuard
             cancellationToken.ThrowIfCancellationRequested();
             var before = _store.Read();
             var now = _utcNow();
+            _commissioning?.Demand(before, now);
             var maintenance = _maintenance();
             var process = before.Intent == null ? ProcessObservation.Unknown : _probe(before.Intent.MainProcess);
             var snapshot = _store.ReadSnapshot();
             var decision = _store.Observe(snapshot, process, _owner.BootId, now, _settings, maintenance);
             var state = _store.Read();
+            _commissioning?.Demand(state, _utcNow());
             // A released historical transaction must not prevent a later
             // failure of this run (or a newly authorized run) from being claimed.
             var transaction = state.Transaction?.OwnershipReleased == true ? null : state.Transaction;
@@ -201,6 +206,9 @@ namespace MTTFTest.RecoveryGuard
                 return Result("RecoverExitedWaitingForMainExit");
 
             RecoveryActionResult action;
+            // Recheck immediately before transport; a new trial must not inherit
+            // the one-time commissioning session while the worker is running.
+            _commissioning?.Demand(_store.Read(), _utcNow());
             using (var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
                 var remaining = TimeSpan.FromTicks(transaction.StageDeadlineUtcTicks - now.Ticks);
@@ -224,6 +232,7 @@ namespace MTTFTest.RecoveryGuard
             }
             if (action == null || !Enum.IsDefined(typeof(RecoveryActionOutcome), action.Outcome) || string.IsNullOrWhiteSpace(action.Evidence))
                 throw new InvalidDataException("RecoveryActionEvidenceMissing");
+            _commissioning?.Demand(_store.Read(), _utcNow());
             var currentAttempt = _store.Read().Transaction;
             if (currentAttempt?.TransactionId != transaction.TransactionId || currentAttempt.Epoch != transaction.Epoch)
                 return Result("RecoveryAttemptChanged;ReconcileCurrentEpoch", false, true);

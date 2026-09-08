@@ -25,6 +25,7 @@
     <Reference Include="System.Xml" />
     <Compile Include="Program.cs" />
     <Compile Include="RecoveryExecutionEngine.cs" />
+    <Compile Include="RecoveryCommissioningScope.cs" />
     <Compile Include="RecoveryWorkerDispatch.cs" />
     <Compile Include="RecoveryWorkerRetirement.cs" />
     <Compile Include="SupervisorRecoveryActions.cs" />
