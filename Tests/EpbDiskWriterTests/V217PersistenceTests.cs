@@ -11,6 +11,7 @@ namespace EpbDiskWriterTests
     {
         private static void RunV217PersistenceTests()
         {
+            Run("V3 学习批次合并耐久事务保持各通道时间切片", LearningBatchStagesExactSlices);
             Run("I0046 多帧checkpoint按圈归并仍保留最大耐久前缀", CheckpointCoalescingPreservesPrefix);
             Run("I0046 写盘阶段诊断隔离且空批次幂等", StorageTimingCannotChangeDurability);
             Run("V217 原始日志修复被清零的环形记录且重放不重复计数", RawJournalReplaysExactPositions);
@@ -19,6 +20,34 @@ namespace EpbDiskWriterTests
             Run("V217 历史基线加耐久回执且不把圈号当次数", MechanicalBaselineSurvivesCheckpointLag);
             Run("V217 非法数据耐久隔离且健康后继继续", InvalidBatchDoesNotPoisonQueue);
             Run("V217 已耐久未应用批次停止时重放且后圈不覆盖", StagedBatchIsAppliedBeforeAbort);
+        }
+
+        private static void LearningBatchStagesExactSlices()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                EpbWriteTiming observed = null;
+                policy.WriteTimingSink = value => observed = value;
+                using var writer = new EpbDiskWriter(policy);
+                var time = DateTime.UtcNow;
+                writer.BeginCycle(4, -701, time.AddMilliseconds(1));
+                writer.BeginCycle(5, -701, time.AddMilliseconds(2));
+                var samples = new[] { time, time.AddMilliseconds(1), time.AddMilliseconds(2) };
+                writer.WriteDeviceBatch("Dev1", 1, 1, samples, new[]
+                {
+                    new EpbChannelDiskBatch(4, new[] { 1d, 2d, 3d }, new[] { 0d, 0d, 0d }),
+                    new EpbChannelDiskBatch(5, new[] { 4d, 5d, 6d }, new[] { 0d, 0d, 0d })
+                }, 2, 3);
+                Assert(observed.Succeeded && observed.RawStageMs > 0 && observed.RawCommitMs > 0,
+                    "学习批次未走设备级耐久事务");
+                Assert(writer.GetCurrentCycleSampleCount(4) == 2 && writer.GetCurrentCycleSampleCount(5) == 1,
+                    "学习开始边界的时间切片改变");
+                writer.CompleteCycle(4, -701, 2, time.AddMilliseconds(3));
+                writer.CompleteCycle(5, -701, 1, time.AddMilliseconds(3));
+                Assert(Scalar(policy, "SELECT SUM(sample_count) FROM epb_cycles WHERE cycle_number=-701") == 3,
+                    "学习样本封圈数量改变");
+            });
         }
 
         private static void CheckpointCoalescingPreservesPrefix()

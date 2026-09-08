@@ -672,6 +672,9 @@ namespace Controller
             latest.LastStage = timedOut ? StopSafetyStage.TimedOut : StopSafetyStage.Completed;
             latest.TimedOut = timedOut;
             latest.RequiresProcessRestart = timedOut || !fullyConfirmed;
+            latest.LogicalCleanupPending = latest.LogicalCleanupPending && !timedOut &&
+                latest.FullyConfirmed && !latest.DataContinuityCompromised &&
+                !latest.LogicalQuiescenceConfirmed;
             latest.Outcome = timedOut
                 ? StopSafetyOutcome.SafeButRestartRequired
                 : fullyConfirmed

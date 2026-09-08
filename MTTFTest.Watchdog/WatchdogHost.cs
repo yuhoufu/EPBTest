@@ -4790,8 +4790,11 @@ namespace MTTFTest.Watchdog
                         ? "WatchdogTakeover"
                         : _journal.RecoveryFailureCode,
                     DeviceOrChannelGroup = _journal.DeviceOrChannelGroup,
-                    RunId = _journal.RunId,
-                    RunEpoch = _journal.LastHeartbeat?.RunEpoch ?? 0,
+                    RunId = string.IsNullOrWhiteSpace(_journal.RunId)
+                        ? _journal.LastCheckpointMirror?.RunId : _journal.RunId,
+                    RunEpoch = string.IsNullOrWhiteSpace(_journal.RunId)
+                        ? _journal.LastCheckpointMirror?.RunEpoch ?? 0
+                        : _journal.LastHeartbeat?.RunEpoch ?? 0,
                     RecoveryStage = _journal.RecoveryStage,
                     RecoveryProgressToken = _journal.RecoveryProgressToken,
                     RecoveryProcessSource = _journal.RecoveryProcessSource
@@ -4806,7 +4809,10 @@ namespace MTTFTest.Watchdog
                 correlation,
                 Interlocked.Read(ref _connectionGeneration));
             if (decision.DurableDecisionRetryPending)
+            {
+                Record("RelaunchPermitAdmissionDeferred", _journal.LastReason ?? reason);
                 return 0;
+            }
             if (decision.SafeIdleRecoveryBlocked ||
                 (!decision.ProcessRelaunchAllowed &&
                  !decision.RelaunchPermitAlreadyPending))

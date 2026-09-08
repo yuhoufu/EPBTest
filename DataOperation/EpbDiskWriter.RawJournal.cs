@@ -108,12 +108,27 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
                         var channel = channels[i];
                         var state = _states[channel.EpbId];
                         if (!ShouldStageRawFrame(state, boundary, sampleCount)) continue;
-                        var records = new SampleRecord[sampleCount];
-                        for (var sample = 0; sample < sampleCount; sample++)
-                            records[sample] = new SampleRecord { TimestampBinary = times[sample].ToLocalTime().ToBinary(),
+                        var from = 0;
+                        var to = sampleCount;
+                        if (!state.SequenceBoundaryEnabled)
+                        {
+                            // Learning uses the timestamp-bounded recorder path. Stage
+                            // the same accepted slice as WriteBatch, in this device's
+                            // FULL transaction instead of one fsync per learning channel.
+                            while (from < to && times[from].ToUniversalTime() < state.CurrentCycleStartUtc) from++;
+                            if (state.CurrentCycleEndUtc.HasValue)
+                                while (to > from && times[to - 1].ToUniversalTime() > state.CurrentCycleEndUtc.Value) to--;
+                        }
+                        var accepted = to - from;
+                        if (accepted <= 0 || (_policy.MaxActiveCycleRecords > 0 &&
+                            state.CurrentSampleIndex + accepted > _policy.MaxActiveCycleRecords)) continue;
+                        var records = new SampleRecord[accepted];
+                        for (var sample = 0; sample < accepted; sample++)
+                            records[sample] = new SampleRecord { TimestampBinary = times[from + sample].ToLocalTime().ToBinary(),
                                 CycleNumber = state.CurrentCycle.Value, SampleIndex = state.CurrentSampleIndex + sample,
-                                EpbCurrent = channel.Currents[sample], GroupPressure = channel.Pressures[sample] };
-                        AppendRawJournal(channel.EpbId, state, records, sampleCount, boundary.Sequence);
+                                EpbCurrent = channel.Currents[from + sample], GroupPressure = channel.Pressures[from + sample] };
+                        AppendRawJournal(channel.EpbId, state, records, accepted,
+                            state.SequenceBoundaryEnabled ? boundary.Sequence : (long?)null);
                     }
                     var commitStarted = Stopwatch.GetTimestamp();
                     try { tx.Commit(); }
@@ -127,11 +142,12 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
     }
 
     private bool ShouldStageRawFrame(EpbState state, DeviceBatchBoundary boundary, int sampleCount) =>
-        state.CurrentCycle.HasValue && state.SequenceBoundaryEnabled && sampleCount > 0 &&
+        state.CurrentCycle.HasValue && sampleCount > 0 &&
         !state.ActiveCycleLimitLatched &&
-        (!state.CurrentCycleEndSequence.HasValue || boundary.Sequence <= state.CurrentCycleEndSequence.Value) &&
-        (state.CurrentCycleGeneration != boundary.Generation || boundary.Sequence > state.CurrentCycleLastSequence) &&
-        (_policy.MaxActiveCycleRecords <= 0 || state.CurrentSampleIndex + sampleCount <= _policy.MaxActiveCycleRecords);
+        (!state.SequenceBoundaryEnabled ||
+         ((!state.CurrentCycleEndSequence.HasValue || boundary.Sequence <= state.CurrentCycleEndSequence.Value) &&
+          (state.CurrentCycleGeneration != boundary.Generation || boundary.Sequence > state.CurrentCycleLastSequence) &&
+          (_policy.MaxActiveCycleRecords <= 0 || state.CurrentSampleIndex + sampleCount <= _policy.MaxActiveCycleRecords)));
 
     private bool ValidateOrQuarantineBatch(DeviceBatchBoundary boundary, DateTime[] times,
         EpbChannelDiskBatch channel, int count)

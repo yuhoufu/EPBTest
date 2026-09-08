@@ -13686,7 +13686,13 @@ namespace Controller
                 ? string.Empty
                 : string.Join("; ", errors.Concat(new[] { logical.ToString() }));
             result.CompletedUtc = DateTime.UtcNow;
-            lock (_stopSafetyGate) _lastStopSafetyResult = result.Clone();
+            lock (_stopSafetyGate)
+            {
+                result.TryCompleteLogicalCleanup(
+                    _lastStopSafetyResult?.SafetyTransactionId ?? Guid.Empty,
+                    Interlocked.Read(ref _stopSafetyGeneration), RequiresProcessRestart);
+                _lastStopSafetyResult = result.Clone();
+            }
             if (result.LogicalQuiescenceConfirmed)
                 _log.Info("重新开始逻辑清场不变量全部通过：" + logical, "EPB");
             else

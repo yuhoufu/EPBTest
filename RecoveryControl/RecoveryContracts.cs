@@ -50,6 +50,10 @@ namespace MTTFTest.RecoveryControl
         public string Reason { get; set; }
         public RecoveryProcessIdentity MainProcess { get; set; }
         public string WatchdogSessionId { get; set; }
+        // Issued only while the exact original process is alive. This supports
+        // the existing Watchdog's first-learning restart, not Guard takeover.
+        public string LegacyStartupAdmissionSessionId { get; set; }
+        public string LegacyStartupAdmissionBootId { get; set; }
     }
 
     public sealed class RecoveryChannelProgress

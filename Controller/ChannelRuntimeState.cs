@@ -1325,6 +1325,9 @@ namespace Controller
         public StopSafetyStage LastStage { get; set; } = StopSafetyStage.None;
         public bool TimedOut { get; set; }
         public bool RequiresProcessRestart { get; set; }
+        // A completed physical stop may precede the cancelled startup task's
+        // logical tail. Only that same transaction may resolve this provisional result.
+        public bool LogicalCleanupPending { get; set; }
         public bool PhysicalOffSubmitted { get; set; }
         public bool PowerDisableStarted { get; set; }
         public string StageError { get; set; } = string.Empty;
@@ -1372,6 +1375,19 @@ namespace Controller
                                            FullyConfirmed && LogicalQuiescenceConfirmed &&
                                            !DataContinuityCompromised;
 
+        internal bool TryCompleteLogicalCleanup(Guid transactionId, long generation, bool hardRestartRequired)
+        {
+            if (!LogicalCleanupPending || !LogicalQuiescenceConfirmed || !FullyConfirmed ||
+                DataContinuityCompromised || TimedOut || hardRestartRequired ||
+                SafetyTransactionId == Guid.Empty || SafetyTransactionId != transactionId ||
+                SafetyBoundaryGeneration != generation || LastStage != StopSafetyStage.Completed)
+                return false;
+            LogicalCleanupPending = false;
+            RequiresProcessRestart = false;
+            Outcome = StopSafetyOutcome.CompletedSafe;
+            return true;
+        }
+
         public StopSafetyResult Clone(bool reused = false)
         {
             return new StopSafetyResult
@@ -1380,6 +1396,7 @@ namespace Controller
                 LastStage = LastStage,
                 TimedOut = TimedOut,
                 RequiresProcessRestart = RequiresProcessRestart,
+                LogicalCleanupPending = LogicalCleanupPending,
                 PhysicalOffSubmitted = PhysicalOffSubmitted,
                 PowerDisableStarted = PowerDisableStarted,
                 StageError = StageError,

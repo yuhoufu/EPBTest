@@ -54,9 +54,39 @@ namespace AdaptiveControlTests
             return passed;
         }
 
+        private static void LogicalCleanupConvergesOnlyForCurrentSafeTransaction()
+        {
+            var id = Guid.NewGuid();
+            var pending = new StopSafetyResult
+            {
+                SafetyTransactionId = id, SafetyBoundaryGeneration = 7,
+                LastStage = StopSafetyStage.Completed,
+                Outcome = StopSafetyOutcome.SafeButRestartRequired,
+                RequiresProcessRestart = true, LogicalCleanupPending = true,
+                MotorOffCommandSucceeded = true, PowerOffConfirmed = true,
+                PressureSafeConfirmed = true, PersistenceBoundaryConfirmed = true
+            };
+            Assert(!pending.TryCompleteLogicalCleanup(id, 7, false), "在途逻辑尾声不能续测");
+            pending.LogicalQuiescenceConfirmed = true;
+            Assert(!pending.TryCompleteLogicalCleanup(Guid.NewGuid(), 7, false), "旧事务不能清除");
+            Assert(!pending.TryCompleteLogicalCleanup(id, 8, false), "旧代次不能清除");
+            Assert(!pending.TryCompleteLogicalCleanup(id, 7, true), "硬重启锁存不能清除");
+            var timeout = pending.Clone(); timeout.TimedOut = true;
+            Assert(!timeout.TryCompleteLogicalCleanup(id, 7, false), "超时不能清除");
+            var gap = pending.Clone(); gap.DataContinuityCompromised = true;
+            Assert(!gap.TryCompleteLogicalCleanup(id, 7, false), "数据缺口不能清除");
+            var pressure = pending.Clone(); pressure.PressureSafeConfirmed = false;
+            Assert(!pressure.TryCompleteLogicalCleanup(id, 7, false), "压力未确认不能清除");
+            Assert(pending.TryCompleteLogicalCleanup(id, 7, false) && pending.CanRestartInProcess,
+                "同事务逻辑尾声已完成却仍拒绝恢复");
+            Assert(!pending.TryCompleteLogicalCleanup(id, 7, false), "收敛只能执行一次");
+        }
+
         internal static int RunUnitTests()
         {
             var passed = 0;
+            Run("同事务逻辑尾声收敛且硬重启与过期身份禁止清除",
+                LogicalCleanupConvergesOnlyForCurrentSafeTransaction, ref passed);
             Run("EpbManager生产port发布物理边沿",
                 EpbManagerProductionPortPublishesEdges, ref passed);
             Run("Stop runner stages are strictly ordered and stage deadlines are independent",

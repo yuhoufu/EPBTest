@@ -47,6 +47,7 @@ namespace RecoveryGuardTests
                 Run("In-process continuation keeps authorization and progress baseline", InProcessContinuation);
                 Run("Old watchdog sessions cannot obtain a newer run authorization", WatchdogSessionBinding);
                 Run("Legacy permit admission rejects Guard ownership and stale identity", LegacyPermitAdmission);
+                Run("First learning legacy permit requires exact live current-boot process", LegacyStartupPermitAdmission);
                 Run("Legacy permit mutation excludes Claim but does not delay operator stop", LegacyPermitClaimRace);
                 Run("A superseded watchdog cannot borrow the Guard launch epoch", GuardExcludesOldWatchdog);
                 Run("Late launch consumption rechecks takeover phase, deadline and lease", LaunchConsumptionPhaseFence);
@@ -731,6 +732,51 @@ namespace RecoveryGuardTests
                 Throws(() => f.Store.CaptureLaunchFence(false, null, f.Now), "TakeoverInProgress");
                 f.Stop();
                 Throws(() => f.Store.CaptureLaunchFence(false, null, f.Now), "TakeoverInProgress");
+            }
+        }
+
+        private static void LegacyStartupPermitAdmission()
+        {
+            using (var f = new Fixture(false))
+            {
+                var now = DateTime.UtcNow;
+                var process = RecoveryProcessProbe.Current();
+                var run = Guid.NewGuid().ToString("N");
+                var session = Guid.NewGuid().ToString("N");
+                // Isolated store: no production registration or process manipulation.
+                f.Store = new RecoveryControlStore(Path.Combine(f.Root, "startup"));
+                f.Store.Register("startup-test", process.ExecutablePath);
+                var token = f.Store.BeginManualRun(run, run, "config-hash", process, now);
+                f.Store.BindWatchdogSession(token, run, process, session, now);
+                var calls = 0;
+                Func<int> mutation = () => ++calls;
+                Check(f.Store.Read().Observation?.Established != true, "Guard has not established observation");
+                Check(f.Store.RunLegacyRecoveryAuthorityMutation(session, run, now, mutation) == 1,
+                    "first learning failure cannot reach existing Watchdog");
+                Check(f.Store.Read().Observation?.Established != true, "legacy permit must not establish Guard trust");
+                // Reopen the durable store and exercise the same Supervisor/Agent
+                // reservation, consumption and main-admission path after approval.
+                f.Store = new RecoveryControlStore(Path.Combine(f.Root, "startup"));
+                var fence = f.Store.CaptureLaunchFence(true, session, now);
+                var operation = Guid.NewGuid().ToString("N");
+                f.Store.ReserveLaunch(token, operation, now, now.AddMinutes(1));
+                f.Store.ConsumeLaunch(token, operation, now);
+                f.Store.RecordLaunchResult(operation, process, false);
+                f.Store.AssertStartedLaunch(fence, operation, process, now);
+                f.Store.BindRecoveredRun(token, operation, run, process, now);
+                Check(f.Store.IsRecoveredRunReadyForAdmission(token, operation, process, now),
+                    "approved first-learning restart cannot reach main admission");
+                Throws(() => f.Store.RunLegacyRecoveryAuthorityMutation(session, run, now.AddMinutes(60), mutation), "Expired");
+                Throws(() => f.Store.RunLegacyRecoveryAuthorityMutation(session, Guid.NewGuid().ToString("N"), now, mutation), "Superseded");
+                f.Store.SetOperatorIntent(token.AuthorizationId, token.IntentVersion, RecoveryDesiredState.Stopped, "stop");
+                Throws(() => f.Store.RunLegacyRecoveryAuthorityMutation(session, run, now, mutation), "Revoked");
+                Check(calls == 1, "rejected requests entered authority mutation");
+                process.StartUtcTicks--;
+                var nextRun = Guid.NewGuid().ToString("N");
+                var next = f.Store.BeginManualRun(nextRun, nextRun, "config-hash", process, now);
+                f.Store.BindWatchdogSession(next, nextRun, process, session, now);
+                Throws(() => f.Store.RunLegacyRecoveryAuthorityMutation(session, nextRun, now, mutation), "Unproven");
+                Check(calls == 1, "stale PID identity obtained a new startup admission");
             }
         }
 

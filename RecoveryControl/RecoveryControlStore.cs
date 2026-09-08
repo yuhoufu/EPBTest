@@ -187,7 +187,7 @@ namespace MTTFTest.RecoveryControl
                 if (!Guid.TryParseExact(sessionId, "N", out var session) || session == Guid.Empty ||
                     state.Intent?.WatchdogSessionId != session.ToString("N"))
                     throw new InvalidOperationException("RecoveryWatchdogSessionSuperseded");
-                AssertAllowed(state, state.Token(), nowUtc);
+                AssertExistingWatchdogLaunchAllowed(state, state.Token(), nowUtc);
                 return state.Token();
             });
         }
@@ -205,12 +205,30 @@ namespace MTTFTest.RecoveryControl
                 Locked(() =>
                 {
                     var state = ReadUnsafe();
-                    AssertAllowed(state, state.Token(), nowUtc);
+                    AssertIntent(state, state.Token(), nowUtc);
                     if (string.IsNullOrEmpty(sessionId) || state.Intent.WatchdogSessionId != sessionId ||
                         !SameRolloverRun(state.Intent.RunId, runId))
                         throw new InvalidOperationException("RecoveryLegacyAuthoritySessionOrRunSuperseded");
                     if (state.Transaction != null && !state.Transaction.OwnershipReleased)
                         throw new InvalidOperationException("RecoveryLegacyAuthoritySupersededByGuard");
+                    if (state.Observation?.Established != true &&
+                        string.IsNullOrEmpty(state.Intent.LegacyStartupAdmissionSessionId))
+                    {
+                        // The existing Watchdog must be able to recover a first learning
+                        // failure before Guard has observed two progress snapshots. This
+                        // exception is limited to the exact live process from this boot;
+                        // it cannot authorize Guard takeover or recovery after power loss.
+                        var age = nowUtc.Ticks - state.Intent.IssuedUtcTicks;
+                        if (state.Observation?.Expired == true || age < 0 ||
+                            age >= TimeSpan.FromMinutes(60).Ticks ||
+                            RecoveryProcessProbe.Observe(state.Intent.MainProcess,
+                                RecoveryProcessProbe.ReadBootId()) != ProcessObservation.ExactAlive)
+                            throw new InvalidOperationException("RecoveryLegacyStartupProcessUnprovenOrExpired");
+                        state.Intent.LegacyStartupAdmissionSessionId = sessionId;
+                        state.Intent.LegacyStartupAdmissionBootId = state.Intent.MainProcess.BootId;
+                        WriteStateUnsafe(state);
+                    }
+                    AssertExistingWatchdogLaunchAllowed(state, state.Token(), nowUtc);
                     return true;
                 });
                 return action();
@@ -945,7 +963,7 @@ namespace MTTFTest.RecoveryControl
                 state.InstallationId != fence.Authorization.InstallationId ||
                 state.LastTakeoverEpoch != fence.Authorization.TakeoverEpoch)
                 throw new InvalidOperationException("RecoveryLaunchFenceStale");
-            if (fence.IsRecovery) AssertAllowed(state, fence.Authorization, nowUtc);
+            if (fence.IsRecovery) AssertExistingWatchdogLaunchAllowed(state, fence.Authorization, nowUtc);
             else if (state.Transaction != null && !state.Transaction.OwnershipReleased)
                 throw new InvalidOperationException("RecoveryManualLaunchTakeoverInProgress");
         }
@@ -994,7 +1012,7 @@ namespace MTTFTest.RecoveryControl
                 throw new ArgumentException("RecoveryLaunchReservationInvalid");
             return Mutate(state =>
             {
-                AssertAllowed(state, token, nowUtc);
+                AssertExistingWatchdogLaunchAllowed(state, token, nowUtc);
                 if (transactionId != null)
                 {
                     AssertOwner(state, transactionId, epoch, owner, nowUtc);
@@ -1073,7 +1091,7 @@ namespace MTTFTest.RecoveryControl
         {
             Mutate(state =>
             {
-                AssertAllowed(state, token, nowUtc);
+                AssertExistingWatchdogLaunchAllowed(state, token, nowUtc);
                 AssertLaunchStage(state, nowUtc);
                 var reservation = state.Launches.SingleOrDefault(l => l.OperationId == operationId);
                 if (reservation == null || !TokensEqual(reservation.Authorization, token) || reservation.State != "Reserved" ||
@@ -1160,7 +1178,7 @@ namespace MTTFTest.RecoveryControl
             if (!Guid.TryParse(runId, out _)) throw new ArgumentException("RecoveryRunIdInvalid");
             Mutate(state =>
             {
-                AssertAllowed(state, token, nowUtc);
+                AssertExistingWatchdogLaunchAllowed(state, token, nowUtc);
                 var reservation = state.Launches.SingleOrDefault(l => l.OperationId == operationId);
                 if (reservation?.State != "Started" || !TokensEqual(reservation.Authorization, token) ||
                     process?.Matches(reservation.Process) != true)
@@ -1202,7 +1220,7 @@ namespace MTTFTest.RecoveryControl
             return Locked(() =>
             {
                 var state = ReadUnsafe();
-                AssertAllowed(state, token, nowUtc);
+                AssertExistingWatchdogLaunchAllowed(state, token, nowUtc);
                 var launch = state.Launches.SingleOrDefault(l => l.OperationId == operationId);
                 if (main?.Matches(state.Intent.MainProcess) != true || launch?.State != "Started" ||
                     !TokensEqual(launch.Authorization, token) || launch.Process?.Matches(main) != true)
@@ -1242,7 +1260,7 @@ namespace MTTFTest.RecoveryControl
 
         public void AssertLaunchAllowed(RecoveryAuthorizationToken token, DateTime nowUtc)
         {
-            Locked(() => { AssertAllowed(ReadUnsafe(), token, nowUtc); return true; });
+            Locked(() => { AssertExistingWatchdogLaunchAllowed(ReadUnsafe(), token, nowUtc); return true; });
         }
 
         private static void AssertLaunchStage(RecoveryControlState state, DateTime nowUtc)
@@ -1254,6 +1272,25 @@ namespace MTTFTest.RecoveryControl
             if (transaction.WorkerRetirementRequestedUtcTicks > 0 ||
                 nowUtc.Ticks >= transaction.StageDeadlineUtcTicks || nowUtc.Ticks >= transaction.LeaseUntilUtcTicks)
                 throw new InvalidOperationException("RecoveryLaunchStageOrLeaseExpired");
+        }
+
+        private static void AssertExistingWatchdogLaunchAllowed(RecoveryControlState state,
+            RecoveryAuthorizationToken token, DateTime nowUtc)
+        {
+            AssertIntent(state, token, nowUtc);
+            if (state.Observation?.Established == true ||
+                (state.Transaction != null && !state.Transaction.OwnershipReleased))
+            {
+                AssertAllowed(state, token, nowUtc);
+                return;
+            }
+            var age = nowUtc.Ticks - state.Intent.IssuedUtcTicks;
+            if (state.Observation?.Expired == true || age < 0 || age >= TimeSpan.FromMinutes(60).Ticks ||
+                string.IsNullOrEmpty(state.Intent.LegacyStartupAdmissionSessionId) ||
+                state.Intent.LegacyStartupAdmissionSessionId != state.Intent.WatchdogSessionId ||
+                state.Intent.LegacyStartupAdmissionBootId != state.Intent.MainProcess?.BootId ||
+                state.Intent.LegacyStartupAdmissionBootId != RecoveryProcessProbe.ReadBootId())
+                throw new InvalidOperationException("RecoveryLegacyStartupAdmissionMissingOrExpired");
         }
 
         private static void AssertAllowed(RecoveryControlState state, RecoveryAuthorizationToken token, DateTime nowUtc)
