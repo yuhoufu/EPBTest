@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$MainDirectory,
     [Parameter(Mandatory=$true)][string]$GuardDirectory,
-    [Parameter(Mandatory=$true)][string]$OutputRoot)
+    [Parameter(Mandatory=$true)][string]$OutputRoot,
+    [ValidateSet('ObserveOnly','RecoverExited')][string]$RecoveryMode='ObserveOnly')
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
 if(@(git -C $repo status --porcelain).Count -ne 0 -or $LASTEXITCODE -ne 0){throw '发布工具源码必须干净。'}
@@ -12,9 +13,14 @@ $guard=[IO.Path]::GetFullPath($GuardDirectory)
 & (Join-Path $PSScriptRoot 'Verify-Release.ps1') -ReleaseDirectory $main | Out-Null
 $id=Get-Content (Join-Path $main 'build-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $gid=Get-Content (Join-Path $guard 'guard-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-if($id.gitCommit -ne $gid.gitCommit -or $gid.gitDirty -ne $false -or $gid.automaticExecutionReady -ne $false -or $gid.deliveryStage -ne 'ObserveOnlyCommissioning'){throw '必须使用同一干净提交的正式Main与观察Guard。'}
+if($id.gitCommit -ne $gid.gitCommit -or $gid.gitDirty -ne $false){throw '必须使用同一干净提交的正式Main与Guard。'}
+& (Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1') -Mode Validate -SourceDirectory $guard -RecoveryMode $RecoveryMode | Out-Null
+$automatic=$RecoveryMode -eq 'RecoverExited'
+if($automatic -and ((Get-FileHash (Join-Path $main 'build-identity.json')).Hash -ine $gid.mainIdentitySha256)){throw '自动恢复验收不匹配主程序包。'}
+if(-not $automatic -and ($gid.automaticExecutionReady -ne $false -or $gid.deliveryStage -ne 'ObserveOnlyCommissioning')){throw '观察合包需要观察Guard。'}
 [void](New-Item -ItemType Directory $OutputRoot -Force)
-$output=Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ('V'+$id.fileVersion+'_正式版_'+$commit.Substring(0,12)+'_QUICKDEPLOY_GUARD')
+$suffix=if($automatic){'_QUICKDEPLOY_GUARD_AUTO_RECOVER_EXITED'}else{'_QUICKDEPLOY_GUARD'}
+$output=Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ('V'+$id.fileVersion+'_正式版_'+$commit.Substring(0,12)+$suffix)
 if((Test-Path $output) -or (Test-Path ($output+'.7z'))){throw '输出已存在，不覆盖历史包。'}
 [void](New-Item -ItemType Directory $output)
 Copy-Item $main (Join-Path $output 'Package') -Recurse
@@ -32,7 +38,7 @@ foreach($name in $commands.Keys){
     [IO.File]::WriteAllText((Join-Path $output ($name+'.cmd')),($lines -join "`r`n")+"`r`n",[Text.Encoding]::ASCII)
 }
 $files=@(Get-ChildItem $output -Recurse -File | ForEach-Object {@{name=$_.FullName.Substring($output.Length+1).Replace('\','/');sha256=(Get-FileHash $_.FullName).Hash}})
-@{schemaVersion=1;productVersion=$id.fileVersion;gitCommit=$id.gitCommit;deploymentToolsCommit=$commit;automaticRecoveryEnabled=$false;files=$files} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $output 'bundle-identity.json') -Encoding UTF8
+@{schemaVersion=2;productVersion=$id.fileVersion;gitCommit=$id.gitCommit;deploymentToolsCommit=$commit;recoveryMode=$RecoveryMode;automaticRecoveryEnabled=$automatic;files=$files} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $output 'bundle-identity.json') -Encoding UTF8
 & (Join-Path $output 'Verify-FieldPackage.ps1')
 $sevenZip=Join-Path $env:ProgramFiles '7-Zip\7z.exe'
 if(-not(Test-Path $sevenZip)){$sevenZip=(Get-Command 7z.exe -ErrorAction Stop).Source}

@@ -19,6 +19,8 @@ try {
     }
     $stage='校验完整包'
     & (Join-Path $bundle 'Verify-FieldPackage.ps1')
+    $bundleIdentity=Get-Content (Join-Path $bundle 'bundle-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $recoveryMode=if($bundleIdentity.schemaVersion -eq 1){'ObserveOnly'}else{[string]$bundleIdentity.recoveryMode}
     if ($Action -eq 'Validate') { exit 0 }
     $logRoot=Join-Path $env:ProgramData 'MTTFTest\DeploymentLogs'
     [void](New-Item -ItemType Directory $logRoot -Force)
@@ -36,7 +38,6 @@ try {
     switch ($Action) {
         {$_ -in @('Install','Repair')} {
             # The original installers retain their maintenance, identity and safety gates.
-            Invoke-Step '安装主程序与监督组件' $installer @{Mode=$Action;SourceDirectory=$main;InstallRoot=$root}
             $stage='读取台架注册身份'
             $controlRoot=Join-Path $env:ProgramData 'MTTFTest\RecoveryControl'
             $bench=$env:COMPUTERNAME
@@ -47,9 +48,16 @@ try {
                 if ([string]::IsNullOrWhiteSpace([string]$state.BenchId)) {throw '已有恢复状态缺少台架标识，禁止重新注册覆盖。'}
                 $bench=[string]$state.BenchId
             }
-            Write-Host "Guard台架标识：$bench；模式：ObserveOnly"
-            Invoke-Step '安装独立观察Guard' (Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1') @{Mode='Install';SourceDirectory=$guard;BenchId=$bench;MainExecutable=(Join-Path $root 'Current\MTTFTest.exe');RecoveryMode='ObserveOnly'}
-            if ((Get-ScheduledTask 'MTTFTestRecoveryGuardExecution').State -ne 'Disabled') { throw 'Guard执行任务没有禁用。' }
+            if($recoveryMode -eq 'RecoverExited') {
+                $stage='核验自动恢复目标（修改主程序前）'
+                $accepted=Get-Content (Join-Path $guard 'guard-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+                if($bench -cne $accepted.acceptanceBenchId -or $env:COMPUTERNAME -ine $accepted.acceptanceMachineName){throw 'AcceptanceInstallTargetMismatch'}
+            }
+            Invoke-Step '安装主程序与监督组件' $installer @{Mode=$Action;SourceDirectory=$main;InstallRoot=$root}
+            Write-Host "Guard台架标识：$bench；模式：$recoveryMode"
+            Invoke-Step '安装独立Guard' (Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1') @{Mode='Install';SourceDirectory=$guard;BenchId=$bench;MainExecutable=(Join-Path $root 'Current\MTTFTest.exe');RecoveryMode=$recoveryMode}
+            $executionTask=Get-ScheduledTask 'MTTFTestRecoveryGuardExecution'
+            if(($executionTask.State -ne 'Disabled') -ne ($recoveryMode -eq 'RecoverExited')){throw 'Guard执行任务启用状态与安装模式不一致。'}
             Write-Host '安装完成。请使用“启动试验.cmd”；安装不会自动开始试验。'
         }
         'Launch' {

@@ -318,7 +318,9 @@ if ($Mode -ne 'Uninstall') {
         $null = Resolve-GuardRecoveryMode $identity $packageSettings $RecoveryMode
     }
     if ($Mode -eq 'Validate') {
-        [ordered]@{ validated = $true; version = $identity.version; mode = 'ObserveOnly'; mutations = $false } | ConvertTo-Json
+        $packageSettings = Get-Content -LiteralPath (Join-Path $source 'guard-settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $validatedMode = Resolve-GuardRecoveryMode $identity $packageSettings $RecoveryMode
+        [ordered]@{ validated = $true; version = $identity.version; mode = @('ObserveOnly','RecoverExited','RecoverStalled')[$validatedMode]; mutations = $false } | ConvertTo-Json
         return
     }
 }
