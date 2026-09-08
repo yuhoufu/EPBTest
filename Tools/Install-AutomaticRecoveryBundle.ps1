@@ -4,6 +4,20 @@ param([ValidateSet('Install','Repair','ValidatePackage','Validate')][string]$Mod
     [string]$AcceptanceReportPath='',
     [ValidateSet('RecoverExited','RecoverStalled')][string]$RecoveryMode='RecoverExited')
 $ErrorActionPreference='Stop'
+function Resolve-AutomaticRepairMode([string]$Action,[string]$RequestedMode,[bool]$ExplicitMode,[string]$SettingsPath) {
+    if($Action -ne 'Repair' -or $ExplicitMode -or -not (Test-Path -LiteralPath $SettingsPath)){return $RequestedMode}
+    $installed=Get-Content -LiteralPath $SettingsPath -Raw -Encoding UTF8|ConvertFrom-Json
+    switch -CaseSensitive ([string]$installed.Mode) {
+        '1' {return 'RecoverExited'}
+        'RecoverExited' {return 'RecoverExited'}
+        '2' {return 'RecoverStalled'}
+        'RecoverStalled' {return 'RecoverStalled'}
+        '0' {return $RequestedMode}
+        'ObserveOnly' {return $RequestedMode}
+        default {throw 'InstalledRecoveryModeInvalid: 无法识别已安装恢复模式，禁止修复覆盖。'}
+    }
+}
+$RecoveryMode=Resolve-AutomaticRepairMode $Mode $RecoveryMode ($PSBoundParameters.ContainsKey('RecoveryMode')) (Join-Path $env:ProgramData 'MTTFTestRecoveryGuard\guard-settings.json')
 $bundle=$PSScriptRoot
 $manifest=Get-Content (Join-Path $bundle 'automatic-bundle.json') -Raw -Encoding UTF8|ConvertFrom-Json
 if($manifest.schemaVersion -ne 1 -or $manifest.recoveryMode -cne 'RecoverExited' -or
