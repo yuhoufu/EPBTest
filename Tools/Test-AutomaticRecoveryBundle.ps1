@@ -21,6 +21,8 @@ $report.guardPackageIdentitySha256=(Get-FileHash (Join-Path $guard 'guard-identi
 $reportPath=Join-Path $fixtureRoot 'SYNTHETIC-NOT-FOR-INSTALLATION.json'
 $report|ConvertTo-Json -Depth 10|Set-Content $reportPath -Encoding UTF8
 try{& $entry -Mode Validate -AcceptanceReportPath $reportPath;throw 'ExpectedWrongHost'}catch{if($_.Exception.Message -ne 'AcceptanceInstallTargetMismatch'){throw}}
+try{& $entry -Mode Validate -RecoveryMode RecoverStalled -AcceptanceReportPath $reportPath;throw 'ExpectedUnapprovedMode'}catch{if($_.Exception.Message -notlike 'AcceptanceModeNotApproved*'){throw}}
+Write-Output 'PASS exited-only report cannot authorize stalled recovery'
 Write-Output 'PASS synthetic approved shape cannot authorize this machine'
 # Exercise only materialization + real read-only installer validation. Never run
 # the following Main installation statements. All writes are in TEMP.
@@ -37,9 +39,17 @@ try{
     $reportBytes=[IO.File]::ReadAllBytes($reportPath)
     $evidenceRoot=$fixtureRoot
     $bench='SYNTHETIC-FIXTURE'
+    $RecoveryMode='RecoverExited'
     . $code
     $accepted=Get-Content (Join-Path $stage 'guard-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
     if($accepted.deliveryStage -ne 'AutomaticRecovery' -or $accepted.acceptanceMachineName -ne 'SYNTHETIC-FIXTURE'){throw 'MaterializationInvalid'}
     Write-Output 'PASS materialized synthetic automatic package passes real Guard validation, never installed'
+    $RecoveryMode='RecoverStalled'
+    $report.approvedModes=@('RecoverExited','RecoverStalled')
+    $report.checks+=@{id='stalledRecovery';passed=$true;evidencePath='fixture.txt';evidenceSha256=$evidenceHash}
+    $reportBytes=[Text.Encoding]::UTF8.GetBytes(($report|ConvertTo-Json -Depth 10))
+    $identity=Get-Content (Join-Path $guard 'guard-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
+    . $code
+    Write-Output 'PASS stalled materialization with additional synthetic scenario passes real Guard validation, never installed'
 }finally{$env:ProgramData=$oldProgramData}
-Write-Output 'PASS 4/4; synthetic non-field validation only; no tasks, Main or hardware actions'
+Write-Output 'PASS 6/6; synthetic non-field validation only; no tasks, Main or hardware actions'

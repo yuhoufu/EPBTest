@@ -28,7 +28,7 @@ foreach($name in $commands.Keys){
 }
 $files=@(Get-ChildItem $output -File -Recurse|ForEach-Object {@{name=$_.FullName.Substring($output.Length+1).Replace('\','/');sha256=(Get-FileHash $_.FullName).Hash}})
 @{schemaVersion=1;productVersion=$id.productVersion;componentCommit=$id.gitCommit;deploymentToolsCommit=$commit;
-    recoveryMode='RecoverExited';fieldAcceptanceRequired=$true;files=$files}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $output 'automatic-bundle.json') -Encoding UTF8
+    recoveryMode='RecoverExited';supportedRecoveryModes=@('RecoverExited','RecoverStalled');fieldAcceptanceRequired=$true;files=$files}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $output 'automatic-bundle.json') -Encoding UTF8
 & (Join-Path $output 'Install-AutomaticRecoveryBundle.ps1') -Mode ValidatePackage
 $seven=Join-Path $env:ProgramFiles '7-Zip\7z.exe'
 Push-Location (Split-Path $output -Parent)
@@ -40,4 +40,4 @@ try{
 }finally{Pop-Location}
 $hash=(Get-FileHash ($output+'.7z')).Hash
 $hash|Set-Content ($output+'.7z.sha256') -Encoding ASCII
-@{archive=($output+'.7z');sha256=$hash;recoveryMode='RecoverExited';fieldAcceptanceRequired=$true}|ConvertTo-Json
+@{archive=($output+'.7z');sha256=$hash;recoveryMode='RecoverExited';supportedRecoveryModes=@('RecoverExited','RecoverStalled');fieldAcceptanceRequired=$true}|ConvertTo-Json
