@@ -155,6 +155,15 @@ function Install-CurrentSlot([string]$Source, [string]$Root) {
     }
 }
 
+function Get-DeploymentFileSha256([string]$Path) {
+    # 使用只读流，避免 Windows PowerShell 5.1 Get-FileHash 的内部
+    # ProviderPath 查询受脚本 -WhatIf 影响而不返回摘要。
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
+    finally { $algorithm.Dispose(); $stream.Dispose() }
+}
+
 function Get-VerifiedDeploymentIdentity([string]$Directory) {
     Assert-RequiredProgramFiles $Directory
     $directoryFull = Resolve-SafeDirectory $Directory 'PackageDirectory'
@@ -205,7 +214,7 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
         if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
             -not (Test-Path -LiteralPath $path -PathType Leaf) -or
             [string]$file.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or
-            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne [string]$file.sha256) {
+            (Get-DeploymentFileSha256 $path) -ne [string]$file.sha256) {
             throw "安装包文件缺失或哈希不一致：$path"
         }
         $paths.Add($relative.Replace('\','/'), $path)
@@ -224,7 +233,7 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
     return [pscustomobject]@{
         GitCommit = [string]$identity.gitCommit
         PackageContentSha256 = [string]$identity.packageContentSha256
-        IdentitySha256 = (Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash
+        IdentitySha256 = Get-DeploymentFileSha256 $identityPath
         DeploymentApproved = [bool]$identity.deploymentApproved
         RecoveryArchitectureGeneration = [string]$identity.recoveryArchitectureGeneration
         WatchdogSchema = [int]$identity.watchdogSchema

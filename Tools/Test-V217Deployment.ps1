@@ -93,6 +93,12 @@ try {
     Check (-not (Test-CurrentSlotReplacementRequired $source $root)) '中断于Current移走后可恢复并重新安装'
     $identityPath = Join-Path $source 'build-identity.json'
     $valid = [IO.File]::ReadAllText($identityPath)
+    & {
+        $WhatIfPreference = $true
+        $verified = Get-VerifiedDeploymentIdentity $source
+        Check ($null -ne $verified) 'WhatIf预演仍真实校验包身份'
+        Check ($WhatIfPreference -eq $true) '只读校验不修改调用者WhatIf偏好'
+    }
     $identity = $valid | ConvertFrom-Json
     $identity.sessionAgentSchema = 7
     $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $identityPath -Encoding UTF8
