@@ -20,6 +20,7 @@ if((Test-Path $output) -or (Test-Path ($output+'.7z'))){throw '输出已存在�
 Copy-Item $main (Join-Path $output 'Package') -Recurse
 Copy-Item $guard (Join-Path $output 'Guard') -Recurse
 foreach($name in @('FieldPackage-Launcher.ps1','Verify-FieldPackage.ps1')){Copy-Item (Join-Path $PSScriptRoot $name) $output}
+Copy-Item (Join-Path $repo 'Tools\Stop-RelatedProcesses.ps1') (Join-Path $output 'Stop-RelatedProcesses.ps1')
 Copy-Item (Join-Path $repo 'docs\RecoveryGuard_一键部署包使用说明.md') (Join-Path $output '快捷部署说明.md')
 $commands=[ordered]@{'一键安装正式版'='Install';'启动试验'='Launch';'检查运行状态'='Status';'一键修复'='Repair';'恢复后台服务'='Restore';'一键故障采证'='Evidence';'一键停止全部相关进程'='Stop';'一键卸载'='Uninstall'}
 foreach($name in $commands.Keys){

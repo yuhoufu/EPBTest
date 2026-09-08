@@ -25,7 +25,7 @@ try {
     $log=Join-Path $logRoot ('QuickDeploy-'+$Action+'-'+(Get-Date -Format 'yyyyMMdd-HHmmssfff')+'.log')
     Start-Transcript -LiteralPath $log | Out-Null
     $installer=Join-Path $main 'Deployment\Install-MTTFTest-Unattended.ps1'
-    $stopper=Join-Path $main 'Deployment\Stop-RelatedProcesses.ps1'
+    $stopper=Join-Path $bundle 'Stop-RelatedProcesses.ps1'
     function Invoke-Step([string]$Name,[string]$Script,[hashtable]$Parameters) {
         $script:stage=$Name
         Write-Host "正在执行：$Name"
