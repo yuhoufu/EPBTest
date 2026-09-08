@@ -16,6 +16,8 @@ $output = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
 if (Test-Path $output) { throw 'AutomaticOutputAlreadyExists' }
 if (Test-Path ($output + '.zip')) { throw 'AutomaticArchiveAlreadyExists' }
 $base = Get-Content (Join-Path $source 'guard-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$baseIdentityBytes=[IO.File]::ReadAllBytes((Join-Path $source 'guard-identity.json'))
+$baseIdentityHash=(Get-FileHash (Join-Path $source 'guard-identity.json')).Hash
 if ($base.schemaVersion -ne 2 -or $base.deliveryStage -ne 'ObserveOnlyCommissioning' -or
     $base.configuration -ne 'Release' -or $base.builtFromVerifiedInputs -ne $true -or
     $base.gitDirty -ne $false -or $base.gitCommit.Trim() -cne $head.Trim()) { throw 'AutomaticPublishRequiresMatchingVerifiedGuard' }
@@ -32,7 +34,7 @@ $mainHash = (Get-FileHash (Join-Path $main 'build-identity.json')).Hash
 $guardHash = (Get-FileHash (Join-Path $source 'MTTFTest.RecoveryGuard.exe')).Hash
 $coreHash = (Get-FileHash (Join-Path $source 'MTTFTest.RecoveryControl.dll')).Hash
 if ((Get-FileHash (Join-Path $main 'MTTFTest.RecoveryControl.dll')).Hash -ne $coreHash) { throw 'AutomaticSharedCoreMismatch' }
-[void](Assert-GuardAcceptanceReport $report RecoverExited $mainHash $guardHash $coreHash)
+[void](Assert-GuardAcceptanceReport $report RecoverExited $mainHash $guardHash $coreHash $baseIdentityHash)
 $evidenceRoot = Split-Path $reportFile -Parent
 Assert-GuardAcceptanceEvidenceFiles $report $evidenceRoot
 $parent = Split-Path $output -Parent
@@ -42,6 +44,7 @@ $staging = Join-Path $parent ('.automatic-staging-' + [Guid]::NewGuid().ToString
 Get-ChildItem $source -File | Copy-Item -Destination $staging
 Copy-Item (Join-Path $PSScriptRoot 'RecoveryGuard-Acceptance.ps1') $staging
 [IO.File]::WriteAllBytes((Join-Path $staging 'acceptance-report.json'), $reportBytes)
+[IO.File]::WriteAllBytes((Join-Path $staging 'observe-base-identity.json'), $baseIdentityBytes)
 foreach ($relative in @($report.checks.evidencePath | Sort-Object -Unique)) {
     $target = Join-Path (Join-Path $staging 'Acceptance') $relative
     [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)

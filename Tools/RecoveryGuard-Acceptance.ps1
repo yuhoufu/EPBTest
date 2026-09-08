@@ -7,9 +7,10 @@ function Assert-GuardAcceptanceReport {
         [Parameter(Mandatory=$true)][string]$MainIdentitySha256,
         [Parameter(Mandatory=$true)][string]$GuardExecutableSha256,
         [Parameter(Mandatory=$true)][string]$RecoveryControlSha256,
+        [Parameter(Mandatory=$true)][string]$GuardPackageIdentitySha256,
         [datetime]$NowUtc = [DateTime]::UtcNow
     )
-    foreach ($hash in @($MainIdentitySha256, $GuardExecutableSha256, $RecoveryControlSha256)) {
+    foreach ($hash in @($MainIdentitySha256, $GuardExecutableSha256, $RecoveryControlSha256, $GuardPackageIdentitySha256)) {
         if ($hash -notmatch '^[0-9a-fA-F]{64}$') { throw 'AcceptanceExpectedHashInvalid' }
     }
     if ($Report.schemaVersion -cne 1 -or $Report.kind -cne 'RecoveryGuardFieldAcceptance' -or
@@ -39,6 +40,7 @@ function Assert-GuardAcceptanceReport {
     foreach ($binding in @(
         @('mainIdentitySha256', $MainIdentitySha256),
         @('guardExecutableSha256', $GuardExecutableSha256),
+        @('guardPackageIdentitySha256', $GuardPackageIdentitySha256),
         @('recoveryControlSha256', $RecoveryControlSha256))) {
         $actual = [string]$Report.($binding[0])
         if ($actual -notmatch '^[0-9a-fA-F]{64}$' -or $actual -ine $binding[1]) { throw ('AcceptanceBindingMismatch:' + $binding[0]) }

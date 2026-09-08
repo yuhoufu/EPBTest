@@ -14,12 +14,14 @@ foreach($name in @('Read-VerifiedPackage','Assert-GuardAcceptanceTarget')) {
 $folder=Join-Path $root 'SyntheticPackage'
 [void](New-Item -ItemType Directory -Path $folder)
 Get-ChildItem -LiteralPath $PackageDirectory -File | Copy-Item -Destination $folder
+Copy-Item (Join-Path $folder 'guard-identity.json') (Join-Path $folder 'observe-base-identity.json')
 Copy-Item (Join-Path $PSScriptRoot 'RecoveryGuard-Acceptance.ps1') $folder
 [void](New-Item -ItemType Directory -Path (Join-Path $folder 'Acceptance'))
 Copy-Item (Join-Path $root 'fixture.txt') (Join-Path $folder 'Acceptance\fixture.txt')
 $report=New-Fixture
 $report.guardExecutableSha256=(Get-FileHash (Join-Path $folder 'MTTFTest.RecoveryGuard.exe')).Hash
 $report.recoveryControlSha256=(Get-FileHash (Join-Path $folder 'MTTFTest.RecoveryControl.dll')).Hash
+$report.guardPackageIdentitySha256=(Get-FileHash (Join-Path $folder 'observe-base-identity.json')).Hash
 # a*64 deliberately has no corresponding actual main package: this fixture cannot authorize a real installation.
 $report | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $folder 'acceptance-report.json') -Encoding UTF8
 $id=Get-Content (Join-Path $folder 'guard-identity.json') -Raw | ConvertFrom-Json
@@ -37,6 +39,13 @@ function Save-FixtureIdentity {
 Save-FixtureIdentity
 $verified=Read-VerifiedPackage $folder
 $checks=1
+$readmeBytes=[IO.File]::ReadAllBytes((Join-Path $folder 'README.md'))
+[IO.File]::AppendAllText((Join-Path $folder 'README.md'),'Changed package content after acceptance')
+Save-FixtureIdentity
+try { Read-VerifiedPackage $folder | Out-Null; throw 'Expected rejection missing' } catch {if($_.Exception.Message -ne 'AcceptanceObserveBaseContentMismatch'){throw}}
+$checks++
+[IO.File]::WriteAllBytes((Join-Path $folder 'README.md'),$readmeBytes)
+Save-FixtureIdentity
 $id.acceptanceBenchId='WRONG'; Save-FixtureIdentity
 try { Read-VerifiedPackage $folder | Out-Null; throw 'Expected rejection missing' } catch {if($_.Exception.Message -ne 'AcceptanceManifestScopeMismatch'){throw}}
 $checks++

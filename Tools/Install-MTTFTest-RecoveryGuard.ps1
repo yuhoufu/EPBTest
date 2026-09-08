@@ -30,7 +30,7 @@ function Read-VerifiedPackage([string]$Root) {
     $required = @('MTTFTest.RecoveryGuard.exe', 'MTTFTest.RecoveryControl.dll', 'guard-settings.json', 'Install-MTTFTest-RecoveryGuard.ps1')
     if ($identity.schemaVersion -ge 2) { $required += @('MTTFTest.RecoveryGuard.pdb', 'MTTFTest.RecoveryControl.pdb', 'README.md') }
     if ($automatic) {
-        $required += @('RecoveryGuard-Acceptance.ps1', 'acceptance-report.json')
+        $required += @('RecoveryGuard-Acceptance.ps1', 'acceptance-report.json', 'observe-base-identity.json')
         $report = Get-Content -LiteralPath (Join-Path $Root 'acceptance-report.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($relative in @($report.checks.evidencePath | Sort-Object -Unique)) {
             if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or
@@ -55,7 +55,19 @@ function Read-VerifiedPackage([string]$Root) {
         . (Join-Path $Root 'RecoveryGuard-Acceptance.ps1')
         [void](Assert-GuardAcceptanceReport $report 'RecoverExited' $identity.mainIdentitySha256 `
             (Get-FileHash (Join-Path $Root 'MTTFTest.RecoveryGuard.exe')).Hash `
-            (Get-FileHash (Join-Path $Root 'MTTFTest.RecoveryControl.dll')).Hash)
+            (Get-FileHash (Join-Path $Root 'MTTFTest.RecoveryControl.dll')).Hash `
+            (Get-FileHash (Join-Path $Root 'observe-base-identity.json')).Hash)
+        $observedBase=Get-Content (Join-Path $Root 'observe-base-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        if($observedBase.schemaVersion -ne 2 -or $observedBase.deliveryStage -ne 'ObserveOnlyCommissioning' -or
+            $observedBase.version -cne $identity.version -or
+            $observedBase.gitCommit -cne $identity.gitCommit -or $observedBase.gitDirty -ne $false -or
+            $observedBase.builtFromVerifiedInputs -ne $true -or $observedBase.configuration -ne 'Release' -or
+            @($observedBase.files).Count -ne 7){throw 'AcceptanceObserveBaseInvalid'}
+        $baseNames=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach($file in $observedBase.files){
+            if($file.name -notin $required[0..6] -or -not $baseNames.Add([string]$file.name) -or
+                (Get-FileHash -LiteralPath (Join-Path $Root $file.name)).Hash -ine $file.sha256){throw 'AcceptanceObserveBaseContentMismatch'}
+        }
         Assert-GuardAcceptanceEvidenceFiles $report (Join-Path $Root 'Acceptance')
         if (($report.approvedModes -join ',') -cne ($identity.approvedModes -join ',') -or
             $report.benchId -cne $identity.acceptanceBenchId -or $report.machineName -cne $identity.acceptanceMachineName) {
