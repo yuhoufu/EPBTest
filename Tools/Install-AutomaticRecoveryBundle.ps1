@@ -17,7 +17,8 @@ foreach($file in $manifest.files){
 $actual=@(Get-ChildItem $bundle -File -Recurse|Where-Object FullName -ne (Join-Path $bundle 'automatic-bundle.json'))
 if($actual.Count -ne $names.Count){throw 'AutomaticBundleUnexpectedFiles'}
 $base=Join-Path $bundle 'Base'
-& (Join-Path $base 'Verify-FieldPackage.ps1') | Out-Null
+& (Join-Path $base 'Verify-FieldPackage.ps1') 6>$null | Out-Null
+Write-Host '基础组件校验通过；本安装入口使用 RecoverExited 自动恢复模式。'
 $main=Join-Path $base 'Package'; $guard=Join-Path $base 'Guard'
 $identity=Get-Content (Join-Path $guard 'guard-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
 $mainId=Get-Content (Join-Path $main 'build-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json

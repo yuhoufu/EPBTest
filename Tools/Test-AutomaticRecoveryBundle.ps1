@@ -28,7 +28,8 @@ $text=Get-Content $entry -Raw -Encoding UTF8
 $start=$text.IndexOf('$stage=Join-Path')
 $end=$text.IndexOf('$installRoot=Join-Path',$start)
 if($start -lt 0 -or $end -le $start){throw 'MaterializationBoundariesMissing'}
-$code=[scriptblock]::Create($text.Substring($start,$end-$start))
+$materialization=$text.Substring($start,$end-$start).Replace('$PSCommandPath',("'"+$entry.Replace("'","''")+"'"))
+$code=[scriptblock]::Create($materialization)
 $oldProgramData=$env:ProgramData
 try{
     $env:ProgramData=Join-Path $fixtureRoot 'ProgramData'
