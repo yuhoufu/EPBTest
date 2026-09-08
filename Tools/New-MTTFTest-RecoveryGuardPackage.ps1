@@ -10,6 +10,8 @@ $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 function Get-GuardPackageSourceSnapshot([string]$Repository) {
     $paths = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
     foreach ($relative in @('Build/UnattendedVersion.props', 'Tools/Install-MTTFTest-RecoveryGuard.ps1',
+        'Tools/RecoveryGuard-Acceptance.ps1', 'Tools/New-MTTFTest-RecoveryGuardAutomaticPackage.ps1',
+        'Tools/RecoveryGuard-Archive.ps1',
         'Tools/New-MTTFTest-RecoveryGuardPackage.ps1', 'docs/RecoveryGuard_安装包使用说明.md',
         'MTTFTest.RecoveryGuard/guard-settings.example.json')) { [void]$paths.Add($relative) }
     foreach ($project in @('MTTFTest.RecoveryGuard/MTTFTest.RecoveryGuard.csproj', 'RecoveryControl/RecoveryControl.csproj')) {

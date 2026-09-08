@@ -91,6 +91,7 @@ namespace RecoveryGuardTests
                 Run("Execution engine rejects unrecorded process creation", ExecutionRejectsFalseLaunch);
                 Run("Execution engine respects a stop during an action", ExecutionStopDuringAction);
                 Run("Execution engine keeps supervised cooldown beyond sixty minutes", ExecutionContinuousCooldown);
+                Run("Three hundred failures and fresh heartbeat files preserve business progress origin", RepeatedFailuresPreserveBusinessOrigin);
                 Run("Execution engine bounds a pending action and preserves uncertain state", ExecutionActionTimeout);
                 Run("ObserveOnly execution engine never dispatches actions", ExecutionObserveOnly);
                 Run("Scanner requests only eligible workers and reports lease loss without starting duplicates", WorkerDispatchPolicy);
@@ -2045,6 +2046,55 @@ namespace RecoveryGuardTests
                 Check(!state.Observation.Expired && state.Intent.DesiredState == RecoveryDesiredState.Run && actions.Calls > 1,
                     "continuous supervision preserves retries beyond sixty minutes");
                 Check(state.Observation.LastVerifiedBusinessCommitUtcTicks == originalBusiness, "retry and renewal must not fabricate business progress");
+            }
+        }
+
+        private static void RepeatedFailuresPreserveBusinessOrigin()
+        {
+            using (var f = new Fixture())
+            {
+                f.Claim(); f.Advance(RecoveryStage.SafeStop);
+                var originalCommit = f.Store.Read().Observation.LastVerifiedBusinessCommitUtcTicks;
+                var initialSequence = f.Snapshot.Sequence;
+                var originalClocks = f.Store.Read().Observation.ChannelClocks.ToDictionary(c => c.Channel, c => Clone(c));
+                var actions = new ExecutionActions { Handler = (state, token) => Task.FromResult(new RecoveryActionResult
+                    { Outcome = RecoveryActionOutcome.RetryableFailure, Evidence = "same injected failure" }) };
+                var steps = 0;
+                var maximumSteps = 300 * ((f.Settings.CooldownSeconds + 59) / 60 + 5);
+                var reportedCalls = 0;
+                while (actions.Calls < 300 && steps++ < maximumSteps)
+                {
+                    f.Tick(60, false);
+                    // Fresh publication and a new reader/executor must not invent a business commit.
+                    f.Store = new RecoveryControlStore(f.Root);
+                    f.Observe(ProcessObservation.Exited);
+                    Step(Engine(f, actions));
+                    var state = f.Store.Read();
+                    Check(state.Observation.LastVerifiedBusinessCommitUtcTicks == originalCommit,
+                        "repeated failure or fresh heartbeat reset the business progress origin");
+                    Check(state.Observation.ChannelClocks.Count == originalClocks.Count &&
+                        state.Observation.ChannelClocks.All(c => originalClocks.ContainsKey(c.Channel) &&
+                            c.SampleProgressUtcTicks == originalClocks[c.Channel].SampleProgressUtcTicks &&
+                            c.ControlProgressUtcTicks == originalClocks[c.Channel].ControlProgressUtcTicks &&
+                            c.PersistedProgressUtcTicks == originalClocks[c.Channel].PersistedProgressUtcTicks),
+                        "fresh publication must not reset any channel progress clock");
+                    Check(!state.Observation.Expired && state.Intent.DesiredState == RecoveryDesiredState.Run &&
+                        state.Transaction.Stage != RecoveryStage.Complete,
+                        "continuous failed recovery must remain authorized but never report success");
+                    if (actions.Calls > reportedCalls && actions.Calls % 100 == 0)
+                    {
+                        reportedCalls = actions.Calls;
+                        Console.WriteLine("PROGRESS RepeatedFailures Attempts=" + reportedCalls + " Steps=" + steps);
+                    }
+                }
+                Check(actions.Calls == 300 && f.Snapshot.Sequence > initialSequence,
+                    "bounded scenario must actually dispatch three hundred failures with fresh publications; attempts=" + actions.Calls + " steps=" + steps);
+                f.Stop();
+                var calls = actions.Calls;
+                Check(Step(Engine(f, actions)).StopWorker && actions.Calls == calls,
+                    "operator stop must end repeated recovery without one more action");
+                Console.WriteLine("METRIC RepeatedFailures Attempts=" + calls + " Steps=" + steps +
+                    " SimulatedSeconds=" + (f.Now - f.Start).TotalSeconds);
             }
         }
 

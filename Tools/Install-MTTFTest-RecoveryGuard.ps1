@@ -20,14 +20,24 @@ $registrationPath = Join-Path $guardState 'installation.json'
 
 function Read-VerifiedPackage([string]$Root) {
     $identity = Get-Content -LiteralPath (Join-Path $Root 'guard-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    $commissioning = $identity.deliveryStage -eq 'ObserveOnlyCommissioning' -and $identity.automaticExecutionReady -eq $false
-    $automatic = $identity.schemaVersion -eq 2 -and $identity.deliveryStage -eq 'AutomaticRecovery' -and
-        $identity.automaticExecutionReady -eq $true -and $identity.configuration -eq 'Release' -and $identity.builtFromVerifiedInputs -eq $true
-    if ($identity.schemaVersion -notin @(1, 2) -or $identity.product -ne 'MTTFTest.RecoveryGuard' -or
+    $commissioning = $identity.schemaVersion -in @(1,2) -and $identity.deliveryStage -eq 'ObserveOnlyCommissioning' -and $identity.automaticExecutionReady -eq $false
+    $automatic = $identity.schemaVersion -eq 3 -and $identity.deliveryStage -eq 'AutomaticRecovery' -and
+        $identity.automaticExecutionReady -eq $true -and $identity.configuration -eq 'Release' -and $identity.builtFromVerifiedInputs -eq $true -and
+        $identity.gitDirty -eq $false
+    if ($identity.schemaVersion -notin @(1, 2, 3) -or $identity.product -ne 'MTTFTest.RecoveryGuard' -or
         $identity.version -notmatch '^\d+\.\d+\.\d+\.\d+$' -or
         (-not $commissioning -and -not $automatic)) { throw '独立包身份或交付阶段不受支持。' }
     $required = @('MTTFTest.RecoveryGuard.exe', 'MTTFTest.RecoveryControl.dll', 'guard-settings.json', 'Install-MTTFTest-RecoveryGuard.ps1')
-    if ($identity.schemaVersion -eq 2) { $required += @('MTTFTest.RecoveryGuard.pdb', 'MTTFTest.RecoveryControl.pdb', 'README.md') }
+    if ($identity.schemaVersion -ge 2) { $required += @('MTTFTest.RecoveryGuard.pdb', 'MTTFTest.RecoveryControl.pdb', 'README.md') }
+    if ($automatic) {
+        $required += @('RecoveryGuard-Acceptance.ps1', 'acceptance-report.json')
+        $report = Get-Content -LiteralPath (Join-Path $Root 'acceptance-report.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($relative in @($report.checks.evidencePath | Sort-Object -Unique)) {
+            if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or
+                $relative.Contains(':') -or $relative -match '(^|[\\/])\.\.([\\/]|$)') { throw 'AcceptanceEvidencePathInvalid' }
+            $required += ('Acceptance/' + $relative.Replace('\','/'))
+        }
+    }
     if (@($identity.files).Count -ne $required.Count) { throw '独立包文件清单不完整。' }
     $seen = @{}
     foreach ($file in $identity.files) {
@@ -40,6 +50,17 @@ function Read-VerifiedPackage([string]$Root) {
     }
     foreach ($name in $required[0..1]) {
         if ((Get-Item -LiteralPath (Join-Path $Root $name)).VersionInfo.FileVersion -ne $identity.version) { throw "独立组件版本不一致：$name" }
+    }
+    if ($automatic) {
+        . (Join-Path $Root 'RecoveryGuard-Acceptance.ps1')
+        [void](Assert-GuardAcceptanceReport $report 'RecoverExited' $identity.mainIdentitySha256 `
+            (Get-FileHash (Join-Path $Root 'MTTFTest.RecoveryGuard.exe')).Hash `
+            (Get-FileHash (Join-Path $Root 'MTTFTest.RecoveryControl.dll')).Hash)
+        Assert-GuardAcceptanceEvidenceFiles $report (Join-Path $Root 'Acceptance')
+        if (($report.approvedModes -join ',') -cne ($identity.approvedModes -join ',') -or
+            $report.benchId -cne $identity.acceptanceBenchId -or $report.machineName -cne $identity.acceptanceMachineName) {
+            throw 'AcceptanceManifestScopeMismatch'
+        }
     }
     $settings = Get-Content -LiteralPath (Join-Path $Root 'guard-settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($settings.SchemaVersion -ne 1 -or $settings.Mode -ne 0 -or $settings.SupervisionExpirySeconds -ne 3600) { throw '当前独立包必须为 ObserveOnly，监督过期阈值必须为 60 分钟。' }
@@ -226,10 +247,19 @@ function Resolve-GuardRecoveryMode($Identity, $Settings, [string]$RequestedMode)
     if ($mode -notin @(0, 1, 2) -or $Settings.SupervisionExpirySeconds -ne 3600) { throw 'Guard 恢复模式或 60 分钟阈值无效。' }
     if ($mode -ne 0 -and ($Identity.deliveryStage -ne 'AutomaticRecovery' -or
         $Identity.automaticExecutionReady -ne $true -or $Identity.configuration -ne 'Release' -or
-        $Identity.builtFromVerifiedInputs -ne $true -or $Identity.schemaVersion -ne 2)) {
+        $Identity.builtFromVerifiedInputs -ne $true -or $Identity.schemaVersion -ne 3 -or
+        $Identity.gitDirty -ne $false -or $modes[$mode] -cnotin @($Identity.approvedModes))) {
         throw '当前包未开放自动恢复，不能启用执行任务。'
     }
     return [int]$mode
+}
+
+function Assert-GuardAcceptanceTarget($Identity, [string]$Executable, [string]$TargetBench, [string]$TargetMachine) {
+    if ($Identity.schemaVersion -ne 3 -or $TargetBench -cne $Identity.acceptanceBenchId -or
+        $TargetMachine -ine $Identity.acceptanceMachineName -or
+        (Get-FileHash -LiteralPath (Join-Path (Split-Path $Executable -Parent) 'build-identity.json')).Hash -ine $Identity.mainIdentitySha256) {
+        throw 'AcceptanceInstallTargetMismatch'
+    }
 }
 
 function Assert-GuardTaskOwnership([string]$ActualXml, [string]$Directory, [string]$StateDirectory, [bool]$Execution) {
@@ -356,7 +386,9 @@ try {
     if (-not (Test-Path -LiteralPath $destination)) {
         [void](New-Item -ItemType Directory -Path $destination -Force)
         foreach ($name in @($identity.files | ForEach-Object { $_.name }) + @('guard-identity.json')) {
-            Copy-Item -LiteralPath (Join-Path $source $name) -Destination $destination
+            $targetFile = Join-Path $destination $name
+            [void](New-Item -ItemType Directory -Path (Split-Path $targetFile -Parent) -Force)
+            Copy-Item -LiteralPath (Join-Path $source $name) -Destination $targetFile
         }
     }
     $null = Read-VerifiedPackage $destination
@@ -365,7 +397,10 @@ try {
     $settingsInput = if (Test-Path -LiteralPath $settingsPath -PathType Leaf) { $settingsPath } else { Join-Path $destination 'guard-settings.json' }
     $settings = Get-Content -LiteralPath $settingsInput -Raw -Encoding UTF8 | ConvertFrom-Json
     $settings.Mode = Resolve-GuardRecoveryMode $identity $settings $RecoveryMode
-    if ($settings.Mode -ne 0) { Assert-GuardMainComponents $MainExecutable $destination $identity.version }
+    if ($settings.Mode -ne 0) {
+        Assert-GuardAcceptanceTarget $identity $MainExecutable $BenchId $env:COMPUTERNAME
+        Assert-GuardMainComponents $MainExecutable $destination $identity.version
+    }
     $validationPath = Join-Path $guardState ('settings-validation-' + [Guid]::NewGuid().ToString('N') + '.json')
     try {
         Write-GuardAtomicBytes $validationPath ([Text.Encoding]::UTF8.GetBytes(($settings | ConvertTo-Json -Depth 8)))

@@ -104,8 +104,9 @@ if ($null -eq $modeDefinition) { throw 'Mode policy missing' }
 Invoke-Expression $modeDefinition.Extent.Text
 foreach ($ready in @($false, $true)) {
     foreach ($mode in @('ObserveOnly', 'RecoverExited', 'RecoverStalled')) {
-        $identity = [pscustomobject]@{ schemaVersion=2; deliveryStage=$(if ($ready) { 'AutomaticRecovery' } else { 'ObserveOnlyCommissioning' });
-            automaticExecutionReady=$ready; configuration='Release'; builtFromVerifiedInputs=$true }
+        $identity = [pscustomobject]@{ schemaVersion=$(if ($ready) {3} else {2}); deliveryStage=$(if ($ready) { 'AutomaticRecovery' } else { 'ObserveOnlyCommissioning' });
+            automaticExecutionReady=$ready; configuration='Release'; builtFromVerifiedInputs=$true; gitDirty=$false;
+            approvedModes=@('RecoverExited','RecoverStalled') }
         $config = [pscustomobject]@{ Mode=0; SupervisionExpirySeconds=3600 }
         $rejected = $false
         try { $selected = Resolve-GuardRecoveryMode $identity $config $mode }
@@ -123,4 +124,15 @@ $rejected = $false
 try { $null = Resolve-GuardRecoveryMode $identity $config '' } catch { $rejected = $true }
 if (-not $rejected) { throw 'Unbound binaries allowed activation' }
 $passed++
+[void]($identity.builtFromVerifiedInputs = $true)
+foreach ($case in @('LegacyAutomaticSchema','UnapprovedMode','DirtyBuild')) {
+    $identity.schemaVersion=3; $identity.approvedModes=@('RecoverExited','RecoverStalled'); $identity.gitDirty=$false
+    if ($case -eq 'LegacyAutomaticSchema') { $identity.schemaVersion=2 }
+    if ($case -eq 'UnapprovedMode') { $identity.approvedModes=@('RecoverExited') }
+    if ($case -eq 'DirtyBuild') { $identity.gitDirty=$true }
+    $rejected=$false
+    try { $null=Resolve-GuardRecoveryMode $identity $config 'RecoverStalled' } catch { $rejected=$true }
+    if (-not $rejected) { throw "Automatic mode admitted invalid scope: $case" }
+    $passed++
+}
 [ordered]@{ passed = $passed; taskRegistrationPerformed = $false; scope = 'ProductionTaskXmlContract' } | ConvertTo-Json

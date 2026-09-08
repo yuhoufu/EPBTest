@@ -2,7 +2,7 @@
 
 本说明随包以 README.md 交付。以 guard-identity.json 中的版本、configuration 和 deliveryStage 判定本包身份；文件版本为 3.0.0.0 不等于已通过现场自动恢复验收。
 
-当前包阶段为 ObserveOnlyCommissioning：只观察，执行任务禁用，automaticExecutionReady=false。不得仅编辑清单或配置启用自动执行。主程序、Supervisor、SessionAgent 和安全组件需要另外交付匹配版本，本包不能代替主程序整套安装包。
+ObserveOnlyCommissioning包只观察，执行任务禁用，automaticExecutionReady=false。schema 3的AutomaticRecovery包须携带匹配的现场验收报告与证据，安装时还要核对台架、机器、主程序清单及获准模式；默认配置仍只观察。不得仅编辑清单或配置启用自动执行。主程序、Supervisor、SessionAgent和安全组件需要另外交付匹配版本，本包不能代替主程序整套安装包。当前已交付的现场观察ZIP不因后续代码增加自动发布入口而改变阶段。
 
 ## 包内容与校验
 
