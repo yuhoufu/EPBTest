@@ -56,8 +56,12 @@ try {
             $stage='请求监督启动'
             $launcher=Join-Path $root 'Current\MTTFTest.Watchdog.exe'
             if (-not (Test-Path $launcher)) {throw '尚未安装，请先运行一键安装正式版.cmd。'}
-            & $launcher --launch-main --main-executable (Join-Path $root 'Current\MTTFTest.exe')
-            if ($LASTEXITCODE -ne 0) {throw "监督启动请求失败：$LASTEXITCODE"}
+            $target=Join-Path $root 'Current\MTTFTest.exe'
+            $launchError=$log+'.launch.stderr'
+            $request=Start-Process -FilePath $launcher -ArgumentList ('--launch-main --main-executable "'+$target+'"') -WorkingDirectory (Split-Path $launcher -Parent) -WindowStyle Hidden -RedirectStandardError $launchError -PassThru
+            if (-not $request.WaitForExit(45000)) {throw "监督启动请求尚未结束，PID=$($request.Id)。先核对运行状态，不要重复启动。"}
+            $request.Refresh()
+            if ($request.ExitCode -ne 0) {throw ("监督启动请求失败：$($request.ExitCode)。"+[IO.File]::ReadAllText($launchError))}
             Write-Host '监督启动请求已提交；请核对主窗口与运行状态，尚不代表试验已经运行。'
         }
         'Status' {
