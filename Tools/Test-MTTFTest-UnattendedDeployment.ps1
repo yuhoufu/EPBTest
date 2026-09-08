@@ -162,7 +162,7 @@ $supervisorMainLaunchClientText = [IO.File]::ReadAllText(
     (Join-Path $repo 'MTTFTest.Watchdog\SupervisorMainLaunchClient.cs'), [Text.Encoding]::UTF8)
 if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
     -not $supervisorProtocolText.Contains('public const int SchemaVersion = 7') -or
-    -not $sessionProtocolText.Contains('public const int SchemaVersion = 7') -or
+    -not $sessionProtocolText.Contains('public const int SchemaVersion = 8') -or
     -not $sessionAgentHostText.Contains('LaunchCapabilityAlreadyConsumed') -or
     -not $supervisorHostText.Contains('MainProcessStartUtcTicks') -or
     -not $supervisorHostText.Contains('SupervisorSafetyHandoffOldProcessIdentityMismatch') -or
@@ -173,7 +173,7 @@ if (-not $programText.Contains('LaunchCapabilityGate.ValidateOrReject') -or
     -not $supervisorMainLaunchClientText.Contains('IsRecoveryLaunch = true') -or
     -not $supervisorHostText.Contains('SupervisorMainRecoverySessionMismatch') -or
     -not $supervisorHostText.Contains('SupervisorRecoveryCapabilitySessionAgentLaunch')) {
-    throw 'schema 6 Supervisor 单次 LaunchCapability 生产门禁不完整。'
+    throw 'Supervisor schema 7 / SessionAgent schema 8 单次 LaunchCapability 生产门禁不完整。'
 }
 foreach ($commandName in @(
         '一键安装正式版.cmd', '一键修复.cmd', '一键卸载.cmd', '启动试验.cmd')) {
