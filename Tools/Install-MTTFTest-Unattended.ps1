@@ -14,7 +14,7 @@ $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
 $healthTaskName = 'MTTFTestRecoveryHealth'
-$shortcutName = 'MT EPB 试验系统 V2.17.lnk'
+$shortcutName = 'MT EPB 试验系统.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
 $runtimeConfigNames = @(
     'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
@@ -643,6 +643,15 @@ function Write-ConfiguredMarker([string]$Root) {
 }
 
 function Get-ShortcutPaths([string]$Name = $shortcutName) {
+    if ($Name -eq $shortcutName -and -not [string]::IsNullOrWhiteSpace($root)) {
+        $installedExe = Join-Path $root 'Current\MTTFTest.exe'
+        if (Test-Path -LiteralPath $installedExe -PathType Leaf) {
+            $installedVersion = (Get-Item -LiteralPath $installedExe).VersionInfo.FileVersion
+            if (-not [string]::IsNullOrWhiteSpace($installedVersion)) {
+                $Name = "MT EPB 试验系统 V$installedVersion.lnk"
+            }
+        }
+    }
     $paths = @()
     $desktop = [Environment]::GetFolderPath('DesktopDirectory')
     $programs = [Environment]::GetFolderPath('Programs')
@@ -665,7 +674,7 @@ function Install-Shortcuts([string]$Root) {
     }
     $targetVersion = (Get-Item -LiteralPath $target).VersionInfo.FileVersion
     if ([string]::IsNullOrWhiteSpace($targetVersion)) { $targetVersion = '未知版本' }
-    foreach ($legacy in @(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk')) {
+    foreach ($legacy in @(@(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk') + @(Get-ShortcutPaths 'MT EPB 试验系统 V2.17.lnk'))) {
         if (Test-Path -LiteralPath $legacy -PathType Leaf) {
             Remove-Item -LiteralPath $legacy -Force -Confirm:$false
         }
@@ -696,6 +705,7 @@ function Install-Shortcuts([string]$Root) {
 function Remove-Shortcuts {
     foreach ($path in @(
             @(Get-ShortcutPaths) +
+            @(Get-ShortcutPaths 'MT EPB 试验系统 V2.17.lnk') +
             @(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk'))) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Remove-Item -LiteralPath $path -Force -Confirm:$false

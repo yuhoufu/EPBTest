@@ -28,8 +28,12 @@ namespace MtEmbTest
             try
             {
                 MessageBox.Show(
-                    "V2.17.2.0 正式版仅允许由 Supervisor 服务启动。\r\n" +
-                    "请使用桌面“MT EPB 试验系统 V2.17”快捷方式。" +
+                    "V" + typeof(LaunchCapabilityGate).Assembly.GetName().Version +
+                    (failure == "LaunchCapabilityMissing"
+                        ? " 未收到监督启动凭据，不能直接双击主程序启动。\r\n请先运行安装包根目录的“一键安装正式版.cmd”，安装后使用“启动试验.cmd”或桌面快捷方式。"
+                        : failure == "LaunchCapabilitySchemaMismatch"
+                            ? " 的监督启动协议版本不匹配。\r\n请正常停止并退出试验后，使用同一完整安装包修复主程序与监督组件，再从“启动试验.cmd”启动。"
+                            : " 未通过监督启动校验。\r\n请使用安装包根目录的“检查运行状态.cmd”检查，再通过“启动试验.cmd”启动。") +
                     "\r\n\r\n拒绝原因：" + failure,
                     "启动已拒绝",
                     MessageBoxButtons.OK,
@@ -48,6 +52,11 @@ namespace MtEmbTest
                 var launchNonce = Read(args, SessionAgentProtocol.NonceArgument);
                 var sessionId = Read(args, SessionAgentProtocol.SessionArgument);
                 var schemaText = Read(args, SessionAgentProtocol.SchemaArgument);
+                if (string.IsNullOrWhiteSpace(capabilityId) &&
+                    string.IsNullOrWhiteSpace(launchNonce) &&
+                    string.IsNullOrWhiteSpace(sessionId) &&
+                    string.IsNullOrWhiteSpace(schemaText))
+                    return Reject("LaunchCapabilityMissing", out failure);
                 int schema;
                 if (!int.TryParse(schemaText, out schema) ||
                     schema != SessionAgentProtocol.SchemaVersion)
