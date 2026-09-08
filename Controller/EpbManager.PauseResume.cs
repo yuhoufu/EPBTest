@@ -187,6 +187,7 @@ namespace Controller
                     throw new InvalidOperationException("正式阶段尚未建立，启动定位或学习阶段不能暂停。");
 
                 var channels = timers.Select(pair => pair.Key).ToArray();
+                NotifyExternalManualPause();
                 SetBatchPauseState(BatchPauseState.PausePending, channels, "等待所有通道完成当前圈");
                 var pauseTransaction = CaptureBatchPauseSnapshot();
                 BeginManualPauseProgress(
@@ -340,6 +341,18 @@ namespace Controller
                 EnsureBatchResumePreflightCurrent(preflight);
 
                 var plan = GetCompatibleStaggerPlan(channels);
+                var externalAdmission = ExternalRunAdmissionAsync;
+                if (externalAdmission != null)
+                {
+                    await externalAdmission(new RunAdmissionRequest(
+                        new DataOperation.RunChainIdentity(_activeBatchId, _activeRunChainIdentity.EffectiveRootRunId,
+                            _activeRunChainIdentity.ParentRunId, _activeRunChainIdentity.RestartGeneration,
+                            Interlocked.Read(ref _runEpoch)), channels, RunAdmissionOrigin.ManualContinue),
+                        resumeToken).ConfigureAwait(false);
+                    resumeToken.ThrowIfCancellationRequested();
+                    EnsureBatchResumeGenerationUnchanged(resumePauseGeneration);
+                    EnsureBatchResumePreflightCurrent(preflight);
+                }
                 // All structural, ownership and DAQ checks are complete before
                 // this first command that can energize a power group.
                 powerEnableAttempted = true;
@@ -441,6 +454,8 @@ namespace Controller
             }
             finally
             {
+                if (CurrentBatchPauseState != BatchPauseState.Running)
+                    NotifyExternalManualPause();
                 resumeCts?.Dispose();
                 _pauseResumeGate.Release();
             }

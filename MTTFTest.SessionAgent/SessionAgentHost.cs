@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using MTTFTest.RecoveryControl;
 using System.IO;
 using System.IO.Pipes;
 using System.Security.AccessControl;
@@ -157,6 +158,12 @@ namespace MTTFTest.SessionAgent
 
             var path = SessionAgentProtocol.ConsumptionPath(
                 capability.CapabilityId);
+            var recoveryControl = new RecoveryControlStore();
+            var recoveryFence = RecoveryLaunchFence.Parse(capability.RecoveryFenceJson, capability.IsRecoveryLaunch);
+            if (recoveryFence != null)
+                recoveryControl.AssertLaunchFence(recoveryFence, DateTime.UtcNow);
+            else if (recoveryControl.IsRegisteredOrPending)
+                throw new InvalidOperationException("RecoveryLaunchFenceMissing");
             var stateDirectory = Path.GetDirectoryName(path);
             Directory.CreateDirectory(stateDirectory);
             if (File.Exists(path))
@@ -174,10 +181,17 @@ namespace MTTFTest.SessionAgent
                 ArgumentsSha256 = capability.ArgumentsSha256,
                 CapabilitySealBase64 = Convert.ToBase64String(seal),
                 State = "LaunchIntent",
+                ProcessBootId = RecoveryProcessProbe.ReadBootId(),
                 ConsumedUtcTicks = now
             };
             WriteNew(path + ".capability", Json.Serialize(capability));
             WriteNew(path, Json.Serialize(record));
+            if (recoveryFence != null)
+            {
+                if (capability.IsRecoveryLaunch)
+                    recoveryControl.ConsumeLaunch(recoveryFence.Authorization, capability.CapabilityId, DateTime.UtcNow);
+                else recoveryControl.AssertLaunchFence(recoveryFence, DateTime.UtcNow);
+            }
             var process = Process.Start(new ProcessStartInfo
             {
                 FileName = executable,
@@ -193,21 +207,35 @@ namespace MTTFTest.SessionAgent
             record.State = "Started";
             record.ProcessId = process.Id;
             record.ProcessStartUtcTicks = startTicks;
-            Replace(path, Json.Serialize(record));
+            try
+            {
+                if (recoveryFence?.IsRecovery == true)
+                    recoveryControl.RecordLaunchResult(capability.CapabilityId, new RecoveryProcessIdentity
+                    {
+                        ProcessId = process.Id, StartUtcTicks = startTicks, ExecutablePath = executable,
+                        BootId = record.ProcessBootId
+                    }, false);
+            }
+            finally
+            {
+                // Preserve exact creation evidence even when the shared store
+                // fails. The child still requires both records before admission.
+                try { Replace(path, Json.Serialize(record)); }
+                finally { process.Dispose(); }
+            }
             WriteAudit(
                 "LaunchCapabilityConsumed",
                 $"Capability={capability.CapabilityId};Session={capability.SessionId};" +
-                $"PermitGeneration={capability.PermitGeneration};PID={process.Id}");
+                $"PermitGeneration={capability.PermitGeneration};PID={record.ProcessId}");
             var response = new SessionLaunchResponse
             {
                 CapabilityId = capability.CapabilityId,
                 LaunchNonce = capability.LaunchNonce,
                 Accepted = true,
-                ProcessId = process.Id,
+                ProcessId = record.ProcessId,
                 ProcessStartUtcTicks = startTicks,
                 Detail = "VisibleDesktopProcessStarted"
             };
-            process.Dispose();
             return response;
         }
 

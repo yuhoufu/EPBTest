@@ -36,6 +36,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="V217PersistenceTests.cs" />
+    <Compile Include="RecoveryProgressTests.cs" />
     <None Include="..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\x86\SQLite.Interop.dll">
       <Link>x86\SQLite.Interop.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

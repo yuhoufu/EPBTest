@@ -151,6 +151,11 @@ namespace MTEmbTest
                     checkpoint.RecoveryChainPendingStart,
                     checkpoint.InProcessRecoveryPending,
                     runId == Guid.Empty ? string.Empty : runId.ToString("N"));
+                var guardedRoot = RecoveryGuardRuntime.RootForCurrentRun(transition.CurrentRunId);
+                if (!string.IsNullOrWhiteSpace(guardedRoot) && guardedRoot != transition.RootRunId)
+                    transition = new UnattendedRunChainTransition(guardedRoot, transition.ParentRunId,
+                        transition.CurrentRunId, transition.RestartGeneration, transition.SameRun,
+                        transition.RecoveryContinuation, transition.ProcessRestartContinuation);
                 checkpoint.SchemaVersion = CurrentSchemaVersion;
                 checkpoint.Armed = true;
                 checkpoint.RestartPending = false;
@@ -326,8 +331,22 @@ namespace MTEmbTest
                 }
                 if (!string.Equals(current.WatchdogSessionId, sessionId, StringComparison.Ordinal))
                 {
-                    error = "WatchdogSessionMismatch";
-                    return false;
+                    var control = new MTTFTest.RecoveryControl.RecoveryControlStore();
+                    if (!control.IsRegisteredOrPending)
+                    {
+                        error = "WatchdogSessionMismatch";
+                        return false;
+                    }
+                    try
+                    {
+                        control.AssertCheckpointSessionRollover(current.WatchdogSessionId, sessionId,
+                            current.RunId, current.RootRunId, MTTFTest.RecoveryControl.RecoveryProcessProbe.Current(), DateTime.UtcNow);
+                    }
+                    catch (Exception ex)
+                    {
+                        error = "WatchdogSessionMismatch:" + ex.GetBaseException().Message;
+                        return false;
+                    }
                 }
                 if (config?.Test == null ||
                     !string.Equals(current.StoreDir, config.Test.StoreDir, StringComparison.OrdinalIgnoreCase) ||
@@ -337,8 +356,9 @@ namespace MTEmbTest
                     return false;
                 }
 
-                // Watchdog 恢复不以版本、哈希、构建时间或重试预算为许可条件。
-                // 唯一授权边界是仍 Armed 的同一 Session；人工停止会先清除此字段。
+                // 通常仅接受同一 Session；Guard 会话交接还必须通过上面的
+                // 原试验绑定与新实例 Started 证明。人工停止仍由共享权威优先撤权。
+                current.WatchdogSessionId = sessionId;
                 current.RestartPending = false;
                 current.InProcessRecoveryPending = false;
                 current.RecoveryNonce = string.Empty;
@@ -764,9 +784,11 @@ namespace MTEmbTest
                         expectedRunId: expectedRunId,
                         attemptsInWindow: attemptsInWindow))
                 {
-                    var terminalReason = attemptsInWindow >= EpbManager.UnattendedProcessRestartBudget
-                        ? "RestartBudgetExhaustedAfterFailedAttempt"
-                        : "RestartRetryAuthorizationInvalid";
+                    // Budget exhaustion is handled by the next registration's
+                    // RecoveryCoolingDown result. This branch only represents
+                    // invalid retry authorization, never a new operator stop
+                    // inferred from the number of attempts.
+                    const string terminalReason = "RestartRetryAuthorizationInvalid";
                     DisarmUnsafe(checkpoint, terminalReason);
                     error = terminalReason;
                     return false;
@@ -857,7 +879,7 @@ namespace MTEmbTest
                 checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
                 checkpoint.EffectiveRuntimeSafetyParameters =
                     CaptureEffectiveRuntimeSafetyParameters();
-                checkpoint.RootRunId = runId.ToString("N");
+                checkpoint.RootRunId = RecoveryGuardRuntime.RootForCurrentRun(runId.ToString("N")) ?? runId.ToString("N");
                 checkpoint.ParentRunId = string.Empty;
                 checkpoint.RunId = runId.ToString("N");
                 checkpoint.RestartGeneration = 0;
@@ -992,7 +1014,10 @@ namespace MTEmbTest
                 checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.LastReason = reason ?? "GracefulPauseConsumed";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-                SaveUnsafe(checkpoint);
+                // Consuming a successfully resumed pause checkpoint is not a
+                // stop command for the newly admitted run (which may retain RunId).
+                SaveUnsafe(checkpoint, publishTerminal: reason != "SameProcessResumed" &&
+                    reason != "GracefulCheckpointResumed");
             }
         }
 
@@ -1126,8 +1151,9 @@ namespace MTEmbTest
                     projectPath + ".bak"));
         }
 
-        private static void SaveUnsafe(UnattendedRunCheckpoint checkpoint)
+        private static void SaveUnsafe(UnattendedRunCheckpoint checkpoint, bool publishTerminal = true)
         {
+            if (publishTerminal) RecoveryGuardRuntime.CheckpointTerminal(checkpoint);
             if (checkpoint == null) throw new ArgumentNullException(nameof(checkpoint));
             var projectPath = GetProjectCheckpointPath(checkpoint.StoreDir, checkpoint.TestName);
             var previousRead = DurableJsonFileStore.ReadLatestValid<UnattendedRunCheckpoint>(
@@ -1752,6 +1778,7 @@ namespace MTEmbTest
 
         private static void OnRunAuthorizationRevocationBarrier(StopContext context)
         {
+            RecoveryGuardRuntime.RevokeInMemory(context);
             UnattendedRunCheckpointStore.MarkRunRevokedInMemory(context?.RunId);
             CancelRestartRetrySequence();
         }

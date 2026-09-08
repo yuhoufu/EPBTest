@@ -142,6 +142,7 @@ namespace MTEmbTest
             if (pending?.Armed == true && Guid.TryParse(pending.RootRunId, out var pendingRoot))
                 _epb.ProtectLearningRoot(pendingRoot);
             UnattendedRecoveryCoordinator.Attach(_epb, _cfg);
+            RecoveryGuardRuntime.Attach(_epb, _cfg);
             UnattendedRecoveryCoordinator.RegisterQuiesceAndFlush(
                 QuiesceAndFlushForUnattendedRestartAsync);
             WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
@@ -305,6 +306,62 @@ namespace MTEmbTest
             ThreadPool.GetAvailableThreads(
                 out var availableWorkerThreads,
                 out var availableIoThreads);
+            if (RecoveryGuardRuntime.ShouldCaptureSnapshot())
+            {
+                try
+                {
+                    var channelProgress = logical?.ChannelProgress ?? Array.Empty<Controller.WatchdogChannelProgressSnapshot>();
+                    var currentWriter = _diskWriter;
+                    var externalChannels = states.Select(state =>
+                    {
+                        var progress = channelProgress.FirstOrDefault(item => item.Channel == state.Channel);
+                        var committed = currentWriter?.CaptureCommittedCycleProgress(state.Channel);
+                        var device = twoDeviceAiAcquirer?.GetDeviceForEpbChannel(state.Channel);
+                        var samples = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase) ? daqDev1 :
+                            string.Equals(device, "Dev2", StringComparison.OrdinalIgnoreCase) ? daqDev2 : null;
+                        var stageStart = Math.Max(progress?.StateSinceUtcTicks ?? 0,
+                            progress?.LastMechanicalCompletedUtcTicks ?? 0);
+                        var isNormalStage = state.State == ChannelRuntimeState.Learning ||
+                            state.State == ChannelRuntimeState.Running || state.State == ChannelRuntimeState.WarningRunning ||
+                            state.State == ChannelRuntimeState.WaitingForSlotBarrier;
+                        // A deadline advances only with a real state/cycle edge.
+                        // Publishing this projection again does not move it.
+                        var stageDeadline = isNormalStage && stageStart > 0
+                            ? new DateTime(stageStart, DateTimeKind.Utc)
+                                .AddMilliseconds(Math.Max(1, _cfg?.Test?.PeriodMs ?? 1)).AddSeconds(10).Ticks : 0;
+                        return new MTTFTest.RecoveryControl.RecoveryChannelProgress
+                        {
+                            Channel = state.Channel,
+                            Eligible = eligible.Contains(state.Channel),
+                            Completed = completed.Contains(state.Channel),
+                            PermanentlyIsolated = permanentAlarmed.Contains(state.Channel),
+                            ManuallyExcluded = manuallyDisabled.Contains(state.Channel),
+                            SampleGeneration = samples?.Generation ?? 0,
+                            SampleSequence = samples?.LastProcessedSequence ?? 0,
+                            ControlSequence = progress?.MechanicalCompletedCount ?? 0,
+                            PersistedSequence = committed?.FormalCommits ?? 0,
+                            Stage = state.State.ToString(),
+                            StageStartedUtcTicks = stageStart,
+                            StageDeadlineUtcTicks = stageDeadline
+                        };
+                    }).ToArray();
+                    RecoveryGuardRuntime.Offer(new MTTFTest.RecoveryControl.RecoveryObservationSnapshot
+                    {
+                        RunId = watchdogRunId.ToString("N"),
+                        SourceVersion = aggregate?.Version ?? 0,
+                        SourceUtcTicks = aggregate?.CapturedUtc.Ticks ?? 0,
+                        SourceAvailable = aggregate?.IsStable == true && currentWriter != null &&
+                            externalChannels.Where(channel => channel.Eligible)
+                                .All(channel => channelProgress.Any(p => p.Channel == channel.Channel)),
+                        Stage = phase,
+                        Channels = externalChannels
+                    });
+                }
+                catch (Exception ex)
+                {
+                    ProjectLogHub.Write(ProjectLogLevel.Warning, "RecoveryGuard 快照源不可用：" + ex.Message, "RecoveryGuard");
+                }
+            }
             return new WatchdogHeartbeat
             {
                 UiLifecycle = MonitorLifecycle.ToString(),
@@ -983,6 +1040,7 @@ namespace MTEmbTest
 
             if (selected.Length == 0)
             {
+                RecoveryGuardRuntime.CompleteRecoveredRunBeforeAdmission(checkpoint, _cfg);
                 UnattendedRunCheckpointStore.Disarm("FormalRunAlreadyCompletedAtRecoveryStartup");
                 UnattendedRecoveryCoordinator.LogRecoveryStartupRecovered(
                     Guid.TryParse(checkpoint.RunId, out var completedRunId)

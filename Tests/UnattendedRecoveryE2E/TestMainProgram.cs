@@ -18,6 +18,7 @@ namespace MTTFTest.UnattendedRecoveryTestMain
         private static string _runId;
         private static string _sessionId;
         private static string _eventPath;
+        private static GuardTestRun _guardRun;
 
         [STAThread]
         private static int Main(string[] args)
@@ -51,6 +52,13 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                 Directory.CreateDirectory(journal);
                 _eventPath = Path.Combine(project, "e2e-main-events.log");
                 _runId = Guid.NewGuid().ToString("N");
+                if (File.Exists(Path.Combine(baseDirectory, "E2E.Guard.enabled")))
+                {
+                    _guardRun = new GuardTestRun(
+                        new MTTFTest.RecoveryControl.RecoveryControlStore(),
+                        _runId, _sessionId, project, _recovery);
+                    AppendEvent("GuardRunBound", "NoHardwareFixture;Run=" + _runId);
+                }
 
                 var mainPath = Path.GetFullPath(
                     Process.GetCurrentProcess().MainModule.FileName);
@@ -139,7 +147,7 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                 Application.SetCompatibleTextRenderingDefault(false);
                 using (var form = new Form
                 {
-                    Text = "MTTFTest V2.17 Unattended Recovery E2E Host",
+                    Text = "MTTFTest V3.0 Unattended Recovery E2E Host",
                     Width = 520,
                     Height = 160,
                     StartPosition = FormStartPosition.CenterScreen
@@ -216,8 +224,11 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                 TransportLost = (type, detail) =>
                     AppendEvent("TransportLost:" + type, detail),
                 StopAllRequested = (reason, correlation) =>
-                    AppendEvent("StopAllRequested", reason + ";" + correlation),
-                ObserveDurableStopMarker = () => false
+                {
+                    _guardRun?.Stop();
+                    AppendEvent("StopAllRequested", reason + ";" + correlation);
+                },
+                ObserveDurableStopMarker = () => _guardRun?.Stopped == true
             };
         }
 
@@ -226,7 +237,19 @@ namespace MTTFTest.UnattendedRecoveryTestMain
             using (var process = Process.GetCurrentProcess())
             {
                 var revision = Interlocked.Increment(ref _snapshotRevision);
-                var progress = Interlocked.Increment(ref _controlProgress);
+                var active = true;
+                if (_guardRun != null)
+                {
+                    try { active = _guardRun.TryCommit(); }
+                    catch (Exception ex)
+                    {
+                        _guardRun.Stop();
+                        AppendEvent("GuardFixtureAdmissionFailed", ex.GetBaseException().Message);
+                        active = false;
+                    }
+                }
+                var progress = _guardRun == null
+                    ? Interlocked.Increment(ref _controlProgress) : _guardRun.Sequence;
                 return new WatchdogHeartbeat
                 {
                     PulseSequence = revision,
@@ -242,17 +265,17 @@ namespace MTTFTest.UnattendedRecoveryTestMain
                     RunId = _runId,
                     RunEpoch = 1,
                     Phase = _recovery ? "RecoveryFirstCycle" : "FormalRun",
-                    RunActive = true,
-                    ActiveCycleCount = 1,
+                    RunActive = active,
+                    ActiveCycleCount = active ? 1 : 0,
                     EnabledChannels = new[] { 4 },
                     EligibleChannels = new[] { 4 },
                     RecoveryEligibleChannels = new[] { 4 },
                     RecoveryActive = _recovery,
-                    RecoveryStage = _recovery
+                    RecoveryStage = _recovery && active
                         ? "FirstCycleCommitted"
                         : string.Empty,
                     RecoveryProgressVersion = progress,
-                    RecoveryBatchCommitGeneration = _recovery ? 1 : 0,
+                    RecoveryBatchCommitGeneration = _recovery && active ? 1 : 0,
                     RecoveryProcessSource = _recovery
                         ? RecoveryFailurePolicy.RecoveryProcessSource
                         : RecoveryFailurePolicy.InitialProcessSource

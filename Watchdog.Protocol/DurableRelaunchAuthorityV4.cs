@@ -381,6 +381,10 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public DurableAuthorityDecisionResult RegisterFailureAndDecide(RecoveryFailureOperation operation)
+            => RegisterFailureAndDecide(operation, null, null);
+
+        public DurableAuthorityDecisionResult RegisterFailureAndDecide(RecoveryFailureOperation operation,
+            long? expectedRevision, string expectedSha256)
         {
             // This is intentionally the first operation on the caller input.
             RecoveryFailureFrozenOperation frozen;
@@ -417,6 +421,10 @@ namespace MTTFTest.Watchdog.Protocol
                     }
                     _record = fresh.Record.Clone();
                     _sha256 = fresh.Sha256;
+
+                    if (expectedRevision.HasValue && (fresh.Revision != expectedRevision.Value ||
+                        !string.Equals(fresh.Sha256, expectedSha256, StringComparison.Ordinal)))
+                        return BusyDecisionLocked("AuthorityChangedBeforeFailureRegistration");
 
                     // Persisted circuits are sticky read-only boundaries.
                     // No new correlation, budget, token, or prose may reopen
@@ -852,6 +860,10 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public DurableAuthorityTransitionResult CloseCurrentAsFailed(string reason)
+            => CloseCurrentAsFailed(reason, null, null);
+
+        public DurableAuthorityTransitionResult CloseCurrentAsFailed(string reason,
+            long? expectedRevision, string expectedSha256)
         {
             lock (_gate)
             {
@@ -861,6 +873,9 @@ namespace MTTFTest.Watchdog.Protocol
                 if (fresh == null || fresh.Record == null || fresh.Blocked || fresh.Unproven)
                     return TransitionUnproven(fresh?.Reason ?? "AuthorityReloadBlocked");
                 _record = fresh.Record.Clone(); _sha256 = fresh.Sha256;
+                if ((expectedRevision.HasValue && fresh.Revision != expectedRevision.Value) ||
+                    (expectedSha256 != null && !string.Equals(fresh.Sha256, expectedSha256, StringComparison.Ordinal)))
+                    return TransitionConflict("CloseFailedAuthorityChanged");
                 if (_record.State != DurableRelaunchPermitState.Approved &&
                     _record.State != DurableRelaunchPermitState.LaunchIntent &&
                     _record.State != DurableRelaunchPermitState.Started &&
@@ -1278,6 +1293,13 @@ namespace MTTFTest.Watchdog.Protocol
                 Reason = reason ?? "CircuitOpen",
                 AuthorityRevision = _record?.AuthorityRevision ?? 0
             };
+        }
+
+        // Admission was deferred by the installation coordinator. This is a
+        // read-only result, not a circuit transition or failure registration.
+        public DurableAuthorityDecisionResult DeferFailureDecision(string reason)
+        {
+            lock (_gate) return BusyDecisionLocked(reason);
         }
 
         private DurableAuthorityDecisionResult BusyDecisionLocked(string reason)

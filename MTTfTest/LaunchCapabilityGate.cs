@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using MTTFTest.RecoveryControl;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -116,7 +117,7 @@ namespace MtEmbTest
                 {
                     var executable = Path.GetFullPath(current.MainModule.FileName);
                     var startTicks = current.StartTime.ToUniversalTime().Ticks;
-                    return ValidateBoundCapability(
+                    if (!ValidateBoundCapability(
                         canonical,
                         record,
                         capabilityId,
@@ -127,7 +128,15 @@ namespace MtEmbTest
                         current.SessionId,
                         executable,
                         DateTime.UtcNow.Ticks,
-                        out failure);
+                        out failure)) return false;
+                    var recoveryControl = new RecoveryControlStore();
+                    var recoveryFence = RecoveryLaunchFence.Parse(canonical.RecoveryFenceJson, canonical.IsRecoveryLaunch);
+                    if (recoveryFence != null)
+                        recoveryControl.AssertStartedLaunch(recoveryFence, capabilityId,
+                            RecoveryProcessProbe.Current(), DateTime.UtcNow);
+                    else if (recoveryControl.IsRegisteredOrPending)
+                        return Reject("RecoveryLaunchFenceMissing", out failure);
+                    return true;
                 }
             }
             catch (Exception ex)

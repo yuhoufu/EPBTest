@@ -46,6 +46,7 @@ namespace EpbDiskWriterTests
                     return 0;
                 }
 
+                RunRecoveryProgressTests();
                 RunV217PersistenceTests();
                 if (args.Length == 1 && args[0] == "--v217-stability")
                 { Console.WriteLine($"PASS {_passed}/{_passed}"); return 0; }

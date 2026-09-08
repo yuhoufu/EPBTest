@@ -5,7 +5,8 @@ param(
     [string]$PackageDirectory,
     [Parameter(Mandatory = $true)]
     [switch]$ConfirmIsolatedEnvironment,
-    [string]$EvidenceDirectory = ''
+    [string]$EvidenceDirectory = '',
+    [switch]$GuardViaSystemTask
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,14 +42,69 @@ $packageIdentity = Get-Content `
     -LiteralPath (Join-Path $package 'e2e-package-identity.json') `
     -Raw | ConvertFrom-Json
 if (-not $packageIdentity.testOnly -or $packageIdentity.productionRelease -or
-    $packageIdentity.version -ne '2.17.3.0') {
+    $packageIdentity.version -ne '3.0.0.0') {
     throw '拒绝执行未明确标识 testOnly 的 E2E 包。'
+}
+function Assert-E2EPackageFiles([string]$Directory, $Manifest) {
+    $prefix = [IO.Path]::GetFullPath($Directory).TrimEnd('\') + '\'
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($Manifest.files)) {
+        $relative = [string]$entry.path
+        if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or
+            $relative.Contains(':') -or -not $seen.Add($relative)) {
+            throw 'E2EPackageManifestPathInvalid'
+        }
+        $path = [IO.Path]::GetFullPath((Join-Path $Directory $relative))
+        if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'E2EPackageFileMissingOrEscaped' }
+        $cursor = Get-Item -LiteralPath $path
+        while ($null -ne $cursor -and $cursor.FullName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'E2EPackageReparsePoint' }
+            $cursor = if ($cursor.PSIsContainer) { $cursor.Parent } else { $cursor.Directory }
+        }
+        if ([string]$entry.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne [string]$entry.sha256) {
+            throw "E2EPackageHashMismatch:$relative"
+        }
+    }
+    foreach ($required in @('MTTFTest.exe', 'MTTFTest.Watchdog.exe', 'MTTFTest.SessionAgent.exe',
+        'MTTFTest.SafetyAgent.exe', 'MTTFTest.RecoveryControl.dll', 'MTTFTest.Watchdog.Protocol.dll',
+        'MTTFTest.Watchdog.Client.dll', 'MTTFTest.UnattendedMode.required', 'Config\AlarmConfig.xml')) {
+        if (-not $seen.Contains($required)) { throw "E2EPackageManifestMissing:$required" }
+    }
+    # Refuse an unlisted executable, configuration or activation marker.
+    foreach ($file in Get-ChildItem -LiteralPath $Directory -File -Recurse) {
+        $relative = $file.FullName.Substring($prefix.Length)
+        if ($relative -ne 'e2e-package-identity.json' -and -not $seen.Contains($relative)) {
+            throw "E2EPackageUnlistedFile:$relative"
+        }
+    }
+}
+Assert-E2EPackageFiles $package $packageIdentity
+$guardScenario = $packageIdentity.guardScenario -eq $true
+if ($guardScenario) {
+    foreach ($name in @('MTTFTest.RecoveryGuard.exe', 'guard-settings.json', 'E2E.Guard.enabled')) {
+        if (-not (@($packageIdentity.files.path) -contains $name)) { throw "E2EGuardInputMissing:$name" }
+    }
+}
+if ($GuardViaSystemTask -and -not $guardScenario) {
+    throw 'GuardViaSystemTask requires an E2E package with guardScenario=true.'
 }
 if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
     throw "隔离机已存在 $serviceName，拒绝复用或覆盖。"
 }
 if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
     throw "隔离机已存在 $taskName，拒绝复用或覆盖。"
+}
+if ($GuardViaSystemTask) {
+    foreach ($guardTaskName in @('MTTFTestRecoveryGuard', 'MTTFTestRecoveryGuardExecution')) {
+        if (Get-ScheduledTask -TaskName $guardTaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
+            throw "The isolated host already contains $guardTaskName."
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:ProgramData 'MTTFTestRecoveryGuard')) {
+        throw 'The isolated host already contains RecoveryGuard ProgramData.'
+    }
 }
 if (Test-Path -LiteralPath $programDataRoot) {
     throw "隔离机已存在 $programDataRoot，拒绝覆盖任何既有 ProgramData。"
@@ -69,13 +125,23 @@ $evidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 $createdProgramData = $false
 $createdService = $false
 $createdTask = $false
+$createdGuardTasks = $false
 $startedUtc = [DateTime]::UtcNow
 $result = [ordered]@{
     schemaVersion = 1
-    version = '2.17.3.0'
+    scope = 'SupervisorSessionAgentInstalledRecovery'
+    recoveryGuardAutomaticRecoveryVerified = $false
+    version = '3.0.0.0'
     startedUtc = $startedUtc.ToString('O')
     account = $identity.Name
     package = $package
+    packageIdentitySha256 = (Get-FileHash -LiteralPath (Join-Path $package 'e2e-package-identity.json') -Algorithm SHA256).Hash
+    testScriptSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
+    guardDirectWorkerRecoveryVerified = $false
+    systemGuardTaskVerified = $false
+    physicalHardwareSafetyVerified = $false
+    guardSystemTaskMode = [bool]$GuardViaSystemTask
+    guardTaskRegistrationPerformed = $false
     tests = @()
     passed = $false
 }
@@ -126,6 +192,64 @@ function Stop-ExactProcess([Diagnostics.Process]$Process) {
         }
     } finally { $current.Dispose() }
     return "PID=$pidValue;StartUtcTicks=$startTicks"
+}
+if ($guardScenario) { $result.scope = 'GuardSupervisorSessionAgentNoHardwareRecovery' }
+if ($GuardViaSystemTask) { $result.scope = 'GuardSystemTaskSupervisorSessionAgentNoHardwareRecovery' }
+$guardWorker = $null
+$guardScanTaskName = 'MTTFTestRecoveryGuard'
+$guardExecutionTaskName = 'MTTFTestRecoveryGuardExecution'
+$guardStateRoot = Join-Path $env:ProgramData 'MTTFTestRecoveryGuard'
+$guardTaskRegisteredUtc = [DateTime]::MinValue
+
+function New-E2EGuardTaskXml([string]$Executable, [string]$SettingsPath,
+        [string]$JournalPath, [bool]$Execution) {
+    $verb = if ($Execution) { '--execute' } else { '--check' }
+    $limit = if ($Execution) { 'PT0S' } else { 'PT45S' }
+    $hardTerminate = if ($Execution) { 'false' } else { 'true' }
+    $start = (Get-Date).AddSeconds(10).ToString('yyyy-MM-ddTHH:mm:ss')
+    $directory = Split-Path -Parent $Executable
+    $commandXml = [Security.SecurityElement]::Escape($Executable)
+    $directoryXml = [Security.SecurityElement]::Escape($directory)
+    $argumentsXml = [Security.SecurityElement]::Escape(
+        ($verb + ' --settings "' + $SettingsPath + '" --journal "' + $JournalPath + '"'))
+    return @"
+<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <BootTrigger><Enabled>true</Enabled></BootTrigger>
+    <TimeTrigger><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>$start</StartBoundary><Enabled>true</Enabled></TimeTrigger>
+  </Triggers>
+  <Principals><Principal id="System"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>$hardTerminate</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>$limit</ExecutionTimeLimit></Settings>
+  <Actions Context="System"><Exec><Command>$commandXml</Command><Arguments>$argumentsXml</Arguments><WorkingDirectory>$directoryXml</WorkingDirectory></Exec></Actions>
+</Task>
+"@
+}
+
+function Install-E2EGuardSystemTasks([string]$GuardExecutable, [string]$PackageSettings) {
+    if (Test-Path -LiteralPath $guardStateRoot) { throw 'E2EGuardStateAlreadyExists' }
+    New-Item -ItemType Directory -Path $guardStateRoot | Out-Null
+    $settingsPath = Join-Path $guardStateRoot 'guard-settings.json'
+    Copy-Item -LiteralPath $PackageSettings -Destination $settingsPath
+    $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($settings.Mode -ne 1 -or $settings.SupervisionExpirySeconds -ne 3600) {
+        throw 'E2EGuardSystemTaskSettingsInvalid'
+    }
+    $registration = [ordered]@{ schemaVersion=2; directory=(Split-Path -Parent $GuardExecutable);
+        version='3.0.0.0'; task=$guardScanTaskName; executionTask=$guardExecutionTaskName;
+        executionEnabled=$true; installedUtc=[DateTime]::UtcNow.ToString('O') }
+    [IO.File]::WriteAllText((Join-Path $guardStateRoot 'installation.json'),
+        ($registration | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    $executionXml = New-E2EGuardTaskXml $GuardExecutable $settingsPath (Join-Path $guardStateRoot 'execution-journal') $true
+    $scanXml = New-E2EGuardTaskXml $GuardExecutable $settingsPath (Join-Path $guardStateRoot 'journal') $false
+    Register-ScheduledTask -TaskName $guardExecutionTaskName -TaskPath '\' -Xml $executionXml -Force | Out-Null
+    Register-ScheduledTask -TaskName $guardScanTaskName -TaskPath '\' -Xml $scanXml -Force | Out-Null
+    $script:createdGuardTasks = $true
+    $script:guardTaskRegisteredUtc = [DateTime]::UtcNow
+    $result.guardTaskRegistrationPerformed = $true
+    Export-ScheduledTask -TaskName $guardExecutionTaskName -TaskPath '\' | Set-Content `
+        -LiteralPath (Join-Path $projectRoot 'e2e-guard-execution-task.xml') -Encoding UTF8
+    Export-ScheduledTask -TaskName $guardScanTaskName -TaskPath '\' | Set-Content `
+        -LiteralPath (Join-Path $projectRoot 'e2e-guard-scan-task.xml') -Encoding UTF8
 }
 
 # Suspending the exact retained handle injects a live-but-unresponsive process,
@@ -222,11 +346,26 @@ try {
             Select-Object -First 1
     } 20 'SessionAgent 未启动。'
 
-    $launcher = Start-Process -FilePath $watchdog `
-        -ArgumentList @('--launch-main') -WindowStyle Hidden -PassThru -Wait
-    if ($launcher.ExitCode -ne 0) {
-        throw "Supervisor launcher 失败：Exit=$($launcher.ExitCode)"
+    if ($guardScenario) {
+        [void][Reflection.Assembly]::LoadFrom((Join-Path $package 'MTTFTest.RecoveryControl.dll'))
+        $guardStore = [MTTFTest.RecoveryControl.RecoveryControlStore]::new()
+        [void]$guardStore.Register('UnattendedRecoveryE2E', (Join-Path $package 'MTTFTest.exe'))
     }
+    # Process presence precedes the SessionAgent's authenticated registration.
+    # Retry the idempotent launch request while the interactive session becomes
+    # available; exit 2 before capability consumption is a bounded wait state.
+    $script:e2eLaunchAttempts = 0
+    Wait-Until {
+        $launcher = Start-Process -FilePath $watchdog `
+            -ArgumentList @('--launch-main') -WindowStyle Hidden -PassThru -Wait
+        $script:e2eLaunchAttempts++
+        $exitCode = $launcher.ExitCode
+        $launcher.Dispose()
+        if ($exitCode -eq 0) { return $true }
+        if ($exitCode -ne 2) { throw "Supervisor launcher 失败：Exit=$exitCode" }
+        return $false
+    } 30 'SessionAgent 未在 30 秒内完成注册，Supervisor 无法初始启动。' | Out-Null
+    Add-Result 'InitialLaunchWaitsForRegisteredSession' $true "Attempts=$script:e2eLaunchAttempts"
     $mainPath = Join-Path $package 'MTTFTest.exe'
     $initialMain = Wait-Until {
         @(Get-ExactProcess 'MTTFTest' $mainPath) | Select-Object -First 1
@@ -239,6 +378,148 @@ try {
         "PID=$($initialMain.Id);StartUtcTicks=" +
         $initialMain.StartTime.ToUniversalTime().Ticks)
 
+    if ($guardScenario) {
+        $guardExecutable = Join-Path $package 'MTTFTest.RecoveryGuard.exe'
+        $guardSettingsPath = Join-Path $package 'guard-settings.json'
+        $guardJournalPath = if ($GuardViaSystemTask) { Join-Path $guardStateRoot 'journal' } else { Join-Path $projectRoot 'GuardJournal' }
+        if ($GuardViaSystemTask) {
+            Install-E2EGuardSystemTasks $guardExecutable $guardSettingsPath
+            Wait-Until {
+                $scanEventPath = Join-Path $guardStateRoot 'journal\guard-events.jsonl'
+                if (-not (Test-Path -LiteralPath $scanEventPath)) { return $false }
+                $lastScanEvent = Get-Content -LiteralPath $scanEventPath -Tail 1 | ConvertFrom-Json
+                [DateTime]::Parse([string]$lastScanEvent.ObservedUtc).ToUniversalTime() -gt $guardTaskRegisteredUtc -and
+                    (Get-ScheduledTask -TaskName $guardScanTaskName -TaskPath '\').State -ne 'Running'
+            } 45 'SYSTEM Guard scan task did not run from its time trigger' | Out-Null
+            $periodicInfo = Get-ScheduledTaskInfo -TaskName $guardScanTaskName -TaskPath '\'
+            Add-Result 'GuardPeriodicTaskHealthyObservation' ($periodicInfo.LastTaskResult -eq 0) (
+                'LastRun=' + $periodicInfo.LastRunTime.ToUniversalTime().ToString('O') + ';Result=' + $periodicInfo.LastTaskResult)
+            Wait-Until {
+                $scanEventPath = Join-Path $guardStateRoot 'journal\guard-events.jsonl'
+                $scanBefore = if (Test-Path -LiteralPath $scanEventPath) { @(Get-Content -LiteralPath $scanEventPath).Count } else { 0 }
+                Start-ScheduledTask -TaskName $guardScanTaskName -TaskPath '\'
+                Wait-Until {
+                    (Test-Path -LiteralPath $scanEventPath) -and
+                        @(Get-Content -LiteralPath $scanEventPath).Count -gt $scanBefore -and
+                        (Get-ScheduledTask -TaskName $guardScanTaskName -TaskPath '\').State -ne 'Running'
+                } 15 'SYSTEM Guard healthy scan did not finish' | Out-Null
+                $state = $guardStore.Read()
+                $state.Observation.Established -and $state.Observation.LastVerifiedBusinessCommitUtcTicks -gt 0
+            } 60 'SYSTEM Guard scan task did not establish trusted fixture progress' | Out-Null
+        }
+        else {
+            Wait-Until {
+                & $guardExecutable --check --settings $guardSettingsPath --journal $guardJournalPath | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "E2EGuardObservationExit:$LASTEXITCODE" }
+                $state = $guardStore.Read()
+                $state.Observation.Established -and $state.Observation.LastVerifiedBusinessCommitUtcTicks -gt 0
+            } 60 'Guard did not establish trusted fixture progress' | Out-Null
+        }
+        $before = $guardStore.Read()
+        Add-Result 'GuardTrustedSupervision' $true $before.Intent.AuthorizationId
+        $oldMainPid = $initialMain.Id
+        Stop-ExactProcess $initialMain | Out-Null
+        $guardWorkerRuns = 0
+        $guardDeadline = [DateTime]::UtcNow.AddSeconds(360)
+        $complete = $false
+        if ($GuardViaSystemTask) {
+            $mainKilledUtc = [DateTime]::UtcNow
+            Add-Result 'GuardSystemTaskFailureDispatchStarted' $true ('MainKilledUtc=' + $mainKilledUtc.ToString('O'))
+            do {
+                $scanEventPath = Join-Path $guardStateRoot 'journal\guard-events.jsonl'
+                $executionEventPath = Join-Path $guardStateRoot 'execution-journal\guard-events.jsonl'
+                $scanBefore = if (Test-Path -LiteralPath $scanEventPath) { @(Get-Content -LiteralPath $scanEventPath).Count } else { 0 }
+                $executionBefore = if (Test-Path -LiteralPath $executionEventPath) { @(Get-Content -LiteralPath $executionEventPath).Count } else { 0 }
+                Start-ScheduledTask -TaskName $guardScanTaskName -TaskPath '\'
+                Wait-Until {
+                    (Test-Path -LiteralPath $scanEventPath) -and
+                        @(Get-Content -LiteralPath $scanEventPath).Count -gt $scanBefore -and
+                        (Get-ScheduledTask -TaskName $guardScanTaskName -TaskPath '\').State -ne 'Running'
+                } 20 'Triggered SYSTEM scan did not finish' | Out-Null
+                $executionAdvanced = $false
+                $scanResult = Get-Content -LiteralPath $scanEventPath -Tail 1 | ConvertFrom-Json
+                if ($scanResult.Worker.TaskRequested -eq $true) {
+                    Wait-Until {
+                        if ((Test-Path -LiteralPath $executionEventPath) -and
+                            @(Get-Content -LiteralPath $executionEventPath).Count -gt $executionBefore) { $executionAdvanced = $true }
+                        $executionAdvanced -and
+                            (Get-ScheduledTask -TaskName $guardExecutionTaskName -TaskPath '\').State -ne 'Running'
+                    } 90 'SYSTEM Guard execution task did not finish' | Out-Null
+                }
+                if ($executionAdvanced) {
+                    $executionInfo = Get-ScheduledTaskInfo -TaskName $guardExecutionTaskName -TaskPath '\'
+                    if ($executionInfo.LastTaskResult -ne 0) { throw "E2EGuardSystemWorkerExit:$($executionInfo.LastTaskResult)" }
+                    $guardWorkerRuns++
+                }
+                $state = $guardStore.Read()
+                $complete = $null -ne $state.Transaction -and $state.Transaction.Stage.ToString() -eq 'Complete' -and
+                    $state.Transaction.OwnershipReleased
+                if (-not $complete -and [DateTime]::UtcNow -lt $guardDeadline) { Start-Sleep -Seconds 2 }
+            } while (-not $complete -and [DateTime]::UtcNow -lt $guardDeadline)
+        }
+        else {
+            do {
+                $guardWorker = Start-Process -FilePath $guardExecutable -ArgumentList @('--execute', '--settings',
+                    ('"' + $guardSettingsPath + '"'), '--journal', ('"' + $guardJournalPath + '"')) `
+                    -WindowStyle Hidden -PassThru
+                while (-not $guardWorker.HasExited -and [DateTime]::UtcNow -lt $guardDeadline) {
+                    Start-Sleep -Milliseconds 200
+                }
+                if (-not $guardWorker.HasExited) { throw 'E2EGuardWorkerDidNotExitBeforeDeadline' }
+                $guardWorkerRuns++
+                if ($guardWorker.ExitCode -ne 0) { throw "E2EGuardWorkerExit:$($guardWorker.ExitCode)" }
+                $state = $guardStore.Read()
+                $complete = $null -ne $state.Transaction -and $state.Transaction.Stage.ToString() -eq 'Complete' -and
+                    $state.Transaction.OwnershipReleased
+                if (-not $complete -and [DateTime]::UtcNow -lt $guardDeadline) { Start-Sleep -Seconds 2 }
+            } while (-not $complete -and [DateTime]::UtcNow -lt $guardDeadline)
+        }
+        if (-not $complete) { throw 'Guard recovery did not reach durable Complete' }
+        if ($GuardViaSystemTask) {
+            $executionRecords = @(Get-Content -LiteralPath $executionEventPath | ForEach-Object { $_ | ConvertFrom-Json } |
+                Where-Object { [DateTime]::Parse($_.ObservedUtc).ToUniversalTime() -ge $mainKilledUtc })
+            $executionDecisions = @($executionRecords | ForEach-Object { [string]$_.Decision })
+            $executionInfo = Get-ScheduledTaskInfo -TaskName $guardExecutionTaskName -TaskPath '\'
+            $requiredDecisions = @('ClaimCommitted', 'ActionCompleted:SafeStop', 'ActionCompleted:Launch', 'RecoveryCompleted')
+            $missingDecisions = @($requiredDecisions | Where-Object { $executionDecisions -notcontains $_ })
+            Add-Result 'GuardExecutionTaskInvocation' (
+                $executionInfo.LastTaskResult -eq 0 -and
+                $executionInfo.LastRunTime.ToUniversalTime() -ge $mainKilledUtc -and
+                $missingDecisions.Count -eq 0) (
+                'LastRun=' + $executionInfo.LastRunTime.ToString('O') +
+                ';LastResult=' + $executionInfo.LastTaskResult +
+                ';Records=' + $executionRecords.Count +
+                ';Missing=' + ($missingDecisions -join ','))
+        }
+        else {
+            Add-Result 'GuardExecutionCycles' ($guardWorkerRuns -ge 2) "Count=$guardWorkerRuns"
+        }
+        $after = $guardStore.Read()
+        if ($after.Intent.AuthorizationId -ne $before.Intent.AuthorizationId -or
+            $after.Intent.RootRunId -ne $before.Intent.RootRunId -or
+            $after.Intent.MainProcess.ProcessId -eq $oldMainPid -or
+            $after.Transaction.VerifiedBusinessCommitCount -lt 2) { throw 'E2EGuardRecoveryIdentityOrProgressMismatch' }
+        Add-Result 'GuardRecoveredAndVerified' $true (
+            'Transaction=' + $after.Transaction.TransactionId + ';MainPID=' + $after.Intent.MainProcess.ProcessId)
+        $snapshot = $guardStore.ReadSnapshot()
+        Wait-Until { $guardStore.ReadSnapshot().Sequence -gt $snapshot.Sequence } 20 'Recovered fixture stopped committing' | Out-Null
+        Add-Result 'RecoveredContinuousProgress' $true 'Durable fixture commits continued after Complete'
+        $intent = $guardStore.Read().Intent
+        [void]$guardStore.SetOperatorIntent($intent.AuthorizationId, $intent.IntentVersion,
+            [MTTFTest.RecoveryControl.RecoveryDesiredState]::Stopped, 'E2EOperatorStop')
+        $recovered = @(Get-ExactProcess 'MTTFTest' (Join-Path $package 'MTTFTest.exe'))
+        Add-Result 'ExactlyOneRecoveredMain' ($recovered.Count -eq 1) ('Count=' + $recovered.Count)
+        Stop-ExactProcess $recovered[0] | Out-Null
+        Start-Sleep -Seconds 10
+        Add-Result 'OperatorStopPreventsRelaunch' (
+            @(Get-ExactProcess 'MTTFTest' (Join-Path $package 'MTTFTest.exe')).Count -eq 0 -and
+            $guardStore.Read().Intent.DesiredState.ToString() -eq 'Stopped') 'Observed for 10 seconds after explicit stop'
+        if ($GuardViaSystemTask) {
+            $result.recoveryGuardAutomaticRecoveryVerified = $true
+            $result.systemGuardTaskVerified = $true
+        }
+        else { $result.guardDirectWorkerRecoveryVerified = $true }
+    } else {
     $supervisorPid = [int](Get-CimInstance Win32_Service -Filter "Name='$serviceName'").ProcessId
     $hostProcess = @(Get-ExactProcess 'MTTFTest.Watchdog' $watchdog |
         Where-Object { $_.Id -ne $supervisorPid }) | Select-Object -First 1
@@ -394,9 +675,13 @@ try {
     }
     Add-Result 'ExactlyOneEffectivePermit' ($activePermits -eq 1) `
         "Count=$activePermits"
+    }
     $result.passed = $true
 }
 finally {
+    if ($null -ne $guardWorker -and -not $guardWorker.HasExited) {
+        try { Stop-ExactProcess $guardWorker | Out-Null } catch { }
+    }
     try {
         New-Item -ItemType Directory -Path $evidence -Force | Out-Null
         $result.completedUtc = [DateTime]::UtcNow.ToString('O')
@@ -407,8 +692,43 @@ finally {
                 -Destination (Join-Path $evidence 'ProgramData-MTTFTest') `
                 -Recurse -Force
         }
+        if ($createdGuardTasks -and (Test-Path -LiteralPath $guardStateRoot)) {
+            Copy-Item -LiteralPath $guardStateRoot `
+                -Destination (Join-Path $evidence 'ProgramData-MTTFTestRecoveryGuard') `
+                -Recurse -Force
+        }
     }
     finally {
+        if ($createdGuardTasks) {
+            $expectedGuardExecutable = Join-Path $package 'MTTFTest.RecoveryGuard.exe'
+            foreach ($guardTaskName in @($guardScanTaskName, $guardExecutionTaskName)) {
+                $guardTask = Get-ScheduledTask -TaskName $guardTaskName -TaskPath '\' -ErrorAction SilentlyContinue
+                if ($guardTask) {
+                    $actions = @($guardTask.Actions)
+                    if ($actions.Count -ne 1 -or
+                        [IO.Path]::GetFullPath($actions[0].Execute) -ne [IO.Path]::GetFullPath($expectedGuardExecutable)) {
+                        throw "E2E Guard task ownership changed: $guardTaskName"
+                    }
+                    Disable-ScheduledTask -TaskName $guardTaskName -TaskPath '\' | Out-Null
+                    if ($guardTask.State -eq 'Running') {
+                        Stop-ScheduledTask -TaskName $guardTaskName -TaskPath '\'
+                    }
+                    Unregister-ScheduledTask -TaskName $guardTaskName -TaskPath '\' -Confirm:$false
+                }
+            }
+            if (@(Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -in @($guardScanTaskName, $guardExecutionTaskName)).Count -ne 0) {
+                throw 'E2E Guard tasks were not removed.'
+            }
+            if (Test-Path -LiteralPath $guardStateRoot) {
+                $resolvedGuardState = [IO.Path]::GetFullPath($guardStateRoot)
+                $expectedGuardState = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'MTTFTestRecoveryGuard'))
+                if ($resolvedGuardState -ne $expectedGuardState -or
+                    $resolvedGuardState -eq [IO.Path]::GetPathRoot($resolvedGuardState)) {
+                    throw 'E2E Guard state cleanup path mismatch.'
+                }
+                Remove-Item -LiteralPath $resolvedGuardState -Recurse -Force
+            }
+        }
         if ($createdTask) {
         try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue }
         catch { }

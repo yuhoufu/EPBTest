@@ -1,0 +1,14 @@
+{
+  "SchemaVersion": 1,
+  "Mode": 0,
+  "ScanSeconds": 60,
+  "SnapshotMaxAgeSeconds": 120,
+  "BusinessStallSeconds": 600,
+  "FirstAdmissionSeconds": 900,
+  "SupervisionExpirySeconds": 3600,
+  "ConfirmationCount": 2,
+  "StageTimeoutSeconds": 120,
+  "VerificationTimeoutSeconds": 300,
+  "OwnerLeaseSeconds": 180,
+  "CooldownSeconds": 600
+}

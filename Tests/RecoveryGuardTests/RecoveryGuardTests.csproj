@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">AnyCPU</Platform>
+    <ProjectGuid>{5A719686-B03D-452B-A19F-CA66175CBB8B}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RecoveryGuardTests</RootNamespace>
+    <AssemblyName>RecoveryGuardTests</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>9</LangVersion>
+    <Deterministic>true</Deterministic>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols Condition="'$(Configuration)' == 'Debug'">true</DebugSymbols>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\MTTFTest.RecoveryGuard\MTTFTest.RecoveryGuard.csproj">
+      <Name>MTTFTest.RecoveryGuard</Name>
+    </ProjectReference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Web.Extensions" />
+    <Compile Include="Program.cs" />
+    <ProjectReference Include="..\..\RecoveryControl\RecoveryControl.csproj">
+      <Project>{DBBB1D9E-7969-4ECB-A11F-A39C8E415470}</Project>
+      <Name>RecoveryControl</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

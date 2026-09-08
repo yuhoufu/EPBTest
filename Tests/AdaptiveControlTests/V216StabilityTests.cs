@@ -274,8 +274,16 @@ namespace AdaptiveControlTests
                 fixture.Manager.RevokeExecutionForExternalRecovery("V216InjectedRevocation");
                 try { task.GetAwaiter().GetResult(); }
                 catch (OperationCanceledException) { }
+                catch (InvalidOperationException ex) when (fixture.Manager.RequiresProcessRestart &&
+                    ex.Message == "EPB[4] 启动定位恢复worker启动许可被拒绝。")
+                {
+                    // Recovering is published before Start(). Revocation may
+                    // win in that interval: refusal to start is also the correct
+                    // safe result, rather than cancellation of an active worker.
+                }
                 Assert(fixture.Manager.RequiresProcessRestart && fixture.State(4).ReasonCode != "StartupPositioningRetryReady",
                     "撤权后重试重新授权");
+                Assert(!fixture.Manager.HasActiveRecoveryContract(4, 41), "撤权后owner残留");
                 Console.WriteLine("PASS V216 T02 真实外部撤权与启动重试竞争保持禁止上电");
             }
         }

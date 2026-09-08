@@ -8,11 +8,11 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class SessionAgentProtocol
     {
-        public const int SchemaVersion = 7;
-        public const string PipePrefix = "MTTFTestSessionAgent.Launch.v7.";
+        public const int SchemaVersion = 8;
+        public const string PipePrefix = "MTTFTestSessionAgent.Launch.v8.";
         public const int RegisteredDesktopSessionId = -1;
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes(
-            "MTTFTest.SessionAgent.LaunchCapability.Schema7");
+            "MTTFTest.SessionAgent.LaunchCapability.Schema8");
 
         public const string CapabilityArgument = "--supervisor-launch-capability";
         public const string NonceArgument = "--supervisor-launch-nonce";
@@ -85,6 +85,10 @@ namespace MTTFTest.Watchdog.Protocol
         public long ExpiresUtcTicks { get; set; }
         public int IssuerProcessId { get; set; }
         public long IssuerProcessStartUtcTicks { get; set; }
+        public bool IsRecoveryLaunch { get; set; }
+        // Signed opaque external-control contract. Keeping the wire payload here
+        // avoids adding state-store dependencies to SafetyAgent via Protocol.
+        public string RecoveryFenceJson { get; set; } = string.Empty;
 
         public bool IsStructurallyValid()
         {
@@ -105,7 +109,8 @@ namespace MTTFTest.Watchdog.Protocol
                    WatchdogProcessIdentityPolicy.IsValidChallengeNonce(LaunchNonce) &&
                    IssuedUtcTicks > 0 && ExpiresUtcTicks > IssuedUtcTicks &&
                    ExpiresUtcTicks <= IssuedUtcTicks + TimeSpan.FromMinutes(2).Ticks &&
-                   IssuerProcessId > 0 && IssuerProcessStartUtcTicks > 0;
+                   IssuerProcessId > 0 && IssuerProcessStartUtcTicks > 0 &&
+                   (RecoveryFenceJson ?? string.Empty).Length <= 4096;
         }
 
         public string ToCanonicalString()
@@ -126,13 +131,15 @@ namespace MTTFTest.Watchdog.Protocol
                 IssuedUtcTicks.ToString(),
                 ExpiresUtcTicks.ToString(),
                 IssuerProcessId.ToString(),
-                IssuerProcessStartUtcTicks.ToString()
+                IssuerProcessStartUtcTicks.ToString(),
+                IsRecoveryLaunch.ToString(),
+                RecoveryFenceJson ?? string.Empty
             });
         }
 
         public void WriteTo(BinaryWriter writer, byte[] seal)
         {
-            writer.Write("MTTF-SESSION-AGENT-REQUEST-V7-V217");
+            writer.Write("MTTF-SESSION-AGENT-REQUEST-V8-V300");
             writer.Write(SchemaVersion);
             writer.Write(CapabilityId ?? string.Empty);
             writer.Write(SessionId ?? string.Empty);
@@ -149,6 +156,8 @@ namespace MTTFTest.Watchdog.Protocol
             writer.Write(ExpiresUtcTicks);
             writer.Write(IssuerProcessId);
             writer.Write(IssuerProcessStartUtcTicks);
+            writer.Write(IsRecoveryLaunch);
+            writer.Write(RecoveryFenceJson ?? string.Empty);
             writer.Write(seal?.Length ?? 0);
             if (seal != null) writer.Write(seal);
             writer.Flush();
@@ -160,7 +169,7 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (!string.Equals(
                     reader.ReadString(),
-                    "MTTF-SESSION-AGENT-REQUEST-V7-V217",
+                    "MTTF-SESSION-AGENT-REQUEST-V8-V300",
                     StringComparison.Ordinal))
                 throw new InvalidDataException("SessionAgentRequestMagicMismatch");
             var result = new SessionLaunchCapability
@@ -180,8 +189,12 @@ namespace MTTFTest.Watchdog.Protocol
                 IssuedUtcTicks = reader.ReadInt64(),
                 ExpiresUtcTicks = reader.ReadInt64(),
                 IssuerProcessId = reader.ReadInt32(),
-                IssuerProcessStartUtcTicks = reader.ReadInt64()
+                IssuerProcessStartUtcTicks = reader.ReadInt64(),
+                IsRecoveryLaunch = reader.ReadBoolean()
             };
+            var fenceJson = reader.ReadString();
+            if (fenceJson.Length > 4096) throw new InvalidDataException("RecoveryFenceOversized");
+            result.RecoveryFenceJson = fenceJson;
             var length = reader.ReadInt32();
             if (length <= 0 || length > 64 * 1024)
                 throw new InvalidDataException("SessionAgentSealLengthInvalid");
@@ -254,6 +267,7 @@ namespace MTTFTest.Watchdog.Protocol
         public long ConsumedUtcTicks { get; set; }
         public int ProcessId { get; set; }
         public long ProcessStartUtcTicks { get; set; }
+        public string ProcessBootId { get; set; }
     }
 
     public sealed class SupervisorMainLaunchRequest

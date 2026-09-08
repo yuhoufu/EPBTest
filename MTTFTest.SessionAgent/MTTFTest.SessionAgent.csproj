@@ -36,5 +36,6 @@
       <Name>Watchdog.Protocol</Name>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup><ProjectReference Include="..\RecoveryControl\RecoveryControl.csproj"><Name>MTTFTest.RecoveryControl</Name></ProjectReference></ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

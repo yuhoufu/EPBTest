@@ -451,6 +451,7 @@ UPDATE cycle_receipts SET mechanical=1,completed_at=COALESCE(completed_at,@at) W
 UPDATE epb_cycles SET mechanical_completed=1,mechanical_completed_at=COALESCE(mechanical_completed_at,@at) WHERE epb_id=@ch AND cycle_number=@cy;";
             cmd.ExecuteNonQuery();
             tx.Commit();
+            if (first) PublishRecoveryCommit(channel, 1, 0, 0);
         }
         lock (_rawJournalGate)
         {
@@ -468,11 +469,16 @@ UPDATE epb_cycles SET mechanical_completed=1,mechanical_completed_at=COALESCE(me
         {
             using var cmd = _conn.CreateCommand();
             cmd.Transaction = _activeBatchTransaction;
+            cmd.Parameters.AddWithValue("@ch", channel); cmd.Parameters.AddWithValue("@cy", cycle);
+            cmd.CommandText = "SELECT status FROM cycle_receipts WHERE epb_id=@ch AND cycle_number=@cy;";
+            var previousStatus = Convert.ToString(cmd.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
             cmd.CommandText = @"INSERT OR IGNORE INTO cycle_receipts(epb_id,cycle_number) VALUES(@ch,@cy);
 UPDATE cycle_receipts SET status=(SELECT status FROM epb_cycles WHERE epb_id=@ch AND cycle_number=@cy)
 WHERE epb_id=@ch AND cycle_number=@cy;";
-            cmd.Parameters.AddWithValue("@ch", channel); cmd.Parameters.AddWithValue("@cy", cycle);
             cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT status FROM cycle_receipts WHERE epb_id=@ch AND cycle_number=@cy;";
+            var status = Convert.ToString(cmd.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+            StageRecoveryTerminalCommit(channel, previousStatus, status);
         }
     }
 

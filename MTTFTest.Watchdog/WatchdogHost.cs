@@ -1632,6 +1632,9 @@ namespace MTTFTest.Watchdog
                             RecordEvent(
                                 "RecoveryAttachRejected",
                                 recoveryAttachFailure ?? "RecoveryAttachPermitInvalid");
+                            if ((recoveryAttachFailure ?? string.Empty).StartsWith(
+                                    "RecoveryGuardAttachmentDeferred:", StringComparison.Ordinal))
+                                break; // Rejected attachment cannot poison the Guard's current permit.
                             BlockLaunchOutcomeUnknown(
                                 recoveryAttachFailure ?? "RecoveryAttachPermitInvalid");
                             Send(
@@ -5185,6 +5188,9 @@ namespace MTTFTest.Watchdog
                 failure = "RecoveryAttachPermitMissing";
                 return false;
             }
+            if (!_relaunchCoordinator.TryRefreshGuardCreatedProcess(session.RelaunchGeneration,
+                session.RelaunchPermitId, session.RelaunchPermitNonce, session.ProcessId, session.ProcessStartUtcTicks, out failure, out var guardAttachment))
+                return false;
             var record = _relaunchCoordinator.Snapshot;
             if (record == null ||
                 record.Generation != session.RelaunchGeneration ||
@@ -5217,6 +5223,13 @@ namespace MTTFTest.Watchdog
                     failure = "RecoveryAttachProcessIdentityMismatch";
                     return false;
                 }
+                if (!AdvanceReplacementState(record.Generation, record.PermitId, RecoveryReplacementState.Attached,
+                    "Existing authenticated attachment reconciled"))
+                {
+                    failure = (guardAttachment ? "RecoveryGuardAttachmentDeferred:" : string.Empty) +
+                        "ReplacementTransactionPersistFailed:Attached";
+                    return false;
+                }
                 return true;
             }
             var result = ExecuteAuthorityTransitionWithBusyRetry(
@@ -5244,7 +5257,8 @@ namespace MTTFTest.Watchdog
                         RecoveryReplacementState.Attached,
                         "Authenticated recovery process attached"))
                 {
-                    failure = "ReplacementTransactionPersistFailed:Attached";
+                    failure = (guardAttachment ? "RecoveryGuardAttachmentDeferred:" : string.Empty) +
+                        "ReplacementTransactionPersistFailed:Attached";
                     return false;
                 }
                 return true;

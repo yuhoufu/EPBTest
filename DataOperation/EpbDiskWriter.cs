@@ -371,6 +371,9 @@ public sealed partial class EpbDiskWriter : IDisposable
         using var receipts = _conn.CreateCommand();
         receipts.CommandText = "UPDATE cycle_receipts SET status=(SELECT status FROM epb_cycles c WHERE c.epb_id=cycle_receipts.epb_id AND c.cycle_number=cycle_receipts.cycle_number) WHERE status='running' AND EXISTS(SELECT 1 FROM epb_cycles c WHERE c.epb_id=cycle_receipts.epb_id AND c.cycle_number=cycle_receipts.cycle_number);";
         receipts.ExecuteNonQuery();
+        // Startup replay repairs historical receipts; it is not progress by
+        // this process's newly authorized trial.
+        Array.Clear(_recoveryCommittedProgress, 0, _recoveryCommittedProgress.Length);
     }
 
     /// <summary>
@@ -1865,6 +1868,7 @@ public sealed partial class EpbDiskWriter : IDisposable
                     Interlocked.Increment(ref _progressCheckpointTransactionCount);
                     using var transaction = _conn.BeginTransaction();
                     _activeBatchTransaction = transaction;
+                    ClearRecoveryPendingCommits();
                     try
                     {
                         for (var i = 0; i < channelCount; i++)
@@ -1884,12 +1888,13 @@ public sealed partial class EpbDiskWriter : IDisposable
                                 WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
                         }
                         var commitStarted = Stopwatch.GetTimestamp();
-                        try { transaction.Commit(); }
+                        try { transaction.Commit(); PublishRecoveryBatchCommits(); }
                         finally { if (timing != null) timing.IndexCommitMs += ElapsedWriteMs(commitStarted); }
                     }
                     finally
                     {
                         _activeBatchTransaction = null;
+                        ClearRecoveryPendingCommits();
                     }
                 }
             }
@@ -4407,7 +4412,7 @@ public interface IMechanicalCycleRecorder
 /// </summary>
 public interface IRawJournalCycleRecorder { }
 
-public sealed class DiskWriterRecorderAdapter : IMechanicalReceiptRecorder, IRawJournalCycleRecorder, IEpbCycleRecorder, ISequencedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder
+public sealed class DiskWriterRecorderAdapter : IMechanicalReceiptRecorder, IRawJournalCycleRecorder, IEpbCycleRecorder, ISequencedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder, ICommittedCycleProgressSource
 {
     private readonly EpbDiskWriter _writer;
 
@@ -4578,6 +4583,9 @@ public sealed class DiskWriterRecorderAdapter : IMechanicalReceiptRecorder, IRaw
 
     public long GetMechanicalCycleCompletedCount(int epbId)
         => _writer.GetMechanicalCycleCompletedCount(epbId);
+
+    public EpbCommittedProgress CaptureCommittedCycleProgress(int channel)
+        => _writer.CaptureCommittedCycleProgress(channel);
 
     public DateTime? GetLastMechanicalCycleCompletedUtc(int epbId)
         => _writer.GetLastMechanicalCycleCompletedUtc(epbId);

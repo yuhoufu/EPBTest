@@ -492,8 +492,8 @@ namespace Controller
         public static int SelectUnattendedProcessRestartRetryDelayMs(int completedAttempts)
         {
             // 第一次交接失败后快速复核安全/耐久状态；第二次失败后给磁盘、DAQ
-            // 及操作系统资源更长的收敛时间。第三次已经耗尽既有10分钟预算，
-            // 调用方不得再进入此退避分支。
+            // 及操作系统资源更长的收敛时间。预算耗尽后仍允许进入下一轮登记，
+            // 由登记入口返回冷却期限；次数本身不撤销人工续测授权。
             return completedAttempts <= 1 ? 5_000 : 15_000;
         }
 

@@ -50,6 +50,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="RecoveryGuardRuntimeTests.cs" />
+    <Compile Include="RecoveryGuardSupervisorTests.cs" />
+    <Compile Include="SafetyAgentReconciliationTests.cs" />
+    <Compile Include="RecoveryLaunchReconciliationTests.cs" />
     <Compile Include="CheckpointDisarmInvariantsTests.cs" />
     <Compile Include="V216StabilityTests.cs" />
     <Compile Include="V217StabilityTests.cs" />
@@ -124,6 +128,9 @@
     </None>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\RecoveryControl\RecoveryControl.csproj">
+      <Name>MTTFTest.RecoveryControl</Name>
+    </ProjectReference>
     <ProjectReference Include="..\..\Config\Config.csproj">
       <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
       <Name>Config</Name>

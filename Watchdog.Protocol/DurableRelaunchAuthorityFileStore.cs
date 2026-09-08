@@ -257,6 +257,11 @@ namespace MTTFTest.Watchdog.Protocol
         public DurableAuthorityStoreCommitResult TryOpenAutomaticHalfOpen(
             string expectedFailureFingerprint,
             int expectedConsecutiveFailures)
+            => TryOpenAutomaticHalfOpen(expectedFailureFingerprint, expectedConsecutiveFailures, null, null);
+
+        public DurableAuthorityStoreCommitResult TryOpenAutomaticHalfOpen(
+            string expectedFailureFingerprint, int expectedConsecutiveFailures,
+            long? expectedRevision, string expectedSha256)
         {
             Mutex mutex = null;
             var held = false;
@@ -270,6 +275,9 @@ namespace MTTFTest.Watchdog.Protocol
                 if (current == null || current.Record == null || current.Blocked || current.Unproven)
                     return ReadFailureCommit(current);
                 var record = current.Record;
+                if ((expectedRevision.HasValue && current.Revision != expectedRevision.Value) ||
+                    (expectedSha256 != null && !string.Equals(current.Sha256, expectedSha256, StringComparison.Ordinal)))
+                    return Result(DurableAuthorityCommitStatus.Conflict, "HalfOpenAuthorityChanged");
                 if (record.State != DurableRelaunchPermitState.Blocked ||
                     !record.CircuitOpen)
                     return Result(DurableAuthorityCommitStatus.Conflict, "CircuitNotOpen");

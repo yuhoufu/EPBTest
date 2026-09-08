@@ -1042,7 +1042,11 @@ namespace AdaptiveControlTests
                 var coordinator = new HydraulicRecoveryOwnershipCoordinator();
                 var hydraulic = await coordinator.AcquireAsync(
                     2, "HYDRAULIC:2", RecoveryOwnerPriority.Hydraulic, 1000, CancellationToken.None);
-                var oldOwnerExited = new TaskCompletionSource<bool>(
+                var cleanupEntered = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var allowCleanup = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var oldOwnerCleanupCompleted = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
                 var hydraulicTask = Task.Run(async () =>
                 {
@@ -1053,17 +1057,31 @@ namespace AdaptiveControlTests
                     catch (OperationCanceledException) { }
                     finally
                     {
+                        cleanupEntered.TrySetResult(true);
+                        await allowCleanup.Task;
+                        // Dispose publishes lease release. Cleanup that the
+                        // successor must wait for has to precede that boundary;
+                        // Task.Yield cannot order bookkeeping after Dispose.
+                        oldOwnerCleanupCompleted.TrySetResult(true);
                         hydraulic.Dispose();
-                        oldOwnerExited.TrySetResult(true);
                     }
                 });
 
                 var clock = Stopwatch.StartNew();
-                using (var daq = await coordinator.AcquireAsync(
-                           2, "DAQ:Dev2", RecoveryOwnerPriority.Daq, 2000, CancellationToken.None))
+                var daqTask = coordinator.AcquireAsync(
+                    2, "DAQ:Dev2", RecoveryOwnerPriority.Daq, 2000, CancellationToken.None);
+                try
                 {
-                    Assert(oldOwnerExited.Task.IsCompleted,
-                        "DAQ取得所有权前未等待液压恢复明确退出");
+                    Assert(await Task.WhenAny(cleanupEntered.Task, Task.Delay(1000)) == cleanupEntered.Task,
+                        "液压旧所有者没有响应取消并进入清理");
+                    Assert(!daqTask.IsCompleted && coordinator.GetOwner(2) == "HYDRAULIC:2",
+                        "液压清理和租约释放前DAQ已取得所有权");
+                }
+                finally { allowCleanup.TrySetResult(true); }
+                using (var daq = await daqTask)
+                {
+                    Assert(oldOwnerCleanupCompleted.Task.IsCompleted,
+                        "DAQ取得所有权前未等待液压清理及租约释放");
                     Assert(coordinator.ActiveCount == 1,
                         "同一液压组出现多个恢复所有者");
                     Assert(coordinator.GetOwner(2) == "DAQ:Dev2",

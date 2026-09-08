@@ -488,6 +488,7 @@ $versionedComponents = @(
     $safetyAgentExePath,
     $safetyHardwarePath,
     $sessionAgentExePath,
+    (Join-Path $output 'MTTFTest.RecoveryControl.dll'),
     (Join-Path $output 'Controller.dll')
 )
 foreach ($component in $versionedComponents) {
@@ -781,6 +782,7 @@ $identity = [ordered]@{
     recoveryArchitectureGeneration = 'EPB-V2.17'
     fieldValidation = 'PENDING_USER_HARDWARE_AND_168H'
     watchdogSchema = 7
+    sessionAgentSchema = 8
     packageSlotSchema = 5
     componentIdentities = $componentIdentities
     verification = $verification
