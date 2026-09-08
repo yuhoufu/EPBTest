@@ -58,10 +58,23 @@ try {
             if (-not (Test-Path $launcher)) {throw '尚未安装，请先运行一键安装正式版.cmd。'}
             $target=Join-Path $root 'Current\MTTFTest.exe'
             $launchError=$log+'.launch.stderr'
-            $request=Start-Process -FilePath $launcher -ArgumentList ('--launch-main --main-executable "'+$target+'"') -WorkingDirectory (Split-Path $launcher -Parent) -WindowStyle Hidden -RedirectStandardError $launchError -PassThru
+            $startInfo=New-Object Diagnostics.ProcessStartInfo
+            $startInfo.FileName=$launcher
+            $startInfo.Arguments='--launch-main --main-executable "'+$target+'"'
+            $startInfo.WorkingDirectory=Split-Path $launcher -Parent
+            $startInfo.UseShellExecute=$false
+            $startInfo.CreateNoWindow=$true
+            $startInfo.RedirectStandardError=$true
+            $request=New-Object Diagnostics.Process
+            $request.StartInfo=$startInfo
+            if (-not $request.Start()) {throw '无法创建监督启动请求进程。'}
+            $stderr=$request.StandardError.ReadToEndAsync()
             if (-not $request.WaitForExit(45000)) {throw "监督启动请求尚未结束，PID=$($request.Id)。先核对运行状态，不要重复启动。"}
-            $request.Refresh()
-            if ($request.ExitCode -ne 0) {throw ("监督启动请求失败：$($request.ExitCode)。"+[IO.File]::ReadAllText($launchError))}
+            $exitCode=$request.ExitCode
+            $errorText=$stderr.GetAwaiter().GetResult()
+            [IO.File]::WriteAllText($launchError,$errorText)
+            $request.Dispose()
+            if ($exitCode -ne 0) {throw ("监督启动请求失败：$exitCode。"+$errorText)}
             Write-Host '监督启动请求已提交；请核对主窗口与运行状态，尚不代表试验已经运行。'
         }
         'Status' {
