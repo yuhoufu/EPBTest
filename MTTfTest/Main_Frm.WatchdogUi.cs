@@ -516,7 +516,14 @@ namespace MtEmbTest
             }
             lock (_watchdogExitGate)
             {
-                if (_watchdogCloseTask != null)
+                if (!WinFormsWatchdogUiCloseCoordinator.TryStartCloseAttempt(
+                        ref _watchdogCloseTask,
+                        () =>
+                        {
+                            UseWaitCursor = true;
+                            Text = BuildWindowTitle() + " - 正在安全退出…";
+                            return CompleteWatchdogCloseOnUiThreadAsync(reason);
+                        }))
                 {
                     UseWaitCursor = true;
                     Text = BuildWindowTitle() + " - 已加入同一安全退出事务";
@@ -526,9 +533,6 @@ namespace MtEmbTest
                         "独立看门狗");
                     return;
                 }
-                UseWaitCursor = true;
-                Text = BuildWindowTitle() + " - 正在安全退出…";
-                _watchdogCloseTask = CompleteWatchdogCloseOnUiThreadAsync(reason);
             }
         }
 

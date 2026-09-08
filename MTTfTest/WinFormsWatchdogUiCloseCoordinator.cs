@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 namespace MTEmbTest
 {
@@ -31,6 +32,15 @@ namespace MTEmbTest
 
     internal static class WinFormsWatchdogUiCloseCoordinator
     {
+        // Caller serializes admission on the UI thread / exit gate. A completed
+        // attempt is not a close receipt; retries must run authorization again.
+        internal static bool TryStartCloseAttempt(ref Task current, Func<Task> prepareAndAuthorize)
+        {
+            if (current != null && !current.IsCompleted) return false;
+            current = prepareAndAuthorize();
+            return true;
+        }
+
         internal static bool ShouldCoordinateMainClose(
             bool hasActiveEvidence,
             int mdiChildCount)

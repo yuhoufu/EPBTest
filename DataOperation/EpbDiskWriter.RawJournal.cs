@@ -82,6 +82,16 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
     private readonly PendingRawCheckpoint[] _pendingRawCheckpoints = new PendingRawCheckpoint[EPB_COUNT + 1];
     private Action<int> _rawCheckpointFlushTestHook;
     private long _rawJournalBytes;
+    // Owned by the channel gate, published only after the device FULL commit.
+    // Consumed by the immediately following ring write and cleared at batch exit.
+    private sealed class CommittedDeviceFrame
+    {
+        internal int Cycle, First, Count;
+        internal long Position, Generation;
+        internal byte[] Digest;
+    }
+    private readonly CommittedDeviceFrame[] _committedDeviceFrames = new CommittedDeviceFrame[EPB_COUNT + 1];
+    private Action _deviceRawCommittedTestHook;
     private sealed class RawFrame
     {
         public long Id, Position, Generation, Sequence;
@@ -108,6 +118,7 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
             {
                 if (_writeTiming != null) _writeTiming.RawGateWaitMs += ElapsedWriteMs(gateStarted);
                 var beforeBytes = _rawJournalBytes;
+                var committed = new Dictionary<int, CommittedDeviceFrame>();
                 using var tx = _rawJournal.BeginTransaction();
                 _rawJournalTransaction = tx;
                 try
@@ -136,12 +147,19 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
                             records[sample] = new SampleRecord { TimestampBinary = times[from + sample].ToLocalTime().ToBinary(),
                                 CycleNumber = state.CurrentCycle.Value, SampleIndex = state.CurrentSampleIndex + sample,
                                 EpbCurrent = channel.Currents[from + sample], GroupPressure = channel.Pressures[from + sample] };
-                        AppendRawJournal(channel.EpbId, state, records, accepted,
+                        var digest = AppendRawJournal(channel.EpbId, state, records, accepted,
                             state.SequenceBoundaryEnabled ? boundary.Sequence : (long?)null);
+                        committed[channel.EpbId] = new CommittedDeviceFrame
+                        {
+                            Cycle = records[0].CycleNumber, First = records[0].SampleIndex,
+                            Count = accepted, Position = state.TotalWritten % state.CapacityRecords,
+                            Generation = state.CurrentCycleGeneration, Digest = digest
+                        };
                     }
                     var commitStarted = Stopwatch.GetTimestamp();
                     try { tx.Commit(); }
                     finally { if (_writeTiming != null) _writeTiming.RawCommitMs += ElapsedWriteMs(commitStarted); }
+                    foreach (var item in committed) _committedDeviceFrames[item.Key] = item.Value;
                 }
                 catch { _rawJournalBytes = beforeBytes; throw; }
                 finally { _rawJournalTransaction = null; }
@@ -258,9 +276,19 @@ cycle INTEGER,reason TEXT,evidence BLOB,PRIMARY KEY(device,generation,sequence,c
         _rawJournalBytes = Convert.ToInt64(cmd.ExecuteScalar());
     }
 
-    private void AppendRawJournal(int channel, EpbState state, SampleRecord[] records, int count, long? batchSequence = null)
+    private byte[] AppendRawJournal(int channel, EpbState state, SampleRecord[] records, int count, long? batchSequence = null)
     {
-        if (count <= 0) return;
+        var started = Stopwatch.GetTimestamp();
+        try { return AppendRawJournalCore(channel, state, records, count, batchSequence); }
+        finally
+        {
+            if (_writeTiming != null) _writeTiming.RawAppendMs += ElapsedWriteMs(started);
+        }
+    }
+
+    private byte[] AppendRawJournalCore(int channel, EpbState state, SampleRecord[] records, int count, long? batchSequence)
+    {
+        if (count <= 0) return null;
         byte[] bytes;
         using (var stream = new MemoryStream(checked(count * SampleRecord.Size)))
         {
@@ -277,8 +305,20 @@ cycle INTEGER,reason TEXT,evidence BLOB,PRIMARY KEY(device,generation,sequence,c
         }
         using var sha = SHA256.Create();
         var digest = sha.ComputeHash(bytes);
+        var committed = _committedDeviceFrames[channel];
+        if (committed != null)
+        {
+            _committedDeviceFrames[channel] = null;
+            if (committed.Cycle != records[0].CycleNumber || committed.First != records[0].SampleIndex ||
+                committed.Count != count || committed.Position != state.TotalWritten % state.CapacityRecords ||
+                committed.Generation != state.CurrentCycleGeneration || !committed.Digest.SequenceEqual(digest))
+                throw new InvalidDataException("RawAttemptIdentityConflict: committed device frame differs");
+            return digest;
+        }
+        var gateStarted = Stopwatch.GetTimestamp();
         lock (_rawJournalGate)
         {
+            if (_writeTiming != null) _writeTiming.RawAppendGateWaitMs += ElapsedWriteMs(gateStarted);
             using var cmd = _rawJournal.CreateCommand();
             cmd.Transaction = _rawJournalTransaction;
             cmd.CommandText = "SELECT sha256 FROM raw_frames WHERE channel=@ch AND cycle=@cy AND first_sample=@first;";
@@ -290,7 +330,7 @@ cycle INTEGER,reason TEXT,evidence BLOB,PRIMARY KEY(device,generation,sequence,c
             {
                 if (!existing.SequenceEqual(digest))
                     throw new InvalidDataException("RawAttemptIdentityConflict: original evidence retained");
-                return;
+                return digest;
             }
             if (_rawJournalBytes + bytes.Length > Math.Max(SampleRecord.Size, _policy.RawJournalMaxBytes))
                 throw new IOException("RawJournalCapacityExceeded: unapplied evidence retained; safety pause required");
@@ -305,6 +345,7 @@ VALUES(@ch,@cy,@first,@pos,@count,@gen,@seq,@data,@sha);";
             cmd.ExecuteNonQuery(); // FULL synchronous commit: durable before MMF write.
             _rawJournalBytes += bytes.Length;
         }
+        return digest;
     }
 
     private List<RawFrame> ReadRawFrames(int channel)

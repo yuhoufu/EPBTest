@@ -24,6 +24,8 @@ namespace EpbDiskWriterTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--learning-timing-probe")
+                    return RunLearningTimingProbe();
                 if (args.Length == 4 &&
                     args[0].Equals("--recover", StringComparison.OrdinalIgnoreCase))
                     return RecoverCycles(args[1], int.Parse(args[2], CultureInfo.InvariantCulture), args[3]);

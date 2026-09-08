@@ -11,8 +11,64 @@ namespace EpbDiskWriterTests
 {
     internal static partial class Program
     {
+        private static int RunLearningTimingProbe()
+        {
+            // Isolated synthetic workload, never opens a field project or hardware.
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                policy.FileSizeMb = 100;
+                var timingGate = new object();
+                var slow = new System.Collections.Generic.List<EpbWriteTiming>();
+                long batches = 0;
+                double maximum = 0;
+                policy.WriteTimingSink = timing =>
+                {
+                    if (timing.Operation != "DeviceBatch") return;
+                    lock (timingGate)
+                    {
+                        batches++;
+                        maximum = Math.Max(maximum, timing.TotalMs);
+                        if (timing.TotalMs >= 50 && slow.Count < 200) slow.Add(timing);
+                    }
+                };
+                using var writer = new EpbDiskWriter(policy);
+                Task.WaitAll(new[] { new[] { 4, 5, 7 }, new[] { 8, 9, 12 } }.Select((channels, device) => Task.Run(() =>
+                {
+                    long sequence = 0;
+                    for (var lap = 1; lap <= 6; lap++)
+                    {
+                        var start = DateTime.UtcNow;
+                        foreach (var channel in channels) writer.BeginCycle(channel, -lap, start);
+                        var clock = System.Diagnostics.Stopwatch.StartNew();
+                        for (var batch = 0; batch < 500; batch++)
+                        {
+                            var timestamps = Enumerable.Range(0, 20)
+                                .Select(i => start.AddMilliseconds(batch * 10 + i * 0.5)).ToArray();
+                            var values = channels.Select(ch => new EpbChannelDiskBatch(ch,
+                                Enumerable.Repeat((double)ch, 20).ToArray(), new double[20])).ToArray();
+                            writer.WriteDeviceBatch("Probe" + device, 1, ++sequence, timestamps, values, 3, 20);
+                            var wait = (batch + 1) * 10 - (int)clock.ElapsedMilliseconds;
+                            if (wait > 0) Thread.Sleep(wait);
+                        }
+                        foreach (var channel in channels)
+                        {
+                            Assert(writer.GetCurrentCycleSampleCount(channel) == 10000, "学习探测样本数不一致");
+                            writer.CompleteCycle(channel, -lap, 10000, start.AddSeconds(5));
+                        }
+                    }
+                })).ToArray());
+                Console.WriteLine(System.FormattableString.Invariant($"LearningProbe Batches={batches};MaxMs={maximum:F3};CapturedSlow={slow.Count}"));
+                foreach (var t in slow.OrderByDescending(item => item.TotalMs).Take(20))
+                    Console.WriteLine(System.FormattableString.Invariant(
+                        $"Slow Device={t.Device};Sequence={t.Sequence};Total={t.TotalMs:F3};ChannelGate={t.ChannelGateWaitMs:F3};RawStage={t.RawStageMs:F3};RawAppend={t.RawAppendMs:F3};AppendGate={t.RawAppendGateWaitMs:F3};Remap={t.ViewRemapMs:F3};Write={t.RingWriteMs:F3};Checkpoint={t.CheckpointMs:F3};IndexCommit={t.IndexCommitMs:F3};Prune={t.RawPruneMs:F3}"));
+            });
+            return 0;
+        }
+
         private static void RunV217PersistenceTests()
         {
+            Run("V3 已提交帧复用拒绝变更且失败后可重试", CommittedDeviceFrameRejectsMutation);
             Run("V3 慢环形刷盘不阻塞后续圈且日志重放保留数据", SlowRingFlushPreservesReplayAndProgress);
             Run("V3 环形刷盘失败保留日志并可恢复", FailedRingFlushRetainsEvidence);
             Run("V3 学习批次合并耐久事务保持各通道时间切片", LearningBatchStagesExactSlices);
@@ -117,6 +173,35 @@ namespace EpbDiskWriterTests
             });
         }
 
+        private static void CommittedDeviceFrameRejectsMutation()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using var writer = new EpbDiskWriter(policy);
+                var time = DateTime.UtcNow;
+                writer.BeginCycle(4, -702, time);
+                var currents = new[] { 4d };
+                var batch = new[] { new EpbChannelDiskBatch(4, currents, new[] { 0d }) };
+                var hook = typeof(EpbDiskWriter).GetField("_deviceRawCommittedTestHook",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                hook.SetValue(writer, (Action)(() => currents[0] = 99));
+                var rejected = false;
+                try { writer.WriteDeviceBatch("Dev1", 1, 1, new[] { time }, batch, 1, 1); }
+                catch (InvalidDataException ex) { rejected = ex.Message.Contains("RawAttemptIdentityConflict"); }
+                Assert(rejected && writer.GetCurrentCycleSampleCount(4) == 0,
+                    "已提交凭据接受不同数据或提前推进计数");
+                hook.SetValue(writer, null);
+                currents[0] = 4;
+                writer.WriteDeviceBatch("Dev1", 1, 1, new[] { time }, batch, 1, 1);
+                Assert(writer.GetCurrentCycleSampleCount(4) == 1, "失败后遗留凭据阻止精确重试");
+                writer.CompleteCycle(4, -702, 1, time.AddMilliseconds(1));
+                var export = Path.Combine(root, "committed-retry");
+                writer.ExportCycleAttemptTo(4, -702, export, true, true);
+                AssertCsvCycle(export, 4, -702, 1);
+            });
+        }
+
         private static void LearningBatchStagesExactSlices()
         {
             WithRoot(root =>
@@ -136,6 +221,9 @@ namespace EpbDiskWriterTests
                 }, 2, 3);
                 Assert(observed.Succeeded && observed.RawStageMs > 0 && observed.RawCommitMs > 0,
                     "学习批次未走设备级耐久事务");
+                Assert(observed.RawAppendMs > 0 && observed.RawAppendGateWaitMs >= 0 &&
+                       observed.RingWriteMs > 0 && observed.RawAppendMs >= observed.RawAppendGateWaitMs,
+                    "学习批次遗漏原始日志追加或实际映射写入诊断");
                 Assert(writer.GetCurrentCycleSampleCount(4) == 2 && writer.GetCurrentCycleSampleCount(5) == 1,
                     "学习开始边界的时间切片改变");
                 writer.CompleteCycle(4, -701, 2, time.AddMilliseconds(3));

@@ -1834,6 +1834,7 @@ public sealed partial class EpbDiskWriter : IDisposable
                 var state = GetState(channels[i].EpbId);
                 var gateStarted = Stopwatch.GetTimestamp();
                 Monitor.Enter(state.Gate);
+                _committedDeviceFrames[channels[i].EpbId] = null;
                 if (timing != null) timing.ChannelGateWaitMs += ElapsedWriteMs(gateStarted);
                 snapshots[acquired] = new StateWriteSnapshot
                 {
@@ -1854,6 +1855,7 @@ public sealed partial class EpbDiskWriter : IDisposable
                         boundary.Value.Device, boundary.Value.Generation, boundary.Value.Sequence);
             if (boundary.HasValue)
                 StageDeviceRawJournal(boundary.Value, timestampsUtc, channels, channelCount, sampleCount);
+            _deviceRawCommittedTestHook?.Invoke();
             var needsProgressTransaction = false;
             var lastTimestampUtc = sampleCount > 0
                 ? timestampsUtc[Math.Min(sampleCount, timestampsUtc.Length) - 1]
@@ -1951,6 +1953,7 @@ public sealed partial class EpbDiskWriter : IDisposable
         {
             for (var i = acquired - 1; i >= 0; i--)
             {
+                _committedDeviceFrames[channels[i].EpbId] = null;
                 Monitor.Exit(lockedStates[i].Gate);
                 lockedStates[i] = null;
             }
@@ -3378,12 +3381,20 @@ SELECT COUNT(1)
 
         // 绝不先关旧视图。CreateViewAccessor 在 x86 地址空间紧张时可能失败；
         // 只有新视图已成功后才交换，从而避免将通道永久留在“已关闭访问器”状态。
-        var replacement = _mmfs[ch].CreateViewAccessor(newBase, newLen, MemoryMappedFileAccess.ReadWrite);
-        var previous = _views[ch];
-        _views[ch] = replacement;
-        _viewBaseOffsets[ch] = newBase;
-        _viewLengths[ch] = newLen;
-        previous?.Dispose();
+        var remapStarted = Stopwatch.GetTimestamp();
+        try
+        {
+            var replacement = _mmfs[ch].CreateViewAccessor(newBase, newLen, MemoryMappedFileAccess.ReadWrite);
+            var previous = _views[ch];
+            _views[ch] = replacement;
+            _viewBaseOffsets[ch] = newBase;
+            _viewLengths[ch] = newLen;
+            previous?.Dispose();
+        }
+        finally
+        {
+            if (_writeTiming != null) _writeTiming.ViewRemapMs += ElapsedWriteMs(remapStarted);
+        }
     }
 
     /// <summary>
@@ -3425,7 +3436,12 @@ SELECT COUNT(1)
         var bytes = (long)count * SampleRecord.Size;
         EnsureViewCovers(epbId, fileOffset, bytes);
         var viewOffset = fileOffset - _viewBaseOffsets[epbId];
-        _views[epbId].WriteArray(viewOffset, records, sourceIndex, count);
+        var writeStarted = Stopwatch.GetTimestamp();
+        try { _views[epbId].WriteArray(viewOffset, records, sourceIndex, count); }
+        finally
+        {
+            if (_writeTiming != null) _writeTiming.RingWriteMs += ElapsedWriteMs(writeStarted);
+        }
     }
 
     /// <summary>
