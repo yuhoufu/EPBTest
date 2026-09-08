@@ -165,17 +165,27 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
         @($identity.files).Count -eq 0) {
         throw "安装包身份不完整：$directoryFull"
     }
+    $packageVersion = [Version]$identity.fileVersion
+    $isGuardRelease = $packageVersion -eq [Version]'3.0.0.0'
+    $isLegacyRelease = $packageVersion.Major -eq 2 -and $packageVersion.Minor -eq 17
+    $expectedComponents = @('MTTFTest.exe', 'Controller.dll', 'MTTFTest.Watchdog.exe',
+        'MTTFTest.SafetyAgent.exe', 'MTTFTest.SessionAgent.exe', 'MTTFTest.SafetyHardware.dll',
+        'MTTFTest.Watchdog.Protocol.dll', 'MTTFTest.Watchdog.Client.dll')
+    if ($isGuardRelease) { $expectedComponents += 'MTTFTest.RecoveryControl.dll' }
     if ([string]$identity.recoveryArchitectureGeneration -ne 'EPB-V2.17' -or
         [int]$identity.watchdogSchema -ne 7 -or
         [string]$identity.releaseStatus -ne 'FORMAL_RELEASE' -or
         -not [bool]$identity.deploymentApproved -or
-        ([Version]$identity.fileVersion).Major -ne 2 -or
-        ([Version]$identity.fileVersion).Minor -ne 17 -or
-        @($identity.componentIdentities).Count -ne 8) {
-        throw "拒绝旧许可、V3 混装或非正式包：$directoryFull"
+        (-not $isGuardRelease -and -not $isLegacyRelease) -or
+        ($isGuardRelease -and [int]$identity.sessionAgentSchema -ne 8) -or
+        @($identity.componentIdentities).Count -ne $expectedComponents.Count) {
+        throw "拒绝不兼容协议、组件架构混装或非正式包：$directoryFull"
     }
+    $componentNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($component in @($identity.componentIdentities)) {
-        if ([string]$component.fileVersion -ne [string]$identity.fileVersion -or
+        if ([string]$component.name -notin $expectedComponents -or
+            -not $componentNames.Add([string]$component.name) -or
+            [string]$component.fileVersion -ne [string]$identity.fileVersion -or
             [IO.Path]::GetFileName([string]$component.name) -ne [string]$component.name -or
             (Get-Item -LiteralPath (Join-Path $directoryFull ([string]$component.name))).VersionInfo.FileVersion -ne [string]$identity.fileVersion) {
             throw "正式组件版本混装：$($component.name)"
