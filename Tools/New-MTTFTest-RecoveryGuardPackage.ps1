@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = '',
+    [string]$MainReleaseDirectory = '',
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
     [switch]$SkipBuild
 )
@@ -47,6 +48,20 @@ function Get-GuardPackageSourceSnapshot([string]$Repository) {
 $sourceSnapshot = Get-GuardPackageSourceSnapshot $repo
 [xml]$versionSource = Get-Content -LiteralPath (Join-Path $repo 'Build\UnattendedVersion.props')
 $version = [string]$versionSource.Project.PropertyGroup.UnattendedProductVersion
+$sharedSource = $null
+if (-not [string]::IsNullOrWhiteSpace($MainReleaseDirectory)) {
+    if ($Configuration -ne 'Release' -or $SkipBuild) { throw '同源Main共享组件要求Release实际构建。' }
+    $MainReleaseDirectory = [IO.Path]::GetFullPath($MainReleaseDirectory)
+    & (Join-Path $PSScriptRoot 'Verify-Release.ps1') -ReleaseDirectory $MainReleaseDirectory | Out-Null
+    $mainIdentity = Get-Content (Join-Path $MainReleaseDirectory 'build-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $sourceCommit = ([string](& git -C $repo rev-parse HEAD)).Trim()
+    if ($mainIdentity.gitCommit -ne $sourceCommit -or $mainIdentity.gitDirty -ne $false -or
+        $mainIdentity.fileVersion -ne $version -or @(& git -C $repo status --porcelain).Count -ne 0) {
+        throw '共享组件必须来自当前干净提交的同版本Main正式包。'
+    }
+    $sharedSource = Join-Path $MainReleaseDirectory 'MTTFTest.RecoveryControl.dll'
+    $sharedSourceHash = (Get-FileHash -LiteralPath $sharedSource).Hash
+}
 if (-not $SkipBuild) {
     $msbuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe'
     if (-not (Test-Path -LiteralPath $msbuild)) { $msbuild = (Get-Command msbuild.exe -ErrorAction Stop).Source }
@@ -66,8 +81,16 @@ foreach ($name in @('MTTFTest.RecoveryGuard.exe', 'MTTFTest.RecoveryControl.dll'
 }
 [void](New-Item -ItemType Directory -Path $output)
 foreach ($name in @('MTTFTest.RecoveryGuard.exe', 'MTTFTest.RecoveryControl.dll')) {
-    Copy-Item -LiteralPath (Join-Path $binaryRoot $name) -Destination $output
-    Copy-Item -LiteralPath ([IO.Path]::ChangeExtension((Join-Path $binaryRoot $name), '.pdb')) -Destination $output
+    $source = Join-Path $binaryRoot $name
+    if ($name -eq 'MTTFTest.RecoveryControl.dll' -and $null -ne $sharedSource) { $source = $sharedSource }
+    Copy-Item -LiteralPath $source -Destination $output
+    Copy-Item -LiteralPath ([IO.Path]::ChangeExtension($source, '.pdb')) -Destination $output
+}
+if ($null -ne $sharedSource) {
+    & (Join-Path $PSScriptRoot 'Verify-Release.ps1') -ReleaseDirectory $MainReleaseDirectory | Out-Null
+    if ((Get-FileHash -LiteralPath (Join-Path $output 'MTTFTest.RecoveryControl.dll')).Hash -ne $sharedSourceHash) {
+        throw '复制后的共享组件不匹配已校验Main。'
+    }
 }
 Copy-Item -LiteralPath (Join-Path $repo 'MTTFTest.RecoveryGuard\guard-settings.example.json') -Destination (Join-Path $output 'guard-settings.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-MTTFTest-RecoveryGuard.ps1') -Destination $output
@@ -83,6 +106,7 @@ $identity = [ordered]@{
     gitCommit = [string](& git -C $repo rev-parse HEAD)
     gitDirty = [bool](@(& git -C $repo status --porcelain).Count)
     sourceSnapshot = $sourceSnapshot; builtFromVerifiedInputs = -not [bool]$SkipBuild
+    sharedComponentSource = $MainReleaseDirectory
     builtUtc = [DateTime]::UtcNow.ToString('O'); files = $files
 }
 $identity | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $output 'guard-identity.json') -Encoding UTF8
