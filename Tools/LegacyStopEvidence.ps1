@@ -59,7 +59,8 @@ function Assert-LegacyStopEvidence {
     $checkpointUtc = (Convert-LegacyEvidenceUtc $Checkpoint.UpdatedUtc).Ticks
     if ($NowUtc.Kind -ne [DateTimeKind]::Utc -or $requested -le [long]$Request.StartTicks -or
         $completed -lt $requested -or $completed -gt $NowUtc.Ticks -or
-        $checkpointUtc -lt $requested -or $checkpointUtc -gt $completed -or
+        $checkpointUtc -lt $requested -or $checkpointUtc -gt $NowUtc.Ticks -or
+        ($checkpointUtc -gt $completed -and $Checkpoint.LastReason -cne 'MonitorClosing') -or
         $NowUtc.Ticks - $requested -gt [TimeSpan]::FromMinutes(10).Ticks) {
         throw 'LegacyStopEvidenceExpiredOrClockInvalid'
     }

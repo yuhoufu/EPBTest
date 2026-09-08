@@ -12,7 +12,7 @@ function Test-Case([string]$Name,[scriptblock]$Change,[string]$ExpectedError='')
     $candidate=@{Checkpoint=(Copy-Json $checkpoint);Receipt=(Copy-Json $receipt);Session=(Copy-Json $session);
         Request=(Copy-Json $request);ExpectedExecutablePath=$session.ExecutablePath;
         ExpectedExecutableSha256=$checkpoint.ExecutableSha256;ProcessExited=$true;
-        NowUtc=([DateTime]::new(([long]$receipt.UpdatedUtcTicks+[TimeSpan]::FromSeconds(1).Ticks),[DateTimeKind]::Utc))}
+        NowUtc=([DateTime]::new(([Math]::Max([long]$receipt.UpdatedUtcTicks,(Convert-LegacyEvidenceUtc $checkpoint.UpdatedUtc).Ticks)+[TimeSpan]::FromSeconds(1).Ticks),[DateTimeKind]::Utc))}
     & $Change $candidate
     $failure=''
     try { $result=Assert-LegacyStopEvidence @candidate } catch { $failure=$_.Exception.Message }
@@ -43,5 +43,7 @@ Test-Case 'Future proof rejected' {param($c) $c.NowUtc=[DateTime]::new(([long]$c
 Test-Case 'Proof before request rejected' {param($c) $c.Receipt.UpdatedUtcTicks=[long]$c.Request.RequestUtcTicks-1} 'LegacyStopEvidenceExpiredOrClockInvalid'
 Test-Case 'Live relaunch permit rejected' {param($c) $c.Receipt.RelaunchPermitGeneration=1} 'LegacyStopNotTerminalOperatorStop'
 Test-Case 'Nonmanual stop rejected' {param($c) $c.Receipt.CloseIntent='Shutdown'} 'LegacyStopNotTerminalOperatorStop'
-Test-Case 'Checkpoint changed after receipt rejected' {param($c) $c.Checkpoint.UpdatedUtc=[DateTime]::new(([long]$c.Receipt.UpdatedUtcTicks+1),[DateTimeKind]::Utc).ToString('O')} 'LegacyStopEvidenceExpiredOrClockInvalid'
+Test-Case 'Checkpoint changed after receipt rejected' {param($c) $c.Checkpoint.LastReason='ManualUi'; $c.Checkpoint.UpdatedUtc=[DateTime]::new(([long]$c.Receipt.UpdatedUtcTicks+1),[DateTimeKind]::Utc).ToString('O')} 'LegacyStopEvidenceExpiredOrClockInvalid'
+Test-Case 'Normal monitor close may follow terminal safety' {param($c) $c.Checkpoint.LastReason='MonitorClosing'; $c.Checkpoint.UpdatedUtc=[DateTime]::new(([long]$c.Receipt.UpdatedUtcTicks+1),[DateTimeKind]::Utc).ToString('O')}
+Test-Case 'Monitor close cannot claim future timestamp' {param($c) $c.Checkpoint.LastReason='MonitorClosing'; $c.Checkpoint.UpdatedUtc=$c.NowUtc.AddSeconds(1).ToString('O')} 'LegacyStopEvidenceExpiredOrClockInvalid'
 Write-Output "PASS $passed/$passed; historical fixture time only, no installation or hardware action"
