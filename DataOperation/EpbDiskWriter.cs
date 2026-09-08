@@ -472,6 +472,16 @@ public sealed partial class EpbDiskWriter : IDisposable
             }
         }
 
+        // Checkpoint workers only flush mappings; join before releasing any
+        // mapping/file. Failed flushes retain the FULL journal for next open.
+        for (var ch = 1; ch <= EPB_COUNT; ch++)
+        {
+            lock (_states[ch].Gate)
+            {
+                try { _pendingRawCheckpoints[ch]?.Flush.GetAwaiter().GetResult(); }
+                catch (Exception ex) { WarnRetention("RawCheckpointFlushFailed:" + ex.Message); }
+            }
+        }
         lock (_rawJournalGate)
         {
             _rawJournal?.Dispose();
@@ -3996,6 +4006,19 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
 
     private void DeleteCycles(IEnumerable<CycleInfo> cycles)
     {
+        // A deferred checkpoint still needs the cycle identity to commit its
+        // durable prefix. Retain those index rows until the journal is reclaimed.
+        // Terminal cycle identities cannot acquire new frames; no nested journal
+        // and index gates are needed for this conservative cleanup snapshot.
+        var protectedCycles = new HashSet<string>();
+        lock (_rawJournalGate)
+        {
+            using var pending = _rawJournal.CreateCommand();
+            pending.CommandText = "SELECT DISTINCT channel,cycle FROM raw_frames";
+            using var reader = pending.ExecuteReader();
+            while (reader.Read())
+                protectedCycles.Add(reader.GetInt32(0) + ":" + reader.GetInt32(1));
+        }
         lock (_dbGate)
         {
         using var tx = _conn.BeginTransaction();
@@ -4006,6 +4029,7 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
 
         foreach (var cy in cycles)
         {
+            if (protectedCycles.Contains(cy.EpbId + ":" + cy.CycleNumber)) continue;
             pE.Value = cy.EpbId;
             pC.Value = cy.CycleNumber;
             cmd.ExecuteNonQuery();

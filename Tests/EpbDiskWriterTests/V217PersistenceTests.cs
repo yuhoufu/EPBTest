@@ -3,6 +3,8 @@ using System.Data.SQLite;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using DataOperation;
 
 namespace EpbDiskWriterTests
@@ -11,6 +13,8 @@ namespace EpbDiskWriterTests
     {
         private static void RunV217PersistenceTests()
         {
+            Run("V3 慢环形刷盘不阻塞后续圈且日志重放保留数据", SlowRingFlushPreservesReplayAndProgress);
+            Run("V3 环形刷盘失败保留日志并可恢复", FailedRingFlushRetainsEvidence);
             Run("V3 学习批次合并耐久事务保持各通道时间切片", LearningBatchStagesExactSlices);
             Run("I0046 多帧checkpoint按圈归并仍保留最大耐久前缀", CheckpointCoalescingPreservesPrefix);
             Run("I0046 写盘阶段诊断隔离且空批次幂等", StorageTimingCannotChangeDurability);
@@ -20,6 +24,97 @@ namespace EpbDiskWriterTests
             Run("V217 历史基线加耐久回执且不把圈号当次数", MechanicalBaselineSurvivesCheckpointLag);
             Run("V217 非法数据耐久隔离且健康后继继续", InvalidBatchDoesNotPoisonQueue);
             Run("V217 已耐久未应用批次停止时重放且后圈不覆盖", StagedBatchIsAppliedBeforeAbort);
+        }
+
+        private static void SlowRingFlushPreservesReplayAndProgress()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var time = DateTime.UtcNow;
+                using var entered = new ManualResetEventSlim();
+                using var release = new ManualResetEventSlim();
+                var writer = new EpbDiskWriter(policy);
+                Task next = null;
+                try
+                {
+                    typeof(EpbDiskWriter).GetField("_rawCheckpointFlushTestHook",
+                        BindingFlags.Instance | BindingFlags.NonPublic).SetValue(writer,
+                        new Action<int>(_ => { entered.Set(); release.Wait(); }));
+                    writer.BeginCycle(1, 100, time);
+                    WriteSamples(writer, 1, 3, time);
+                    writer.CompleteCycle(1, 100, 3, time.AddMilliseconds(3));
+                    Assert(entered.Wait(3000), "后台刷盘未进入");
+                    next = Task.Run(() =>
+                    {
+                        writer.BeginCycle(1, 101, time.AddSeconds(1));
+                        WriteSamples(writer, 1, 3, time.AddSeconds(1));
+                        writer.CompleteCycle(1, 101, 3, time.AddSeconds(1).AddMilliseconds(3));
+                    });
+                    Assert(next.Wait(3000), "环形刷盘占住后续写入/封圈");
+                    writer.PersistLatestCyclesNow(1, 1, "delete");
+                    Assert(Scalar(policy, "SELECT COUNT(*) FROM epb_cycles WHERE cycle_number=100") == 1,
+                        "后台刷盘未完成即清理其圈索引");
+                    using var db = new SQLiteConnection("Data Source=" +
+                        Path.Combine(policy.IndexAndExportPath, "raw-journal.db") + ";Pooling=False;");
+                    db.Open();
+                    using var cmd = db.CreateCommand();
+                    cmd.CommandText = "SELECT COUNT(*) FROM raw_frames";
+                    Assert(Convert.ToInt64(cmd.ExecuteScalar()) > 0, "刷盘未完成即删除恢复日志");
+                }
+                finally
+                {
+                    release.Set();
+                    next?.GetAwaiter().GetResult();
+                    writer.Dispose();
+                }
+                var path = Path.Combine(policy.DataStorePath, "EPB1_sliding.dat");
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Write))
+                    stream.Write(new byte[6 * SampleRecord.Size], 0, 6 * SampleRecord.Size);
+                using var recovered = new EpbDiskWriter(policy);
+                foreach (var cycle in new[] { 100, 101 })
+                {
+                    var export = Path.Combine(root, "async-replay-" + cycle);
+                    recovered.ExportCycleAttemptTo(1, cycle, export, true, true);
+                    AssertCsvCycle(export, 1, cycle, 3);
+                }
+            });
+        }
+
+        private static void FailedRingFlushRetainsEvidence()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var time = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    typeof(EpbDiskWriter).GetField("_rawCheckpointFlushTestHook",
+                        BindingFlags.Instance | BindingFlags.NonPublic).SetValue(writer,
+                        new Action<int>(_ => { throw new IOException("InjectedFlushFailure"); }));
+                    writer.BeginCycle(1, 100, time);
+                    WriteSamples(writer, 1, 3, time);
+                    writer.CompleteCycle(1, 100, 3, time.AddMilliseconds(3));
+                    var field = typeof(EpbDiskWriter).GetField("_pendingRawCheckpoints",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    var pending = ((Array)field.GetValue(writer)).GetValue(1);
+                    var flush = (Task)pending.GetType().GetField("Flush",
+                        BindingFlags.Instance | BindingFlags.NonPublic).GetValue(pending);
+                    Assert(SpinWait.SpinUntil(() => flush.IsCompleted, 3000), "故障刷盘未结束");
+                    Assert(flush.IsFaulted, "注入刷盘故障未生效");
+                    var checkpoint = typeof(EpbDiskWriter).GetMethod("CheckpointRawJournal",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    var rejected = false;
+                    try { checkpoint.Invoke(writer, new object[] { 1, true, false }); }
+                    catch (TargetInvocationException ex) when (ex.InnerException is IOException)
+                    { rejected = true; }
+                    Assert(rejected, "后台刷盘失败被吞掉并继续回收日志");
+                }
+                using var recovered = new EpbDiskWriter(policy);
+                var export = Path.Combine(root, "failed-flush-replay");
+                recovered.ExportCycleAttemptTo(1, 100, export, true, true);
+                AssertCsvCycle(export, 1, 100, 3);
+            });
         }
 
         private static void LearningBatchStagesExactSlices()

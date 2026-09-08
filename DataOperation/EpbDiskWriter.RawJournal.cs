@@ -5,6 +5,8 @@ using System.IO;
 using System.Diagnostics;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Threading.Tasks;
+using System.IO.MemoryMappedFiles;
 
 namespace DataOperation;
 
@@ -72,6 +74,13 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
     private SQLiteConnection _rawJournal;
     private SQLiteTransaction _rawJournalTransaction;
     private readonly DateTime[] _rawCheckpointUtc = new DateTime[EPB_COUNT + 1];
+    private sealed class PendingRawCheckpoint
+    {
+        internal List<RawFrame> Frames;
+        internal Task Flush;
+    }
+    private readonly PendingRawCheckpoint[] _pendingRawCheckpoints = new PendingRawCheckpoint[EPB_COUNT + 1];
+    private Action<int> _rawCheckpointFlushTestHook;
     private long _rawJournalBytes;
     private sealed class RawFrame
     {
@@ -337,7 +346,7 @@ VALUES(@ch,@cy,@first,@pos,@count,@gen,@seq,@data,@sha);";
         for (var channel = 1; channel <= EPB_COUNT; channel++)
         {
                 var frames = ReadRawFrames(channel);
-                CheckpointRawJournal(channel, force: true);
+                CheckpointRawJournal(channel, force: true, flushSynchronously: true);
                 _states[channel].TotalWritten = RestoreNextWritePosition(channel, _states[channel].CapacityRecords);
             }
         }
@@ -361,8 +370,25 @@ VALUES(@ch,@cy,@first,@pos,@count,@gen,@seq,@data,@sha);";
                 }
         }
 
-        private void CheckpointRawJournal(int channel, bool force)
+        private void CheckpointRawJournal(int channel, bool force, bool flushSynchronously = false)
         {
+            var pending = _pendingRawCheckpoints[channel];
+            if (pending != null)
+            {
+                if (!pending.Flush.IsCompleted && !flushSynchronously)
+                {
+                    if (!force) return;
+                }
+                else
+                {
+                // Observe failure before reclaiming any replay evidence.
+                pending.Flush.GetAwaiter().GetResult();
+                CommitRawCheckpoint(channel, pending.Frames);
+                _pendingRawCheckpoints[channel] = null;
+                _rawCheckpointUtc[channel] = DateTime.UtcNow;
+                pending = null;
+                }
+            }
             if (!force && DateTime.UtcNow - _rawCheckpointUtc[channel] < TimeSpan.FromSeconds(1)) return;
             var checkpointStarted = Stopwatch.GetTimestamp();
             try
@@ -387,10 +413,71 @@ VALUES(@ch,@cy,@first,@pos,@count,@gen,@seq,@data,@sha);";
             var flushStarted = Stopwatch.GetTimestamp();
             try
             {
-                _views[channel]?.Flush();
-                _ringFiles[channel].Flush(flushToDisk: true);
+                if (!flushSynchronously)
+                {
+                    // Finalizing a cycle must apply every staged frame, but its
+                    // FULL replay log already supplies the durable copy. Never
+                    // join a slow ring flush while holding realtime state gates.
+                    if (pending != null) return;
+                    var work = new PendingRawCheckpoint { Frames = frames };
+                    // Only flush already-applied bytes here. This worker never
+                    // takes state/SQLite locks or publishes a durable prefix.
+                    work.Flush = Task.Run(() => FlushRawFrameRanges(channel, frames));
+                    _pendingRawCheckpoints[channel] = work;
+                    return;
+                }
+                FlushRawFrameRanges(channel, frames);
             }
             finally { if (_writeTiming != null) _writeTiming.RingFlushMs += ElapsedWriteMs(flushStarted); }
+            CommitRawCheckpoint(channel, frames);
+            _rawCheckpointUtc[channel] = DateTime.UtcNow;
+        }
+        finally { if (_writeTiming != null) _writeTiming.CheckpointMs += ElapsedWriteMs(checkpointStarted); }
+    }
+
+    private void FlushRawFrameRanges(int channel, List<RawFrame> frames)
+    {
+        _rawCheckpointFlushTestHook?.Invoke(channel);
+        var capacity = _states[channel].CapacityRecords;
+        var ranges = new List<Tuple<long, long>>();
+        foreach (var frame in frames)
+        {
+            var first = Math.Min(frame.Count, capacity - frame.Position);
+            ranges.Add(Tuple.Create(frame.Position * SampleRecord.Size, first * SampleRecord.Size));
+            if (first < frame.Count)
+                ranges.Add(Tuple.Create(0L, (frame.Count - first) * SampleRecord.Size));
+        }
+        long start = -1, end = -1;
+        foreach (var range in ranges.OrderBy(item => item.Item1))
+        {
+            if (start >= 0 && range.Item1 > end)
+            {
+                FlushRange(start, end);
+                start = -1;
+            }
+            if (start < 0) start = range.Item1;
+            end = Math.Max(end, range.Item1 + range.Item2);
+        }
+        if (start >= 0) FlushRange(start, end);
+        _ringFiles[channel].Flush(flushToDisk: true);
+
+        void FlushRange(long from, long to)
+        {
+            // Separate bounded views survive producer view remapping. Dispose
+            // waits for this worker before closing the underlying mapping.
+            const long window = 1024 * 1024;
+            while (from < to)
+            {
+                var length = Math.Min(window, to - from);
+                using (var view = _mmfs[channel].CreateViewAccessor(from, length, MemoryMappedFileAccess.ReadWrite))
+                    view.Flush();
+                from += length;
+            }
+        }
+    }
+
+    private void CommitRawCheckpoint(int channel, List<RawFrame> frames)
+    {
             var indexStarted = Stopwatch.GetTimestamp();
             lock (_dbGate)
             {
@@ -429,9 +516,6 @@ VALUES(@ch,@cy,@first,@pos,@count,@gen,@seq,@data,@sha);";
                 }
                 finally { if (_writeTiming != null) _writeTiming.RawPruneMs += ElapsedWriteMs(pruneStarted); }
             }
-            _rawCheckpointUtc[channel] = DateTime.UtcNow;
-        }
-        finally { if (_writeTiming != null) _writeTiming.CheckpointMs += ElapsedWriteMs(checkpointStarted); }
     }
 
     public bool TryRecordMechanicalCompletion(int channel, int cycle, DateTime completedUtc)
