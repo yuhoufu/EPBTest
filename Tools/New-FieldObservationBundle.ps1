@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$MainDirectory,
     [Parameter(Mandatory=$true)][string]$GuardDirectory,
@@ -12,7 +12,7 @@ $guard=[IO.Path]::GetFullPath($GuardDirectory)
 & (Join-Path $PSScriptRoot 'Verify-Release.ps1') -ReleaseDirectory $main | Out-Null
 $id=Get-Content (Join-Path $main 'build-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $gid=Get-Content (Join-Path $guard 'guard-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-if($id.gitCommit -ne $commit -or $gid.gitCommit -ne $commit -or $gid.automaticExecutionReady -ne $false -or $gid.deliveryStage -ne 'ObserveOnlyCommissioning'){throw '必须使用同一干净提交的正式Main与观察Guard。'}
+if($id.gitCommit -ne $gid.gitCommit -or $gid.gitDirty -ne $false -or $gid.automaticExecutionReady -ne $false -or $gid.deliveryStage -ne 'ObserveOnlyCommissioning'){throw '必须使用同一干净提交的正式Main与观察Guard。'}
 [void](New-Item -ItemType Directory $OutputRoot -Force)
 $output=Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ('V'+$id.fileVersion+'_正式版_'+$commit.Substring(0,12)+'_QUICKDEPLOY_GUARD')
 if((Test-Path $output) -or (Test-Path ($output+'.7z'))){throw '输出已存在，不覆盖历史包。'}
@@ -31,7 +31,7 @@ foreach($name in $commands.Keys){
     [IO.File]::WriteAllText((Join-Path $output ($name+'.cmd')),($lines -join "`r`n")+"`r`n",[Text.Encoding]::ASCII)
 }
 $files=@(Get-ChildItem $output -Recurse -File | ForEach-Object {@{name=$_.FullName.Substring($output.Length+1).Replace('\','/');sha256=(Get-FileHash $_.FullName).Hash}})
-@{schemaVersion=1;productVersion=$id.fileVersion;gitCommit=$commit;automaticRecoveryEnabled=$false;files=$files} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $output 'bundle-identity.json') -Encoding UTF8
+@{schemaVersion=1;productVersion=$id.fileVersion;gitCommit=$id.gitCommit;deploymentToolsCommit=$commit;automaticRecoveryEnabled=$false;files=$files} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $output 'bundle-identity.json') -Encoding UTF8
 & (Join-Path $output 'Verify-FieldPackage.ps1')
 $sevenZip=Join-Path $env:ProgramFiles '7-Zip\7z.exe'
 if(-not(Test-Path $sevenZip)){$sevenZip=(Get-Command 7z.exe -ErrorAction Stop).Source}

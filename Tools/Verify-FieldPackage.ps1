@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $identity=Get-Content (Join-Path $root 'bundle-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json

@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param([ValidateSet('Install','Repair','Launch','Status','Restore','Evidence','Stop','Uninstall','Validate')][string]$Action='Status')
 $ErrorActionPreference='Stop'
