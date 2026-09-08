@@ -554,7 +554,10 @@ function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
             if (-not $PhysicalIsolationConfirmed -and (-not [bool]$legacy.MotorOffConfirmed -or
                 -not [bool]$legacy.PressureSafeConfirmed -or
                 -not [bool]$legacy.PersistenceDrained)) {
-                throw "schema $legacySchema 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。"
+                if (-not $maintenanceHeld) { throw 'LegacyStopMaintenanceNotHeld' }
+                . (Join-Path $PSScriptRoot 'LegacyStopEvidence.ps1')
+                $migration['terminalStopEvidence'] = Get-LiveLegacyStopEvidence -Root $Root `
+                    -CheckpointPath $checkpoint -Checkpoint $legacy -ArchiveRoot $archiveRoot
             }
 
             foreach ($path in @($checkpoint, "$checkpoint.bak")) {

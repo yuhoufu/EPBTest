@@ -719,6 +719,7 @@ $utf8Bom = New-Object Text.UTF8Encoding($true)
 foreach ($deploymentScriptName in @(
         'Install-EPB-UnattendedAlarm.ps1',
         'Install-MTTFTest-Unattended.ps1',
+        'LegacyStopEvidence.ps1',
         'Test-MTTFTest-RecoveryHealth.ps1',
         'Verify-Release.ps1',
         'Stop-RelatedProcesses.ps1',
