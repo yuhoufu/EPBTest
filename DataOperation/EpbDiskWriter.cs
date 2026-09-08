@@ -1,4 +1,4 @@
-﻿// ReSharper disable InconsistentNaming
+// ReSharper disable InconsistentNaming
 // ReSharper disable RedundantNameQualifier
 
 using System;
@@ -176,6 +176,7 @@ public sealed partial class EpbDiskWriter : IDisposable
     private sealed class EpbState
     {
         public readonly object Gate = new();
+        public bool SealInProgress;
         public readonly Queue<PreTriggerSample> PreTriggerSamples = new();
         public long CapacityRecords; // 文件可容纳记录数
         public int? CurrentCycle; // 正式圈号（null=未开圈）
@@ -288,6 +289,7 @@ public sealed partial class EpbDiskWriter : IDisposable
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private int _disposed;
+    private int _disposeRequested;
 
     /// <summary>
     /// 设置单个活动圈允许接收的最大样本数。0 表示不限制。
@@ -452,7 +454,12 @@ public sealed partial class EpbDiskWriter : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (Interlocked.Exchange(ref _disposeRequested, 1) != 0) return;
+        // Export owns detached records, but its final receipt still uses SQLite.
+        // Wait for those receipts before disposing the storage underneath them.
+        _sealLifetimeGate.EnterWriteLock();
+        Volatile.Write(ref _disposed, 1);
+        _sealLifetimeGate.ExitWriteLock();
 
         // Latest保留清理由专用线程执行；关闭前停止接收并观察线程终态，
         // 禁止关闭SQLite/MMF后仍有裸后台任务访问同一项目目录。
@@ -909,7 +916,7 @@ public sealed partial class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
-    /// 在单通道锁内冻结当前报警圈，原子导出 CSV/BIN，校验后以相同边界封存数据库。
+    /// 在单通道锁内冻结当前报警圈，锁外原子导出 CSV/BIN，校验后以相同边界封存数据库。
     /// </summary>
     public AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(
         int epbId,
@@ -926,7 +933,7 @@ public sealed partial class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
-    /// 在单通道锁内原子领取、导出并封存当前圈。报警后台与学习收尾并发时只有首个调用方能够领取。
+    /// 在单通道锁内领取并冻结当前圈，锁外导出和校验，最后提交终态。并发收尾只能领取一次。
     /// </summary>
     public AlarmCycleSnapshotEvidence SealAndExportCycle(
         int epbId,
@@ -934,6 +941,21 @@ public sealed partial class EpbDiskWriter : IDisposable
         string exportDir,
         DateTime fallbackEndUtc,
         string status)
+    {
+        _sealLifetimeGate.EnterReadLock();
+        try
+        {
+            if (Volatile.Read(ref _disposeRequested) != 0) throw new ObjectDisposedException(nameof(EpbDiskWriter));
+            return SealAndExportCycleCore(epbId, cycleNumber, exportDir, fallbackEndUtc, status);
+        }
+        finally { _sealLifetimeGate.ExitReadLock(); }
+    }
+
+    private readonly ReaderWriterLockSlim _sealLifetimeGate = new();
+    private Action _sealExportTestHook;
+
+    private AlarmCycleSnapshotEvidence SealAndExportCycleCore(
+        int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc, string status)
     {
         if (string.IsNullOrWhiteSpace(exportDir))
             throw new ArgumentException("exportDir is required", nameof(exportDir));
@@ -961,7 +983,7 @@ public sealed partial class EpbDiskWriter : IDisposable
             var endUtc = fallbackEndUtc.Kind == DateTimeKind.Utc
                 ? fallbackEndUtc
                 : fallbackEndUtc.ToUniversalTime();
-            if (s.CurrentCycle != cycleNumber)
+            if (s.CurrentCycle != cycleNumber || s.SealInProgress)
             {
                 evidence.WasClaimed = false;
                 evidence.ValidationError =
@@ -971,6 +993,7 @@ public sealed partial class EpbDiskWriter : IDisposable
             }
 
             evidence.WasClaimed = true;
+            s.SealInProgress = true;
             try
             {
                 var cycle = GetCycleInfo(epbId, cycleNumber);
@@ -987,43 +1010,52 @@ public sealed partial class EpbDiskWriter : IDisposable
                     : new List<SampleRecord>();
                 if (records.Count > 0)
                     endUtc = DateTime.FromBinary(records[records.Count - 1].TimestampBinary).ToUniversalTime();
-                Directory.CreateDirectory(exportDir);
+                // The record list is an owned copy and the cycle is now claimed.
+                // File encoding, publication and validation must not hold the
+                // channel gate required by every batch on this DAQ device.
+                Monitor.Exit(s.Gate);
                 try
                 {
-                    if (saveCsv && saveBin)
+                    _sealExportTestHook?.Invoke();
+                    Directory.CreateDirectory(exportDir);
+                    try
                     {
-                        ExportCyclePair(epbId, cycle, csvPath, binPath, new ExportFormatOptions(), records);
-                    }
-                    else if (saveCsv)
-                    {
-                        WriteAtomically(csvPath, tempPath =>
+                        if (saveCsv && saveBin)
                         {
-                            using (var sw = new StreamWriter(tempPath, false, Encoding.UTF8))
-                                WriteCsvRecords(sw, records, new ExportFormatOptions());
-                        });
-                    }
-                    else
-                    {
-                        WriteAtomically(binPath, tempPath =>
+                            ExportCyclePair(epbId, cycle, csvPath, binPath, new ExportFormatOptions(), records);
+                        }
+                        else if (saveCsv)
                         {
-                            using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.Read))
-                            using (var bw = new BinaryWriter(fs))
-                                WriteBinRecords(bw, records);
-                        });
+                            WriteAtomically(csvPath, tempPath =>
+                            {
+                                using (var sw = new StreamWriter(tempPath, false, Encoding.UTF8))
+                                    WriteCsvRecords(sw, records, new ExportFormatOptions());
+                            });
+                        }
+                        else
+                        {
+                            WriteAtomically(binPath, tempPath =>
+                            {
+                                using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                                using (var bw = new BinaryWriter(fs))
+                                    WriteBinRecords(bw, records);
+                            });
+                        }
                     }
-                }
-                finally
-                {
-                    // WriteAtomically/ExportCyclePair remove their own temporary files.
-                }
+                    finally
+                    {
+                        // WriteAtomically/ExportCyclePair remove their own temporary files.
+                    }
 
-                evidence = ValidateAlarmCycleSnapshotFiles(
-                    csvPath,
-                    binPath,
-                    epbId,
-                    cycleNumber,
-                    allowEmpty,
-                    storage);
+                    evidence = ValidateAlarmCycleSnapshotFiles(
+                        csvPath,
+                        binPath,
+                        epbId,
+                        cycleNumber,
+                        allowEmpty,
+                        storage);
+                }
+                finally { Monitor.Enter(s.Gate); }
                 evidence.WasClaimed = true;
                 evidence.FinalStatus = normalizedStatus;
                 evidence.StorageFormat = storage.ToString();
@@ -1086,6 +1118,7 @@ public sealed partial class EpbDiskWriter : IDisposable
             }
             finally
             {
+                s.SealInProgress = false;
                 if (terminalCommitted)
                 {
                     s.CurrentCycle = null;
@@ -1443,6 +1476,8 @@ public sealed partial class EpbDiskWriter : IDisposable
         int expectedCycle,
         string operation)
     {
+        if (state.SealInProgress)
+            throw new InvalidOperationException($"EPB[{epbId}] {operation} 等待当前圈封存导出完成。");
         if (state.CurrentCycle == expectedCycle) return;
         throw new InvalidOperationException(
             $"EPB[{epbId}] {operation} 拒绝修改非当前圈。" +
@@ -1461,6 +1496,7 @@ public sealed partial class EpbDiskWriter : IDisposable
 
         lock (s.Gate)
         {
+            if (s.SealInProgress) return;
             if (s.CurrentCycle.HasValue)
             {
                 cycle = s.CurrentCycle.Value;
@@ -1531,6 +1567,7 @@ public sealed partial class EpbDiskWriter : IDisposable
         var state = GetState(epbId);
         lock (state.Gate)
         {
+            if (state.SealInProgress) return;
             var from = 0;
             var to = count;
             if (state.CurrentCycle.HasValue)
@@ -1618,6 +1655,7 @@ public sealed partial class EpbDiskWriter : IDisposable
         var state = GetState(epbId);
         lock (state.Gate)
         {
+            if (state.SealInProgress) return;
             if (!state.CurrentCycle.HasValue)
             {
                 BufferPreTriggerSamples(
@@ -1862,7 +1900,7 @@ public sealed partial class EpbDiskWriter : IDisposable
                 : DateTime.UtcNow;
             for (var i = 0; i < acquired; i++)
             {
-                if (lockedStates[i].CurrentCycle.HasValue &&
+                if (!lockedStates[i].SealInProgress && lockedStates[i].CurrentCycle.HasValue &&
                     !lockedStates[i].ActiveCycleLimitLatched &&
                     ShouldCheckpointCycleProgress(lockedStates[i], lastTimestampUtc, commit: false))
                 {
@@ -1930,7 +1968,8 @@ public sealed partial class EpbDiskWriter : IDisposable
                 }
             }
             for (var i = 0; i < channelCount; i++)
-                CheckpointRawJournal(channels[i].EpbId, force: false);
+                if (!lockedStates[i].SealInProgress)
+                    CheckpointRawJournal(channels[i].EpbId, force: false);
             if (timing != null) timing.Succeeded = true;
         }
         catch
@@ -1986,6 +2025,7 @@ public sealed partial class EpbDiskWriter : IDisposable
         var state = GetState(epbId);
         lock (state.Gate)
         {
+            if (state.SealInProgress) return;
             if (state.CurrentCycle == cycleNumber)
             {
                 var cutoffUtc = endUtc.ToUniversalTime();
@@ -2010,6 +2050,7 @@ public sealed partial class EpbDiskWriter : IDisposable
         var state = GetState(epbId);
         lock (state.Gate)
         {
+            if (state.SealInProgress) return;
             if (state.CurrentCycle != cycleNumber) return;
             if (!state.SequenceBoundaryEnabled)
             {

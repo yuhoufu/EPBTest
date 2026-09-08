@@ -13,6 +13,9 @@ namespace EpbDiskWriterTests
     {
         private static int RunLearningTimingProbe()
         {
+            var configuredLaps = Environment.GetEnvironmentVariable("EPB_LEARNING_PROBE_LAPS");
+            var laps = int.TryParse(configuredLaps, out var requestedLaps)
+                ? Math.Max(1, Math.Min(120, requestedLaps)) : 6;
             // Isolated synthetic workload, never opens a field project or hardware.
             WithRoot(root =>
             {
@@ -24,19 +27,18 @@ namespace EpbDiskWriterTests
                 double maximum = 0;
                 policy.WriteTimingSink = timing =>
                 {
-                    if (timing.Operation != "DeviceBatch") return;
                     lock (timingGate)
                     {
-                        batches++;
+                        if (timing.Operation == "DeviceBatch") batches++;
                         maximum = Math.Max(maximum, timing.TotalMs);
                         if (timing.TotalMs >= 50 && slow.Count < 200) slow.Add(timing);
                     }
                 };
                 using var writer = new EpbDiskWriter(policy);
-                Task.WaitAll(new[] { new[] { 4, 5, 7 }, new[] { 8, 9, 12 } }.Select((channels, device) => Task.Run(() =>
+                Task.WaitAll(new[] { new[] { 4, 5 }, new[] { 7, 8, 9, 12 } }.Select((channels, device) => Task.Run(() =>
                 {
                     long sequence = 0;
-                    for (var lap = 1; lap <= 6; lap++)
+                    for (var lap = 1; lap <= laps; lap++)
                     {
                         var start = DateTime.UtcNow;
                         foreach (var channel in channels) writer.BeginCycle(channel, -lap, start);
@@ -47,27 +49,33 @@ namespace EpbDiskWriterTests
                                 .Select(i => start.AddMilliseconds(batch * 10 + i * 0.5)).ToArray();
                             var values = channels.Select(ch => new EpbChannelDiskBatch(ch,
                                 Enumerable.Repeat((double)ch, 20).ToArray(), new double[20])).ToArray();
-                            writer.WriteDeviceBatch("Probe" + device, 1, ++sequence, timestamps, values, 3, 20);
+                            writer.WriteDeviceBatch("Probe" + device, 1, ++sequence, timestamps, values, channels.Length, 20);
                             var wait = (batch + 1) * 10 - (int)clock.ElapsedMilliseconds;
                             if (wait > 0) Thread.Sleep(wait);
                         }
                         foreach (var channel in channels)
                         {
                             Assert(writer.GetCurrentCycleSampleCount(channel) == 10000, "学习探测样本数不一致");
-                            writer.CompleteCycle(channel, -lap, 10000, start.AddSeconds(5));
+                            var evidence = writer.SealAndExportCycle(channel, -lap,
+                                Path.Combine(root, "learning", "EPB" + channel, "Cycle" + lap),
+                                start.AddSeconds(5), "learning_completed");
+                            Assert(evidence.IsValid && evidence.SampleCount == 10000,
+                                "学习探测封存导出失败或样本边界改变");
                         }
                     }
                 })).ToArray());
                 Console.WriteLine(System.FormattableString.Invariant($"LearningProbe Batches={batches};MaxMs={maximum:F3};CapturedSlow={slow.Count}"));
                 foreach (var t in slow.OrderByDescending(item => item.TotalMs).Take(20))
                     Console.WriteLine(System.FormattableString.Invariant(
-                        $"Slow Device={t.Device};Sequence={t.Sequence};Total={t.TotalMs:F3};ChannelGate={t.ChannelGateWaitMs:F3};RawStage={t.RawStageMs:F3};RawAppend={t.RawAppendMs:F3};AppendGate={t.RawAppendGateWaitMs:F3};Remap={t.ViewRemapMs:F3};Write={t.RingWriteMs:F3};Checkpoint={t.CheckpointMs:F3};IndexCommit={t.IndexCommitMs:F3};Prune={t.RawPruneMs:F3}"));
+                        $"Slow Operation={t.Operation};Device={t.Device};Sequence={t.Sequence};Total={t.TotalMs:F3};ChannelGate={t.ChannelGateWaitMs:F3};RawStage={t.RawStageMs:F3};RawAppend={t.RawAppendMs:F3};AppendGate={t.RawAppendGateWaitMs:F3};Remap={t.ViewRemapMs:F3};Write={t.RingWriteMs:F3};Checkpoint={t.CheckpointMs:F3};IndexCommit={t.IndexCommitMs:F3};Prune={t.RawPruneMs:F3}"));
             });
             return 0;
         }
 
         private static void RunV217PersistenceTests()
         {
+            Run("学习慢导出不占用同设备写入锁且领取和快照保持唯一", SlowSealDoesNotBlockDeviceWriter);
+            Run("关闭等待学习导出失败终态且不提前释放数据库", DisposeWaitsForSealFailure);
             Run("V3 已提交帧复用拒绝变更且失败后可重试", CommittedDeviceFrameRejectsMutation);
             Run("V3 慢环形刷盘不阻塞后续圈且日志重放保留数据", SlowRingFlushPreservesReplayAndProgress);
             Run("V3 环形刷盘失败保留日志并可恢复", FailedRingFlushRetainsEvidence);
@@ -134,6 +142,100 @@ namespace EpbDiskWriterTests
                     recovered.ExportCycleAttemptTo(1, cycle, export, true, true);
                     AssertCsvCycle(export, 1, cycle, 3);
                 }
+            });
+        }
+
+        private static void SlowSealDoesNotBlockDeviceWriter()
+        {
+            WithRoot(root =>
+            {
+                using var writer = new EpbDiskWriter(NewPolicy(root));
+                var start = DateTime.UtcNow;
+                var sealingCycle = writer.BeginLearningCycle(4, start);
+                writer.BeginLearningCycle(5, start);
+                WriteSamples(writer, 4, 8, start);
+                WriteSamples(writer, 5, 8, start);
+                using var exporting = new ManualResetEventSlim();
+                using var release = new ManualResetEventSlim();
+                typeof(EpbDiskWriter).GetField("_sealExportTestHook", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .SetValue(writer, (Action)(() =>
+                    {
+                        exporting.Set();
+                        if (!release.Wait(10000)) throw new TimeoutException("Seal test release missing");
+                    }));
+                var seal = Task.Run(() => writer.SealAndExportCycle(4, sealingCycle,
+                    Path.Combine(root, "slow-export"), start.AddSeconds(1), "learning_completed"));
+                Task write = null;
+                try
+                {
+                    Assert(exporting.Wait(5000), "导出没有进入阻塞点");
+                    var timestamps = Enumerable.Range(0, 20).Select(i => start.AddSeconds(2).AddMilliseconds(i)).ToArray();
+                    var channels = new[] { 4, 5 }.Select(ch => new EpbChannelDiskBatch(ch,
+                        Enumerable.Repeat(1.0, 20).ToArray(), new double[20])).ToArray();
+                    write = Task.Run(() => writer.WriteDeviceBatch("Dev1", 1, 1, timestamps, channels, 2, 20));
+                    Assert(write.Wait(1000), "一个通道的文件导出阻塞了同设备健康通道写入");
+                    Assert(writer.GetCurrentCycleSampleCount(4) == 8, "已领取的封存快照仍被追加");
+                    Assert(writer.GetCurrentCycleSampleCount(5) == 28, "健康通道样本缺失");
+                    var duplicate = writer.SealAndExportCycle(4, sealingCycle,
+                        Path.Combine(root, "duplicate"), start, "learning_completed");
+                    Assert(!duplicate.WasClaimed, "导出途中重复领取了圈");
+                    Assert(writer.CaptureCommittedCycleProgress(4).SuccessfulCommits == 0,
+                        "导出验证前发布了成功进度");
+                }
+                finally
+                {
+                    release.Set();
+                    Task.WaitAll(new[] { seal, write ?? Task.CompletedTask });
+                }
+                Assert(seal.Result.IsValid && seal.Result.SampleCount == 8, "冻结快照封存不完整");
+                Assert(writer.CaptureCommittedCycleProgress(4).SuccessfulCommits == 1,
+                    "真实导出成功后没有唯一提交");
+                Assert(writer.BeginLearningCycle(4, start.AddSeconds(3)) != sealingCycle,
+                    "封存后不能开始新圈");
+            });
+        }
+
+        private static void DisposeWaitsForSealFailure()
+        {
+            WithRoot(root =>
+            {
+                var writer = new EpbDiskWriter(NewPolicy(root));
+                var start = DateTime.UtcNow;
+                var cycle = writer.BeginLearningCycle(4, start);
+                WriteSamples(writer, 4, 8, start);
+                using var entered = new ManualResetEventSlim();
+                using var release = new ManualResetEventSlim();
+                typeof(EpbDiskWriter).GetField("_sealExportTestHook", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .SetValue(writer, (Action)(() =>
+                    {
+                        entered.Set();
+                        if (!release.Wait(10000)) throw new TimeoutException("Release missing");
+                        throw new IOException("Injected export failure");
+                    }));
+                var seal = Task.Run(() => writer.SealAndExportCycle(4, cycle,
+                    Path.Combine(root, "failed-export"), start.AddSeconds(1), "learning_completed"));
+                Task dispose = null;
+                try
+                {
+                    Assert(entered.Wait(5000), "导出未进入受控失败点");
+                    dispose = Task.Run(() => writer.Dispose());
+                    Assert(SpinWait.SpinUntil(() => (int)typeof(EpbDiskWriter)
+                        .GetField("_disposeRequested", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(writer) == 1, 5000),
+                        "关闭任务未开始");
+                    Assert(!dispose.Wait(100), "导出仍在执行时数据库已被关闭");
+                }
+                finally
+                {
+                    release.Set();
+                    Task.WaitAll(new[] { seal, dispose ?? Task.CompletedTask });
+                    writer.Dispose();
+                }
+                Assert(!seal.Result.IsValid, "失败导出被记为成功");
+                Assert(writer.CaptureCommittedCycleProgress(4).SuccessfulCommits == 0,
+                    "失败导出发布了成功进度");
+                using var reopened = new EpbDiskWriter(NewPolicy(root));
+                Assert(Scalar(NewPolicy(root), $"SELECT COUNT(*) FROM epb_cycles WHERE epb_id=4 AND cycle_number={cycle} AND status='learning_failed'") == 1,
+                    "关闭前没有提交失败终态");
             });
         }
 

@@ -176,6 +176,21 @@ namespace MTTFTest.Watchdog
     /// </summary>
     internal static class WatchdogRecoveryChannelIntentPolicy
     {
+        internal static WatchdogVerifiedActiveRun GetRetainedPermitRun(WatchdogJournal journal)
+        {
+            if (journal == null || journal.ManualStopRequested || journal.RecoveryBlocked ||
+                !string.IsNullOrWhiteSpace(journal.RunId)) return null;
+            var run = journal.LastVerifiedActiveRun;
+            if (run == null || !Guid.TryParseExact(run.RunId, "N", out var id) ||
+                id == Guid.Empty || run.RunEpoch <= 0 || journal.CurrentPid <= 0 ||
+                journal.CurrentProcessStartUtcTicks <= 0 ||
+                run.ProcessId != journal.CurrentPid ||
+                run.ProcessStartUtcTicks != journal.CurrentProcessStartUtcTicks) return null;
+            // This selects an identity only. The RecoveryControl store still rejects
+            // revoked/superseded sessions, runs, intents and Guard-owned transactions.
+            return run;
+        }
+
         internal static bool TryCaptureLastVerifiedActiveRun(
             WatchdogJournal journal,
             WatchdogHeartbeat heartbeat,
@@ -4784,6 +4799,7 @@ namespace MTTFTest.Watchdog
                     try { TryPersistJournalSnapshotLocked(); } catch { }
                     return 0;
                 }
+                var retainedPermitRun = WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(_journal);
                 report = new RecoveryFailureReport
                 {
                     RootCode = string.IsNullOrWhiteSpace(_journal.RecoveryFailureCode)
@@ -4791,9 +4807,9 @@ namespace MTTFTest.Watchdog
                         : _journal.RecoveryFailureCode,
                     DeviceOrChannelGroup = _journal.DeviceOrChannelGroup,
                     RunId = string.IsNullOrWhiteSpace(_journal.RunId)
-                        ? _journal.LastCheckpointMirror?.RunId : _journal.RunId,
+                        ? retainedPermitRun?.RunId ?? _journal.LastCheckpointMirror?.RunId : _journal.RunId,
                     RunEpoch = string.IsNullOrWhiteSpace(_journal.RunId)
-                        ? _journal.LastCheckpointMirror?.RunEpoch ?? 0
+                        ? retainedPermitRun?.RunEpoch ?? _journal.LastCheckpointMirror?.RunEpoch ?? 0
                         : _journal.LastHeartbeat?.RunEpoch ?? 0,
                     RecoveryStage = _journal.RecoveryStage,
                     RecoveryProgressToken = _journal.RecoveryProgressToken,

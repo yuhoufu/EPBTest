@@ -39,7 +39,7 @@ public sealed partial class EpbDiskWriter
 {
     private void ValidateOrTerminateSequenceGap(int channel, EpbState state, string device, long generation, long sequence)
     {
-        if (!state.CurrentCycle.HasValue || !state.SequenceBoundaryEnabled || state.DataGapLatched ||
+        if (state.SealInProgress || !state.CurrentCycle.HasValue || !state.SequenceBoundaryEnabled || state.DataGapLatched ||
             state.ActiveCycleLimitLatched ||
             (state.CurrentCycleEndSequence.HasValue && sequence > state.CurrentCycleEndSequence.Value)) return;
         var identityMismatch = !string.Equals(state.CurrentCycleDevice, device, StringComparison.OrdinalIgnoreCase) ||
@@ -169,7 +169,7 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
     }
 
     private bool ShouldStageRawFrame(EpbState state, DeviceBatchBoundary boundary, int sampleCount) =>
-        state.CurrentCycle.HasValue && sampleCount > 0 &&
+        !state.SealInProgress && state.CurrentCycle.HasValue && sampleCount > 0 &&
         !state.ActiveCycleLimitLatched &&
         (!state.SequenceBoundaryEnabled ||
          ((!state.CurrentCycleEndSequence.HasValue || boundary.Sequence <= state.CurrentCycleEndSequence.Value) &&
@@ -218,13 +218,13 @@ WHERE epb_id=@ch AND cycle_number=@cy AND status='running';";
                 {
                     if (_rawJournalBytes + evidence.Length > _policy.RawJournalMaxBytes)
                         throw new IOException("RawJournalCapacityExceeded: malformed evidence retained in queue");
-                    cmd.Parameters.AddWithValue("@cy", state.CurrentCycle ?? 0); cmd.Parameters.AddWithValue("@data", evidence);
+                    cmd.Parameters.AddWithValue("@cy", state.SealInProgress ? 0 : state.CurrentCycle ?? 0); cmd.Parameters.AddWithValue("@data", evidence);
                     cmd.CommandText = @"INSERT INTO invalid_batches VALUES(@dev,@gen,@seq,@ch,@cy,'InvalidDaqBatch',@data);";
                     cmd.ExecuteNonQuery();
                     _rawJournalBytes += evidence.Length;
                 }
             }
-            if (state.CurrentCycle.HasValue && !state.DataGapLatched)
+            if (!state.SealInProgress && state.CurrentCycle.HasValue && !state.DataGapLatched)
             {
                 lock (_dbGate)
                 {

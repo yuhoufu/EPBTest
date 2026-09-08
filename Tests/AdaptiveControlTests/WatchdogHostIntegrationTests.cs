@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -7,6 +7,7 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using MTTFTest.Watchdog.Protocol;
 using MTTFTest.Watchdog;
+using MTTFTest.RecoveryControl;
 
 namespace AdaptiveControlTests
 {
@@ -17,9 +18,90 @@ namespace AdaptiveControlTests
     /// </summary>
     internal static class WatchdogHostIntegrationTests
     {
+        private static void RetainedPermitRunSurvivesCleanup()
+        {
+            var run = new WatchdogVerifiedActiveRun
+            {
+                RunId = "2d6867ec8acb44329bbb9ea0aee2a78b", RunEpoch = 4,
+                ProcessId = 336, ProcessStartUtcTicks = 639245054733541561
+            };
+            var journal = new WatchdogJournal
+            {
+                RunId = string.Empty, CurrentPid = 336,
+                CurrentProcessStartUtcTicks = run.ProcessStartUtcTicks,
+                LastVerifiedActiveRun = run
+            };
+            Assert(ReferenceEquals(WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(journal), run),
+                "清场丢失已验证重建Run");
+            journal.CurrentPid++;
+            Assert(WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(journal) == null, "串PID被接纳");
+            journal.CurrentPid = run.ProcessId;
+            journal.CurrentProcessStartUtcTicks++;
+            Assert(WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(journal) == null, "PID复用被接纳");
+            journal.CurrentProcessStartUtcTicks = run.ProcessStartUtcTicks;
+            journal.ManualStopRequested = true;
+            Assert(WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(journal) == null, "人工停止被忽略");
+            journal.ManualStopRequested = false;
+            journal.RecoveryBlocked = true;
+            Assert(WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(journal) == null, "阻断被忽略");
+            journal.RecoveryBlocked = false;
+            journal.RunId = Guid.NewGuid().ToString("N");
+            Assert(WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(journal) == null, "当前Run被旧记录替换");
+        }
+
+        private static void RetainedRunUsesProductionAuthorityAdmission()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "RetainedPermit-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var now = DateTime.UtcNow;
+                var process = RecoveryProcessProbe.Current();
+                var run = Guid.NewGuid().ToString("N");
+                var session = Guid.NewGuid().ToString("N");
+                var store = new RecoveryControlStore(root);
+                store.Register("retained-permit-test", process.ExecutablePath);
+                var token = store.BeginManualRun(run, run, "config-hash", process, now);
+                store.BindWatchdogSession(token, run, process, session, now);
+                var journal = new WatchdogJournal
+                {
+                    RunId = string.Empty, CurrentPid = process.ProcessId,
+                    CurrentProcessStartUtcTicks = process.StartUtcTicks,
+                    LastVerifiedActiveRun = new WatchdogVerifiedActiveRun
+                    {
+                        RunId = run, RunEpoch = 4, ProcessId = process.ProcessId,
+                        ProcessStartUtcTicks = process.StartUtcTicks
+                    }
+                };
+                var calls = 0;
+                Func<int> mutation = () => ++calls;
+                void Reject(string requestedSession, string requestedRun, string reason)
+                {
+                    try { store.RunLegacyRecoveryAuthorityMutation(requestedSession, requestedRun, now, mutation); }
+                    catch (InvalidOperationException ex)
+                    {
+                        Assert(ex.Message.Contains(reason), "许可拒绝原因不一致：" + ex.Message);
+                        return;
+                    }
+                    throw new InvalidOperationException("错误身份进入许可写入");
+                }
+                Reject(session, journal.RunId, "Superseded");
+                var retained = WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(journal);
+                Assert(store.RunLegacyRecoveryAuthorityMutation(session, retained.RunId, now, mutation) == 1,
+                    "清场后的同进程Run不能通过真实许可准入");
+                Reject(Guid.NewGuid().ToString("N"), retained.RunId, "Superseded");
+                Reject(session, Guid.NewGuid().ToString("N"), "Superseded");
+                store.SetOperatorIntent(token.AuthorizationId, token.IntentVersion, RecoveryDesiredState.Stopped, "stop");
+                Reject(session, retained.RunId, "Revoked");
+                Assert(calls == 1, "拒绝路径写入了许可");
+            }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+
         internal static int RunAll()
         {
             var passed = 0;
+            Run("清场后的许可Run沿用同进程已验证重建身份", RetainedPermitRunSurvivesCleanup, ref passed);
+            Run("清场Run通过真实许可准入且人工停止和串会话仍拒绝", RetainedRunUsesProductionAuthorityAdmission, ref passed);
             Run("Host schema4 bootstrap先于Sidecar且只允许一次", BootstrapIsSchema4AndSingleUse, ref passed);
             Run("Host bootstrap非法身份故障闭锁", InvalidBootstrapFailsClosed, ref passed);
             Run("Host生产编排注入端口仍由durable permit唯一授权", ProductionOrchestratorUsesInjectedPorts, ref passed);
