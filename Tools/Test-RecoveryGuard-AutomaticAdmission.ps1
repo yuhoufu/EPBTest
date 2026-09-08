@@ -15,6 +15,12 @@ $folder=Join-Path $root 'SyntheticPackage'
 [void](New-Item -ItemType Directory -Path $folder)
 Get-ChildItem -LiteralPath $PackageDirectory -File | Copy-Item -Destination $folder
 Copy-Item (Join-Path $folder 'guard-identity.json') (Join-Path $folder 'observe-base-identity.json')
+# This is already an explicitly synthetic, non-installable target. Normalize
+# source provenance in the fixture so the parser tests also accept dev inputs;
+# never modify the source package or use this report for actual installation.
+$fixtureBase=Get-Content (Join-Path $folder 'observe-base-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$fixtureBase.gitDirty=$false; $fixtureBase.configuration='Release'; $fixtureBase.builtFromVerifiedInputs=$true
+$fixtureBase | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $folder 'observe-base-identity.json') -Encoding UTF8
 Copy-Item (Join-Path $PSScriptRoot 'RecoveryGuard-Acceptance.ps1') $folder
 [void](New-Item -ItemType Directory -Path (Join-Path $folder 'Acceptance'))
 Copy-Item (Join-Path $root 'fixture.txt') (Join-Path $folder 'Acceptance\fixture.txt')

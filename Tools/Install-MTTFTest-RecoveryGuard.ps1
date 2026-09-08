@@ -32,6 +32,7 @@ function Read-VerifiedPackage([string]$Root) {
     if ($identity.supervisedCommissioningAvailable -eq $true) {
         $required += @('Invoke-MTTFTest-RecoveryGuardCommissioning.ps1','Verify-Release.ps1')
     }
+    $observeRequired = @($required)
     if ($automatic) {
         $required += @('RecoveryGuard-Acceptance.ps1', 'acceptance-report.json', 'observe-base-identity.json')
         $report = Get-Content -LiteralPath (Join-Path $Root 'acceptance-report.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -65,10 +66,11 @@ function Read-VerifiedPackage([string]$Root) {
             $observedBase.version -cne $identity.version -or
             $observedBase.gitCommit -cne $identity.gitCommit -or $observedBase.gitDirty -ne $false -or
             $observedBase.builtFromVerifiedInputs -ne $true -or $observedBase.configuration -ne 'Release' -or
-            @($observedBase.files).Count -ne 7){throw 'AcceptanceObserveBaseInvalid'}
+            [bool]$observedBase.supervisedCommissioningAvailable -ne [bool]$identity.supervisedCommissioningAvailable -or
+            @($observedBase.files).Count -ne $observeRequired.Count){throw 'AcceptanceObserveBaseInvalid'}
         $baseNames=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         foreach($file in $observedBase.files){
-            if($file.name -notin $required[0..6] -or -not $baseNames.Add([string]$file.name) -or
+            if($file.name -notin $observeRequired -or -not $baseNames.Add([string]$file.name) -or
                 (Get-FileHash -LiteralPath (Join-Path $Root $file.name)).Hash -ine $file.sha256){throw 'AcceptanceObserveBaseContentMismatch'}
         }
         Assert-GuardAcceptanceEvidenceFiles $report (Join-Path $Root 'Acceptance')
