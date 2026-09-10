@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$BundleDirectory)
+﻿param([Parameter(Mandatory=$true)][string]$BundleDirectory)
 $ErrorActionPreference='Stop'
 $bundle=[IO.Path]::GetFullPath($BundleDirectory)
 $entry=Join-Path $bundle 'Install-AutomaticRecoveryBundle.ps1'
@@ -48,4 +48,26 @@ foreach($name in @('一键安装正式版.cmd','一键修复.cmd')){
     }
 }
 Write-Output 'PASS inner and outer entries share report-free installation'
-Write-Output 'PASS one-click package 5/5; no services, tasks or hardware modified'
+# Run the actual install tail against filesystem-only installer doubles.
+$text=[IO.File]::ReadAllText($entry)
+$tail=$text.Substring($text.IndexOf('$stage=$guard'))
+$main=Join-Path $temp 'Main';$guard=Join-Path $temp 'FakeGuard'
+[void][IO.Directory]::CreateDirectory((Join-Path $main 'Deployment'))
+[void][IO.Directory]::CreateDirectory($guard)
+$global:epbOneClickFixture=@{seenMain='';seenGuard='';mainFailure=0}
+[IO.File]::WriteAllText((Join-Path $main 'Deployment\Install-MTTFTest-Unattended.ps1'), 'param($Mode,$SourceDirectory,$InstallRoot) $global:epbOneClickFixture.seenMain=$Mode; $global:LASTEXITCODE=$global:epbOneClickFixture.mainFailure')
+[IO.File]::WriteAllText((Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1'), 'param($Mode,$SourceDirectory,$BenchId,$MainExecutable,$RecoveryMode) $global:epbOneClickFixture.seenGuard=$RecoveryMode; $global:LASTEXITCODE=0')
+function Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
+$bench='Fixture';$RecoveryMode='RecoverStalled'
+foreach($Mode in @('Install','Repair')){
+    $global:epbOneClickFixture.mainFailure=0;$global:epbOneClickFixture.seenMain='';$global:epbOneClickFixture.seenGuard=''
+    . ([scriptblock]::Create($tail)) | Out-Null
+    if($global:epbOneClickFixture.seenMain -cne $Mode -or $global:epbOneClickFixture.seenGuard -cne 'RecoverStalled'){throw 'InstallDispatchMismatch'}
+}
+$global:epbOneClickFixture.mainFailure=1;$global:epbOneClickFixture.seenGuard=''
+try{. ([scriptblock]::Create($tail));throw 'ExpectedMainFailure'}catch{if($_.Exception.Message -ne 'MainInstallationFailed'){throw}}
+if($global:epbOneClickFixture.seenGuard -ne ''){throw 'GuardRanAfterMainFailure'}
+Remove-Variable epbOneClickFixture -Scope Global
+$global:LASTEXITCODE=0
+Write-Output 'PASS install and repair dispatch correctly; Main failure stops Guard installation'
+Write-Output 'PASS one-click package 6/6; no services, tasks or hardware modified'
