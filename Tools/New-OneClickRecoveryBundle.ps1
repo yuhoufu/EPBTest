@@ -1,19 +1,32 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$SourceBundle,
-    [Parameter(Mandatory=$true)][string]$OutputRoot)
+    [Parameter(Mandatory=$true)][string]$OutputRoot,
+    [switch]$SourceIsBaseBundle)
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
 if(@(git -C $repo status --porcelain).Count -ne 0 -or $LASTEXITCODE -ne 0){throw 'CleanToolsSourceRequired'}
 $commit=([string](git -C $repo rev-parse HEAD)).Trim()
 $source=[IO.Path]::GetFullPath($SourceBundle)
-& (Join-Path $source 'Install-AutomaticRecoveryBundle.ps1') -Mode ValidatePackage | Out-Null
-$mainId=Get-Content (Join-Path $source 'Base\Package\build-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
-$guardId=Get-Content (Join-Path $source 'Base\Guard\guard-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
+if($SourceIsBaseBundle){
+    # 新构建直接从已校验Base升级，避免经过已被一键安装策略替代的旧schema中间包。
+    & (Join-Path $source 'Verify-FieldPackage.ps1') | Out-Null
+    $sourceBase=$source
+}else{
+    & (Join-Path $source 'Install-AutomaticRecoveryBundle.ps1') -Mode ValidatePackage | Out-Null
+    $sourceBase=Join-Path $source 'Base'
+}
+$mainId=Get-Content (Join-Path $sourceBase 'Package\build-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
+$guardId=Get-Content (Join-Path $sourceBase 'Guard\guard-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
 if($guardId.schemaVersion -ne 2 -or $guardId.gitCommit -cne $mainId.gitCommit -or $guardId.gitDirty -ne $false){throw 'VerifiedSourceComponentsRequired'}
 $output=Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ('V'+$mainId.fileVersion+'_'+$commit.Substring(0,12)+'_AUTO_RECOVERY_ONECLICK')
 if((Test-Path $output) -or (Test-Path ($output+'.7z'))){throw 'OutputAlreadyExists'}
-Copy-Item -LiteralPath $source -Destination $output -Recurse
+if($SourceIsBaseBundle){
+    [void](New-Item -ItemType Directory -Path $output)
+    Copy-Item -LiteralPath $sourceBase -Destination (Join-Path $output 'Base') -Recurse
+}else{
+    Copy-Item -LiteralPath $source -Destination $output -Recurse
+}
 function Copy-Tool([string]$Name,[string]$Target) {
     [IO.File]::WriteAllText($Target,[IO.File]::ReadAllText((Join-Path $PSScriptRoot $Name)),[Text.UTF8Encoding]::new($true))
 }
@@ -23,6 +36,14 @@ function Manifest-Files([string]$Root,[string]$Exclude) {
     })
 }
 $base=Join-Path $output 'Base';$guard=Join-Path $base 'Guard'
+if($SourceIsBaseBundle){
+    foreach($name in @('启动试验','检查运行状态','恢复后台服务','一键故障采证','一键停止全部相关进程','一键卸载')){
+        $entry=[IO.File]::ReadAllText((Join-Path $base ($name+'.cmd')))
+        $entry=$entry.Replace('%~dp0FieldPackage-Launcher.ps1','%~dp0Base\FieldPackage-Launcher.ps1')
+        [IO.File]::WriteAllText((Join-Path $output ($name+'.cmd')),$entry,[Text.Encoding]::ASCII)
+    }
+}
+Copy-Tool 'RecoveryGuard-Acceptance.ps1' (Join-Path $output 'RecoveryGuard-Acceptance.ps1')
 Copy-Tool 'Install-AutomaticRecoveryBundle.ps1' (Join-Path $output 'Install-AutomaticRecoveryBundle.ps1')
 Copy-Tool 'FieldPackage-Launcher.ps1' (Join-Path $base 'FieldPackage-Launcher.ps1')
 Copy-Tool 'Install-MTTFTest-RecoveryGuard.ps1' (Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1')
@@ -31,7 +52,7 @@ foreach($entry in @{
     installationPolicy='OperatorManaged';fieldAcceptanceRequired=$false;
     deploymentToolsCommit=$commit;mainIdentitySha256=(Get-FileHash (Join-Path $base 'Package\build-identity.json')).Hash;
     approvedModes=@('RecoverExited','RecoverStalled');
-    componentSourceIdentitySha256=(Get-FileHash (Join-Path $source 'Base\Guard\guard-identity.json')).Hash
+    componentSourceIdentitySha256=(Get-FileHash (Join-Path $sourceBase 'Guard\guard-identity.json')).Hash
 }.GetEnumerator()){$guardId|Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value -Force}
 Copy-Item (Join-Path $repo 'docs\一键自动恢复安装与修复.md') (Join-Path $guard 'README.md') -Force
 $guardId.files=Manifest-Files $guard 'guard-identity.json'
