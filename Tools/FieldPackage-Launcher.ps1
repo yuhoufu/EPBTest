@@ -3,6 +3,13 @@
 param([ValidateSet('Install','Repair','Launch','Status','Restore','Evidence','Stop','Uninstall','Validate')][string]$Action='Status')
 $ErrorActionPreference='Stop'
 $bundle=$PSScriptRoot
+if($Action -in @('Install','Repair')) {
+    $outer=Join-Path (Split-Path $bundle -Parent) 'Install-AutomaticRecoveryBundle.ps1'
+    if(Test-Path -LiteralPath $outer -PathType Leaf) {
+        & $outer -Mode $Action
+        return
+    }
+}
 $root=Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'MTTFTest'
 if ([string]::IsNullOrWhiteSpace([Environment]::GetFolderPath('ProgramFilesX86'))) { $root=Join-Path $env:ProgramFiles 'MTTFTest' }
 $main=Join-Path $bundle 'Package'

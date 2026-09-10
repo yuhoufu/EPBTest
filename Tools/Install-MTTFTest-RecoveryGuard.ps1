@@ -21,12 +21,18 @@ $registrationPath = Join-Path $guardState 'installation.json'
 function Read-VerifiedPackage([string]$Root) {
     $identity = Get-Content -LiteralPath (Join-Path $Root 'guard-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $commissioning = $identity.schemaVersion -in @(1,2) -and $identity.deliveryStage -eq 'ObserveOnlyCommissioning' -and $identity.automaticExecutionReady -eq $false
+    $direct = $identity.schemaVersion -eq 4 -and $identity.deliveryStage -eq 'AutomaticRecovery' -and
+        $identity.installationPolicy -ceq 'OperatorManaged' -and $identity.fieldAcceptanceRequired -ceq $false -and
+        $identity.automaticExecutionReady -ceq $true -and $identity.configuration -ceq 'Release' -and
+        $identity.builtFromVerifiedInputs -ceq $true -and $identity.gitDirty -ceq $false -and
+        $identity.mainIdentitySha256 -match '^[0-9a-fA-F]{64}$' -and
+        $identity.deploymentToolsCommit -match '^[0-9a-fA-F]{40}$'
     $automatic = $identity.schemaVersion -eq 3 -and $identity.deliveryStage -eq 'AutomaticRecovery' -and
         $identity.automaticExecutionReady -eq $true -and $identity.configuration -eq 'Release' -and $identity.builtFromVerifiedInputs -eq $true -and
         $identity.gitDirty -eq $false
-    if ($identity.schemaVersion -notin @(1, 2, 3) -or $identity.product -ne 'MTTFTest.RecoveryGuard' -or
+    if ($identity.schemaVersion -notin @(1, 2, 3, 4) -or $identity.product -ne 'MTTFTest.RecoveryGuard' -or
         $identity.version -notmatch '^\d+\.\d+\.\d+\.\d+$' -or
-        (-not $commissioning -and -not $automatic)) { throw '独立包身份或交付阶段不受支持。' }
+        (-not $commissioning -and -not $automatic -and -not $direct)) { throw '独立包身份或交付阶段不受支持。' }
     $required = @('MTTFTest.RecoveryGuard.exe', 'MTTFTest.RecoveryControl.dll', 'guard-settings.json', 'Install-MTTFTest-RecoveryGuard.ps1')
     if ($identity.schemaVersion -ge 2) { $required += @('MTTFTest.RecoveryGuard.pdb', 'MTTFTest.RecoveryControl.pdb', 'README.md') }
     if ($identity.supervisedCommissioningAvailable -eq $true) {
@@ -264,7 +270,7 @@ function Resolve-GuardRecoveryMode($Identity, $Settings, [string]$RequestedMode)
     if ($mode -notin @(0, 1, 2) -or $Settings.SupervisionExpirySeconds -ne 3600) { throw 'Guard 恢复模式或 60 分钟阈值无效。' }
     if ($mode -ne 0 -and ($Identity.deliveryStage -ne 'AutomaticRecovery' -or
         $Identity.automaticExecutionReady -ne $true -or $Identity.configuration -ne 'Release' -or
-        $Identity.builtFromVerifiedInputs -ne $true -or $Identity.schemaVersion -ne 3 -or
+        $Identity.builtFromVerifiedInputs -ne $true -or $Identity.schemaVersion -notin @(3,4) -or
         $Identity.gitDirty -ne $false -or $modes[$mode] -cnotin @($Identity.approvedModes))) {
         throw '当前包未开放自动恢复，不能启用执行任务。'
     }
@@ -272,6 +278,14 @@ function Resolve-GuardRecoveryMode($Identity, $Settings, [string]$RequestedMode)
 }
 
 function Assert-GuardAcceptanceTarget($Identity, [string]$Executable, [string]$TargetBench, [string]$TargetMachine) {
+    if ($Identity.schemaVersion -eq 4) {
+        if ($Identity.installationPolicy -cne 'OperatorManaged' -or
+            [string]::IsNullOrWhiteSpace($TargetBench) -or $TargetMachine -ine $env:COMPUTERNAME -or
+            (Get-FileHash -LiteralPath (Join-Path (Split-Path $Executable -Parent) 'build-identity.json')).Hash -ine $Identity.mainIdentitySha256) {
+            throw 'DirectInstallTargetMismatch'
+        }
+        return
+    }
     if ($Identity.schemaVersion -ne 3 -or $TargetBench -cne $Identity.acceptanceBenchId -or
         $TargetMachine -ine $Identity.acceptanceMachineName -or
         (Get-FileHash -LiteralPath (Join-Path (Split-Path $Executable -Parent) 'build-identity.json')).Hash -ine $Identity.mainIdentitySha256) {
