@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -63,7 +63,7 @@ namespace AdaptiveControlTests
             }
         }
 
-        private static void ScopeCompetition(int[] channels)
+        internal static void ScopeCompetition(int[] channels, string operation = "StartupPositioningSelfHealing")
         {
             var registry = new RecoveryTaskRegistry();
             var states = new Dictionary<Guid, bool>();
@@ -91,7 +91,7 @@ namespace AdaptiveControlTests
                 RecoveryOwnerKind.HydraulicGroupRecovery, RecoveryTargetPhase.Startup, Guid.NewGuid(), channels,
                 _ => () => Task.CompletedTask, _ => { }, out var owner);
             Check(result == RecoveryIncidentCoordinator.BeginResult.Created, "必须先建立实际恢复所有权");
-            result = coordinator.TryBegin("StartupPositioningSelfHealing", run, 1,
+            result = coordinator.TryBegin(operation, run, 1,
                 RecoveryOwnerKind.BatchStartup, RecoveryTargetPhase.Startup, Guid.NewGuid(),
                 new[] { channels[0] }, new[] { channels[0] }, _ => () => Task.CompletedTask, _ => { },
                 out var rejected, reportScopeBusy: true);
@@ -99,7 +99,7 @@ namespace AdaptiveControlTests
                 "范围竞争不得登记新worker、断能或被报成登记故障");
             Check(owner.CompleteAfterTerminal(c => { lock (gate) states[c.IncidentId] = true; }), "旧恢复必须安全退休");
             RecoveryIncidentCoordinator.Incident retry = null;
-            result = coordinator.TryBegin("StartupPositioningSelfHealing", run, 1,
+            result = coordinator.TryBegin(operation, run, 1,
                 RecoveryOwnerKind.BatchStartup, RecoveryTargetPhase.Startup, Guid.NewGuid(),
                 channels, _ => async () =>
                 {

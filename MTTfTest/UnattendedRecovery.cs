@@ -2019,6 +2019,19 @@ namespace MTEmbTest
                 {
                     if (string.Equals(registrationError, "RunIdMismatch", StringComparison.Ordinal))
                     {
+                        var pendingStartup = UnattendedRunCheckpointStore.Load();
+                        if (pendingStartup?.Armed == true && pendingStartup.RecoveryChainPendingStart &&
+                            manager?.HasSoftwareRecoveryEscalation(fault?.RunId ?? Guid.Empty) == true)
+                        {
+                            // 新批次尚未完整提交，检查点故意保留父 RunId。其真实启动栈
+                            // 会检查熔断并安全回滚，再沿原 Watchdog bootstrap 交接；
+                            // 不开启第二个恢复 owner，也不能把当前子批次当作旧请求丢弃。
+                            ProjectLogHub.Write(ProjectLogLevel.Warning,
+                                $"PendingStartupRecoveryFaultOwned RunId={fault.RunId:N};" +
+                                $"ParentRunId={pendingStartup.RunId};安全回滚由当前恢复启动事务完成。",
+                                "无人值守恢复");
+                            return;
+                        }
                         ProjectLogHub.Write(
                             ProjectLogLevel.Warning,
                             $"忽略迟到旧运行的无人值守恢复请求。" +

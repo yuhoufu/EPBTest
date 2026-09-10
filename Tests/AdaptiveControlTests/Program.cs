@@ -25,6 +25,12 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--i0010")
+                {
+                    _passed += I0010IncidentTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--i0009")
                 {
                     _passed += I0009IncidentTests.RunAll();
@@ -496,6 +502,7 @@ namespace AdaptiveControlTests
                     args[0].Equals("--cycle-lifecycle", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += CycleAttemptLifecycleTests.RunAll();
+                _passed += I0010IncidentTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -596,6 +603,7 @@ namespace AdaptiveControlTests
                 // before broader controller suites that intentionally leave terminal evidence.
                 _passed += RecoveryCoordinationTests.RunAll();
                 _passed += CycleAttemptLifecycleTests.RunAll();
+                _passed += I0010IncidentTests.RunAll();
                 _passed += I0009IncidentTests.RunAll();
                 _passed += RecoveryProductionSeamTests.RunAll();
                 _passed += PowerSupplyTelemetryRecorderTests.RunAll();

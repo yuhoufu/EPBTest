@@ -1,8 +1,9 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$SourceBundle,
     [Parameter(Mandatory=$true)][string]$OutputRoot,
-    [switch]$SourceIsBaseBundle)
+    [switch]$SourceIsBaseBundle,
+    [ValidateSet('RecoverExited','RecoverStalled')][string]$RecoveryMode='RecoverExited')
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
 if(@(git -C $repo status --porcelain).Count -ne 0 -or $LASTEXITCODE -ne 0){throw 'CleanToolsSourceRequired'}
@@ -45,6 +46,13 @@ if($SourceIsBaseBundle){
 }
 Copy-Tool 'RecoveryGuard-Acceptance.ps1' (Join-Path $output 'RecoveryGuard-Acceptance.ps1')
 Copy-Tool 'Install-AutomaticRecoveryBundle.ps1' (Join-Path $output 'Install-AutomaticRecoveryBundle.ps1')
+if($PSBoundParameters.ContainsKey('RecoveryMode')){
+    $installerPath=Join-Path $output 'Install-AutomaticRecoveryBundle.ps1'
+    $installerText=[IO.File]::ReadAllText($installerPath).Replace("[string]`$RecoveryMode='RecoverExited'", "[string]`$RecoveryMode='$RecoveryMode'")
+    [IO.File]::WriteAllText($installerPath,$installerText,[Text.UTF8Encoding]::new($true))
+}
+$modeArgument=if($PSBoundParameters.ContainsKey('RecoveryMode')){' -RecoveryMode '+$RecoveryMode}else{''}
+
 Copy-Tool 'FieldPackage-Launcher.ps1' (Join-Path $base 'FieldPackage-Launcher.ps1')
 Copy-Tool 'Install-MTTFTest-RecoveryGuard.ps1' (Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1')
 $guardId.schemaVersion=4;$guardId.deliveryStage='AutomaticRecovery';$guardId.automaticExecutionReady=$true
@@ -62,18 +70,26 @@ foreach($name in @('一键安装正式版','一键修复')){
     foreach($root in @($output,$base)){
         $relative=if($root -eq $base){'..\'}else{''}
         $lines=@('@echo off','setlocal DisableDelayedExpansion',
-            ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0'+$relative+'Install-AutomaticRecoveryBundle.ps1" -Mode '+$action),
+            ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0'+$relative+'Install-AutomaticRecoveryBundle.ps1" -Mode '+$action+$modeArgument),
             'set "MTTFTEST_RESULT=%ERRORLEVEL%"','if not defined MTTFTEST_QUICKDEPLOY_NONINTERACTIVE pause','endlocal & exit /b %MTTFTEST_RESULT%')
         [IO.File]::WriteAllText((Join-Path $root ($name+'.cmd')),($lines -join "`r`n")+"`r`n",[Text.Encoding]::ASCII)
     }
 }
 foreach($path in @((Join-Path $output '自动恢复安装说明.md'),(Join-Path $base '快捷部署说明.md'))){Copy-Item (Join-Path $repo 'docs\一键自动恢复安装与修复.md') $path -Force}
+if($PSBoundParameters.ContainsKey('RecoveryMode')){
+    foreach($path in @((Join-Path $output '自动恢复安装说明.md'),(Join-Path $base '快捷部署说明.md'),(Join-Path $guard 'README.md'))){
+        $text=[IO.File]::ReadAllText($path)
+        [IO.File]::WriteAllText($path,("本候选包安装/修复入口明确选择 $RecoveryMode；执行入口后才更改配置。RecoverStalled 包含进程存活但试验停滞的接管，仍需完整安全证据和人工运行授权。以下为通用说明。`r`n`r`n"+$text),[Text.UTF8Encoding]::new($true))
+    }
+    $guardId.files=Manifest-Files $guard 'guard-identity.json'
+    $guardId|ConvertTo-Json -Depth 15|Set-Content (Join-Path $guard 'guard-identity.json') -Encoding UTF8
+}
 $bid=Get-Content (Join-Path $base 'bundle-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
-$bid.recoveryMode='RecoverExited';$bid.automaticRecoveryEnabled=$true;$bid.deploymentToolsCommit=$commit
+$bid.recoveryMode=$RecoveryMode;$bid.automaticRecoveryEnabled=$true;$bid.deploymentToolsCommit=$commit
 $bid.files=Manifest-Files $base 'bundle-identity.json'
 $bid|ConvertTo-Json -Depth 8|Set-Content (Join-Path $base 'bundle-identity.json') -Encoding UTF8
 $manifest=[ordered]@{schemaVersion=2;productVersion=$mainId.fileVersion;componentCommit=$mainId.gitCommit;
-    deploymentToolsCommit=$commit;installationPolicy='OperatorManaged';recoveryMode='RecoverExited';
+    deploymentToolsCommit=$commit;installationPolicy='OperatorManaged';recoveryMode=$RecoveryMode;
     supportedRecoveryModes=@('RecoverExited','RecoverStalled');fieldAcceptanceRequired=$false;
     hardwareValidationPerformed=$false;files=(Manifest-Files $output 'automatic-bundle.json')}
 $manifest|ConvertTo-Json -Depth 8|Set-Content (Join-Path $output 'automatic-bundle.json') -Encoding UTF8

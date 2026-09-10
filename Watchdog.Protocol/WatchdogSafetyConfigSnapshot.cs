@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -263,7 +263,8 @@ namespace MTTFTest.Watchdog.Protocol
                 var temporaryManifest = Path.Combine(
                     temporaryRoot, "config-snapshot-manifest.json");
                 WriteDurable(temporaryManifest, manifestBytes);
-                Directory.Move(temporaryRoot, finalRoot);
+                PublishSnapshotDirectory(() => Directory.Move(temporaryRoot, finalRoot),
+                    () => Directory.Exists(temporaryRoot) && !Directory.Exists(finalRoot) && !File.Exists(finalRoot));
                 temporaryRoot = null;
                 return Validate(
                     journalRoot,
@@ -286,6 +287,22 @@ namespace MTTFTest.Watchdog.Protocol
                         Directory.Delete(temporaryRoot, true);
                 }
                 catch { }
+            }
+        }
+
+        internal static void PublishSnapshotDirectory(Action move, Func<bool> remainsUnpublished)
+        {
+            for (var attempt = 0; ; attempt++)
+            {
+                try { move(); return; }
+                catch (IOException error) when ((error.HResult & 0xffff) == 5 &&
+                    attempt < 4 && remainsUnpublished())
+                {
+                    // .NET Framework目录发布实测会短暂返回ERROR_ACCESS_DENIED；
+                    // 仅重试尚未发布的私有快照目录，不修改ACL、不替换已存在的权威。
+                    // 永久失败仍返回失败；随后必须通过原manifest逐文件哈希校验。
+                    System.Threading.Thread.Sleep(20 * (attempt + 1));
+                }
             }
         }
 

@@ -351,6 +351,30 @@ namespace AdaptiveControlTests
             }
         }
 
+        internal static void PendingStartupEscalationKeepsExactIdentity()
+        {
+            using (var fixture = new StartupFixture())
+            {
+                var manager = fixture.Manager;
+                var run = manager.WatchdogRunId;
+                var gate = (SoftwareRecoveryEscalationGate)typeof(EpbManager).GetField(
+                    "_softwareRecoveryEscalation", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(manager);
+                Assert(gate.TryOpen(run), "未建立真实软件恢复熔断");
+                Assert(manager.HasSoftwareRecoveryEscalation(run) &&
+                    !manager.HasSoftwareRecoveryEscalation(Guid.NewGuid()), "子批次故障跨Run归属");
+                var boundary = typeof(EpbManager).GetMethod("ThrowIfStartupSoftwareRecoveryEscalated",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                boundary.Invoke(manager, new object[] { Guid.NewGuid() });
+                var rejected = false;
+                try { boundary.Invoke(manager, new object[] { run }); }
+                catch (TargetInvocationException error)
+                { rejected = error.InnerException is SoftwareSelfHealingExhaustedException; }
+                Assert(rejected, "已熔断的未提交子批次仍允许进入正式阶段");
+                fixture.SetField("_activeBatchId", Guid.NewGuid());
+                Assert(!manager.HasSoftwareRecoveryEscalation(run), "旧批次熔断污染新运行");
+            }
+        }
+
         private sealed class StartupFixture : IDisposable
         {
             internal TwoDeviceAiAcquirer Acquirer => _acq;

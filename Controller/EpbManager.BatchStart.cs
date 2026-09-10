@@ -1214,6 +1214,24 @@ namespace Controller
             return CaptureLogicalQuiescenceSnapshot();
         }
 
+        internal static void StartFormalRuntime(Action startTimers, Action markBatchRunning, Action publishRunning)
+        {
+            startTimers();
+            markBatchRunning();
+            publishRunning();
+        }
+
+        public bool HasSoftwareRecoveryEscalation(Guid runId)
+            => runId != Guid.Empty && runId == _activeBatchId && _softwareRecoveryEscalation.IsOpen(runId);
+
+        private void ThrowIfStartupSoftwareRecoveryEscalated(Guid runId)
+        {
+            if (HasSoftwareRecoveryEscalation(runId))
+                throw new SoftwareSelfHealingExhaustedException("StartupBatchRecoveryEscalated",
+                    SoftwareRecoveryEscalationAttempts,
+                    new InvalidOperationException("启动期间软件恢复已升级，禁止部分通道继续正式运行。"));
+        }
+
         public Guid WatchdogRunId => _activeBatchId;
         public long WatchdogRunEpoch => Interlocked.Read(ref _runEpoch);
 
@@ -2019,6 +2037,7 @@ namespace Controller
                     var learningFailed = await RunLearningPhaseAsync(
                             groups, t0OfGroup, learnCycles, staggerPlan, sessionToken)
                         .ConfigureAwait(false);
+                    ThrowIfStartupSoftwareRecoveryEscalated(startupRunId);
                     foreach (var failedChannel in learningFailed)
                     {
                         var alreadyHardwareIsolated =
@@ -2248,18 +2267,23 @@ namespace Controller
                         completedDuringStart.ToArray());
                 }
 
-                foreach (var channel in activeChannels)
-                    PublishChannelRuntimeState(
-                        channel,
-                        ChannelRuntimeState.Running,
-                        "Running",
-                        "正式试验运行中",
-                        affectedChannels: activeChannels,
-                        correlationId: _activeBatchId);
-
-                // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
-                StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
-                MarkBatchRunning(activeChannels, "正式试验运行中");
+                ThrowIfStartupSoftwareRecoveryEscalated(startupRunId);
+                // 计时器必须先离开 Created，批次也必须取得 Running 准入，
+                // 才能向健康检查发布 Running；创建过程中的数据库读取可能阻塞。
+                StartFormalRuntime(
+                    () => StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken),
+                    () => MarkBatchRunning(activeChannels, "正式试验运行中"),
+                    () =>
+                    {
+                        foreach (var channel in activeChannels)
+                            PublishChannelRuntimeState(
+                                channel,
+                                ChannelRuntimeState.Running,
+                                "Running",
+                                "正式试验运行中",
+                                affectedChannels: activeChannels,
+                                correlationId: _activeBatchId);
+                    });
                 LogFieldSessionMetric("Start", _activeBatchId, activeChannels, false, "BatchFormal");
                 LogDaqLivenessRunBinding(_activeBatchId);
                 return new BatchStartResult(
@@ -2270,7 +2294,7 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                var failedRunId = _activeBatchId == Guid.Empty ? Guid.NewGuid() : _activeBatchId;
+                var failedRunId = startupRunId;
                 var circuitFailure = FindInnerException<SoftwareSelfHealingExhaustedException>(ex);
                 var circuitOpen = circuitFailure != null;
                 var failureChannels = ResolveBatchStartFailureChannels(
@@ -2388,7 +2412,7 @@ namespace Controller
                     _adaptiveLifecyclePort.PublishSystemFault(
                         fault,
                         failedRunId,
-                        Interlocked.Read(ref _runEpoch));
+                        startupRunEpoch);
                 }
 
                 throw;
@@ -5023,6 +5047,24 @@ namespace Controller
                 throw new InvalidOperationException("LearningRetryTerminalRejected");
         }
 
+        internal static async Task WaitForRecoveryScopeAsync(Func<bool> tryBegin,
+            Func<bool> scopeBusy, Action validate, int timeoutMs, CancellationToken token)
+        {
+            var elapsed = Stopwatch.StartNew();
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                validate();
+                if (tryBegin()) return;
+                if (!scopeBusy())
+                    throw new InvalidOperationException("LearningRecoveryRegistrationRejected");
+                if (elapsed.ElapsedMilliseconds >= timeoutMs)
+                    throw new TimeoutException("LearningRecoveryScopeRetirementDeadline");
+                // 只等原 owner 退役；不占有它的 worker、不发布 Learning 或放行上电。
+                await Task.Delay(Math.Min(50, Math.Max(1, timeoutMs)), token).ConfigureAwait(false);
+            }
+        }
+
         private async Task RunLearningRetryIncidentAsync(
             IEpbCycleRunner runner,
             EpbAdaptiveProfile modelBeforeLogicalCycle,
@@ -5074,34 +5116,53 @@ namespace Controller
                             "学习圈失败尝试已安全封存，准备重做同一逻辑学习圈。")), token);
             }
 
-            if (!TryBeginRecoveryIncident(
-                    "LearningPersistenceSelfHealing",
-                    runId,
-                    runEpoch,
-                    RecoveryOwnerKind.BatchLearning,
-                    RecoveryTargetPhase.Learning,
-                    ownerId,
-                    new[] { channel },
-                    _ => BuildRecoveryWorker(),
-                    contract =>
-                    {
-                        PublishRecoveryIncidentState(
-                            channel,
-                            ChannelRuntimeState.Recovering,
-                            "LearningPersistenceSelfHealing",
-                            $"学习圈证据软件自愈第{attempt}次：本次尝试已作废，随后重做同一逻辑学习圈。",
-                            affectedChannels: contract.Channels,
-                            correlationId: contract.IncidentId,
-                            allowTerminalReset: true,
-                            recoveryOwnerKind: contract.OwnerKind,
-                            recoveryTargetPhase: contract.TargetPhase,
-                            recoveryOwnerId: contract.OwnerId,
-                            recoveryOwnerGeneration: contract.RunEpoch);
-                    },
-                    out recoveryIncident,
-                    startupParent: startupParent))
-                throw new InvalidOperationException(
-                    $"EPB[{channel}] 学习恢复事务建立失败，已保持安全终态。");
+            try
+            {
+                var scopeBusy = false;
+                await WaitForRecoveryScopeAsync(() =>
+                {
+                    scopeBusy = false;
+                    return TryBeginRecoveryIncident(
+                        "LearningPersistenceSelfHealing",
+                        runId,
+                        runEpoch,
+                        RecoveryOwnerKind.BatchLearning,
+                        RecoveryTargetPhase.Learning,
+                        ownerId,
+                        new[] { channel },
+                        _ => BuildRecoveryWorker(),
+                        contract =>
+                        {
+                            PublishRecoveryIncidentState(
+                                channel,
+                                ChannelRuntimeState.Recovering,
+                                "LearningPersistenceSelfHealing",
+                                $"学习圈证据软件自愈第{attempt}次：本次尝试已作废，随后重做同一逻辑学习圈。",
+                                affectedChannels: contract.Channels,
+                                correlationId: contract.IncidentId,
+                                allowTerminalReset: true,
+                                recoveryOwnerKind: contract.OwnerKind,
+                                recoveryTargetPhase: contract.TargetPhase,
+                                recoveryOwnerId: contract.OwnerId,
+                                recoveryOwnerGeneration: contract.RunEpoch);
+                        },
+                        out recoveryIncident,
+                        startupParent: startupParent,
+                        onScopeBusy: () => scopeBusy = true);
+                }, () => scopeBusy, () =>
+                {
+                    if (runId != _activeBatchId || runEpoch != Interlocked.Read(ref _runEpoch) ||
+                        IsEnergizationRevoked)
+                        throw new OperationCanceledException("LearningRetrySuperseded", token);
+                }, RecoveryGroupHardDeadlineMs, token).ConfigureAwait(false);
+            }
+            catch (Exception error) when (!(error is OperationCanceledException))
+            {
+                TryEscalateSoftwareRecoveryCircuitOpen("LearningRecoveryAdmissionFailed",
+                    error.Message, new[] { channel }, runId, runEpoch,
+                    SoftwareRecoveryEscalationAttempts, "LearningRecoveryAdmissionFailed");
+                throw;
+            }
 
             _taskSupervisor.Observe(
                 recoveryIncident.WorkerTask,

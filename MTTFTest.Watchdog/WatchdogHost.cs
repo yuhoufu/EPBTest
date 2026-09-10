@@ -3312,6 +3312,11 @@ namespace MTTFTest.Watchdog
         private void BeginRelaunchAfterExit(long approvedPermitGeneration = 0)
         {
             if (IsRecoveryBlocked() || _journal.ManualStopRequested || IsSessionRevoked()) return;
+            // 同一退出回执/安全终态会被多个观察者重放。已消耗的许可不能
+            // 再登记“启动前退出”失败，否则新进程 Attach 后会被旧回执熔断。
+            if (approvedPermitGeneration > 0 &&
+                !CanObserveApprovedExitPermit(_relaunchCoordinator?.Snapshot, approvedPermitGeneration))
+                return;
             if (Interlocked.CompareExchange(
                     ref _relaunchAfterExitStarted,
                     1,
@@ -3335,6 +3340,9 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     var permitGeneration = approvedPermitGeneration;
+                    if (permitGeneration > 0 &&
+                        !CanObserveApprovedExitPermit(_relaunchCoordinator?.Snapshot, permitGeneration))
+                        return;
                     if (_journal.RecoveryAttempt > _journal.ConsecutiveStartupFailures)
                     {
                         // RegisterRecoveryFailure is the single strict-V4 failure
@@ -4803,6 +4811,10 @@ namespace MTTFTest.Watchdog
                 return 0;
             return record.Generation;
         }
+
+        internal static bool CanObserveApprovedExitPermit(DurableRelaunchPermitRecord record, long generation)
+            => generation > 0 && record != null && record.Generation == generation &&
+               record.State == DurableRelaunchPermitState.Approved;
 
         private bool IsConsumableRelaunchPermit(long generation)
         {
@@ -6565,7 +6577,7 @@ namespace MTTFTest.Watchdog
             long currentProcessStartUtcTicks,
             string reason)
         {
-            _ = Task.Run(async () =>
+            _ = Task.Run(() =>
             {
                 try
                 {
@@ -6576,16 +6588,9 @@ namespace MTTFTest.Watchdog
                                 currentProcessStartUtcTicks))
                             return;
                         WriteFirstLivenessSnapshot(process, reason);
-                        await MiniDumpCapture.TryCaptureAsync(
-                                process,
-                                _args.JournalDirectory,
-                                _args.SessionId,
-                                TimeSpan.FromSeconds(2),
-                                message => RecordEvent(
-                                    "FirstLivenessMiniDump",
-                                    message),
-                                fullMemory: false)
-                            .ConfigureAwait(false);
+                        // 首次语义快照迟滞尚不是停止授权。活动试验只采轻量证据，
+                        // 避免对DAQ进程抓dump反过来制造采样空窗；终止前抓取路径保留。
+                        RecordEvent("FirstLivenessMiniDumpDeferred", "AwaitTerminalTakeover:" + reason);
                     }
                 }
                 catch (Exception ex)
