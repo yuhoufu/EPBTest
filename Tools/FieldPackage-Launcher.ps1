@@ -1,6 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Install','Repair','Launch','Status','Restore','Evidence','Stop','Uninstall','Validate')][string]$Action='Status')
+param([ValidateSet('Install','Repair','Launch','Status','Restore','Evidence','Stop','Uninstall','Validate')][string]$Action='Status',
+    [switch]$PauseOnExit)
 $ErrorActionPreference='Stop'
 $bundle=$PSScriptRoot
 if($Action -in @('Install','Repair')) {
@@ -19,7 +20,8 @@ try {
     $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if ($Action -ne 'Validate' -and -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         $scriptPath=$PSCommandPath.Replace("'","''")
-        $command="& '$scriptPath' -Action '$Action'; exit `$LASTEXITCODE"
+        $pauseArgument=if($Action -eq 'Status' -and -not $env:MTTFTEST_QUICKDEPLOY_NONINTERACTIVE){' -PauseOnExit'}else{''}
+        $command="& '$scriptPath' -Action '$Action'$pauseArgument; exit `$LASTEXITCODE"
         $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
         $child=Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -Wait -PassThru
         exit $child.ExitCode
@@ -118,4 +120,9 @@ try {
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Host '已完成的步骤不会被当作整体成功；保留数据与日志，排除原因后再修复。'
     exit 1
-} finally {try {Stop-Transcript | Out-Null} catch {}}
+} finally {
+    try {Stop-Transcript | Out-Null} catch {}
+    if($PauseOnExit -and -not $env:MTTFTEST_QUICKDEPLOY_NONINTERACTIVE){
+        [void](Read-Host '结果已显示，按回车关闭此窗口')
+    }
+}
