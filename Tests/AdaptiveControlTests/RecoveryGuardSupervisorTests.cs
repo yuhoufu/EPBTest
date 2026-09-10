@@ -803,7 +803,7 @@ namespace AdaptiveControlTests
                 {
                     SessionId = session, SessionGeneration = 1, SessionLease = 1, HandoffId = Guid.NewGuid().ToString("N"),
                     Nonce = nonce, RunId = run, Revision = 1, State = WatchdogSafetyHandoffState.Completed,
-                    Stage = WatchdogSafetyStage.Completed, MotorsOff = true, PowerOff = true, PressureSafe = true,
+                    Stage = WatchdogSafetyStage.Completed, MotorsOff = true, PowerOff = true, PressureSafe = true, CurrentSafe = true,
                     PersistenceDrained = true, LogicalQuiescent = true, HardwareResourcesReleased = true,
                     ExecutionAuthorizationRevoked = true, CallbacksIsolated = true,
                     OldProcessId = process.ProcessId, OldProcessStartUtcTicks = process.StartUtcTicks,

@@ -22,4 +22,4 @@ Base保留已验证的基础组件及校验器。其基础身份中的观察模�
 
 ## 可选停滞恢复
 
-仅在真实报告 approvedModes 包含 RecoverStalled 且 stalledRecovery 场景通过后，使用 PowerShell 安装或修复入口追加 `-RecoveryMode RecoverStalled`。该模式仍受运行授权、人工停止优先、60分钟过期、独立安全证明及接管互斥约束。管理员提权会保留所选模式。首次双击安装默认 RecoverExited；修复未显式指定模式时保留已安装的自动恢复模式，已有观察模式则请求 RecoverExited。已安装模式缺失或未知时拒绝覆盖。显式参数可选择报告批准的模式。软件模拟验证不能代替这项现场验收。
+仅在真实报告 approvedModes 包含 RecoverStalled 且 stalledRecovery、forcedStalledRecovery、forcedStalledRecoveryInterlocks 三类场景通过后，使用 PowerShell 安装或修复入口追加 `-RecoveryMode RecoverStalled`。后两项分别要求完全卡死后的独立安全恢复及拒绝场景证据，详见[验收报告契约](RecoveryGuard_自动发布验收报告契约.md)。该模式仍受运行授权、人工停止优先、60分钟过期、独立安全证明及接管互斥约束。管理员提权会保留所选模式。首次双击安装默认 RecoverExited；修复未显式指定模式时保留已安装的自动恢复模式，已有观察模式则请求 RecoverExited。已安装模式缺失或未知时拒绝覆盖。显式参数可选择报告批准的模式。软件模拟验证不能代替这项现场验收。

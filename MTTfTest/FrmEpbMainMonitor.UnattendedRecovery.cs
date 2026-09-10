@@ -329,6 +329,15 @@ namespace MTEmbTest
                         var stageDeadline = isNormalStage && stageStart > 0
                             ? new DateTime(stageStart, DateTimeKind.Utc)
                                 .AddMilliseconds(Math.Max(1, _cfg?.Test?.PeriodMs ?? 1)).AddSeconds(10).Ticks : 0;
+                        var stageName = state.State.ToString();
+                        if (RecoveryGuardRuntime.TryProjectRecoveryStage(state, aggregate?.Infrastructure,
+                            watchdogRunId, watchdogRunEpoch, out var recoveryStage,
+                            out var recoveryStart, out var recoveryDeadline))
+                        {
+                            stageName = recoveryStage;
+                            stageStart = recoveryStart;
+                            stageDeadline = recoveryDeadline;
+                        }
                         return new MTTFTest.RecoveryControl.RecoveryChannelProgress
                         {
                             Channel = state.Channel,
@@ -340,7 +349,7 @@ namespace MTEmbTest
                             SampleSequence = samples?.LastProcessedSequence ?? 0,
                             ControlSequence = progress?.MechanicalCompletedCount ?? 0,
                             PersistedSequence = committed?.FormalCommits ?? 0,
-                            Stage = state.State.ToString(),
+                            Stage = stageName,
                             StageStartedUtcTicks = stageStart,
                             StageDeadlineUtcTicks = stageDeadline
                         };

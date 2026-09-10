@@ -1832,6 +1832,7 @@ namespace AdaptiveControlTests
                 RequiresProcessRestart = true,
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = true,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true,
                 PersistenceBoundaryConfirmed = true,
                 LogicalQuiescenceConfirmed = true

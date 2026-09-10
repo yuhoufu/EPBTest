@@ -56,9 +56,16 @@ namespace MTTFTest.Watchdog.Protocol
         public int PressureSampleMaxAgeMs { get; set; }
         public int ReleaseStableMs { get; set; }
         public int ReleaseTimeoutMs { get; set; }
+        // Conservative existing motor-off current default. Serialized in the
+        // immutable runtime snapshot so the safety worker cannot pick a looser
+        // limit from mutable application settings during an attempt.
+        public double SafeCurrentThresholdA { get; set; } = 0.1;
 
         public void Validate()
         {
+            if (double.IsNaN(SafeCurrentThresholdA) || double.IsInfinity(SafeCurrentThresholdA) ||
+                SafeCurrentThresholdA <= 0 || SafeCurrentThresholdA > 0.1)
+                throw new InvalidDataException("SafetyAgentConfigInvalid:CurrentThreshold");
             if (SchemaVersion != 2 || double.IsNaN(SampleRateHz) ||
                 double.IsInfinity(SampleRateHz) || SampleRateHz <= 0 ||
                 SamplesPerChannel < 1)

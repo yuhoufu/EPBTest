@@ -62,6 +62,24 @@ namespace Controller
             return removed;
         }
 
+        public bool RemoveExact(int channel, T expected, Action<T> deactivate = null)
+        {
+            ValidateChannel(channel);
+            if (expected == null) return false;
+            var removed = false;
+            lock (_channelGates[channel])
+            {
+                if (Active.TryGetValue(channel, out var active) && ReferenceEquals(active, expected))
+                    removed |= ((ICollection<KeyValuePair<int, T>>)Active)
+                        .Remove(new KeyValuePair<int, T>(channel, expected));
+                if (Cache.TryGetValue(channel, out var cached) && ReferenceEquals(cached, expected))
+                    removed |= ((ICollection<KeyValuePair<int, T>>)Cache)
+                        .Remove(new KeyValuePair<int, T>(channel, expected));
+            }
+            if (removed) deactivate?.Invoke(expected);
+            return removed;
+        }
+
         public void Clear(Action<T> deactivate = null)
         {
             var channels = Active.Keys.Concat(Cache.Keys).Distinct().OrderBy(x => x).ToArray();

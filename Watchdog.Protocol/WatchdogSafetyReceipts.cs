@@ -374,6 +374,9 @@ namespace MTTFTest.Watchdog.Protocol
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
         public bool PressureSafe { get; set; }
+        // Deliberately false for historical receipts: pressure/OFF acknowledgements
+        // alone are not evidence of measured current after safe commands.
+        public bool CurrentSafe { get; set; }
         public bool PersistenceDrained { get; set; }
         public bool LogicalQuiescent { get; set; }
         public bool HardwareResourcesReleased { get; set; }
@@ -479,7 +482,7 @@ namespace MTTFTest.Watchdog.Protocol
         public bool IsSafetyCompleted =>
             State == WatchdogSafetyHandoffState.Completed &&
             (SchemaVersion < 3 || Stage == WatchdogSafetyStage.Completed) &&
-            MotorsOff && PowerOff && PressureSafe;
+            MotorsOff && PowerOff && PressureSafe && CurrentSafe;
 
         public bool IsTerminal =>
             State == WatchdogSafetyHandoffState.Completed ||
@@ -685,6 +688,7 @@ namespace MTTFTest.Watchdog.Protocol
                    previous.MotorsOff == current.MotorsOff &&
                    previous.PowerOff == current.PowerOff &&
                    previous.PressureSafe == current.PressureSafe &&
+                   previous.CurrentSafe == current.CurrentSafe &&
                    (!previous.PersistenceDrained || current.PersistenceDrained) &&
                    (!previous.LogicalQuiescent || current.LogicalQuiescent) &&
                    (!previous.HardwareResourcesReleased ||

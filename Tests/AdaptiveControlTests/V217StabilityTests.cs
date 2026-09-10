@@ -166,6 +166,32 @@ namespace AdaptiveControlTests
             Assert(EpbManager.IsVerifiedBusinessRejoin(run, 7, 10, attempt, true), "有效圈提交后仍未确认恢复");
             Assert(!EpbManager.IsVerifiedBusinessRejoin(run, 8, 10, attempt, true) &&
                 !EpbManager.IsVerifiedBusinessRejoin(run, 7, 11, attempt, true), "旧执行代次或旧尝试确认了新恢复");
+
+            foreach (var changeRunId in new[] { false, true })
+            {
+                // No hardware is constructed. A stale commit must return
+                // before reaching any publisher or removing its pending entry.
+                var manager = (EpbManager)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(EpbManager));
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                var pendingField = typeof(EpbManager).GetField("_businessRejoinPending", flags);
+                var pending = Activator.CreateInstance(pendingField.FieldType);
+                pendingField.SetValue(manager, pending);
+                typeof(EpbManager).GetField("_activeBatchId", flags).SetValue(manager, run);
+                typeof(EpbManager).GetField("_runEpoch", flags).SetValue(manager, 7L);
+                typeof(EpbManager).GetField("_cycleAttemptSequence", flags).SetValue(manager, 10L);
+                typeof(EpbManager).GetMethod("ExpectVerifiedBusinessCycle", flags)
+                    .Invoke(manager, new object[] { 4 });
+                typeof(EpbManager).GetField(changeRunId ? "_activeBatchId" : "_runEpoch", flags)
+                    .SetValue(manager, changeRunId ? (object)Guid.NewGuid() : 8L);
+                typeof(EpbManager).GetMethod("ConfirmBusinessCycle", flags).Invoke(manager,
+                    new object[] { 4, attempt, new Controller.Adaptive.EpbCycleOutcome
+                    {
+                        Kind = Controller.Adaptive.EpbCycleOutcomeKind.Success,
+                        Stage = Controller.Adaptive.EpbCurrentStage.Released
+                    } });
+                Assert((int)pendingField.FieldType.GetProperty("Count").GetValue(pending) == 1,
+                    "旧活动运行的迟到提交移除了pending或发布恢复成功。");
+            }
         }
 
         private static void Assert(bool condition, string message)

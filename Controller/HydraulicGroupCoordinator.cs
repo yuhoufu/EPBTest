@@ -831,7 +831,17 @@ namespace Controller
             return MarkVoltageReleaseAsync(lease, epbChannel);
         }
 
-        public async Task ForceReleaseAsync(int hydraulicId, string reason)
+        public Task ForceReleaseAsync(int hydraulicId, string reason) =>
+            ForceReleaseAsync(hydraulicId, reason, null);
+
+        // Output attempt only, not a pressure proof or a generation retirement.
+        // Recovery retains ownership and must still perform ForceRelease and
+        // fresh joint feedback before permitting reenergization.
+        internal Task IssueRecoveryReleaseOutputAsync(int hydraulicId) =>
+            ExecuteReleaseOutputAsync(hydraulicId);
+
+        internal async Task ForceReleaseAsync(int hydraulicId, string reason,
+            Func<int, PressureSample> stopEvidenceReader)
         {
             var active = _generations.Values
                 .Where(x => x.Key.HydraulicId == hydraulicId && !x.Completion.Task.IsCompleted)
@@ -846,7 +856,7 @@ namespace Controller
             // 即使某代次已由另一故障线程进入 FailGeneration，也再次幂等回零，
             // 并以实际压力连续安全作为 StopAll/恢复流程的完成依据。
             await ExecuteReleaseOutputAsync(hydraulicId).ConfigureAwait(false);
-            await WaitForSafePressureAsync(hydraulicId).ConfigureAwait(false);
+            await WaitForSafePressureAsync(hydraulicId, stopEvidenceReader).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -1286,8 +1296,9 @@ namespace Controller
                 await _hydCtl.ForceReleaseAsync(hydraulicId).ConfigureAwait(false);
                 return;
             }
-            try { _do?.SetPressure(hydraulicId, false); } catch { }
-            try { _ao?.WritePressure(hydraulicId == 1 ? "Cylinder1" : "Cylinder2", 0); } catch { }
+            HydraulicController.ConfirmReleaseOutputCommands(
+                () => _do?.SetPressure(hydraulicId, false) == true,
+                () => _ao?.WritePressure(hydraulicId == 1 ? "Cylinder1" : "Cylinder2", 0) == true);
         }
 
         private void PublishFault(GenerationState state, Exception exception)
@@ -1370,6 +1381,7 @@ namespace Controller
         /// </summary>
         public async Task EnterElectricalPhaseAsync(int epbChannel, CancellationToken token)
         {
+            token.ThrowIfCancellationRequested();
             if (!_channel2Hyd.TryGetValue(epbChannel, out var hydId))
             {
                 _log.Warn($"EPB[{epbChannel}] 未映射到液压，跳过建压逻辑。", "液压协调");
@@ -1380,6 +1392,7 @@ namespace Controller
 
             while (true)
             {
+                token.ThrowIfCancellationRequested();
                 Task priorRelease = null;
                 bool needBuild;
                 lock (latch.Gate)
@@ -1430,36 +1443,36 @@ namespace Controller
                     // 方式A：优先用你已有的 HydraulicController —— BuildAndHoldAsync + Release
                     // BuildAndHoldAsync 会：DO 打开 + AO 输出到设定百分比，并保持，直到 Release(hydId) 或 token 取消。
                     // 我们在后台开一个保持任务；ReleaseAction 直接调用 _hydCtl.Release(hydId)。
+                    var holdCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    latch.Cts = holdCancellation;
+                    var holdTask = Task.Run(
+                        () => _hydCtl.BuildAndHoldAsync(hydId, holdCancellation.Token),
+                        holdCancellation.Token);
                     latch.ReleaseActionAsync = async () =>
                     {
                         try
                         {
+                            holdCancellation.Cancel();
                             _hydCtl.Release(hydId);
+                            try { await holdTask.ConfigureAwait(false); }
+                            catch (OperationCanceledException) when (holdCancellation.IsCancellationRequested) { }
                         }
-                        catch
+                        finally
                         {
-                            /* 忽略异常 */
+                            await ExecuteReleaseOutputAsync(hydId).ConfigureAwait(false);
                         }
-
-                        await Task.CompletedTask;
                     };
 
                     // 异步起保持任务（不阻塞 EPB 的电控流程）
                     _tasks.Observe(
-                        Task.Run(() => _hydCtl.BuildAndHoldAsync(hydId, token), token),
+                        holdTask,
                         "HydraulicBuildAndHold",
                         Guid.Empty);
 
                     _log.Info($"液压[{hydId}] 进入保持（HydraulicController.BuildAndHoldAsync）。", "液压协调");
 
-                    // 兼容 RunOnceAsync(HoldUntilRelease) 的“委托释放”用法（可选）：
-                    // 若你的业务在别处以 RunOnceAsync(HoldUntilRelease) 启动保持，这里也尝试获取一次释放委托。
-                    if (_hydCtl.TryGetReleaseDelegate(hydId, out var rel))
-                    {
-                        // 如果拿到了委托，优先用控制器的委托（写入日志方便排查）
-                        latch.ReleaseActionAsync = rel;
-                        _log.Info($"液压[{hydId}] 获取到 TryGetReleaseDelegate 的释放委托。", "液压协调");
-                    }
+                    // Do not replace this wrapper with a signal-only release
+                    // delegate: successful release also requires writer exit.
                 }
                 else
                 {
@@ -1475,40 +1488,31 @@ namespace Controller
                         return;
                     }
 
-                    latch.Cts = new CancellationTokenSource();
+                    var holdCancellation = new CancellationTokenSource();
+                    latch.Cts = holdCancellation;
+                    var holdTask = Task.Run(
+                        () => FallbackHoldLoopAsync(hydId, holdCancellation.Token),
+                        holdCancellation.Token);
                     _tasks.Observe(
-                        Task.Run(
-                            () => FallbackHoldLoopAsync(hydId, latch.Cts.Token),
-                            latch.Cts.Token),
+                        holdTask,
                         "HydraulicFallbackHold",
                         Guid.Empty);
                     latch.ReleaseActionAsync = async () =>
                     {
-                        try
-                        {
-                            latch.Cts?.Cancel();
-                        }
-                        catch
-                        {
-                        }
-
-                        await Task.Delay(10);
-                        try
-                        {
-                            _do.SetPressure(hydId, false);
-                        }
-                        catch
-                        {
-                        }
-
-                        try
-                        {
-                            var dev = hydId == 1 ? "Cylinder1" : "Cylinder2";
-                            _ao.WritePressure(dev, 0);
-                        }
-                        catch
-                        {
-                        }
+                        var failures = new List<Exception>();
+                        try { holdCancellation.Cancel(); }
+                        catch (Exception error) { failures.Add(error); }
+                        // Attempt safe outputs promptly, then join the exact old
+                        // writer and reissue OFF so a late write cannot win.
+                        try { await ExecuteReleaseOutputAsync(hydId).ConfigureAwait(false); }
+                        catch (Exception error) { failures.Add(error); }
+                        try { await holdTask.ConfigureAwait(false); }
+                        catch (OperationCanceledException) when (holdCancellation.IsCancellationRequested) { }
+                        catch (Exception error) { failures.Add(error); }
+                        try { await ExecuteReleaseOutputAsync(hydId).ConfigureAwait(false); }
+                        catch (Exception error) { failures.Add(error); }
+                        if (failures.Count > 0)
+                            throw new AggregateException("HydraulicFallbackReleaseUnconfirmed", failures);
                     };
                     _log.Info($"液压[{hydId}] 进入保持（Fallback）。", "液压协调");
                 }
@@ -1539,6 +1543,7 @@ namespace Controller
             bool needReleaseNow;
             int generation;
             Task releaseCompletion;
+            TaskCompletionSource<bool> releaseCompletionSource;
             Func<Task> releaseAction;
             lock (latch.Gate)
             {
@@ -1547,7 +1552,8 @@ namespace Controller
                     return;
 
                 generation = latch.Generation;
-                releaseCompletion = latch.ReleaseCompletion.Task;
+                releaseCompletionSource = latch.ReleaseCompletion;
+                releaseCompletion = releaseCompletionSource.Task;
                 needReleaseNow = latch.InFlight.Count == 0 && !latch.ReleaseStarted;
                 if (needReleaseNow)
                     latch.ReleaseStarted = true;
@@ -1568,30 +1574,15 @@ namespace Controller
                     }
                     else
                     {
-                        try
-                        {
-                            _do?.SetPressure(hydId, false);
-                        }
-                        catch
-                        {
-                        }
-
-                        try
-                        {
-                            var dev = hydId == 1 ? "Cylinder1" : "Cylinder2";
-                            _ao?.WritePressure(dev, 0);
-                        }
-                        catch
-                        {
-                        }
+                        await ExecuteReleaseOutputAsync(hydId).ConfigureAwait(false);
                     }
 
                     await WaitForSafePressureAsync(hydId).ConfigureAwait(false);
-                    latch.ReleaseCompletion.TrySetResult(true);
+                    releaseCompletionSource.TrySetResult(true);
                 }
                 catch (Exception ex)
                 {
-                    latch.ReleaseCompletion.TrySetException(ex);
+                    releaseCompletionSource.TrySetException(ex);
                 }
                 finally
                 {
@@ -1613,13 +1604,14 @@ namespace Controller
             await releaseCompletion.ConfigureAwait(false);
         }
 
-        private async Task WaitForSafePressureAsync(int hydId)
+        private async Task WaitForSafePressureAsync(int hydId, Func<int, PressureSample> evidenceReader = null)
         {
             var item = _test.Hydraulics.FirstOrDefault(h => h.Id == hydId);
             var safePressureBar = Math.Max(0, item?.ReleaseSafePressureBar ?? 5);
             var stableMs = Math.Max(0, item?.ReleaseStableMs ?? 100);
             var timeoutMs = Math.Max(1, item?.ReleaseTimeoutMs ?? 5000);
-            if (_readPressureSample == null)
+            var reader = evidenceReader ?? _readPressureSample;
+            if (reader == null)
             {
                 throw new HydraulicReleaseTimeoutException(
                     hydId,
@@ -1638,7 +1630,7 @@ namespace Controller
                 PressureSample sample;
                 try
                 {
-                    sample = _readPressureSample(hydId);
+                    sample = reader(hydId);
                     lastPressureBar = sample.ValueBar;
                 }
                 catch (Exception ex)
@@ -1691,6 +1683,7 @@ namespace Controller
         // —— 回退保持实现：DO 打开 + AO 输出百分比，达到阈值后保持，直到外部取消 —— //
         private async Task FallbackHoldLoopAsync(int hydId, CancellationToken token)
         {
+            if (token.IsCancellationRequested) return;
             var item = _test.Hydraulics.FirstOrDefault(h => h.Id == hydId);
             if (item == null || !item.Enabled)
             {

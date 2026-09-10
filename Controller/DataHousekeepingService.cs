@@ -329,16 +329,20 @@ namespace Controller
             }
             var staging = Path.Combine(parent, StagingPrefix + Guid.NewGuid().ToString("N"));
             var pendingSidecar = path + ".retention.pending.json";
+            var stagingPhase = "WriteSidecar";
             try
             {
                 WriteSidecar(pendingSidecar, staging, path, manifest);
+                stagingPhase = "MoveDirectory";
                 Directory.Move(path, staging); // same volume atomic rename
+                stagingPhase = "MoveSidecar";
                 File.Move(pendingSidecar, staging + SidecarSuffix);
                 _statistics.IncStaged();
+                stagingPhase = "DeleteStaging";
                 return DeleteStagingInBatches(staging);
             }
-            catch (IOException ex) { _statistics.IncFailed(); Warn($"Housekeeping改名/占用失败，已跳过：{path}; {ex.Message}"); return false; }
-            catch (UnauthorizedAccessException ex) { _statistics.IncFailed(); Warn($"Housekeeping权限失败，已跳过：{path}; {ex.Message}"); return false; }
+            catch (IOException ex) { _statistics.IncFailed(); Warn($"Housekeeping改名/占用失败，已跳过：{path}; Phase={stagingPhase}; HResult=0x{ex.HResult:X8}; {ex.Message}"); return false; }
+            catch (UnauthorizedAccessException ex) { _statistics.IncFailed(); Warn($"Housekeeping权限失败，已跳过：{path}; Phase={stagingPhase}; HResult=0x{ex.HResult:X8}; {ex.Message}"); return false; }
             catch (Exception ex) { _statistics.IncFailed(); Warn($"Housekeeping失败，保留原目录：{path}; {ex.Message}"); return false; }
         }
 

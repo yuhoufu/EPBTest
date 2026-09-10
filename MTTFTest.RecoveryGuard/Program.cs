@@ -147,11 +147,17 @@ namespace MTTFTest.RecoveryGuard
                         store.PulseExecutionWorker(owner, previous, previous == null ? ProcessObservation.Exited : probe(previous),
                             DateTime.UtcNow, settings.OwnerLeaseSeconds);
                     }
-                    var actions = new SupervisorRecoveryActions(store, new RecoverySupervisorTransport(), () => DateTime.UtcNow, probe);
-                    var engine = new RecoveryExecutionEngine(store, settings, owner, actions, () => DateTime.UtcNow, probe,
-                        () => File.Exists(Path.Combine(Path.GetDirectoryName(store.Root), "maintenance-inhibit.json")) ||
+                    Func<bool> maintenanceInhibited = () => File.Exists(Path.Combine(Path.GetDirectoryName(store.Root), "maintenance-inhibit.json")) ||
                             File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                                "MTTFTestRecoveryGuard", "maintenance-inhibit.json")), commissioning);
+                                "MTTFTestRecoveryGuard", "maintenance-inhibit.json"));
+                    var actions = new SupervisorRecoveryActions(store, new RecoverySupervisorTransport(), () => DateTime.UtcNow, probe,
+                        settings, () =>
+                        {
+                            if (maintenanceInhibited()) throw new InvalidOperationException("RecoveryMainRetirementMaintenanceInhibited");
+                            commissioning?.Demand(store.Read(), DateTime.UtcNow);
+                        });
+                    var engine = new RecoveryExecutionEngine(store, settings, owner, actions, () => DateTime.UtcNow, probe,
+                        maintenanceInhibited, commissioning);
                     using (var cancellation = new CancellationTokenSource())
                     {
                         if (commissioning != null)

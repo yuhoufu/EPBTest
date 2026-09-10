@@ -31,6 +31,12 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("EpbManager.StopAllAsync真实十阶段与虚拟12秒液压",
                 EpbManagerStopAllRunsProductionStages, ref passed);
+            Run("停止后外部恢复保留原Run范围并重新执行安全事务",
+                ExternalRecoveryReconfirmsRetainedRun, ref passed);
+            Run("外部恢复等待在途停止且不并发第二个物理事务",
+                ExternalRecoveryJoinsActiveStop, ref passed);
+            Run("旧停止超时但后台核心未退出时拒绝新恢复事务",
+                ExternalRecoveryRejectsOrphanStop, ref passed);
             Run("StopAll入口同步安装禁止再上电栅栏",
                 StopAllAdmissionInstallsEnergizationFenceSynchronously, ref passed);
             Run("EpbManager生产DO物理失败与准入拒绝进入统一终态",
@@ -54,6 +60,191 @@ namespace AdaptiveControlTests
             return passed;
         }
 
+        private static void ExternalRecoveryRejectsOrphanStop()
+        {
+            using (var fixture = new ProductionManagerFixture(new FailingPowerSupply(fail: false)))
+            {
+                const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                var run = Guid.NewGuid();
+                typeof(EpbManager).GetField("_activeBatchId", fields).SetValue(fixture.Manager, run);
+                typeof(EpbManager).GetField("_runEpoch", fields).SetValue(fixture.Manager, 1L);
+                var clock = new ManualClock();
+                var hydraulic = new ProductionHydraulicAdapter(clock);
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                fixture.Manager.ConfigureStopSafetyProductionSeams(clock, hydraulic);
+                var stop = fixture.Manager.StopAllAsync(new StopContext
+                {
+                    Source = StopSource.SystemFault, RunId = run.ToString("N"),
+                    CorrelationId = Guid.NewGuid().ToString("N")
+                });
+                StopSafetyTransactionRunner runner = null;
+                try
+                {
+                    Assert(hydraulic.Started.Wait(TimeSpan.FromSeconds(2)), "旧核心未进入模拟反馈等待。");
+                    clock.Advance(TimeSpan.FromSeconds(45));
+                    Assert(stop.Wait(TimeSpan.FromSeconds(2)) && stop.Result.TimedOut, "旧停止未按真实runner超时。");
+                    runner = (StopSafetyTransactionRunner)typeof(EpbManager)
+                        .GetField("_activeStopSafetyRunner", fields).GetValue(fixture.Manager);
+                    Assert(runner.HasOrphanCore, "测试必须保留真实未退出核心，不能只伪造超时结果。");
+                    var powerCalls = fixture.PowerDisableCallCount;
+                    var generation = fixture.Manager.CaptureStopSafetyProgress().Generation;
+                    try
+                    {
+                        fixture.Manager.StopForExternalRecoveryAsync(new StopContext
+                        {
+                            Source = StopSource.SystemFault, RunId = run.ToString("N")
+                        }).GetAwaiter().GetResult();
+                        throw new Exception("仍有orphan核心时不应接受新事务。");
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        Assert(ex.Message == "RecoveryStopPreviousCoreStillActive", "必须明确拒绝旧核心未退出。");
+                    }
+                    Assert(fixture.PowerDisableCallCount == powerCalls && hydraulic.ConfirmCallCount == 1 &&
+                        fixture.Manager.CaptureStopSafetyProgress().Generation == generation,
+                        "拒绝时不能增加代次或再次调用物理端口。");
+                }
+                finally
+                {
+                    hydraulic.Complete(true, string.Empty);
+                    if (runner != null) Assert(SpinWait.SpinUntil(() => !runner.HasOrphanCore, 2000),
+                        "测试释放反馈后旧核心仍未退出。");
+                }
+                var renewedTask = fixture.Manager.StopForExternalRecoveryAsync(new StopContext
+                {
+                    Source = StopSource.SystemFault, RunId = run.ToString("N"),
+                    CorrelationId = Guid.NewGuid().ToString("N")
+                });
+                // The manual clock must keep advancing while a new transaction
+                // runs, otherwise even its deadline can never resolve a wait.
+                var retryClock = System.Diagnostics.Stopwatch.StartNew();
+                var advanced = TimeSpan.Zero;
+                while (!renewedTask.IsCompleted && retryClock.Elapsed < TimeSpan.FromSeconds(20))
+                {
+                    Thread.Sleep(10);
+                    var elapsed = retryClock.Elapsed;
+                    clock.Advance(elapsed - advanced);
+                    advanced = elapsed;
+                }
+                Assert(renewedTask.IsCompleted,
+                    "续接未在测试观察预算内完成：" + fixture.Manager.CaptureStopSafetyProgress().Stage);
+                var renewed = renewedTask.GetAwaiter().GetResult();
+                Assert(renewed.RunId == run && renewed.SafetyTransactionId != stop.Result.SafetyTransactionId &&
+                    renewed.SafetyBoundaryGeneration > stop.Result.SafetyBoundaryGeneration &&
+                    renewed.FullyConfirmed && renewed.RawStorageFlushed && !renewed.ReusedPreviousResult,
+                    "旧核心退出后必须允许新安全事务重新确认，不能永久停留在旧超时结果。Stage=" +
+                    renewed.LastStage + "; Outcome=" + renewed.Outcome);
+            }
+        }
+
+        private static void ExternalRecoveryJoinsActiveStop()
+        {
+            using (var fixture = new ProductionManagerFixture(new FailingPowerSupply(fail: false)))
+            {
+                const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                var run = Guid.NewGuid();
+                typeof(EpbManager).GetField("_activeBatchId", fields).SetValue(fixture.Manager, run);
+                typeof(EpbManager).GetField("_runEpoch", fields).SetValue(fixture.Manager, 1L);
+                var hydraulic = new ProductionHydraulicAdapter();
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                fixture.Manager.ConfigureStopSafetyProductionSeams(hydraulicAdapter: hydraulic);
+                var firstTask = fixture.Manager.StopAllAsync(new StopContext
+                {
+                    Source = StopSource.SystemFault, RunId = run.ToString("N"),
+                    CorrelationId = Guid.NewGuid().ToString("N")
+                });
+                Task<StopSafetyResult> recoveryTask = null;
+                var correlation = Guid.NewGuid().ToString("N");
+                try
+                {
+                    Assert(hydraulic.Started.Wait(TimeSpan.FromSeconds(2)), "旧停止没有进入阻塞的模拟反馈阶段。");
+                    var generation = fixture.Manager.CaptureStopSafetyProgress().Generation;
+                    recoveryTask = fixture.Manager.StopForExternalRecoveryAsync(new StopContext
+                    {
+                        Source = StopSource.SystemFault, RunId = run.ToString("N"), CorrelationId = correlation
+                    });
+                    Assert(!recoveryTask.IsCompleted && hydraulic.ConfirmCallCount == 1 &&
+                        fixture.PowerDisableCallCount == 1 &&
+                        fixture.Manager.CaptureStopSafetyProgress().Generation == generation,
+                        "加入旧停止期间不得建立新代次或并发物理停止。");
+                }
+                finally { hydraulic.Complete(true, string.Empty); }
+                var first = firstTask.GetAwaiter().GetResult();
+                var second = recoveryTask.GetAwaiter().GetResult();
+                Assert(second.RunId == run && second.CorrelationId == correlation &&
+                    second.SafetyTransactionId != first.SafetyTransactionId &&
+                    second.SafetyBoundaryGeneration > first.SafetyBoundaryGeneration &&
+                    !second.ReusedPreviousResult && second.FullyConfirmed && second.RawStorageFlushed,
+                    "旧停止退出后必须完成属于接管请求的新安全事务。");
+                Assert(hydraulic.ConfirmCallCount == 2 && fixture.PowerDisableCallCount == 2 &&
+                    fixture.PersistenceFlushCallCount == 2, "两次事务必须各自重新确认物理与数据边界。");
+            }
+        }
+
+        private static void ExternalRecoveryReconfirmsRetainedRun()
+        {
+            using (var fixture = new ProductionManagerFixture(new FailingPowerSupply(fail: false)))
+            {
+                const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                var runField = typeof(EpbManager).GetField("_activeBatchId", fields);
+                var epochField = typeof(EpbManager).GetField("_runEpoch", fields);
+                var run = Guid.NewGuid();
+                // Seed a trial identity without starting NI or a business trial.
+                runField.SetValue(fixture.Manager, run);
+                epochField.SetValue(fixture.Manager, 1L);
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                fixture.Manager.ConfigureStopSafetyProductionSeams(
+                    hydraulicAdapter: new ProductionHydraulicAdapter(immediateSuccess: true));
+                var first = fixture.Manager.StopAllAsync(new StopContext
+                {
+                    Source = StopSource.SystemFault, RunId = run.ToString("N"),
+                    CorrelationId = Guid.NewGuid().ToString("N"), Initiator = "EarlierStop"
+                }).GetAwaiter().GetResult();
+                Assert(first.RunId == run && fixture.Manager.WatchdogRunId == Guid.Empty,
+                    "旧停止必须保留Run证据且清空活动身份。");
+                var flushes = fixture.PersistenceFlushCallCount;
+                var powerCalls = fixture.PowerDisableCallCount;
+                var receiptCount = fixture.Receipts.Count;
+                var correlation = Guid.NewGuid().ToString("N");
+                var second = fixture.Manager.StopForExternalRecoveryAsync(new StopContext
+                {
+                    Source = StopSource.SystemFault, RunId = run.ToString("N"),
+                    CorrelationId = correlation, Initiator = "RecoveryGuardAutomaticSafeStop"
+                }).GetAwaiter().GetResult();
+                Assert(second.RunId == run && second.RunEpoch == first.RunEpoch &&
+                    second.CorrelationId == correlation && !second.ReusedPreviousResult &&
+                    second.SafetyTransactionId != first.SafetyTransactionId &&
+                    second.SafetyBoundaryGeneration > first.SafetyBoundaryGeneration,
+                    "续接必须建立新事务但保持原Run/epoch。");
+                Assert(second.FullyConfirmed && second.RawStorageFlushed && !second.DataContinuityCompromised,
+                    "模拟硬件成功时，新事务必须真实收敛物理与数据确认，不能只产生新编号。");
+                Assert(fixture.PowerDisableCallCount == powerCalls + 1 &&
+                    fixture.PersistenceFlushCallCount == flushes + 1,
+                    "续接必须重新执行电源关闭与数据边界，不能复制成功位。");
+                var newReceipts = fixture.Receipts.Skip(receiptCount).ToArray();
+                Assert(new[] { 4, 10 }.All(channel => newReceipts.Any(receipt =>
+                    receipt.Channel == channel && receipt.Result)), "旧受影响通道必须再次取得OFF回执。");
+                runField.SetValue(fixture.Manager, Guid.NewGuid());
+                try
+                {
+                    fixture.Manager.StopForExternalRecoveryAsync(new StopContext
+                    {
+                        Source = StopSource.SystemFault, RunId = run.ToString("N")
+                    }).GetAwaiter().GetResult();
+                    throw new Exception("旧Run不应停止新运行。");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Assert(ex.Message == "RecoveryStopDifferentActiveRun", "必须明确拒绝不同活动Run。");
+                    Assert(fixture.PowerDisableCallCount == powerCalls + 1, "拒绝后不得重复物理动作。");
+                }
+                finally { runField.SetValue(fixture.Manager, Guid.Empty); }
+            }
+        }
+
         private static void LogicalCleanupConvergesOnlyForCurrentSafeTransaction()
         {
             var id = Guid.NewGuid();
@@ -64,6 +255,7 @@ namespace AdaptiveControlTests
                 Outcome = StopSafetyOutcome.SafeButRestartRequired,
                 RequiresProcessRestart = true, LogicalCleanupPending = true,
                 MotorOffCommandSucceeded = true, PowerOffConfirmed = true,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true, PersistenceBoundaryConfirmed = true
             };
             Assert(!pending.TryCompleteLogicalCleanup(id, 7, false), "在途逻辑尾声不能续测");
@@ -77,6 +269,10 @@ namespace AdaptiveControlTests
             Assert(!gap.TryCompleteLogicalCleanup(id, 7, false), "数据缺口不能清除");
             var pressure = pending.Clone(); pressure.PressureSafeConfirmed = false;
             Assert(!pressure.TryCompleteLogicalCleanup(id, 7, false), "压力未确认不能清除");
+            var current = pending.Clone(); current.CurrentSafeConfirmed = false;
+            Assert(!current.PhysicalSafetyConfirmed && !current.TryCompleteLogicalCleanup(id, 7, false) &&
+                   !EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(current, true),
+                "缺少实测电流证据仍放行恢复或显式重启");
             Assert(pending.TryCompleteLogicalCleanup(id, 7, false) && pending.CanRestartInProcess,
                 "同事务逻辑尾声已完成却仍拒绝恢复");
             Assert(!pending.TryCompleteLogicalCleanup(id, 7, false), "收敛只能执行一次");
@@ -85,6 +281,8 @@ namespace AdaptiveControlTests
         internal static int RunUnitTests()
         {
             var passed = 0;
+            Run("总截止已撤销租约但缓存未发布时仍保留阶段orphan",
+                ExpiredLeaseBeforeTimeoutCacheRetainsStage, ref passed);
             Run("逻辑尾声与停止监督投影统一收敛且过期拒绝",
                 DeferredLogicalCleanupDoesNotPublishHardTakeover, ref passed);
             Run("同事务逻辑尾声收敛且硬重启与过期身份禁止清除",
@@ -110,6 +308,29 @@ namespace AdaptiveControlTests
             Run("Stop supervisor orders heartbeats by validated process attachment",
                 ValidatedAttachmentOrdersHeartbeat, ref passed);
             return passed;
+        }
+
+        private static void ExpiredLeaseBeforeTimeoutCacheRetainsStage()
+        {
+            var runner = new StopSafetyTransactionRunner(new FakePort());
+            var started = DateTime.UtcNow;
+            using (var cancellation = new CancellationTokenSource())
+            {
+                var lease = new StopSafetyTransactionLease(Guid.NewGuid(), 1, Guid.NewGuid(), 1,
+                    started, started.AddSeconds(45), cancellation);
+                var context = new StopSafetyTransactionContext(NewContext(), lease.TransactionId,
+                    lease.Generation, lease.RunId, lease.RunEpoch, started, lease.HardDeadlineUtc, cancellation.Token);
+                var stage = new TaskCompletionSource<StopSafetyPortResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                Assert(lease.TryExpire(), "模拟总截止必须先取得过期权。");
+                // Deterministically enter the gap before the winner writes its
+                // timeout cache; no scheduler timing or hardware is involved.
+                typeof(StopSafetyTransactionRunner).GetMethod("EnterStageDeadlineTimeout",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(runner, new object[] { context, StopSafetyStage.ReleaseHydraulics, stage.Task, lease });
+                Assert(runner.HasOrphanCore, "缓存尚未发布不能丢弃真正未退出的阶段。");
+                stage.SetResult(StopSafetyPortResult.Success("released"));
+                Assert(SpinWait.SpinUntil(() => !runner.HasOrphanCore, 2000), "只有原阶段完成后才允许清除orphan。");
+            }
         }
 
         // Keep the old aggregate entry point for callers outside Program while
@@ -1922,6 +2143,7 @@ namespace AdaptiveControlTests
                         {
                             MotorOffCommandSucceeded = true,
                             PowerOffConfirmed = true,
+                            CurrentSafeConfirmed = true,
                             PressureSafeConfirmed = true,
                             PersistenceBoundaryConfirmed = true,
                             LogicalQuiescenceConfirmed = !LogicalCleanupPending,
@@ -2092,7 +2314,7 @@ namespace AdaptiveControlTests
             internal int VirtualElapsedSeconds { get; private set; }
             internal int ConfirmCallCount { get; private set; }
 
-            public Task<(bool ok, string error)> ConfirmPressureSafeAsync(
+            public Task<(bool ok, string error)> ConfirmCurrentAndPressureSafeAsync(
                 StopContext context,
                 Task<(bool ok, string error)> powerOffTask,
                 long stopGeneration)
@@ -2259,7 +2481,7 @@ namespace AdaptiveControlTests
                 return false;
             }
 
-            public void RecordSuccessfulActionCycle(int epbChannel, long groupCycleSlot) { }
+            public void RecordSuccessfulActionCycle(int epbChannel, long groupCycleSlot, Guid operationId, long operationEpoch) { }
             public PswSnapshot GetLatestSnapshot(int electricalGroupId) => null;
             public PowerSupplyRuntimeState GetRuntimeState(int electricalGroupId) =>
                 new PowerSupplyRuntimeState { ElectricalGroupId = electricalGroupId };

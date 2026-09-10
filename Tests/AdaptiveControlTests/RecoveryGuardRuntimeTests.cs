@@ -330,6 +330,11 @@ namespace AdaptiveControlTests
                 Redirect(Runtime, "_lease", null);
                 Redirect(Runtime, "_externalFence", null);
                 Redirect(Runtime, "_lastObservedFence", null);
+                Check(Runtime.GetField("_automaticStopTask", Static).GetValue(null) is not Task automatic || automatic.IsCompleted,
+                    "test cannot redirect an active automatic safe stop");
+                Redirect(Runtime, "_automaticStop", null);
+                Redirect(Runtime, "_automaticStopTask", null);
+                Redirect(Runtime, "_lastAutomaticStop", null);
                 Checkpoint = Path.Combine(Root, "checkpoint.json");
                 Redirect(typeof(UnattendedRunCheckpointStore), "CheckpointPath", Checkpoint);
                 Redirect(typeof(UnattendedRunCheckpointStore), "CheckpointBackupPath", Checkpoint + ".bak");

@@ -768,6 +768,13 @@ namespace Controller
         internal static bool IsRecoveryOperation(string operation)
         {
             if (string.IsNullOrWhiteSpace(operation)) return false;
+            // These production incident names predate the naming convention.
+            // Keep their diagnostic identities while admitting their real workers;
+            // do not broaden the gate to arbitrary Reset/Retry/Incident tasks.
+            if (string.Equals(operation, "AffectedGroupReset", StringComparison.Ordinal) ||
+                string.Equals(operation, "RecoverableWarningRetry", StringComparison.Ordinal) ||
+                string.Equals(operation, "StartupPositioningFailureIncident", StringComparison.Ordinal))
+                return true;
             return operation.IndexOf("Recovery", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    operation.IndexOf("SelfHealing", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    operation.IndexOf("Finalize", StringComparison.OrdinalIgnoreCase) >= 0 ||

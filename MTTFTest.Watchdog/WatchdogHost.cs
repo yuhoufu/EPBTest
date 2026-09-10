@@ -4034,6 +4034,7 @@ namespace MTTFTest.Watchdog
                 MotorsOff = existing?.MotorsOff ?? false,
                 PowerOff = existing?.PowerOff ?? false,
                 PressureSafe = existing?.PressureSafe ?? false,
+                CurrentSafe = existing?.CurrentSafe ?? false,
                 PersistenceDrained = existing?.PersistenceDrained ?? false,
                 LogicalQuiescent = existing?.LogicalQuiescent ?? false,
                 DataContinuityVerified =

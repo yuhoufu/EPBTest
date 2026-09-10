@@ -212,6 +212,7 @@ namespace AdaptiveControlTests
                                 SafetyBoundaryGeneration = round,
                                 MotorOffCommandSucceeded = true,
                                 PowerOffConfirmed = true,
+                                CurrentSafeConfirmed = true,
                                 PressureSafeConfirmed = true,
                                 PersistenceBoundaryConfirmed = true,
                                 LogicalQuiescenceConfirmed = true

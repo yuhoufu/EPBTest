@@ -107,6 +107,17 @@ namespace Controller
                    current.Generation == permit.Generation;
         }
 
+        // Identity observation only: this never grants authorization to energize
+        // or create a runtime. Safety-only disabled/revoked members are valid.
+        internal bool IsUnchanged(ChannelExecutionPermit snapshot)
+        {
+            if (snapshot.Channel < 1 || snapshot.Channel > 12) return false;
+            var current = Capture(snapshot.Channel);
+            return current.RunEpoch == snapshot.RunEpoch &&
+                   current.Generation == snapshot.Generation &&
+                   current.Authorized == snapshot.Authorized;
+        }
+
         internal static bool CanCreateRuntime(
             ChannelRuntimeStateChangedEvent state,
             bool enabled,

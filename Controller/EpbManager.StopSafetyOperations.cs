@@ -9,13 +9,13 @@ using IO.NI;
 namespace Controller
 {
     /// <summary>
-    /// Hydraulic physical-release boundary.  The production adapter is the
-    /// manager's existing pressure/ForceRelease implementation; no deadline
+    /// Physical-release boundary including fresh joint current/pressure proof.
+    /// The production adapter uses ForceRelease and DAQ evidence; no deadline
     /// is owned here—the outer stop runner remains the sole clock authority.
     /// </summary>
     internal interface IStopSafetyHydraulicAdapter
     {
-        Task<(bool ok, string error)> ConfirmPressureSafeAsync(
+        Task<(bool ok, string error)> ConfirmCurrentAndPressureSafeAsync(
             StopContext context,
             Task<(bool ok, string error)> powerOffTask,
             long stopGeneration);
@@ -61,6 +61,65 @@ namespace Controller
     {
         private readonly object _stopSafetyProductionGate = new object();
         private StopSafetyProductionState _stopSafetyProductionState;
+
+        public async Task<StopSafetyResult> StopForExternalRecoveryAsync(StopContext request)
+        {
+            if (request == null || request.Source != StopSource.SystemFault ||
+                !Guid.TryParseExact(request.RunId, "N", out var requestedRun) || requestedRun == Guid.Empty)
+                throw new InvalidOperationException("RecoveryStopRunIdentityInvalid");
+            // Join at most one existing stop. Never enqueue another core behind
+            // an orphan, or turn an unbounded succession of requests into a loop.
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                Task<StopSafetyResult> task;
+                bool joined;
+                lock (_stopSafetyGate)
+                {
+                    var previous = _stopSafetyProductionState;
+                    if (_activeBatchId != Guid.Empty && _activeBatchId != requestedRun)
+                        throw new InvalidOperationException("RecoveryStopDifferentActiveRun");
+                    joined = _stopSafetyTask != null && !_stopSafetyTask.IsCompleted;
+                    if (_activeBatchId != requestedRun &&
+                        (previous == null || previous.RunId != requestedRun ||
+                         previous.Generation != Interlocked.Read(ref _stopSafetyGeneration)))
+                        throw new InvalidOperationException("RecoveryStopRetainedIdentityMissing");
+                    if (joined)
+                    {
+                        task = _stopSafetyTask;
+                    }
+                    else
+                    {
+                        if (_activeStopSafetyRunner?.HasOrphanCore == true)
+                            throw new RecoveryStopPendingException();
+                        var retained = _activeBatchId == Guid.Empty;
+                        if (retained && (!IsEnergizationRevoked || IsBatchSessionActive ||
+                            !MatchesRetainedRecoveryStop(requestedRun, previous.RunId, previous.RunEpoch,
+                                previous.TransactionId, previous.Generation, _lastStopSafetyResult)))
+                            throw new InvalidOperationException("RecoveryStopRetainedBoundaryMismatch");
+                        var context = new StopContext
+                        {
+                            Source = StopSource.SystemFault, RunId = request.RunId,
+                            CorrelationId = request.CorrelationId, RequestedUtc = request.RequestedUtc,
+                            Reason = request.Reason, Initiator = request.Initiator, FaultScope = request.FaultScope,
+                            RequireFreshPhysicalEvidence = true,
+                            RetainedRunId = retained ? previous.RunId : Guid.Empty,
+                            RetainedRunEpoch = retained ? previous.RunEpoch : 0
+                        };
+                        task = StopAllAsync(context, CancellationToken.None);
+                    }
+                }
+                var result = await task.ConfigureAwait(false);
+                if (!joined) return result;
+            }
+            throw new InvalidOperationException("RecoveryStopConcurrentRequestDidNotRetire");
+        }
+
+        internal static bool MatchesRetainedRecoveryStop(Guid requestedRun, Guid retainedRun, long retainedEpoch,
+            Guid transaction, long generation, StopSafetyResult result)
+            => requestedRun != Guid.Empty && retainedRun == requestedRun && retainedEpoch > 0 &&
+               transaction != Guid.Empty && generation > 0 && result != null &&
+               result.RunId == retainedRun && result.RunEpoch == retainedEpoch &&
+               result.SafetyTransactionId == transaction && result.SafetyBoundaryGeneration == generation;
 
         // A late durable completion belongs to the original stopped session. It may authorize
         // exit, but must never resurrect the expired runner or authorize another trial.
@@ -178,7 +237,7 @@ namespace Controller
                     context,
                     powerOffTask,
                     stopGeneration)
-                : adapter.ConfirmPressureSafeAsync(
+                : adapter.ConfirmCurrentAndPressureSafeAsync(
                     context,
                     powerOffTask,
                     stopGeneration);
@@ -323,12 +382,21 @@ namespace Controller
                         .Concat(_cyclePauseCtsByChannel.Keys)
                         .Concat(_currentCycleNumberByChannel.Keys)
                         .Concat(Enumerable.Range(1, 12).Where(IsChannelEnergized))
+                        .Concat(transaction.StopContext.RequireFreshPhysicalEvidence &&
+                            _stopSafetyProductionState?.RunId == transaction.RunId
+                            ? _stopSafetyProductionState.Channels : Array.Empty<int>())
                         .Distinct()
                         .OrderBy(channel => channel)
                         .ToArray();
+                    var cycles = CaptureSoftwareRecoveryCycles(Enumerable.Range(1, 12));
+                    if (transaction.StopContext.RequireFreshPhysicalEvidence &&
+                        _stopSafetyProductionState?.RunId == transaction.RunId)
+                        foreach (var pair in _stopSafetyProductionState.StopCycles)
+                            cycles[pair.Key] = cycles.TryGetValue(pair.Key, out var current)
+                                ? Math.Max(current, pair.Value) : pair.Value;
                     _stopSafetyProductionState =
                         new StopSafetyProductionState(transaction, channels,
-                            CaptureSoftwareRecoveryCycles(Enumerable.Range(1, 12)));
+                            cycles);
                 }
                 return _stopSafetyProductionState;
             }
@@ -773,6 +841,9 @@ namespace Controller
                 await Task.WhenAll(ownersTask, pendingTask).ConfigureAwait(false);
                 var ownersExited = ownersTask.Result;
                 var drain = pendingTask.Result;
+                if (_affectedGroupStageActions.Values.Any(actions => actions.HasPending))
+                    return StopSafetyPortResult.Failure(
+                        "整组恢复仍有在途硬件动作；软件撤权不能作为硬件退出证据。");
                 if (ownersExited != true || !drain.Drained)
                 {
                     var residue = string.Join(",", drain.Residues.Select(item =>
@@ -834,7 +905,7 @@ namespace Controller
                             state.Pressure.ok ? string.Empty : "Pressure:" + state.Pressure.error
                         }).Where(item => !string.IsNullOrWhiteSpace(item))));
                 return StopSafetyPortResult.Success(
-                    "液压释放、DO完成与电源/压力回读均已取得。",
+                    "液压释放、DO完成、电源OFF及新鲜电流/压力联合安全证据均已取得。",
                     true,
                     "StopHydraulicRelease",
                     Math.Max(1, state.OffCompletions.Count),
@@ -849,19 +920,31 @@ namespace Controller
         private async Task AwaitStopEvidenceWithProgressAsync(Task task,
             StopSafetyProductionState state, string predicate, CancellationToken token)
         {
-            while (!task.IsCompleted)
+            try
             {
-                token.ThrowIfCancellationRequested();
-                if (await Task.WhenAny(task, Task.Delay(1000, token)).ConfigureAwait(false) == task) break;
-                token.ThrowIfCancellationRequested();
-                _log?.Warn($"StopSafetyPending Transaction={state.TransactionId:N} " +
-                    $"Run={state.RunId:N}/{state.RunEpoch} Predicate={predicate} " +
-                    $"Power={state.PowerTask?.Status} Pressure={state.PressureTask?.Status} " +
-                    $"DoPending=[{string.Join(",", state.OffCompletions.Where(p => !p.Value.Task.IsCompleted).Select(p => p.Key))}] " +
-                    $"Dev1={_acq?.GetDaqFreshnessSnapshot("Dev1").RejectionReason} " +
-                    $"Dev2={_acq?.GetDaqFreshnessSnapshot("Dev2").RejectionReason}", "EPB-Safety");
+                while (!task.IsCompleted)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (await Task.WhenAny(task, Task.Delay(1000, token)).ConfigureAwait(false) == task) break;
+                    token.ThrowIfCancellationRequested();
+                    _log?.Warn($"StopSafetyPending Transaction={state.TransactionId:N} " +
+                        $"Run={state.RunId:N}/{state.RunEpoch} Predicate={predicate} " +
+                        $"Power={state.PowerTask?.Status} Pressure={state.PressureTask?.Status} " +
+                        $"DoPending=[{string.Join(",", state.OffCompletions.Where(p => !p.Value.Task.IsCompleted).Select(p => p.Key))}] " +
+                        $"Dev1={_acq?.GetDaqFreshnessSnapshot("Dev1").RejectionReason} " +
+                        $"Dev2={_acq?.GetDaqFreshnessSnapshot("Dev2").RejectionReason}", "EPB-Safety");
+                }
+                await task.ConfigureAwait(false);
             }
-            await task.ConfigureAwait(false);
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                // The outer runner already publishes its bounded timeout.
+                // Cancelling progress observation must not retire this port
+                // while its non-cancellable hardware/receipt task still runs.
+                // Keeping the await owns the real orphan until it finishes.
+                await task.ConfigureAwait(false);
+                throw;
+            }
         }
 
         private StopSafetyPortResult ExecuteStopAcquisitionStage(
@@ -1011,6 +1094,7 @@ namespace Controller
                 PowerOffConfirmed = powerDisposition == PowerShutdownDisposition.ConfirmedOff,
                 PowerDisposition = powerDisposition,
                 PressureSafeConfirmed = state.Pressure.ok,
+                CurrentSafeConfirmed = state.Pressure.ok,
                 PersistenceBoundaryConfirmed = state.PersistenceBoundaryConfirmed,
                 RawStorageFlushed = state.RawStorageFlushed,
                 DataContinuityCompromised = state.DataGaps.Count != 0,

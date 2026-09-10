@@ -156,6 +156,8 @@ namespace Controller
 
         private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _holdTcs
             = new();
+        private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _failedHoldRelease
+            = new();
 
         private readonly IAppLogger _log;
         private readonly Func<int, PressureSample> _readPressureSample;
@@ -210,11 +212,13 @@ namespace Controller
             var buildStartedUtc = DateTime.MinValue;
             try
             {
+                token.ThrowIfCancellationRequested();
                 buildStartedUtc = DateTime.UtcNow;
                 if (!_do.SetPressure(hydId, true))
                     throw new HydraulicBuildException($"Hydraulic={hydId} PressureDOOpenFailed");
 
                 outputArmed = true;
+                token.ThrowIfCancellationRequested();
                 var aoResult = _ao.WritePressureDetailed(aoDevName, item.PressureThresholdBar);
                 if (!aoResult.Success)
                     throw new HydraulicBuildException($"Hydraulic={hydId} PressureAOWriteFailed Device={aoDevName}");
@@ -354,10 +358,54 @@ namespace Controller
         public Task ForceReleaseAsync(int hydId)
         {
             var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
-            try { _do.SetPressure(hydId, false); } catch { }
-            try { _ao.WritePressure(aoDevName, 0); } catch { }
-            _log.Info($"HydraulicForceRelease Hydraulic={hydId} DO=Off AO=0", "液压");
+            // Only failures already observed before these commands may use
+            // their completion as retry evidence.
+            _failedHoldRelease.TryGetValue(hydId, out var failedHold);
+            try
+            {
+                ConfirmReleaseOutputCommands(
+                    () => _do?.SetPressure(hydId, false) == true,
+                    () => _ao?.WritePressure(aoDevName, 0) == true);
+            }
+            catch (Exception ex) { return Task.FromException(ex); }
+            if (failedHold != null)
+            {
+                // Only a later confirmed output retry may retire this exact
+                // failed owner; never remove a replacement hold by key alone.
+                RemoveExactHoldEntry(_holdTcs, hydId, failedHold);
+                RemoveExactHoldEntry(_failedHoldRelease, hydId, failedHold);
+            }
+            _log.Info($"HydraulicForceRelease Hydraulic={hydId} DO=Off PressureCommand=0 confirmed", "液压");
             return Task.CompletedTask;
+        }
+
+        internal static bool RemoveExactHoldEntry(
+            ConcurrentDictionary<int, TaskCompletionSource<bool>> entries,
+            int hydraulicId, TaskCompletionSource<bool> expected)
+        {
+            if (expected == null) return false;
+            return ((System.Collections.Generic.ICollection<System.Collections.Generic.KeyValuePair<int, TaskCompletionSource<bool>>>)entries)
+                .Remove(new System.Collections.Generic.KeyValuePair<int, TaskCompletionSource<bool>>(hydraulicId, expected));
+        }
+
+        internal static void ConfirmReleaseOutputCommands(Func<bool> doOff, Func<bool> aoRelease)
+        {
+            Exception doFailure = null;
+            Exception aoFailure = null;
+            try
+            {
+                if (doOff?.Invoke() != true) doFailure = new InvalidOperationException("HydraulicDoOffUnconfirmed");
+            }
+            catch (Exception ex) { doFailure = ex; }
+            // Attempt both safe commands even when the first one fails.
+            try
+            {
+                if (aoRelease?.Invoke() != true) aoFailure = new InvalidOperationException("HydraulicAoReleaseUnconfirmed");
+            }
+            catch (Exception ex) { aoFailure = ex; }
+            if (doFailure != null || aoFailure != null)
+                throw new InvalidOperationException("HydraulicReleaseOutputUnconfirmed:DO=" +
+                    (doFailure?.Message ?? "Confirmed") + ";AO=" + (aoFailure?.Message ?? "Confirmed"));
         }
 
 
@@ -401,8 +449,8 @@ namespace Controller
 
             var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!_holdTcs.TryAdd(hydId, tcs)) // 已在保持，直接复用
-                return true;
+            if (!_holdTcs.TryAdd(hydId, tcs))
+                throw new InvalidOperationException($"HydraulicHoldAlreadyOwned:{hydId}");
 
             try
             {
@@ -420,14 +468,19 @@ namespace Controller
             catch (Exception ex)
             {
                 _log.Error($"液压[{hydId}] 保持异常：{ex.Message}", "液压", ex);
-                return false;
+                throw;
             }
             finally
             {
                 // 统一落位
-                await ForceReleaseAsync(hydId).ConfigureAwait(false);
+                try { await ForceReleaseAsync(hydId).ConfigureAwait(false); }
+                catch
+                {
+                    _failedHoldRelease[hydId] = tcs;
+                    throw;
+                }
 
-                _holdTcs.TryRemove(hydId, out _);
+                RemoveExactHoldEntry(_holdTcs, hydId, tcs);
                 _log.Info($"液压[{hydId}] 已释压回零。", "液压");
             }
         }
@@ -445,6 +498,7 @@ namespace Controller
         /// </summary>
         public async Task<bool> RunOnceAsync(int hydId, CancellationToken token)
         {
+            if (token.IsCancellationRequested) return false;
             var item = _test.Hydraulics.Find(h => h.Id == hydId);
             if (item == null || !item.Enabled)
             {
@@ -469,6 +523,7 @@ namespace Controller
 
                 // Step 2: 输出 AO 百分比（由 AoController 内部做限幅与电压换算）
                 // 同步版：WritePressure；如需无阻塞可改用 await _ao.SetPressureAsync(...)
+                token.ThrowIfCancellationRequested();
                 if (!_ao.WritePressure(aoDevName, item.PressureThresholdBar))
                 {
                     _log.Error($"液压[{hydId}] AO 输出失败（设备={aoDevName} 压力={item.PressureThresholdBar:F1}%）。", "液压");
@@ -563,26 +618,10 @@ namespace Controller
             }
             finally
             {
-                // Step 5: 关闭压力 DO；AO 回零百分比（落位）
-                try
-                {
-                    _do.SetPressure(hydId, false);
-                }
-                catch
-                {
-                    /* 忽略落位异常 */
-                }
-
-                try
-                {
-                    _ao.WritePressure(aoDevName, 0);
-                }
-                catch
-                {
-                    /* 忽略落位异常 */
-                }
-
-                _log.Info($"液压[{hydId}] 停止并回零。", "液压");
+                // A successful body cannot hide failed safe outputs. The
+                // shared release attempts both commands and propagates failure;
+                // it does not claim measured pressure is already safe.
+                await ForceReleaseAsync(hydId).ConfigureAwait(false);
             }
         }
     }

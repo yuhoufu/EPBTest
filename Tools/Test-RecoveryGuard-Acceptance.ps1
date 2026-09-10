@@ -50,6 +50,11 @@ try {
     $r=New-Fixture; $r.approvedModes=@('RecoverExited','RecoverStalled')
     Reject 'stalled mode without scenario' { Validate $r 'RecoverStalled' } 'AcceptanceChecksIncomplete'
     $r.checks+=@{id='stalledRecovery';passed=$true;evidencePath='fixture.txt';evidenceSha256=$evidenceHash}
+    Reject 'cooperative recovery cannot approve forced recovery' { Validate $r 'RecoverStalled' } 'AcceptanceChecksIncomplete'
+    Reject 'Exited request cannot hide incomplete advertised stalled mode' { Validate $r 'RecoverExited' } 'AcceptanceChecksIncomplete'
+    $r.checks+=@{id='forcedStalledRecovery';passed=$true;evidencePath='fixture.txt';evidenceSha256=$evidenceHash}
+    Reject 'forced success without interlock failures' { Validate $r 'RecoverStalled' } 'AcceptanceChecksIncomplete'
+    $r.checks+=@{id='forcedStalledRecoveryInterlocks';passed=$true;evidencePath='fixture.txt';evidenceSha256=$evidenceHash}
     Validate $r 'RecoverStalled'; $passed++
     Write-Output "PASS GuardAcceptance $passed/$passed; synthetic parser fixtures only; no installation or hardware"
 } finally {

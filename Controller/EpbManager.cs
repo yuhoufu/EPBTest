@@ -563,7 +563,8 @@ namespace Controller
             RecoveryTargetPhase recoveryTargetPhase = RecoveryTargetPhase.None,
             Guid recoveryOwnerId = default,
             long recoveryOwnerGeneration = 0,
-            long runEpochOverride = 0)
+            long runEpochOverride = 0,
+            Func<ChannelRuntimeStateChangedEvent, Func<bool>, bool> publicationTransaction = null)
         {
             // 物理安全目标可以包含同组全部硬件成员，但禁用通道不属于当前运行状态机。
             // 这是中央不变量：任何故障、恢复或迟到事件都不能把 Enabled=false 污染为
@@ -783,15 +784,14 @@ namespace Controller
                     correlationId = existingRecoveryContract.Contract.IncidentId;
                 }
             }
-            ChannelRuntimeStateChangedEvent update;
+            ChannelRuntimeStateChangedEvent update = null;
             // The state store operation is part of the same contract gate used by
             // TryBeginRecoveryIncident and CompleteRecoveryIncident.  Observers
             // therefore cannot observe a new owner without its Recovering state,
             // or a terminal state after its owner has already been removed.
             lock (_recoveryContractGate)
             {
-                update = _channelRuntimeStateStore.Publish(
-                        new ChannelRuntimeStateChangedEvent
+                var requestedUpdate = new ChannelRuntimeStateChangedEvent
                         {
                             Channel = channel,
                             State = state,
@@ -823,9 +823,15 @@ namespace Controller
                             RecoveryOwnerGeneration = recoveryOwnerGeneration,
                             RecoveryTargetPhase = recoveryTargetPhase,
                             SourceStateRevision = sourceStateRevision
-                        },
-                        allowTerminalReset,
-                        allowSystemFaultReset);
+                        };
+                Func<bool> publish = () => _channelRuntimeStateStore.TryPublish(
+                    requestedUpdate, out update, allowTerminalReset, allowSystemFaultReset);
+                if (!(publicationTransaction == null
+                    ? publish()
+                    : publicationTransaction(requestedUpdate, publish))) return;
+                // 存储返回原状态表示旧代次写入被拒绝；不能把这次拒绝
+                // 冒充恢复进展，更不能用旧请求的 state 清掉当前警告。
+                if (runEpoch > 0 && update.RunEpoch > runEpoch) return;
                 if (update.State == ChannelRuntimeState.Recovering)
                     _recoveryTaskRegistry.ReportProgressForChannel(
                         update.RunEpoch,
@@ -1097,6 +1103,8 @@ namespace Controller
 
         private sealed class DaqAutoRecoveryContext
         {
+            public Dictionary<int, EmergencyPowerGroupRegistration> PowerFaultSnapshots;
+            public RecoveryIncidentHandle RecoveryOwner;
             public string Device;
             public Guid RunId;
             public Guid CorrelationId;
@@ -1183,8 +1191,8 @@ namespace Controller
             public Task[] PowerDisableTasks = Array.Empty<Task>();
             // 保留电源组到关闭任务的映射；仅保存 Task[] 会丢失“哪一组”卡在
             // DisableCore/Gate 的证据，而 runtime telemetry 可能尚未反映 pending。
-            public Dictionary<int, Task<(bool ok, string error)>> PowerDisableTasksByGroup =
-                new Dictionary<int, Task<(bool ok, string error)>>();
+            public Dictionary<int, Task<PowerSafetyDisableResult>> PowerDisableTasksByGroup =
+                new Dictionary<int, Task<PowerSafetyDisableResult>>();
             // Runtime telemetry may lag an accepted OFF command.  Keep the
             // exact recovery-epoch receipt so pending OFF is not misclassified
             // as a hard failure from a stale status bitmap.
@@ -1207,6 +1215,7 @@ namespace Controller
 
         private sealed class DaqRecoveryPowerOffReceipt
         {
+            public Task<PowerSafetyDisableResult> ExecutionTask;
             public int GroupId;
             public long RecoveryEpoch;
             public long PowerOperationEpoch;
@@ -1239,6 +1248,7 @@ namespace Controller
             internal Task WorkerTask => _inner.WorkerTask;
             internal int TerminalPublished => _inner.TerminalPublished;
             internal int TerminalPublishing => _inner.TerminalPublishing;
+            internal RecoveryIncidentCoordinator.Incident CoordinatorOwner => _inner;
 
             internal bool Start() => _manager.StartRecoveryIncident(_inner);
 
@@ -1310,6 +1320,17 @@ namespace Controller
         private static string FormatDaqRecoveryCycleIdentity(Guid runId, long runEpoch, int channel, int cycle)
             => $"RunId={runId:N};RunEpoch={runEpoch};EPB={channel};Cycle={cycle}";
 
+        private static string SoftwareAbortedAttemptKey(Guid runId, long runEpoch, int channel, int cycle, long attemptId)
+            => $"{DaqAbortedCycleKey(runId, runEpoch, channel, cycle)}:Attempt={attemptId}";
+
+        private void MarkSoftwareRecoveryAttemptAborted(Guid runId, long runEpoch, int channel, int cycle, long attemptId)
+        {
+            if (runId == Guid.Empty || runEpoch <= 0 || channel < 1 || cycle <= 0) return;
+            // 无原始身份的兼容终态保持保守圈级保护，不猜测当前尝试。
+            if (attemptId <= 0) { MarkDaqClockCycleAborted(runId, runEpoch, channel, cycle); return; }
+            _daqClockAbortedCycles[SoftwareAbortedAttemptKey(runId, runEpoch, channel, cycle, attemptId)] = 0;
+        }
+
         private void MarkDaqRecoveryCyclesAborted(DaqAutoRecoveryContext context)
         {
             if (context == null) return;
@@ -1333,10 +1354,13 @@ namespace Controller
             Guid runId,
             long runEpoch,
             int channel,
-            int cycleNumber)
+            int cycleNumber,
+            long attemptId = 0)
         {
             if (runId == Guid.Empty || runEpoch <= 0 || channel < 1 || cycleNumber <= 0)
                 return false;
+            if (attemptId > 0 && _daqClockAbortedCycles.TryRemove(
+                    SoftwareAbortedAttemptKey(runId, runEpoch, channel, cycleNumber, attemptId), out _)) return true;
             return _daqClockAbortedCycles.TryRemove(
                 DaqAbortedCycleKey(runId, runEpoch, channel, cycleNumber), out _);
         }
@@ -1345,10 +1369,13 @@ namespace Controller
             Guid runId,
             long runEpoch,
             int channel,
-            int cycleNumber)
+            int cycleNumber,
+            long attemptId = 0)
         {
             if (runId == Guid.Empty || runEpoch <= 0 || channel < 1 || cycleNumber <= 0)
                 return false;
+            if (attemptId > 0 && _daqClockAbortedCycles.ContainsKey(
+                    SoftwareAbortedAttemptKey(runId, runEpoch, channel, cycleNumber, attemptId))) return true;
             return _daqClockAbortedCycles.ContainsKey(
                 DaqAbortedCycleKey(runId, runEpoch, channel, cycleNumber));
         }
@@ -1403,12 +1430,13 @@ namespace Controller
                         RemoveCycleAttemptAfterDurableTerminal);
                     if (!committed && !context.IsDurablyCommitted) return false;
 
-                    _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
-                    MarkDaqClockCycleAborted(
+                    FinalizeFormalPendingCycleAfterDurableTerminal(
+                        context.RunId, context.RunEpoch, channel, context.Cycle, context.AttemptId);
+                    MarkSoftwareRecoveryAttemptAborted(
                         context.RunId,
                         context.RunEpoch,
                         channel,
-                        context.Cycle);
+                        context.Cycle, context.AttemptId);
                     _log.Warn(
                         $"EPB[{channel}] Cycle={context.Cycle} Attempt={context.AttemptId} " +
                         $"因软件自愈作废；不计正式完成数。Reason={reason}",
@@ -1426,28 +1454,31 @@ namespace Controller
                 }
             }
 
-            int cycleNumber;
-            if (expectedCycleNumber.HasValue)
+            // 无 context 的兼容路径至少冻结本次封圈身份，持久化返回后不得回读新运行。
+            var fallbackRunId = _activeBatchId;
+            var fallbackRunEpoch = Interlocked.Read(ref _runEpoch);
+            var cycleNumber = 0;
+            var attemptId = 0L;
+            var projectionCaptured = _cycleAttempts.WithChannelProjectionGate(channel, () =>
             {
-                var expected = new KeyValuePair<int, int>(channel, expectedCycleNumber.Value);
-                if (!((ICollection<KeyValuePair<int, int>>)_currentCycleNumberByChannel)
-                        .Remove(expected))
-                {
-                    _currentCycleNumberByChannel.TryGetValue(channel, out var actualCycle);
-                    _log.Warn(
-                        $"EPB[{channel}] 拒绝作废非当前圈。" +
-                        $"ExpectedCycle={expectedCycleNumber} ActualCycle={actualCycle} " +
-                        $"Reason={reason}",
-                        "落盘");
+                if (!IsAffectedGroupResetRunCurrent(fallbackRunId, fallbackRunEpoch) ||
+                    _cycleAttempts.TryGetCurrent(channel, out _) ||
+                    !_currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle) ||
+                    (expectedCycleNumber.HasValue && currentCycle != expectedCycleNumber.Value))
                     return false;
-                }
-                cycleNumber = expectedCycleNumber.Value;
-            }
-            else if (!_currentCycleNumberByChannel.TryRemove(channel, out cycleNumber))
+                // 与建圈投影使用同一短锁；不能先删旧圈、再删掉并发发布的新 attempt。
+                cycleNumber = currentCycle;
+                _currentCycleNumberByChannel.TryRemove(channel, out _);
+                _currentAttemptIdByChannel.TryRemove(channel, out attemptId);
+                return true;
+            });
+            if (!projectionCaptured)
             {
+                _log.Warn(
+                    $"EPB[{channel}] 拒绝作废非当前圈。ExpectedCycle={expectedCycleNumber} Reason={reason}",
+                    "落盘");
                 return false;
             }
-            _currentAttemptIdByChannel.TryRemove(channel, out var attemptId);
             try
             {
                 SealCyclePersistenceWindow(Recorder, channel, cycleNumber, cutoffUtc);
@@ -1465,13 +1496,14 @@ namespace Controller
                         cycleNumber,
                         cutoffUtc,
                         terminalStatus);
-                _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
+                FinalizeFormalPendingCycleAfterDurableTerminal(
+                    fallbackRunId, fallbackRunEpoch, channel, cycleNumber, attemptId);
                 // 正式圈回调稍后收尾时只消费此标记，不得把已作废圈再次封账。
-                MarkDaqClockCycleAborted(
-                    _activeBatchId,
-                    Interlocked.Read(ref _runEpoch),
+                MarkSoftwareRecoveryAttemptAborted(
+                    fallbackRunId,
+                    fallbackRunEpoch,
                     channel,
-                    cycleNumber);
+                    cycleNumber, attemptId);
                 _log.Warn(
                     $"EPB[{channel}] Cycle={cycleNumber} 因软件自愈作废；" +
                     $"不计正式完成数。Reason={reason}",
@@ -1482,8 +1514,17 @@ namespace Controller
             {
                 // 封圈失败时恢复活动圈所有权，后续自维护必须继续重试；不能留下
                 // “字典已移除但 SQLite 仍 running”的半提交状态。
-                _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
-                if (attemptId > 0) _currentAttemptIdByChannel.TryAdd(channel, attemptId);
+                _cycleAttempts.WithChannelProjectionGate(channel, () =>
+                {
+                    // 新圈已经接管时，不得把旧 attempt 拼接到新圈投影上。
+                    if (!IsAffectedGroupResetRunCurrent(fallbackRunId, fallbackRunEpoch) ||
+                        _cycleAttempts.TryGetCurrent(channel, out _) ||
+                        _currentCycleNumberByChannel.ContainsKey(channel) ||
+                        _currentAttemptIdByChannel.ContainsKey(channel)) return false;
+                    _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
+                    if (attemptId > 0) _currentAttemptIdByChannel.TryAdd(channel, attemptId);
+                    return true;
+                });
                 _log.Warn(
                     $"EPB[{channel}] 软件自愈作废当前圈失败：{ex.Message}",
                     "落盘");
@@ -1843,6 +1884,8 @@ namespace Controller
             string status)
         {
             if (cycles == null || cycles.Count == 0) return true;
+            var finalizingRunId = _activeBatchId;
+            var finalizingRunEpoch = Interlocked.Read(ref _runEpoch);
             var recorder = Recorder;
             if (recorder == null)
             {
@@ -1881,23 +1924,32 @@ namespace Controller
                             allFinalized = false;
                             continue;
                         }
-                        _formalPersistenceRecoveryPendingCycles.TryRemove(pair.Key, out _);
-                        MarkDaqClockCycleAborted(
-                            _activeBatchId,
-                            Interlocked.Read(ref _runEpoch),
+                        FinalizeFormalPendingCycleAfterDurableTerminal(
+                            context.RunId, context.RunEpoch, pair.Key, context.Cycle, context.AttemptId);
+                        MarkSoftwareRecoveryAttemptAborted(
+                            context.RunId,
+                            context.RunEpoch,
                             pair.Key,
-                            pair.Value);
+                            context.Cycle, context.AttemptId);
                         QueuePendingWarningSnapshotsForCycle(pair.Key, pair.Value);
                         continue;
                     }
 
+                    var hadAttempt = _currentAttemptIdByChannel.TryGetValue(pair.Key, out var finalizingAttemptId);
                     var finalN = recorder.GetCurrentCycleSampleCount(pair.Key);
                     recorder.AbortCycle(pair.Key, pair.Value, finalN, cutoffUtc, status);
-                    var removed =
-                        ((ICollection<KeyValuePair<int, int>>)_currentCycleNumberByChannel)
-                        .Remove(pair);
-                    if (!removed &&
-                        _currentCycleNumberByChannel.TryGetValue(pair.Key, out var currentCycle))
+                    var projectionRemoved = _cycleAttempts.WithChannelProjectionGate(pair.Key, () =>
+                    {
+                        var hasCurrentAttempt = _currentAttemptIdByChannel.TryGetValue(pair.Key, out var currentAttemptId);
+                        if (hadAttempt != hasCurrentAttempt ||
+                            (hadAttempt && finalizingAttemptId != currentAttemptId)) return false;
+                        if (_currentCycleNumberByChannel.TryGetValue(pair.Key, out var currentCycle) &&
+                            currentCycle != pair.Value) return false;
+                        _currentCycleNumberByChannel.TryRemove(pair.Key, out _);
+                        _currentAttemptIdByChannel.TryRemove(pair.Key, out _);
+                        return true;
+                    });
+                    if (!projectionRemoved)
                     {
                         // 终态提交后若通道身份已经变成另一圈，绝不能清除新圈的 attempt/
                         // recovery 标记，更不能把本次 Stop 宣告为已完全收口。
@@ -1905,17 +1957,17 @@ namespace Controller
                         _log.Warn(
                             $"EPB[{pair.Key}] Stop圈终态已提交，但内存圈身份发生变化，" +
                             $"禁止同进程重启。FinalizedCycle={pair.Value} " +
-                            $"CurrentCycle={currentCycle}",
+                            $"ExpectedAttempt={finalizingAttemptId}",
                             "落盘");
                         continue;
                     }
-                    _currentAttemptIdByChannel.TryRemove(pair.Key, out _);
-                    _formalPersistenceRecoveryPendingCycles.TryRemove(pair.Key, out _);
-                    MarkDaqClockCycleAborted(
-                        _activeBatchId,
-                        Interlocked.Read(ref _runEpoch),
+                    FinalizeFormalPendingCycleAfterDurableTerminal(
+                        finalizingRunId, finalizingRunEpoch, pair.Key, pair.Value, finalizingAttemptId);
+                    MarkSoftwareRecoveryAttemptAborted(
+                        finalizingRunId,
+                        finalizingRunEpoch,
                         pair.Key,
-                        pair.Value);
+                        pair.Value, finalizingAttemptId);
                     QueuePendingWarningSnapshotsForCycle(pair.Key, pair.Value);
                 }
                 catch (Exception ex)
@@ -2221,10 +2273,15 @@ namespace Controller
         /// </summary>
         /// <param name="channel">EPB 通道号（1..12）。</param>
         /// <param name="cycleNumber">当前圈号（与 Recorder.BeginCycle 一致）。</param>
-        private void MarkCurrentCycleNumber(int channel, int cycleNumber)
+        private long MarkCurrentCycleNumber(int channel, int cycleNumber)
         {
-            _currentCycleNumberByChannel[channel] = cycleNumber;
-            _currentAttemptIdByChannel[channel] = Interlocked.Increment(ref _cycleAttemptSequence);
+            return _cycleAttempts.WithChannelProjectionGate(channel, () =>
+            {
+                var attemptId = Interlocked.Increment(ref _cycleAttemptSequence);
+                _currentCycleNumberByChannel[channel] = cycleNumber;
+                _currentAttemptIdByChannel[channel] = attemptId;
+                return attemptId;
+            });
         }
 
 
@@ -2232,21 +2289,48 @@ namespace Controller
         ///     清除通道“当前圈号”（Complete/Alarm 封圈后调用），避免后续误封圈。
         /// </summary>
         /// <param name="channel">EPB 通道号（1..12）。</param>
+        private bool ClearCurrentCycleNumberForAttempt(int channel, int cycleNumber, long originalAttemptId)
+        {
+            if (originalAttemptId <= 0) return false;
+            return _cycleAttempts.WithChannelProjectionGate(channel, () =>
+            {
+                if (!_currentAttemptIdByChannel.TryGetValue(channel, out var currentAttemptId) ||
+                    currentAttemptId != originalAttemptId ||
+                    !_currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle) ||
+                    currentCycle != cycleNumber) return false;
+                ClearCurrentCycleNumber(channel);
+                return !_currentAttemptIdByChannel.ContainsKey(channel) &&
+                    !_currentCycleNumberByChannel.ContainsKey(channel);
+            });
+        }
+
         private void ClearCurrentCycleNumber(int channel)
         {
-            if (_formalPersistenceRecoveryPendingCycles.TryGetValue(
-                    channel,
-                    out var pendingCycle) &&
-                _currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle) &&
-                currentCycle == pendingCycle)
+            var blockedCycle = 0;
+            var cleared = _cycleAttempts.WithChannelProjectionGate(channel, () =>
+            {
+                lock (_formalPersistenceRecoveryPendingCycles)
+                {
+                    if (_formalPersistenceRecoveryPendingCycles.TryGetValue(
+                            FormalRecoveryRunKey(_activeBatchId, Interlocked.Read(ref _runEpoch), channel),
+                            out var pendingCycle) &&
+                        _currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle) &&
+                        currentCycle == pendingCycle.Cycle)
+                    {
+                        blockedCycle = currentCycle;
+                        return false;
+                    }
+                    _currentCycleNumberByChannel.TryRemove(channel, out _);
+                    _currentAttemptIdByChannel.TryRemove(channel, out _);
+                    return true;
+                }
+            });
+            if (!cleared)
             {
                 _log.Warn(
-                    $"EPB[{channel}] 圈{currentCycle}仍等待耐久恢复，拒绝清除当前圈身份。",
+                    $"EPB[{channel}] 圈{blockedCycle}仍等待耐久恢复，拒绝清除当前圈身份。",
                     "落盘");
-                return;
             }
-            _currentCycleNumberByChannel.TryRemove(channel, out _);
-            _currentAttemptIdByChannel.TryRemove(channel, out _);
         }
 
 
@@ -3293,17 +3377,13 @@ namespace Controller
             Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
             Action<RecoveryContractSnapshot> publishRecovering,
             out RecoveryIncidentHandle incident,
-            Guid incidentId = default)
+            Guid incidentId = default,
+            IEnumerable<int> safetyAffectedChannels = null,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null)
         {
             incident = null;
-            var safetyAffected = (channels ?? Array.Empty<int>())
-                .Where(channel => channel >= 1 && channel <= 12)
-                .Distinct()
-                .OrderBy(channel => channel)
-                .ToArray();
-            var ownedChannels = safetyAffected
-                .Where(IsChannelEnabled)
-                .ToArray();
+            var (ownedChannels, safetyAffected) = BuildRecoveryAdmissionScopes(
+                channels, safetyAffectedChannels, IsChannelEnabled);
             if (ownedChannels.Length == 0) return false;
 
             lock (_recoveryAdmissionGate)
@@ -3325,7 +3405,8 @@ namespace Controller
                     workerFactory,
                     publishRecovering,
                     out var createdIncident,
-                    incidentId);
+                    incidentId,
+                    startupParent);
                 if (result != RecoveryIncidentCoordinator.BeginResult.Created ||
                     createdIncident == null)
                 {
@@ -3345,6 +3426,28 @@ namespace Controller
                                createdIncident.Contract.IncidentId,
                                out incident);
             }
+        }
+
+        internal static (int[] ownedChannels, int[] safetyAffected) BuildRecoveryAdmissionScopes(
+            IEnumerable<int> channels, IEnumerable<int> safetyAffectedChannels, Func<int, bool> isEnabled)
+        {
+            if (isEnabled == null) throw new ArgumentNullException(nameof(isEnabled));
+            var requestedChannels = (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            // 安全输出覆盖范围不能赋予额外成员续测权限；旧调用保持原有范围。
+            var safetyAffected = (safetyAffectedChannels ?? Array.Empty<int>())
+                .Concat(requestedChannels)
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var ownedChannels = requestedChannels
+                .Where(isEnabled)
+                .ToArray();
+            return (ownedChannels, safetyAffected);
         }
 
         private bool StartRecoveryIncident(RecoveryIncidentCoordinator.Incident incident)
@@ -3659,7 +3762,16 @@ namespace Controller
         }
 
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
-        public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
+        public Task StartChannelAsync(int channel, CancellationToken uiToken = default)
+        {
+            return _batchLifecycleGate.RunAsync(
+                () => StartChannelUnderLifecycleGateAsync(channel, uiToken),
+                uiToken);
+        }
+
+        private async Task StartChannelUnderLifecycleGateAsync(
+            int channel,
+            CancellationToken uiToken)
         {
             if (!IsChannelEnabled(channel))
                 throw new InvalidOperationException(
@@ -3669,6 +3781,10 @@ namespace Controller
                 _log.Warn($"EPB[{channel}] 已在运行。", "EPB");
                 return;
             }
+            if (IsBatchSessionActive || !_timers.IsEmpty || !_runners.IsEmpty)
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 拒绝在其它运行仍活动时建立新的单通道 RunEpoch；" +
+                    "请先安全停止现有运行，或使用批量启动一次性建立整组所有权。");
 
             var singleRunId = Guid.NewGuid();
             _activeBatchId = singleRunId;
@@ -3969,6 +4085,7 @@ namespace Controller
                         cycleNumber,
                         DateTime.UtcNow,
                         singleRunId,
+                        singleRunEpoch,
                         CycleAttemptKind.FormalSingle,
                         ct,
                         out var cycleAttempt))
@@ -4029,7 +4146,8 @@ namespace Controller
                     ReportFormalControlSoftwareRecovery(
                         channel,
                         cycleNumber,
-                        cycleOutcome.Reason);
+                        cycleOutcome.Reason,
+                        cycleAttempt);
                 }
 
                 // —— 圈结束：根据是否报警停机决定封圈状态 ——
@@ -4047,7 +4165,7 @@ namespace Controller
                             cycleAttempt.RunId,
                             cycleAttempt.RunEpoch,
                             channel,
-                            cycleNumber))
+                            cycleNumber, cycleAttempt.AttemptId))
                     {
                         if (abortedByRecoveredGap)
                             _daqRecoveredGapAbortedCycles.TryRemove(abortKey, out _);
@@ -4106,7 +4224,8 @@ namespace Controller
                         channel,
                         cycleNumber,
                         "CycleFinalizer",
-                        ex);
+                        ex,
+                        cycleAttempt);
                 }
 
                 // 若本通道自然完成最后一圈，则做统一收尾（含“停止即存最近10圈”）
@@ -6290,7 +6409,8 @@ namespace Controller
                                 eventUtc,
                                 recoveryAttempt,
                                 raiseRecoverableAlarm,
-                                recoverableAlarmChannel)
+                                recoverableAlarmChannel,
+                                incident)
                             .ConfigureAwait(false);
 
                         // Self-maintenance may outlive the initial cutoff
@@ -6339,7 +6459,8 @@ namespace Controller
                             recoveryOwnerId: contract.OwnerId,
                             recoveryOwnerGeneration: contract.RunEpoch);
                 },
-                out incident);
+                out incident,
+                safetyAffectedChannels: GetAffectedHydraulicSafetyScope(affected));
             if (!started || incident == null) return;
 
             try
@@ -6678,14 +6799,22 @@ namespace Controller
             DateTime eventUtc,
             int recoveryAttempt = 0,
             bool raiseRecoverableAlarm = false,
-            int recoverableAlarmChannel = 0)
+            int recoverableAlarmChannel = 0,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             if (string.IsNullOrWhiteSpace(device)) return;
             var affected = GetDaqGroupChannels(device);
             if (affected.Length == 0) return;
             var pauseAdmission = CaptureBatchPauseSnapshot();
+            var powerFaultSnapshots = new Dictionary<int, EmergencyPowerGroupRegistration>();
+            foreach (var groupId in affected.Select(GetElectricalGroupId).Where(id => id > 0).Distinct())
+                if (_emergencyPowerGroupLatch.TryCapture(groupId, out var snapshot) &&
+                    snapshot.CorrelationId == correlationId)
+                    powerFaultSnapshots.Add(groupId, snapshot);
             var context = new DaqAutoRecoveryContext
             {
+                PowerFaultSnapshots = powerFaultSnapshots,
+                RecoveryOwner = recoveryOwner,
                 Device = device,
                 RunId = _activeBatchId,
                 CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId,
@@ -7280,6 +7409,9 @@ namespace Controller
         {
             if (!_daqAutoRecovery.TryGetValue(device, out var context)) return;
             if (Interlocked.CompareExchange(ref context.Completing, 1, 0) != 0) return;
+            var businessVerificationId = Guid.NewGuid();
+            var businessRejoinPublished = false;
+            var jointSafetyConfirmed = false;
             try
             {
                 if (TryEscalatePermanentDataContinuityGap(
@@ -7490,16 +7622,20 @@ namespace Controller
                             await RecoveryStageDeadline.RunAsync(
                                     "EmergencyPowerOffBarrier",
                                     RecoveryStageTimeoutMs,
-                                    ct => _powerSupply.DisableGroupAsync(
+                                    ct => TrackRecoveryHardwareAction(powerRecoveryChannels, _powerSupply.DisableGroupAsync(
                                         groupId,
                                         $"DaqRecoveryPreEnableBarrier:{device}",
-                                        ct),
+                                        ct)),
                                     context.Cancellation.Token)
                                 .ConfigureAwait(false);
                         }
                     }
                     if (!IsCurrentRecovery(context)) return;
 
+                    context.ValidationDetail = "JointPhysicalSafetyBeforePowerEnable";
+                    await ConfirmDaqRecoveryPhysicalSafetyAsync(context).ConfigureAwait(false);
+                    jointSafetyConfirmed = true;
+                    if (!IsCurrentRecovery(context)) return;
                     context.ValidationDetail = "PowerEnableThenMechanicalRelease";
                     var recoveryPermits = powerRecoveryChannels.ToDictionary(
                         channel => channel, channel => _channelExecutionFence.Capture(channel));
@@ -7511,7 +7647,8 @@ namespace Controller
                                 : async (channels, ct) =>
                                 {
                                     ValidateRecoveryExecutionPermits(recoveryPermits, "DaqPowerEnable");
-                                    await _powerSupply.PrepareAndEnableAsync(channels, ct).ConfigureAwait(false);
+                                    await TrackRecoveryHardwareAction(channels,
+                                        _powerSupply.PrepareAndEnableAsync(channels, ct)).ConfigureAwait(false);
                                     ValidateRecoveryExecutionPermits(recoveryPermits, "DaqPostPowerEnable");
                                 },
                             rejoinChannels.Length == 0
@@ -7520,7 +7657,7 @@ namespace Controller
                                     rejoinChannels,
                                     rejoinPlan,
                                     $"DaqRecovery:{device}",
-                                    ct),
+                                    ct, context.RecoveryOwner),
                             context.Cancellation.Token)
                         .ConfigureAwait(false);
                     ValidateRecoveryExecutionPermits(recoveryPermits, "DaqPostMechanicalRelease");
@@ -7599,6 +7736,20 @@ namespace Controller
                                 $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
 
                         if (!holdForBatchPause && rejoinChannels.Length > 0)
+                        {
+                            if (!jointSafetyConfirmed)
+                                throw new RecoveryExecutionRejectedException("DaqBusinessProofRequiresJointSafety");
+                            foreach (var fault in context.PowerFaultSnapshots ??
+                                         new Dictionary<int, EmergencyPowerGroupRegistration>())
+                            {
+                                var members = rejoinChannels.Where(channel => GetElectricalGroupId(channel) == fault.Key).ToArray();
+                                if (members.Length == 0) continue;
+                                if (!_emergencyPowerGroupLatch.TryArmBusinessVerification(fault.Key, fault.Value,
+                                        context.RunId, context.RunEpoch, members,
+                                        Interlocked.Read(ref _cycleAttemptSequence), businessVerificationId,
+                                        replaceAfterFreshSafety: true))
+                                    throw new RecoveryExecutionRejectedException("DaqBusinessProofSuperseded");
+                            }
                             RejoinFormalChannelsAtSharedFutureSlot(
                                 rejoinChannels,
                                 rejoinPlan,
@@ -7607,6 +7758,8 @@ namespace Controller
                                 allowTerminalReset: false,
                                 ownedByActiveDaqRecovery: true,
                                 recoveryEpoch: context.RecoveryEpoch);
+                            businessRejoinPublished = true;
+                        }
 
                         if (!context.Phase.CompleteRejoin())
                             throw new InvalidOperationException(
@@ -7754,13 +7907,9 @@ namespace Controller
                         "DAQ软件数据链已恢复；通道仍按人工操作保持暂停",
                         affectedChannels: new[] { channel },
                         correlationId: context.CorrelationId);
-                foreach (var groupId in context.AffectedChannels
-                             .Select(GetElectricalGroupId)
-                             .Where(id => id > 0)
-                             .Distinct())
-                    _emergencyPowerGroupLatch.TryRemove(
-                        groupId,
-                        context.CorrelationId);
+                foreach (var fault in context.PowerFaultSnapshots ??
+                             new Dictionary<int, EmergencyPowerGroupRegistration>())
+                    _emergencyPowerGroupLatch.TryMarkControlReady(fault.Key, fault.Value);
                 _log.Info(
                     holdForBatchPause
                         ? $"DAQ软件自动恢复完成 Device={device}；批次状态={batchPauseState}，" +
@@ -7817,6 +7966,7 @@ namespace Controller
                         ? "Unknown"
                         : context.ValidationPhase)
                     : context.ValidationDetail;
+                businessRejoinPublished = false;
                 if (ex is RecoveryExecutionRejectedException)
                 {
                     RollbackDaqRecoveryRejoinSafety(context, phase, ex.Message);
@@ -7868,6 +8018,10 @@ namespace Controller
             }
             finally
             {
+                if (!businessRejoinPublished)
+                    foreach (var fault in context.PowerFaultSnapshots ??
+                                 new Dictionary<int, EmergencyPowerGroupRegistration>())
+                        _emergencyPowerGroupLatch.InvalidateBusinessVerification(fault.Key, fault.Value, businessVerificationId);
                 Interlocked.Exchange(ref context.Completing, 0);
             }
         }
@@ -8122,6 +8276,10 @@ namespace Controller
         {
             return string.Equals(
                        phase,
+                       "JointPhysicalSafetyBeforePowerEnable",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(
+                       phase,
                        "PowerEnableThenMechanicalRelease",
                        StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(
@@ -8136,6 +8294,14 @@ namespace Controller
             string error)
         {
             if (context == null) return;
+            // A late validation failure must not issue OFF against a successor
+            // run, or act after the hydraulic lease has been retired.
+            if (!CanRollbackHydraulicResume(context.RunId, context.RunEpoch,
+                    _activeBatchId, Interlocked.Read(ref _runEpoch),
+                    context.Ownerships != null && context.Ownerships.Length > 0 &&
+                    Volatile.Read(ref context.OwnershipReleased) == 0 &&
+                    context.Ownerships.All(lease => !lease.Token.IsCancellationRequested)) ||
+                !IsCurrentRecovery(context)) return;
             Dictionary<int, string> rejectedOff = null;
             ExecuteNonBlockingSafetyIsolationOrder(
                 () => FreezeAndCancelSafetyChannels(
@@ -8235,6 +8401,21 @@ namespace Controller
             }), "DaqPowerOffPendingRetry");
         }
 
+        internal static bool IsValidPowerOffExecutionReceipt(PowerSafetyDisableResult receipt, int groupId)
+        {
+            return receipt != null && receipt.ConfirmedOff &&
+                   receipt.Outcome == PowerSafetyDisableOutcome.ConfirmedOff &&
+                   receipt.ElectricalGroupId == groupId && receipt.OperationGeneration > 0 &&
+                   receipt.StartedUtc != default(DateTime) && receipt.CompletedUtc >= receipt.StartedUtc;
+        }
+
+        internal static bool ShouldRetryPowerOffTask(Task<PowerSafetyDisableResult> task, int groupId)
+        {
+            if (task == null || task.IsCanceled || task.IsFaulted) return true;
+            if (!task.IsCompleted) return false;
+            return !IsValidPowerOffExecutionReceipt(task.GetAwaiter().GetResult(), groupId);
+        }
+
         private void RetryDaqRecoveryPowerDisableTasks(DaqAutoRecoveryContext context)
         {
             if (context == null || _powerSupply == null) return;
@@ -8252,26 +8433,26 @@ namespace Controller
                     return false;
                 return context.PowerDisableTasksByGroup == null ||
                        !context.PowerDisableTasksByGroup.TryGetValue(groupId, out var task) ||
-                       task == null || task.IsFaulted || task.IsCanceled;
+                       ShouldRetryPowerOffTask(task, groupId);
             }).ToArray();
             if (retryGroups.Length == 0) return;
 
             var retried = StartElectricalGroupSafetyDisables(
-                context.AffectedChannels,
+                context.AffectedChannels.Where(channel => retryGroups.Contains(GetElectricalGroupId(channel))),
                 $"DAQ恢复PowerOffPending重试 Device={context.Device} " +
                 $"RecoveryEpoch={context.RecoveryEpoch}",
                 "DaqPowerOffPendingRetry");
             lock (context.ProgressGate)
             {
-                var tasks = context.PowerDisableTasksByGroup ??
-                            new Dictionary<int, Task<(bool ok, string error)>>();
+                var tasks = context.PowerDisableTasksByGroup == null
+                    ? new Dictionary<int, Task<PowerSafetyDisableResult>>()
+                    : new Dictionary<int, Task<PowerSafetyDisableResult>>(context.PowerDisableTasksByGroup);
                 foreach (var groupId in retryGroups)
                 {
                     if (!retried.TryGetValue(groupId, out var task) || task == null) continue;
                     tasks[groupId] = task;
-                    var receipt = context.PowerOffReceipts.GetOrAdd(
-                        groupId,
-                        id => new DaqRecoveryPowerOffReceipt { GroupId = id });
+                    // 不复用旧对象：仍在等待旧任务的调用只能更新旧回执。
+                    var receipt = new DaqRecoveryPowerOffReceipt { GroupId = groupId, ExecutionTask = task };
                     receipt.RecoveryEpoch = context.RecoveryEpoch;
                     receipt.SubmittedUtc = DateTime.UtcNow;
                     receipt.TaskCompleted = false;
@@ -8289,6 +8470,7 @@ namespace Controller
                         Status = SafetyOffEvidenceStatus.Submitted,
                         EvidenceSource = "PowerSupplySafetyDisable"
                     };
+                    context.PowerOffReceipts[groupId] = receipt;
                 }
                 context.PowerDisableTasksByGroup = tasks;
                 context.PowerDisableTasks = tasks.Values.Where(task => task != null).ToArray();
@@ -8669,11 +8851,17 @@ namespace Controller
                 foreach (var groupId in groups)
                 {
                     var state = _powerSupply.GetRuntimeState(groupId);
-                    var receipt = context.PowerOffReceipts.GetOrAdd(
+                    Task<PowerSafetyDisableResult> disableTask = null;
+                    DaqRecoveryPowerOffReceipt receipt;
+                    lock (context.ProgressGate)
+                    {
+                    context.PowerDisableTasksByGroup?.TryGetValue(groupId, out disableTask);
+                    receipt = context.PowerOffReceipts.GetOrAdd(
                         groupId,
                         id => new DaqRecoveryPowerOffReceipt
                         {
                             GroupId = id,
+                            ExecutionTask = disableTask,
                             RecoveryEpoch = context.RecoveryEpoch,
                             SubmittedUtc = DateTime.UtcNow,
                             Evidence = new SafetyOffReceipt
@@ -8688,11 +8876,9 @@ namespace Controller
                                 EvidenceSource = "PowerSupplySafetyDisable"
                             }
                         });
+                    }
                     receipt.RecoveryEpoch = context.RecoveryEpoch;
-                    receipt.PowerOperationEpoch = state.OperationEpoch;
-                    if (context.PowerDisableTasksByGroup == null ||
-                        !context.PowerDisableTasksByGroup.TryGetValue(groupId, out var disableTask) ||
-                        disableTask == null)
+                    if (disableTask == null || !ReferenceEquals(receipt.ExecutionTask, disableTask))
                     {
                         receipt.PowerOffPending = true;
                         receipt.Failure = "PowerOffTaskMissingForRecoveryEpoch";
@@ -8734,10 +8920,11 @@ namespace Controller
                             }
                         }
                         var powerReceipt = await disableTask.ConfigureAwait(false);
-                        if (!powerReceipt.ok)
+                        if (!IsValidPowerOffExecutionReceipt(powerReceipt, groupId))
                         {
                             receipt.PowerOffPending = true;
-                            receipt.Failure = powerReceipt.error ?? "PowerOffUnconfirmed";
+                            receipt.Failure = string.IsNullOrWhiteSpace(powerReceipt?.Error)
+                                ? "PowerOffExecutionReceiptInvalid" : powerReceipt.Error;
                             receipt.Evidence.Status = SafetyOffEvidenceStatus.Failed;
                             receipt.Evidence.Error = receipt.Failure;
                             receipt.Evidence.CompletedUtc = DateTime.UtcNow;
@@ -8745,7 +8932,9 @@ namespace Controller
                             continue;
                         }
                         receipt.TaskCompleted = true;
-                        receipt.TaskCompletedUtc = DateTime.UtcNow;
+                        receipt.PowerOperationEpoch = powerReceipt.OperationGeneration;
+                        receipt.SubmittedUtc = powerReceipt.StartedUtc;
+                        receipt.TaskCompletedUtc = powerReceipt.CompletedUtc;
                     }
                     catch (OperationCanceledException) when (
                         context.Cancellation.IsCancellationRequested)
@@ -8781,10 +8970,10 @@ namespace Controller
                     receipt.Evidence.TargetKind = SafetyOffTargetKind.PowerSupplyGroup;
                     receipt.Evidence.TargetId = groupId;
                     receipt.Evidence.RunEpoch = context.RunEpoch;
-                    receipt.Evidence.OperationGeneration = state.OperationEpoch;
+                    receipt.Evidence.OperationGeneration = receipt.PowerOperationEpoch;
                     receipt.Evidence.SubmittedUtc = receipt.SubmittedUtc;
                     receipt.Evidence.CompletedUtc = receipt.TaskCompletedUtc;
-                    receipt.Evidence.HardwareObservedUtc = receipt.StateObservedUtc;
+                    receipt.Evidence.HardwareObservedUtc = receipt.TaskCompletedUtc;
                     receipt.Evidence.Status = receipt.OutputConfirmedOff
                         ? SafetyOffEvidenceStatus.ConfirmedOff
                         : SafetyOffEvidenceStatus.Failed;
@@ -8808,7 +8997,7 @@ namespace Controller
                     $"Affected=[{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}]；" +
                     "发布PowerOffPending，禁止丢弃批次和重建DAQ。",
                     "AI");
-            return deenergized;
+            return deenergized && HasDaqRecoveryPowerOffReceipts(context);
         }
 
         private void PublishDaqPowerOffPending(
@@ -8857,16 +9046,37 @@ namespace Controller
 
         private bool HasDaqRecoveryPowerOffReceipts(DaqAutoRecoveryContext context)
         {
-            if (context == null || _powerSupply == null) return true;
-            var groups = (context.AffectedChannels ?? Array.Empty<int>())
-                .Select(GetElectricalGroupId)
-                .Where(id => id > 0)
-                .Distinct()
-                .ToArray();
-            return groups.All(groupId => context.PowerOffReceipts.TryGetValue(groupId, out var receipt) &&
+            if (context == null || _powerSupply == null || context.CorrelationId == Guid.Empty ||
+                context.RunEpoch <= 0 || context.RecoveryEpoch <= 0 || context.AffectedChannels == null ||
+                context.AffectedChannels.Length == 0 || context.AffectedChannels.Any(channel => channel < 1 || channel > 12))
+                return false;
+            var groups = context.AffectedChannels.Select(GetElectricalGroupId).ToArray();
+            if (groups.Any(groupId => groupId <= 0)) return false;
+            lock (context.ProgressGate)
+            {
+            return groups.Distinct().All(groupId => context.PowerOffReceipts.TryGetValue(groupId, out var receipt) &&
+                                        receipt != null &&
+                                        receipt.ExecutionTask != null &&
+                                        context.PowerDisableTasksByGroup != null &&
+                                        context.PowerDisableTasksByGroup.TryGetValue(groupId, out var task) &&
+                                        ReferenceEquals(receipt.ExecutionTask, task) &&
+                                        task.Status == TaskStatus.RanToCompletion &&
+                                        IsValidPowerOffExecutionReceipt(task.Result, groupId) &&
+                                        receipt.PowerOperationEpoch == task.Result.OperationGeneration &&
+                                        receipt.SubmittedUtc == task.Result.StartedUtc &&
+                                        receipt.TaskCompletedUtc == task.Result.CompletedUtc &&
+                                        receipt.GroupId == groupId && !receipt.PowerOffPending &&
                                         receipt.RecoveryEpoch == context.RecoveryEpoch &&
                                         receipt.TaskCompleted && receipt.OutputConfirmedOff &&
-                                        receipt.Evidence?.ConfirmedOff == true);
+                                        receipt.Evidence?.ConfirmedOff == true &&
+                                        receipt.Evidence.OperationGeneration == task.Result.OperationGeneration &&
+                                        receipt.Evidence.SubmittedUtc == task.Result.StartedUtc &&
+                                        receipt.Evidence.CompletedUtc == task.Result.CompletedUtc &&
+                                        receipt.Evidence.TargetKind == SafetyOffTargetKind.PowerSupplyGroup &&
+                                        receipt.Evidence.TargetId == groupId &&
+                                        receipt.Evidence.CorrelationId == context.CorrelationId &&
+                                        receipt.Evidence.RunEpoch == context.RunEpoch);
+            }
         }
 
         private bool HasDaqRecoverySafeOffEvidence(DaqAutoRecoveryContext context)
@@ -9035,12 +9245,12 @@ namespace Controller
             return tasks;
         }
 
-        private Dictionary<int, Task<(bool ok, string error)>> StartElectricalGroupSafetyDisables(
+        private Dictionary<int, Task<PowerSafetyDisableResult>> StartElectricalGroupSafetyDisables(
             IEnumerable<int> affectedChannels,
             string reason,
             string operation)
         {
-            var tasks = new Dictionary<int, Task<(bool ok, string error)>>();
+            var tasks = new Dictionary<int, Task<PowerSafetyDisableResult>>();
             if (_powerSupply == null) return tasks;
             foreach (var groupId in (affectedChannels ?? Array.Empty<int>())
                          .Select(GetElectricalGroupId)
@@ -9057,7 +9267,7 @@ namespace Controller
             return tasks;
         }
 
-        private async Task<(bool ok, string error)> ConfirmElectricalGroupOffSafetyAsync(
+        private async Task<PowerSafetyDisableResult> ConfirmElectricalGroupOffSafetyAsync(
             int groupId,
             string reason)
         {
@@ -9070,11 +9280,9 @@ namespace Controller
                             reason ?? "SafetyIsolation",
                             CancellationToken.None)
                         .ConfigureAwait(false);
-                    return receipt != null && receipt.ConfirmedOff
-                        ? (true, string.Empty)
-                        : (false, receipt?.Error ?? "PowerOffReceiptMissing");
+                    return receipt ?? new PowerSafetyDisableResult { ElectricalGroupId = groupId, Error = "PowerOffReceiptMissing" };
                 }
-                return (true, string.Empty);
+                return new PowerSafetyDisableResult { ElectricalGroupId = groupId, Error = "PowerOffHardwareMissing" };
             }
             catch (Exception ex)
             {
@@ -9082,7 +9290,7 @@ namespace Controller
                     $"电源组{groupId}安全关闭未得到可靠回读：{ex.Message}",
                     "程控电源",
                     ex);
-                return (false, ex.GetBaseException().Message);
+                return new PowerSafetyDisableResult { ElectricalGroupId = groupId, Error = ex.GetBaseException().Message };
             }
             finally
             {
@@ -10311,21 +10519,14 @@ namespace Controller
                         attempt++;
                         try
                         {
-                            var retryOffFailed = channels
-                                .Where(channel => !TryEnsureSoftwareRecoveryOutputOff(
-                                    channel,
-                                    "HydraulicSelfHealingRetry"))
-                                .ToArray();
-                            if (retryOffFailed.Length > 0)
-                                throw new SoftwareSelfHealingRetryException(
-                                    $"电机断电仍未确认：EPB[{string.Join(",", retryOffFailed)}]");
-
                             await RecoveryStageDeadline.RunAsync(
                                     "HydraulicForceRelease",
                                     RecoveryMechanicalReleaseTimeoutMs,
-                                    _ => _hydCoordinator.ForceReleaseAsync(
-                                        hydraulicId,
-                                        $"SoftwareSelfHealing:{fault.Code}"),
+                                    ct => ConfirmHydraulicResumePhysicalSafetyAsync(
+                                        hydraulicId, channels,
+                                        () => IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels) &&
+                                            !ct.IsCancellationRequested,
+                                        ct),
                                     recoveryToken)
                                 .ConfigureAwait(false);
 
@@ -10365,6 +10566,22 @@ namespace Controller
                                 .ToArray();
                             if (rejoinChannels.Length > 0)
                             {
+                                await RecoveryStageDeadline.RunAsync(
+                                        "HydraulicRecoveryPowerReady",
+                                        RecoveryStageTimeoutMs,
+                                        async ct =>
+                                        {
+                                            if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels))
+                                                throw new OperationCanceledException("HydraulicRecoveryRunSuperseded");
+                                            var disabled = await EnsurePowerSupplyReadyBeforeStartAsync(rejoinChannels, ct,
+                                                    recoveryOwner: recoveryIncident)
+                                                .ConfigureAwait(false);
+                                            if (disabled.Length > 0)
+                                                throw new InvalidOperationException("HydraulicRecoveryPowerChannelsDisabled:" +
+                                                    string.Join(",", disabled));
+                                        },
+                                        recoveryToken).ConfigureAwait(false);
+                                if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels)) return;
                                 var plan = GetCompatibleStaggerPlan(rejoinChannels);
                                 await RecoveryStageDeadline.RunAsync(
                                         "HydraulicMechanicalRelease",
@@ -10373,7 +10590,7 @@ namespace Controller
                                             rejoinChannels,
                                             plan,
                                             $"HydraulicRecovery:{fault.Code}",
-                                            ct),
+                                            ct, recoveryIncident),
                                         recoveryToken)
                                     .ConfigureAwait(false);
                                 if (!IsSoftwareRecoveryRunCurrent(
@@ -10472,33 +10689,14 @@ namespace Controller
                     hardDeadline?.Dispose();
                     ownership?.Dispose();
                     _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
-                    if (hardDeadlineReached)
-                    {
-                        try
-                        {
-                            await ExecuteAffectedGroupResetAsync(
-                                    channels,
-                                    $"HydraulicRecoveryHardDeadline:{fault.Code}",
-                                    fault.CorrelationId,
-                                    recoveryRunId,
-                                    recoveryRunEpoch,
-                                    RecoveryTargetPhase.Formal)
-                                .ConfigureAwait(false);
-                        }
-                        catch (Exception resetError)
-                        {
-                            _log.Error(
-                                $"液压组{hydraulicId}硬期限清场失败，保持安全终态：{resetError.Message}",
-                                "液压协调",
-                                resetError);
-                        }
-                    }
-
                     recoveryIncident?.CompleteAfterTerminal(contract =>
                         CommitRecoveryIncidentStateForRelease(
                             contract,
                             "HydraulicRecoveryTerminalWithoutRejoin",
                             "液压软件自愈未完成重入，已保持受影响通道安全终态。 "));
+                    if (hardDeadlineReached)
+                        ScheduleAffectedGroupResetAfterRetirement(recoveryIncident, channels,
+                            $"HydraulicRecoveryHardDeadline:{fault.Code}");
                 }
                 };
             }
@@ -10621,9 +10819,32 @@ namespace Controller
             recorder?.DetachAndShutdown();
         }
 
+        internal static bool IsObsoletePowerSupplyFault(PowerSupplyFault fault, PowerSupplyRuntimeState current)
+        {
+            return fault != null && fault.SourceOperationId != Guid.Empty && current != null &&
+                   current.OperationId != Guid.Empty &&
+                   (fault.SourceOperationId != current.OperationId || fault.SourceOperationEpoch != current.OperationEpoch);
+        }
+
         private void OnPowerSupplyFaultRaised(PowerSupplyFault fault)
         {
             if (fault == null) return;
+            if (fault.SourceOperationId != Guid.Empty)
+            {
+                PowerSupplyRuntimeState current = null;
+                try { current = _powerSupply?.GetRuntimeState(fault.ElectricalGroupId); }
+                catch (Exception ex)
+                {
+                    _log?.Warn($"电源故障来源状态无法核验，保留故障处理：{ex.Message}", "程控电源");
+                }
+                if (IsObsoletePowerSupplyFault(fault, current))
+                {
+                    _log?.Warn($"忽略已换代电源故障：Group={fault.ElectricalGroupId}; " +
+                        $"Source={fault.SourceOperationId:N}/{fault.SourceOperationEpoch}; " +
+                        $"Current={current.OperationId:N}/{current.OperationEpoch}", "程控电源");
+                    return;
+                }
+            }
             var controlFault = new ControlFault(
                 "PowerSupply" + fault.Code,
                 fault.Reason,
@@ -10740,6 +10961,9 @@ namespace Controller
                 return;
             }
 
+            _emergencyPowerGroupLatch.TryCapture(groupId, out var powerFaultSnapshot);
+            if (powerFaultSnapshot.CorrelationId != controlFault.CorrelationId)
+                powerFaultSnapshot = default;
             var recoveryRunId = _activeBatchId;
             var recoveryRunEpoch = Interlocked.Read(ref _runEpoch);
             var cutoffUtc = DateTime.UtcNow;
@@ -10865,10 +11089,10 @@ namespace Controller
                                 await RecoveryStageDeadline.RunAsync(
                                         "PowerDisable",
                                         RecoveryStageTimeoutMs,
-                                        ct => _powerSupply.DisableGroupAsync(
+                                        ct => TrackRecoveryHardwareAction(channels, _powerSupply.DisableGroupAsync(
                                             groupId,
                                             $"SoftwareSelfHealing:{sourceFault.Code}",
-                                            ct),
+                                            ct)),
                                         recoveryToken)
                                     .ConfigureAwait(false);
                             }
@@ -10909,7 +11133,8 @@ namespace Controller
                             await RecoveryStageDeadline.RunAsync(
                                     "PowerPrepareAndEnable",
                                     RecoveryStageTimeoutMs,
-                                    ct => _powerSupply.PrepareAndEnableAsync(channels, ct),
+                                    ct => TrackRecoveryHardwareAction(channels,
+                                        _powerSupply.PrepareAndEnableAsync(channels, ct)),
                                     recoveryToken)
                                 .ConfigureAwait(false);
                             if (!IsSoftwareRecoveryRunCurrent(recoveryRunId, recoveryRunEpoch, channels))
@@ -10920,10 +11145,10 @@ namespace Controller
                                     await RecoveryStageDeadline.RunAsync(
                                             "PowerDiscardDisable",
                                             RecoveryStageTimeoutMs,
-                                            ct => _powerSupply.DisableGroupAsync(
+                                            ct => TrackRecoveryHardwareAction(channels, _powerSupply.DisableGroupAsync(
                                                 groupId,
                                                 "DiscardStaleSoftwareRecovery",
-                                                ct),
+                                                ct)),
                                             recoveryToken)
                                         .ConfigureAwait(false);
                                 }
@@ -10956,9 +11181,9 @@ namespace Controller
                                         allowTerminalReset: true,
                                         allowSystemFaultReset: true,
                                         runIdOverride: recoveryRunId);
-                                _emergencyPowerGroupLatch.TryRemove(
+                                _emergencyPowerGroupLatch.TryMarkControlReady(
                                     groupId,
-                                    controlFault.CorrelationId);
+                                    powerFaultSnapshot);
                                 exitDisposition = RecoveryExitDisposition.RejoinedRunning;
                                 return;
                             }
@@ -10993,7 +11218,7 @@ namespace Controller
                                             rejoinChannels,
                                             plan,
                                             $"PowerSupplyRecovery:{sourceFault.Code}",
-                                            ct),
+                                            ct, recoveryIncident),
                                         recoveryToken)
                                     .ConfigureAwait(false);
                                 if (!IsSoftwareRecoveryRunCurrent(
@@ -11024,9 +11249,9 @@ namespace Controller
                                 $"电源组{groupId}软件自愈完成 Attempt={attempt}；" +
                                 "作废圈不计数，机械释放后按公共正式槽继续。",
                                 "程控电源");
-                            _emergencyPowerGroupLatch.TryRemove(
+                            _emergencyPowerGroupLatch.TryMarkControlReady(
                                 groupId,
-                                controlFault.CorrelationId);
+                                powerFaultSnapshot);
                             exitDisposition = RecoveryExitDisposition.RejoinedRunning;
                             return;
                         }
@@ -11099,40 +11324,18 @@ namespace Controller
                                  Array.Empty<HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease>())
                         ownership.Dispose();
                     _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
-                    if (hardDeadlineReached)
-                    {
-                        try
-                        {
-                            await ExecuteAffectedGroupResetAsync(
-                                    channels,
-                                    $"PowerRecoveryHardDeadline:{sourceFault.Code}",
-                                    controlFault.CorrelationId,
-                                    recoveryRunId,
-                                    recoveryRunEpoch,
-                                    RecoveryTargetPhase.Formal)
-                                .ConfigureAwait(false);
-                        }
-                        catch (Exception resetError)
-                        {
-                            _log.Error(
-                                $"电源组{groupId}硬期限清场失败，保持安全终态：{resetError.Message}",
-                                "程控电源",
-                                resetError);
-                        }
-                    }
-
                     if (exitDisposition == RecoveryExitDisposition.RejoinedRunning)
                     {
-                        _emergencyPowerGroupLatch.TryRemove(
+                        _emergencyPowerGroupLatch.TryMarkControlReady(
                             groupId,
-                            controlFault.CorrelationId);
+                            powerFaultSnapshot);
                         recoveryIncident?.CompleteAfterTerminal(_ => { });
                     }
                     else if (exitDisposition == RecoveryExitDisposition.HeldForManualPause)
                     {
-                        _emergencyPowerGroupLatch.TryRemove(
+                        _emergencyPowerGroupLatch.TryMarkControlReady(
                             groupId,
-                            controlFault.CorrelationId);
+                            powerFaultSnapshot);
                         recoveryIncident?.CompleteAfterTerminal(contract =>
                         {
                             var pause = CaptureBatchPauseSnapshot();
@@ -11153,9 +11356,9 @@ namespace Controller
                     }
                     else
                     {
-                        _emergencyPowerGroupLatch.TryFail(
+                        _emergencyPowerGroupLatch.TryFailUnchanged(
                             groupId,
-                            controlFault.CorrelationId,
+                            powerFaultSnapshot,
                             hardDeadlineReached
                                 ? "PowerRecoveryHardDeadline"
                                 : exitDisposition.ToString());
@@ -11164,6 +11367,9 @@ namespace Controller
                                 contract,
                                 "PowerRecovery" + exitDisposition,
                                 "程控电源恢复未完成运行态重入，已保持安全终态。"));
+                        if (hardDeadlineReached)
+                            ScheduleAffectedGroupResetAfterRetirement(recoveryIncident, channels,
+                                $"PowerRecoveryHardDeadline:{sourceFault.Code}");
                     }
                 }
                 };
@@ -11199,9 +11405,9 @@ namespace Controller
             if (!started)
             {
                 _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
-                _emergencyPowerGroupLatch.TryFail(
+                _emergencyPowerGroupLatch.TryFailUnchanged(
                     groupId,
-                    controlFault.CorrelationId,
+                    powerFaultSnapshot,
                     "PowerRecoveryIncidentRegistrationRejected");
                 return;
             }
@@ -11225,9 +11431,9 @@ namespace Controller
                         $"程控电源软件自愈任务登记失败，已保持安全终态：{observeError.Message}");
                 });
                 _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
-                _emergencyPowerGroupLatch.TryFail(
+                _emergencyPowerGroupLatch.TryFailUnchanged(
                     groupId,
-                    controlFault.CorrelationId,
+                    powerFaultSnapshot,
                     "PowerRecoveryObserveFailed");
                 return;
             }
@@ -11243,9 +11449,9 @@ namespace Controller
                         "程控电源软件自愈启动许可被拒绝，已保持安全终态。 ");
                 });
                 _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
-                _emergencyPowerGroupLatch.TryFail(
+                _emergencyPowerGroupLatch.TryFailUnchanged(
                     groupId,
-                    controlFault.CorrelationId,
+                    powerFaultSnapshot,
                     "PowerRecoveryStartRejected");
             }
         }
@@ -11872,7 +12078,7 @@ namespace Controller
                     TryResumeStopPersistenceForClose(out var retainedClose)) return retainedClose;
                 if (_stopSafetyTask != null && _activeStopSafetyRunner?.HasOrphanCore == true)
                     return _stopSafetyTask;
-                if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
+                if (!context.RequireFreshPhysicalEvidence && _lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
                     (_lastStopSafetyResult.CanRestartInProcess ||
                      IsFinalExitStopSource(context.Source) && _lastStopSafetyResult.CanCloseApplication) &&
@@ -12773,6 +12979,7 @@ namespace Controller
                 PowerOffConfirmed = powerDisposition == PowerShutdownDisposition.ConfirmedOff,
                 PowerDisposition = powerDisposition,
                 PressureSafeConfirmed = pressure.ok,
+                CurrentSafeConfirmed = pressure.ok,
                 PersistenceBoundaryConfirmed = persistenceBoundaryConfirmed,
                 RawStorageFlushed = rawStorageFlushed,
                 DataContinuityCompromised = processingDataGaps.Count > 0,
@@ -12934,9 +13141,12 @@ namespace Controller
                 try
                 {
                     await Task.WhenAll(hydraulicIds.Select(id =>
-                            _hydCoordinator.ForceReleaseAsync(id, $"StopAll:{context.Source}")))
+                            _hydCoordinator.ForceReleaseAsync(id, $"StopAll:{context.Source}", _acq.ReadPressureSafetySample)))
                         .ConfigureAwait(false);
-                    return (true, string.Empty);
+                    var power = powerOffTask == null ? (ok: false, error: "PowerOffTaskMissing")
+                        : await powerOffTask.ConfigureAwait(false);
+                    if (!power.ok) return (false, power.error);
+                    return await ConfirmJointPhysicalSafetyForStopAsync(stopGeneration).ConfigureAwait(false);
                 }
                 catch (HydraulicReleaseTimeoutException ex)
                     when (ex.IsPressureEvidenceUnavailable && rearmAttempt < hydraulicIds.Length)
@@ -13266,7 +13476,7 @@ namespace Controller
             var cutoffCyclesSealed = true;
             var correlationId = registration.CorrelationId;
             Dictionary<int, string> rejectedOff = null;
-            Dictionary<int, Task<(bool ok, string error)>> powerDisableTasks = null;
+            Dictionary<int, Task<PowerSafetyDisableResult>> powerDisableTasks = null;
 
             ExecuteNonBlockingSafetyIsolationOrder(
                 () =>
@@ -13477,7 +13687,10 @@ namespace Controller
                 _affectedGroupResetInProgress.Count,
                 _isolatedInfrastructureRecoveryScheduled.Count,
                 _timerRuntimeRecoveries.Count,
-                _activeCycleLimitRecoveries.Count,
+                _activeRecoveryContracts.Values.Count(incident =>
+                    incident?.Contract != null && incident.TerminalPublished == 0 &&
+                    string.Equals(incident.Contract.Operation, "ActiveCycleDataLimitRecovery",
+                        StringComparison.Ordinal)),
                 _alarmCycleFinalizationRetries.Count,
                 _formalPersistenceRecoveryPendingCycles.Count);
             var snapshot = new LogicalQuiescenceSnapshot
@@ -13743,9 +13956,9 @@ namespace Controller
                          .Distinct()
                          .OrderBy(x => x))
             {
-                _formalPersistenceRecoveryAttempts.TryRemove(channel, out _);
-                _formalControlRecoveryAttempts.TryRemove(channel, out _);
-                _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
+                // 重入准备不是恢复完成证据。这里仅重置自适应诊断连续计数；
+                // 正式恢复计数由可靠业务提交收口，待封圈标记由耐久终态收口。
+                // 提前删除会让重入失败丢失恢复历史，并绕过当前圈的落盘保护。
                 try
                 {
                     bool changed;
@@ -13876,25 +14089,6 @@ namespace Controller
         }
 
 
-        // —— 圈开始（如仍保留该方法供其他调用）
-        private void OnCycleBegin(int epbId, int cycleNumber)
-        {
-            Recorder?.BeginCycle(epbId, cycleNumber, DateTime.UtcNow);
-        }
-
-        // —— 圈结束
-        private void OnCycleComplete(int epbId, int cycleNumber)
-        {
-            var finalN = Recorder?.GetCurrentCycleSampleCount(epbId) ?? 0;
-            CompleteCycleAndScheduleEvidence(
-                Recorder,
-                epbId,
-                cycleNumber,
-                finalN,
-                DateTime.UtcNow);
-        }
-
-
         #region 卡钳预释放
 
         /// <summary>
@@ -13957,7 +14151,9 @@ namespace Controller
             int[] channels,
             int? keepMs,
             ElectricalStaggerPlan staggerPlan,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空。", nameof(channels));
@@ -13990,7 +14186,8 @@ namespace Controller
                                     HydraulicPhaseKind.PreRelease,
                                     positioningSlot),
                                 members,
-                                token)
+                                token,
+                                startupParent)
                             .ConfigureAwait(false);
                     }
                     catch (Exception ex) when (
@@ -14091,7 +14288,7 @@ namespace Controller
                                         "不占用机械定位尝试次数。" + executionRepairFailure,
                                         repairDelayMs,
                                         ct,
-                                        "StartupPositioningExecutionRepairOff")
+                                        "StartupPositioningExecutionRepairOff", startupParent, recoveryOwner)
                                     .ConfigureAwait(false);
                                 continue;
                             }
@@ -14123,7 +14320,7 @@ namespace Controller
                                         $"电源恢复刷新了执行许可；{powerPermitDelayMs}ms后重新建立启动框架，不占用机械尝试次数。",
                                         powerPermitDelayMs,
                                         ct,
-                                        "StartupPositioningPowerPermitRefreshOff")
+                                        "StartupPositioningPowerPermitRefreshOff", startupParent, recoveryOwner)
                                     .ConfigureAwait(false);
                                 continue;
                             }
@@ -14147,7 +14344,7 @@ namespace Controller
                                         $"电源资格未就绪；{powerReadinessDelayMs}ms后恢复重试，不占用机械尝试次数。{ex.Message}",
                                         powerReadinessDelayMs,
                                         ct,
-                                        "StartupPositioningPowerReadinessOff")
+                                        "StartupPositioningPowerReadinessOff", startupParent, recoveryOwner)
                                     .ConfigureAwait(false);
                                 continue;
                             }
@@ -14184,7 +14381,7 @@ namespace Controller
                                             $"启动定位软件异常，第{attempt}次有界自愈，{exceptionDelayMs}ms后重试。",
                                             exceptionDelayMs,
                                             ct,
-                                        "StartupPositioningOutputOffCommandFailed")
+                                        "StartupPositioningOutputOffCommandFailed", startupParent, recoveryOwner)
                                         .ConfigureAwait(false);
                                 }
                                 catch (SoftwareSelfHealingRetryException retryEx)
@@ -14228,7 +14425,7 @@ namespace Controller
                                         $"启动定位软件瞬态未通过，第{attempt}次有界自愈，{delayMs}ms后重试。",
                                         delayMs,
                                         ct,
-                                        "StartupPositioningOutputOffCommandFailed")
+                                        "StartupPositioningOutputOffCommandFailed", startupParent, recoveryOwner)
                                     .ConfigureAwait(false);
                             }
                             catch (SoftwareSelfHealingRetryException retryEx)

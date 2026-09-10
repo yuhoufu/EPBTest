@@ -137,6 +137,46 @@ function Assert-VerificationEvidence {
     if ($noMandatorySoak -ne 'PASS ReleaseBuildNoMandatorySoak 1/1') {
         throw "verification.releaseBuildNoMandatorySoak 未通过：$noMandatorySoak"
     }
+    $taskRollback = Get-RequiredJsonProperty `
+        $Verification 'runtimeTaskRollback' 'identity.verification'
+    if ($taskRollback -ne 'PASS task restore: exact existence, XML, OWNER/GROUP/DACL and prior running state') {
+        throw "verification.runtimeTaskRollback 未通过：$taskRollback"
+    }
+    $installRollback = Get-RequiredJsonProperty `
+        $Verification 'installTransactionRollback' 'identity.verification'
+    if ($installRollback -ne 'PASS install rollback 4/4') {
+        throw "verification.installTransactionRollback 未通过：$installRollback"
+    }
+    $installJournal = Get-RequiredJsonProperty `
+        $Verification 'installTransactionJournal' 'identity.verification'
+    if ($installJournal -ne 'PASS install transaction journal 2/2') {
+        throw "verification.installTransactionJournal 未通过：$installJournal"
+    }
+    $installRecovery = Get-RequiredJsonProperty `
+        $Verification 'installTransactionRecovery' 'identity.verification'
+    if ($installRecovery -ne 'PASS install transaction recovery 3/3') {
+        throw "verification.installTransactionRecovery 未通过：$installRecovery"
+    }
+    $markerRollback = Get-RequiredJsonProperty `
+        $Verification 'configuredMarkerRollback' 'identity.verification'
+    if ($markerRollback -ne 'PASS configured marker rollback 3/3') {
+        throw "verification.configuredMarkerRollback 未通过：$markerRollback"
+    }
+    $serviceRollback = Get-RequiredJsonProperty `
+        $Verification 'serviceRegistryRollback' 'identity.verification'
+    if ($serviceRollback -ne 'PASS service registry rollback integration 1/1') {
+        throw "verification.serviceRegistryRollback 未通过：$serviceRollback"
+    }
+    $aclRollback = Get-RequiredJsonProperty `
+        $Verification 'aclRollback' 'identity.verification'
+    if ($aclRollback -ne 'PASS ACL rollback 1/1') {
+        throw "verification.aclRollback 未通过：$aclRollback"
+    }
+    $currentRollback = Get-RequiredJsonProperty `
+        $Verification 'currentSlotDeferredCommit' 'identity.verification'
+    if ($currentRollback -isnot [string] -or $currentRollback -notmatch '^PASS 16/16;') {
+        throw "verification.currentSlotDeferredCommit 未通过：$currentRollback"
+    }
 
     $fieldGateSummary = Get-RequiredJsonProperty $Verification 'fieldGateTests' 'identity.verification'
     if ($fieldGateSummary -isnot [string] -or

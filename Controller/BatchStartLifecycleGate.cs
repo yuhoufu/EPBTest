@@ -33,6 +33,24 @@ namespace Controller
             }
         }
 
+        public async Task RunAsync(Func<Task> operation, CancellationToken token)
+        {
+            if (operation == null) throw new ArgumentNullException(nameof(operation));
+            Interlocked.Increment(ref _activeOperations);
+            var entered = false;
+            try
+            {
+                await _gate.WaitAsync(token).ConfigureAwait(false);
+                entered = true;
+                await operation().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (entered) _gate.Release();
+                Interlocked.Decrement(ref _activeOperations);
+            }
+        }
+
         public async Task JoinAsync(CancellationToken token)
         {
             await _gate.WaitAsync(token).ConfigureAwait(false);

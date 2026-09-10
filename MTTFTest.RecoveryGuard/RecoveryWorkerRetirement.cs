@@ -39,10 +39,11 @@ namespace MTTFTest.RecoveryGuard
             });
         }
 
-        private static void ValidateTarget(RecoveryProcessIdentity owner, string executable)
+        private static void ValidateTarget(RecoveryProcessIdentity owner, string executable,
+            string expectedFileName = "MTTFTest.RecoveryGuard.exe")
         {
             if (owner?.IsValid() != true || owner.ProcessId == Process.GetCurrentProcess().Id ||
-                !string.Equals(Path.GetFileName(executable), "MTTFTest.RecoveryGuard.exe", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFileName(executable), expectedFileName, StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(Path.GetFullPath(executable), Path.GetFullPath(owner.ExecutablePath), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("RecoveryWorkerRetirementTargetInvalid");
         }
@@ -52,6 +53,21 @@ namespace MTTFTest.RecoveryGuard
         internal static bool RetireExactProcess(RecoveryProcessIdentity owner, string executable, Action beforeTerminate)
         {
             ValidateTarget(owner, executable);
+            return RetireValidatedProcess(owner, executable, beforeTerminate);
+        }
+
+        // Only the stalled-Main authorization path may call this entry. It
+        // must revalidate the exact transaction immediately before termination.
+        internal static bool RetireExactMainProcess(RecoveryProcessIdentity main, string executable,
+            Action beforeTerminate)
+        {
+            ValidateTarget(main, executable, "MTTFTest.exe");
+            return RetireValidatedProcess(main, executable, beforeTerminate);
+        }
+
+        private static bool RetireValidatedProcess(RecoveryProcessIdentity owner, string executable,
+            Action beforeTerminate)
+        {
             if (beforeTerminate == null) throw new ArgumentNullException(nameof(beforeTerminate));
             if (!string.Equals(owner.BootId, RecoveryProcessProbe.ReadBootId(), StringComparison.OrdinalIgnoreCase)) return true;
             using (var handle = OpenProcess(0x00100000 | 0x1000 | 0x0001, false, owner.ProcessId))

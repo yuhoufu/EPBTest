@@ -2,6 +2,11 @@ using System;
 
 namespace Controller
 {
+    public sealed class RecoveryStopPendingException : InvalidOperationException
+    {
+        internal RecoveryStopPendingException() : base("RecoveryStopPreviousCoreStillActive") { }
+    }
+
     public enum StopSource
     {
         ManualUi,
@@ -23,6 +28,10 @@ namespace Controller
         public string RunId { get; set; }
         public FaultScope? FaultScope { get; set; }
         public DateTime RequestedUtc { get; set; } = DateTime.UtcNow;
+        // Only Controller's validated external-recovery entry populates these.
+        internal bool RequireFreshPhysicalEvidence { get; set; }
+        internal Guid RetainedRunId { get; set; }
+        internal long RetainedRunEpoch { get; set; }
 
         public static StopContext Legacy(string caller)
         {

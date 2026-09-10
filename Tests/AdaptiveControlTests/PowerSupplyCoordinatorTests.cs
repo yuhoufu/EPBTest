@@ -37,6 +37,24 @@ namespace AdaptiveControlTests
             Run("同组连续8个动作槽无遥测才报警", CommunicationFaultRequiresEightUniqueGroupSlots, ref passed);
             Run("停机等待在途遥测完成后再关闭输出", ShutdownWaitsForInFlightTelemetry, ref passed);
             Run("三个并发OFF请求共用一个安全任务", ConcurrentShutdownRequestsShareOneOwner, ref passed);
+            Run("安全OFF回执绑定共享执行且不随后继上电改变", SafetyReceiptBelongsToExecutedOwner, ref passed);
+            Run("迟到OFF退休拒绝旧任务且保留在途后继", LateRetirementPreservesSuccessor, ref passed);
+            Run("退休电源组的排队操作不执行且释放旧Gate", RetiredQueuedOperationCannotExecute, ref passed);
+            Run("退休OFF等待者不访问硬件且释放旧Gate", RetiredQueuedOffCannotExecute, ref passed);
+            Run("旧监控固定客户端且取消后的迟到回读不覆盖快照", CancelledMonitorCannotPublishLateRead, ref passed);
+            Run("旧监控代次撤销后迟到回读不覆盖快照", () => MonitorCannotPublishLateRead(true), ref passed);
+            Run("计划操作跨等待保持原客户端身份", PlannedOperationKeepsBoundClient, ref passed);
+            Run("安全OFF撤销计划操作后拒绝迟到状态发布", SafetyOffRevokesPlannedPublication, ref passed);
+            Run("安全OFF等待旧监控后仍使用原客户端", SafetyOffKeepsClientAcrossMonitorDrain, ref passed);
+            Run("电源撤销先失效代次且不持组锁执行取消回调", CancellationCallbackRunsOutsideOperationLock, ref passed);
+            Run("人工复位要求实时回读且拒绝运行组不改变代次", ManualResetRequiresReadbackAndPreservesRunningEpoch, ref passed);
+            Run("人工复位取消后的迟到回读不清除锁存", CancelledManualResetPreservesFault, ref passed);
+            Run("人工复位不能清除回读期间的重复故障", RepeatedFaultInvalidatesManualReset, ref passed);
+            Run("人工复位不能清除回读期间首次出现的故障", () => FaultDuringCheckRejectsClear(false, false), ref passed);
+            Run("启动预检遇到重复故障不清锁存且不上电", () => FaultDuringCheckRejectsClear(true, true), ref passed);
+            Run("启动预检遇到首次故障不清锁存且不上电", () => FaultDuringCheckRejectsClear(true, false), ref passed);
+            Run("电源故障创建绑定执行身份且通知不持组锁", ScopedFaultRejectsStaleOwner, ref passed);
+            Run("管理器只拒绝已证实过期的电源故障来源", ManagerRejectsOnlyKnownObsoleteFault, ref passed);
             Run("单组断线不误报关闭且不阻塞其他组", SafetyDisableIsStructuredAndIsolated, ref passed);
             Run("电源关闭仅把真实通讯不可用归类为可跳过", SafetyDisableFailureClassificationIsExact, ref passed);
             Run("电源故障只联动对应组且新预检自动清旧锁存", FaultIsScopedAndFreshPreflightClearsLatch, ref passed);
@@ -390,10 +408,13 @@ namespace AdaptiveControlTests
                 clients[1].FailConnect = true;
                 Assert(degraded.Wait(TimeSpan.FromSeconds(3)), "未进入通信降级状态");
 
+                var actionIdentity = coordinator.GetRuntimeState(1);
+                coordinator.RecordSuccessfulActionCycle(1, 1000, Guid.NewGuid(), actionIdentity.OperationEpoch);
+                coordinator.RecordSuccessfulActionCycle(1, 1000, actionIdentity.OperationId, actionIdentity.OperationEpoch - 1);
                 for (var slot = 1L; slot <= 7; slot++)
                 {
-                    coordinator.RecordSuccessfulActionCycle(1, slot);
-                    coordinator.RecordSuccessfulActionCycle(2, slot);
+                    coordinator.RecordSuccessfulActionCycle(1, slot, coordinator.GetRuntimeState(1).OperationId, coordinator.GetRuntimeState(1).OperationEpoch);
+                    coordinator.RecordSuccessfulActionCycle(2, slot, coordinator.GetRuntimeState(1).OperationId, coordinator.GetRuntimeState(1).OperationEpoch);
                 }
                 var beforeRecovery = coordinator.GetRuntimeState(1);
                 Assert(beforeRecovery.ConsecutiveCommunicationMissCycles == 7,
@@ -448,13 +469,13 @@ namespace AdaptiveControlTests
 
                 for (var slot = 1L; slot <= 7; slot++)
                 {
-                    coordinator.RecordSuccessfulActionCycle(1, slot);
-                    coordinator.RecordSuccessfulActionCycle(2, slot);
+                    coordinator.RecordSuccessfulActionCycle(1, slot, coordinator.GetRuntimeState(1).OperationId, coordinator.GetRuntimeState(1).OperationEpoch);
+                    coordinator.RecordSuccessfulActionCycle(2, slot, coordinator.GetRuntimeState(1).OperationId, coordinator.GetRuntimeState(1).OperationEpoch);
                 }
                 Assert(!faulted.IsSet, "少于8个组动作槽时提前报警");
-                coordinator.RecordSuccessfulActionCycle(2, 8);
+                coordinator.RecordSuccessfulActionCycle(2, 8, coordinator.GetRuntimeState(1).OperationId, coordinator.GetRuntimeState(1).OperationEpoch);
                 Assert(faulted.Wait(TimeSpan.FromSeconds(2)), "第8个组动作槽仍未升级通信故障");
-                coordinator.RecordSuccessfulActionCycle(1, 8);
+                coordinator.RecordSuccessfulActionCycle(1, 8, coordinator.GetRuntimeState(1).OperationId, coordinator.GetRuntimeState(1).OperationEpoch);
 
                 lock (faultGate)
                 {
@@ -462,6 +483,12 @@ namespace AdaptiveControlTests
                     Assert(faults[0].Code == "CommunicationUnavailableConfirmed" &&
                            faults[0].Classification == FaultClassification.SystemFault,
                         "8圈通信故障的代码或分类不正确");
+                    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                    var operation = typeof(PowerSupplyCoordinator).GetMethod("Operation", flags)
+                        .Invoke(coordinator, new object[] { 1 });
+                    Assert(faults[0].SourceOperationId == (Guid)operation.GetType().GetField("Identity", flags).GetValue(operation) &&
+                           faults[0].SourceOperationEpoch == coordinator.GetRuntimeState(1).OperationEpoch,
+                        "动作槽通信故障未绑定当前电源执行身份");
                 }
                 Assert(!coordinator.HasEnergizationPermit(1, out _),
                     "8圈确认后仍保留动作许可");
@@ -734,6 +761,469 @@ namespace AdaptiveControlTests
                     "三个并发OFF请求未合并为一次硬件操作。");
                 Assert(!faults.Any(fault => fault.Code == "OutputOffUnverified"),
                     "同方向OFF合并期间仍产生了取消型故障锁存。");
+            }
+        }
+
+        private static void SafetyReceiptBelongsToExecutedOwner()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                clients[1].BlockOutputOff = true;
+                var first = coordinator.DisableGroupForSafetyAsync(1, "receipt-first", CancellationToken.None);
+                Assert(clients[1].OutputOffStarted.Wait(TimeSpan.FromSeconds(2)),
+                    "OFF 未进入实际执行阻塞点。");
+                var second = coordinator.DisableGroupForSafetyAsync(1, "receipt-join", CancellationToken.None);
+                Assert(!first.IsCompleted && !second.IsCompleted, "安全回执在硬件 OFF 完成前发布。");
+                clients[1].AllowOutputOff.Set();
+                Task.WaitAll(first, second);
+                var receipt = first.Result;
+                Assert(ReferenceEquals(receipt, second.Result), "加入同一 OFF owner 的调用重建了不同回执。");
+                Assert(receipt.ConfirmedOff && receipt.Outcome == PowerSafetyDisableOutcome.ConfirmedOff &&
+                       receipt.ElectricalGroupId == 1 && receipt.OperationGeneration > 0 &&
+                       receipt.StartedUtc <= receipt.CompletedUtc && clients[1].OutputOffCount == 1,
+                    "实际 OFF 回执身份、时间或输出确认无效。");
+                var generation = receipt.OperationGeneration;
+                var completedUtc = receipt.CompletedUtc;
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Assert(coordinator.GetRuntimeState(1).OperationEpoch > generation && clients[1].OutputEnabled,
+                    "后继上电未改变实际运行代次，测试未触及缓存变化。");
+                Assert(receipt.OperationGeneration == generation && receipt.CompletedUtc == completedUtc &&
+                       receipt.ConfirmedOff, "历史 OFF 执行回执随当前状态改变。");
+                // 历史回执不是后继上电后的安全证明；恢复仍必须另行检查新鲜物理反馈。
+            }
+        }
+
+        private static void LateRetirementPreservesSuccessor()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var start = typeof(PowerSupplyCoordinator).GetMethod("StartDisableGroup", flags);
+                var retire = typeof(PowerSupplyCoordinator).GetMethod("RetirePowerDisableOwner", flags);
+                var oldTask = (Task<PowerSafetyDisableResult>)start.Invoke(coordinator, new object[] { 1, "old-owner" });
+                oldTask.GetAwaiter().GetResult();
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult();
+                clients[1].OutputOffStarted.Reset();
+                clients[1].AllowOutputOff.Reset();
+                clients[1].BlockOutputOff = true;
+                var next = (Task<PowerSafetyDisableResult>)start.Invoke(coordinator, new object[] { 1, "successor" });
+                try
+                {
+                    Assert(clients[1].OutputOffStarted.Wait(TimeSpan.FromSeconds(2)), "后继 OFF 未进入在途阻塞点");
+                    var epoch = coordinator.GetRuntimeState(1).OperationEpoch;
+                    Assert(!(bool)retire.Invoke(coordinator, new object[] { 1, oldTask, "late-old-timeout" }),
+                        "旧任务退休回调撤销了后继 owner");
+                    var unrelated = new TaskCompletionSource<PowerSafetyDisableResult>();
+                    Assert(!(bool)retire.Invoke(coordinator, new object[] { 1, unrelated.Task, "wrong-pending-owner" }),
+                        "其它在途任务获得退休权限");
+                    Assert(!next.IsCompleted && coordinator.GetRuntimeState(1).OperationEpoch == epoch,
+                        "拒绝退休时改变了后继任务或代次");
+                }
+                finally { clients[1].AllowOutputOff.Set(); }
+                Assert(next.GetAwaiter().GetResult().ConfirmedOff, "后继任务不能继续完成实际 OFF 回读");
+            }
+        }
+
+        private static void RetiredQueuedOperationCannotExecute()
+        {
+            var config = NewConfig();
+            using (var coordinator = NewCoordinator(config, NewClients(config)))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var operation = typeof(PowerSupplyCoordinator).GetMethod("Operation", flags)
+                    .Invoke(coordinator, new object[] { 1 });
+                var gate = (SemaphoreSlim)operation.GetType().GetField("Gate", flags).GetValue(operation);
+                gate.Wait();
+                var called = false;
+                Func<IPswClient, CancellationToken, Action<Action>, Task> action = (client, token, publish) => { called = true; return Task.CompletedTask; };
+                var queued = (Task)typeof(PowerSupplyCoordinator).GetMethod("RunPlannedGroupOperationAsync", flags)
+                    .Invoke(coordinator, new object[] { 1, true, CancellationToken.None, action, null });
+                Assert(!queued.IsCompleted, "未建立实际 Gate 排队条件");
+                operation.GetType().GetField("Retired", flags).SetValue(operation, 1);
+                gate.Release();
+                try { queued.GetAwaiter().GetResult(); throw new Exception("退休排队操作未取消"); }
+                catch (OperationCanceledException) { }
+                Assert(!called && gate.CurrentCount == 1, "退休等待者执行动作或泄漏 Gate");
+            }
+        }
+
+        private static void RetiredQueuedOffCannotExecute()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var operation = typeof(PowerSupplyCoordinator).GetMethod("Operation", flags)
+                    .Invoke(coordinator, new object[] { 1 });
+                var gate = (SemaphoreSlim)operation.GetType().GetField("Gate", flags).GetValue(operation);
+                gate.Wait();
+                var queued = (Task)typeof(PowerSupplyCoordinator).GetMethod("DisableGroupCoreAsync", flags)
+                    .Invoke(coordinator, new object[] { 1, "retired-queued-off", operation });
+                Assert(!queued.IsCompleted, "OFF 未在实际 Gate 排队");
+                operation.GetType().GetField("Retired", flags).SetValue(operation, 1);
+                gate.Release();
+                try { queued.GetAwaiter().GetResult(); throw new Exception("退休 OFF 未取消"); }
+                catch (OperationCanceledException) { }
+                Assert(clients[1].OutputOffCount == 0 && gate.CurrentCount == 1,
+                    "退休 OFF 访问了硬件或未释放 Gate");
+            }
+        }
+
+        private static void ManagerRejectsOnlyKnownObsoleteFault()
+        {
+            var identity = Guid.NewGuid();
+            var fault = new PowerSupplyFault { SourceOperationId = identity, SourceOperationEpoch = 7 };
+            Assert(!EpbManager.IsObsoletePowerSupplyFault(fault,
+                new PowerSupplyRuntimeState { OperationId = identity, OperationEpoch = 7 }), "当前故障被丢弃");
+            Assert(EpbManager.IsObsoletePowerSupplyFault(fault,
+                new PowerSupplyRuntimeState { OperationId = Guid.NewGuid(), OperationEpoch = 7 }), "旧实例故障被接受");
+            Assert(EpbManager.IsObsoletePowerSupplyFault(fault,
+                new PowerSupplyRuntimeState { OperationId = identity, OperationEpoch = 8 }), "旧代次故障被接受");
+            Assert(!EpbManager.IsObsoletePowerSupplyFault(fault, null) &&
+                !EpbManager.IsObsoletePowerSupplyFault(fault, new PowerSupplyRuntimeState()) &&
+                !EpbManager.IsObsoletePowerSupplyFault(new PowerSupplyFault(),
+                    new PowerSupplyRuntimeState { OperationId = identity, OperationEpoch = 7 }),
+                "缺失来源或状态被错误当成过期而丢弃");
+        }
+
+        private static void ScopedFaultRejectsStaleOwner()
+        {
+            var config = NewConfig();
+            using (var coordinator = NewCoordinator(config, NewClients(config)))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var operation = typeof(PowerSupplyCoordinator).GetMethod("Operation", flags).Invoke(coordinator, new object[] { 1 });
+                var type = operation.GetType();
+                var sync = type.GetField("Sync", flags).GetValue(operation);
+                var epoch = (long)type.GetField("Epoch", flags).GetValue(operation);
+                var identity = (Guid)type.GetField("Identity", flags).GetValue(operation);
+                var faults = (System.Collections.Concurrent.ConcurrentDictionary<int, long>)typeof(PowerSupplyCoordinator)
+                    .GetField("_faultedGroups", flags).GetValue(coordinator);
+                PowerSupplyFault received = null;
+                bool callbackUnlocked = false;
+                coordinator.FaultRaised += fault =>
+                {
+                    received = fault;
+                    callbackUnlocked = Task.Run(() =>
+                    {
+                        if (!Monitor.TryEnter(sync, TimeSpan.FromSeconds(1))) return false;
+                        Monitor.Exit(sync);
+                        return true;
+                    }).GetAwaiter().GetResult();
+                };
+                var raise = typeof(PowerSupplyCoordinator).GetMethod("RaiseOperationFault", flags);
+                raise.Invoke(coordinator, new object[] { 1, "Injected", "wrong-epoch", null, operation, epoch + 1 });
+                type.GetField("Retired", flags).SetValue(operation, 1);
+                raise.Invoke(coordinator, new object[] { 1, "Injected", "retired", null, operation, epoch });
+                Assert(received == null && !faults.ContainsKey(1), "旧执行创建了故障或修改锁存");
+                type.GetField("Retired", flags).SetValue(operation, 0);
+                raise.Invoke(coordinator, new object[] { 1, "Injected", "current", null, operation, epoch });
+                Assert(received != null && received.SourceOperationId == identity &&
+                    received.SourceOperationEpoch == epoch && callbackUnlocked,
+                    "当前故障未保留执行身份或持组锁通知观察者");
+            }
+        }
+
+        private static void RepeatedFaultInvalidatesManualReset()
+        {
+            FaultDuringCheckRejectsClear(false, true);
+        }
+
+        private static void FaultDuringCheckRejectsClear(bool prepare, bool initiallyFaulted)
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var raise = typeof(PowerSupplyCoordinator).GetMethod("RaiseFault", flags);
+                var faults = (System.Collections.Concurrent.ConcurrentDictionary<int, long>)typeof(PowerSupplyCoordinator)
+                    .GetField("_faultedGroups", flags).GetValue(coordinator);
+                var notifications = 0;
+                coordinator.FaultRaised += fault => notifications++;
+                if (initiallyFaulted)
+                    raise.Invoke(coordinator, new object[] { 1, "InjectedSystemFault", "before-check", null });
+                faults.TryGetValue(1, out var first);
+                clients[1].ConnectAsync(CancellationToken.None).GetAwaiter().GetResult();
+                clients[1].BlockSnapshotReads = true;
+                var reset = prepare
+                    ? coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    : coordinator.ResetFaultAsync(1, CancellationToken.None);
+                bool rejected = false;
+                try
+                {
+                    Assert(clients[1].SnapshotReadStarted.Wait(TimeSpan.FromSeconds(2)), "复位未进入阻塞回读");
+                    raise.Invoke(coordinator, new object[] { 1, "InjectedSystemFault", "during-reset", null });
+                    Assert(faults[1] != first && notifications == 1, "重复故障未更新身份或破坏通知去重");
+                }
+                finally
+                {
+                    clients[1].AllowSnapshotRead.Set();
+                    try { reset.GetAwaiter().GetResult(); }
+                    catch (InvalidOperationException) { rejected = true; }
+                }
+                Assert(rejected && faults.ContainsKey(1), "旧复位清除了检查期间的新故障");
+                Assert(clients[1].OutputOnCount == 0, "故障身份已变化仍执行了上电");
+                clients[1].BlockSnapshotReads = false;
+                coordinator.ResetFaultAsync(1, CancellationToken.None).GetAwaiter().GetResult();
+                Assert(!faults.ContainsKey(1), "无新增故障时重新复位不能清除匹配锁存");
+            }
+        }
+
+        private static void ManualResetRequiresReadbackAndPreservesRunningEpoch()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                clients[1].FailSnapshotReads = true;
+                bool rejected = false;
+                try { coordinator.ResetFaultAsync(1, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (IOException) { rejected = true; }
+                Assert(rejected, "未建立客户端时复位跳过了实时回读");
+                clients[1].FailSnapshotReads = false;
+                coordinator.ResetFaultAsync(1, CancellationToken.None).GetAwaiter().GetResult();
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None).GetAwaiter().GetResult();
+                var epoch = coordinator.GetRuntimeState(1).OperationEpoch;
+                rejected = false;
+                try { coordinator.ResetFaultAsync(1, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (InvalidOperationException) { rejected = true; }
+                Assert(rejected && coordinator.GetRuntimeState(1).OperationEpoch == epoch,
+                    "拒绝运行中复位时修改了监控所属代次");
+            }
+        }
+
+        private static void CancelledManualResetPreservesFault()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            using (var cancellation = new CancellationTokenSource())
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var faults = (System.Collections.Concurrent.ConcurrentDictionary<int, long>)typeof(PowerSupplyCoordinator)
+                    .GetField("_faultedGroups", flags).GetValue(coordinator);
+                faults[1] = 0;
+                clients[1].BlockSnapshotReads = true;
+                var reset = coordinator.ResetFaultAsync(1, cancellation.Token);
+                try
+                {
+                    Assert(clients[1].SnapshotReadStarted.Wait(TimeSpan.FromSeconds(2)), "复位未进入在途回读");
+                }
+                finally
+                {
+                    cancellation.Cancel();
+                    clients[1].AllowSnapshotRead.Set();
+                    try { reset.GetAwaiter().GetResult(); throw new Exception("取消复位仍成功"); }
+                    catch (OperationCanceledException) { }
+                }
+                Assert(faults.ContainsKey(1), "取消复位清除了故障锁存");
+            }
+        }
+
+        private static void CancellationCallbackRunsOutsideOperationLock()
+        {
+            var config = NewConfig();
+            using (var coordinator = NewCoordinator(config, NewClients(config)))
+            using (var cancellation = new CancellationTokenSource())
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var operation = typeof(PowerSupplyCoordinator).GetMethod("Operation", flags)
+                    .Invoke(coordinator, new object[] { 1 });
+                var operationType = operation.GetType();
+                var sync = operationType.GetField("Sync", flags).GetValue(operation);
+                operationType.GetField("ActiveOperation", flags).SetValue(operation, cancellation);
+                var epochField = operationType.GetField("Epoch", flags);
+                var priorEpoch = (long)epochField.GetValue(operation);
+                bool lockAvailable = false;
+                bool epochRevoked = false;
+                using (cancellation.Token.Register(() =>
+                {
+                    Task.Run(() =>
+                    {
+                        if (!Monitor.TryEnter(sync, TimeSpan.FromSeconds(1))) return;
+                        try
+                        {
+                            lockAvailable = true;
+                            epochRevoked = (long)epochField.GetValue(operation) > priorEpoch;
+                        }
+                        finally { Monitor.Exit(sync); }
+                    }).GetAwaiter().GetResult();
+                }))
+                {
+                    typeof(PowerSupplyCoordinator).GetMethod("CancelActiveGroupOperation", flags)
+                        .Invoke(coordinator, new[] { operation });
+                }
+                Assert(lockAvailable && epochRevoked, "取消回调被组锁阻塞或回调开始前未撤销代次");
+                operationType.GetField("ActiveOperation", flags).SetValue(operation, null);
+            }
+        }
+
+        private static void SafetyOffKeepsClientAcrossMonitorDrain()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            using (var replacement = new FakePswClient(1))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var registry = (System.Collections.Concurrent.ConcurrentDictionary<int, IPswClient>)typeof(PowerSupplyCoordinator)
+                    .GetField("_clients", flags).GetValue(coordinator);
+                var monitors = typeof(PowerSupplyCoordinator).GetField("_monitors", flags).GetValue(coordinator);
+                var registrationType = monitors.GetType().GetGenericArguments()[1];
+                var registration = Activator.CreateInstance(registrationType, true);
+                var drained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                registrationType.GetField("Task", flags).SetValue(registration, drained.Task);
+                Assert((bool)monitors.GetType().GetMethod("TryAdd").Invoke(monitors, new[] { (object)1, registration }),
+                    "未建立旧监控等待条件");
+                var off = (Task<PowerSafetyDisableResult>)typeof(PowerSupplyCoordinator).GetMethod("StartDisableGroup", flags)
+                    .Invoke(coordinator, new object[] { 1, "bound-off-client" });
+                try
+                {
+                    Assert(!off.IsCompleted && registry.ContainsKey(1), "OFF 未在监控等待前捕获客户端");
+                    registry[1] = replacement;
+                }
+                finally { drained.TrySetResult(true); }
+                try
+                {
+                    Assert(off.GetAwaiter().GetResult().ConfirmedOff, "原客户端 OFF 未完成回读");
+                    Assert(clients[1].OutputOffCount == 1 && replacement.OutputOffCount == 0,
+                        "旧 OFF 使用了等待期间注册的后继客户端");
+                }
+                finally { registry[1] = clients[1]; }
+            }
+        }
+
+        private static void SafetyOffRevokesPlannedPublication()
+        {
+            var config = NewConfig();
+            using (var coordinator = NewCoordinator(config, NewClients(config)))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var resume = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                bool initialPublished = false;
+                bool latePublished = false;
+                Func<IPswClient, CancellationToken, Action<Action>, Task> action = async (client, token, publish) =>
+                {
+                    publish(() => initialPublished = true);
+                    await resume.Task.ConfigureAwait(false);
+                    publish(() => latePublished = true);
+                };
+                var planned = (Task)typeof(PowerSupplyCoordinator).GetMethod("RunPlannedGroupOperationAsync", flags)
+                    .Invoke(coordinator, new object[] { 1, true, CancellationToken.None, action, null });
+                Task<PowerSafetyDisableResult> off = null;
+                try
+                {
+                    Assert(initialPublished && !planned.IsCompleted, "未建立有效计划操作的跨等待发布条件");
+                    off = (Task<PowerSafetyDisableResult>)typeof(PowerSupplyCoordinator).GetMethod("StartDisableGroup", flags)
+                        .Invoke(coordinator, new object[] { 1, "publication-revocation" });
+                }
+                finally { resume.TrySetResult(true); }
+                try { planned.GetAwaiter().GetResult(); throw new Exception("被安全 OFF 撤销后仍正常完成"); }
+                catch (OperationCanceledException) { }
+                Assert(!latePublished, "旧计划动作在撤销后发布了状态");
+                Assert(off.GetAwaiter().GetResult().ConfirmedOff, "拒绝旧发布后实际安全 OFF 未完成");
+            }
+        }
+
+        private static void PlannedOperationKeepsBoundClient()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var registry = (System.Collections.Concurrent.ConcurrentDictionary<int, IPswClient>)typeof(PowerSupplyCoordinator)
+                    .GetField("_clients", flags).GetValue(coordinator);
+                var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var resume = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                Func<IPswClient, CancellationToken, Action<Action>, Task> action = async (client, token, publish) =>
+                {
+                    entered.TrySetResult(true);
+                    await resume.Task.ConfigureAwait(false);
+                    Assert(ReferenceEquals(client, clients[1]), "计划操作跨等待改用了后继客户端");
+                    Assert(!ReferenceEquals(client, registry[1]), "计划操作没有保留原执行连接");
+                };
+                var planned = (Task)typeof(PowerSupplyCoordinator).GetMethod("RunPlannedGroupOperationAsync", flags)
+                    .Invoke(coordinator, new object[] { 1, true, CancellationToken.None, action, null });
+                try
+                {
+                    Assert(entered.Task.Wait(TimeSpan.FromSeconds(2)), "计划操作未进入实际动作");
+                    registry[1] = new FakePswClient(1);
+                }
+                finally
+                {
+                    resume.TrySetResult(true);
+                    planned.GetAwaiter().GetResult();
+                }
+            }
+        }
+
+        private static void CancelledMonitorCannotPublishLateRead()
+        {
+            MonitorCannotPublishLateRead(false);
+        }
+
+        private static void MonitorCannotPublishLateRead(bool revokeEpoch)
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            using (var cancellation = new CancellationTokenSource())
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var active = (System.Collections.Concurrent.ConcurrentDictionary<int, byte>)typeof(PowerSupplyCoordinator)
+                    .GetField("_activeGroups", flags).GetValue(coordinator);
+                var cache = (System.Collections.Concurrent.ConcurrentDictionary<int, PswSnapshot>)typeof(PowerSupplyCoordinator)
+                    .GetField("_latest", flags).GetValue(coordinator);
+                var registry = (System.Collections.Concurrent.ConcurrentDictionary<int, IPswClient>)typeof(PowerSupplyCoordinator)
+                    .GetField("_clients", flags).GetValue(coordinator);
+                var original = clients[1];
+                original.ConnectAsync(CancellationToken.None).GetAwaiter().GetResult();
+                original.BlockSnapshotReads = true;
+                var replacement = new FakePswClient(1);
+                var marker = replacement.ConnectAsync(CancellationToken.None).GetAwaiter().GetResult();
+                registry[1] = replacement;
+                active[1] = 0;
+                cache[1] = marker;
+                var operation = typeof(PowerSupplyCoordinator).GetMethod("Operation", flags)
+                    .Invoke(coordinator, new object[] { 1 });
+                var epoch = (long)operation.GetType().GetField("Epoch", flags).GetValue(operation);
+                var monitor = (Task)typeof(PowerSupplyCoordinator).GetMethod("MonitorLoopAsync", flags)
+                    .Invoke(coordinator, new object[] { 1, original, cancellation.Token, operation, epoch });
+                try
+                {
+                    Assert(original.SnapshotReadStarted.Wait(TimeSpan.FromSeconds(2)), "旧监控改用了注册表中的后继客户端");
+                    if (revokeEpoch)
+                    {
+                        var sync = operation.GetType().GetField("Sync", flags).GetValue(operation);
+                        lock (sync) { operation.GetType().GetField("Epoch", flags).SetValue(operation, epoch + 1); }
+                    }
+                    else cancellation.Cancel();
+                    original.AllowSnapshotRead.Set();
+                    Assert(monitor.Wait(TimeSpan.FromSeconds(2)), "撤销身份后旧监控未及时退出");
+                    monitor.GetAwaiter().GetResult();
+                    Assert(ReferenceEquals(cache[1], marker), "取消或代次撤销后的旧回读覆盖了后继快照");
+                }
+                finally
+                {
+                    cancellation.Cancel();
+                    original.AllowSnapshotRead.Set();
+                    try { monitor.GetAwaiter().GetResult(); }
+                    finally
+                    {
+                        active.TryRemove(1, out _);
+                        original.Dispose();
+                    }
+                }
             }
         }
 

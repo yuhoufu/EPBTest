@@ -399,13 +399,14 @@ namespace Controller
 
         public FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(
             Guid testRunId,
-            int cycleNumber)
+            int cycleNumber,
+            EpbCycleOutcome committedOutcome)
         {
             lock (_adaptiveGate)
             {
                 var result = FormalCycleFaultPolicy.Commit(
                     _adaptiveProfile,
-                    LastCycleOutcome,
+                    committedOutcome,
                     testRunId,
                     cycleNumber,
                     _adaptiveForwardStallConfirmCycles,
@@ -421,12 +422,12 @@ namespace Controller
 
                 _log?.Info(
                     $"EPB[{_channel}] 正式圈异常证据已提交：RunId={testRunId:N} " +
-                    $"Cycle={cycleNumber} Peak={LastCycleOutcome.PeakCurrentA:F3}A " +
-                    $"Target={LastCycleOutcome.TargetCurrentA:F3}A " +
-                    $"Slope={LastCycleOutcome.EstimatedSlopeAperMs:F6}A/ms " +
-                    $"LowPlateau={LastCycleOutcome.ForwardLowPlateauCandidate} " +
+                    $"Cycle={cycleNumber} Peak={committedOutcome.PeakCurrentA:F3}A " +
+                    $"Target={committedOutcome.TargetCurrentA:F3}A " +
+                    $"Slope={committedOutcome.EstimatedSlopeAperMs:F6}A/ms " +
+                    $"LowPlateau={committedOutcome.ForwardLowPlateauCandidate} " +
                     $"LowStreak={result.ForwardLowPlateauStreak}/{_adaptiveForwardStallConfirmCycles} " +
-                    $"Overshoot2A={LastCycleOutcome.ForwardPermanentOvershootCandidate} " +
+                    $"Overshoot2A={committedOutcome.ForwardPermanentOvershootCandidate} " +
                     $"OvershootStreak={result.ForwardOvershootStreak}/{_adaptiveOvershootConfirmCycles} " +
                     "Evidence=FullRateValid Persistence=Committed",
                     "EPB");

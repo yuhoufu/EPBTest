@@ -82,8 +82,20 @@ namespace AdaptiveControlTests
                 report.RootCode,
                 false,
                 string.Empty);
-            Assert(classification.MaximumProcessRelaunches == 2,
-                "边界测试未使用固定的两次软件重拉预算");
+            Assert(classification.MaximumProcessRelaunches == ContinuousRecoveryPolicy.MaximumRestarts &&
+                   classification.MaximumProcessRelaunches > 0,
+                "故障分类与安装级重启限频额度不一致");
+
+            // The durable failure gate below and the rolling frequency fence
+            // are separate: time expiry opens the latter, not the former.
+            var now = new DateTime(2026, 9, 9, 0, 0, 0, DateTimeKind.Utc);
+            var attempts = Enumerable.Repeat(now, classification.MaximumProcessRelaunches).ToArray();
+            Assert(ContinuousRecoveryPolicy.NextAllowedUtc(attempts, now) ==
+                   now + ContinuousRecoveryPolicy.RestartWindow,
+                "达到重启限频额度后未等待完整窗口");
+            var expires = now + ContinuousRecoveryPolicy.RestartWindow;
+            Assert(ContinuousRecoveryPolicy.NextAllowedUtc(attempts, expires) == expires,
+                "窗口到期仍错误占用重启限频额度");
 
             var fingerprint = RecoveryFailurePolicy.BuildFingerprint(report);
             var progressed = report.Clone();
@@ -212,21 +224,25 @@ namespace AdaptiveControlTests
 
         private static void SchemaV2BlockedStateSurvivesRestartMigration()
         {
+            foreach (var legacySchema in new[] { 2, 3, 4, 5 })
+            {
             var legacy = "{\"SchemaVersion\":2,\"RecoveryBlocked\":true," +
                          "\"RecoveryFailureFingerprint\":\"RFP2-legacy\"," +
                          "\"ConsecutiveStartupFailures\":5," +
                          "\"RelaunchGeneration\":9}";
+            legacy = legacy.Replace("\"SchemaVersion\":2", "\"SchemaVersion\":" + legacySchema);
             var migrated = WatchdogJournalMigration.MigrateJournalJson(legacy);
             Assert(!string.IsNullOrWhiteSpace(migrated) &&
-                   migrated.Contains("\"SchemaVersion\":5") &&
+                   migrated.Contains("\"SchemaVersion\":" + WatchdogJournalPolicy.CurrentSchemaVersion) &&
                    migrated.Contains("\"RecoveryBlocked\":true") &&
                    migrated.Contains("\"RecoveryFailureFingerprint\":\"RFP2-legacy\"") &&
                    migrated.Contains("\"ConsecutiveStartupFailures\":5") &&
                    migrated.Contains("\"RelaunchGeneration\":9"),
-                "V2 Journal迁移丢失RecoveryBlocked或预算状态");
+                "旧Journal迁移丢失RecoveryBlocked或预算状态，Schema=" + legacySchema);
             var afterRestart = WatchdogJournalMigration.MigrateJournalJson(migrated);
             Assert(afterRestart == migrated && afterRestart.Contains("\"RecoveryBlocked\":true"),
-                "重启后的V4 Journal再次读取时没有保持RecoveryBlocked");
+                "重启后再次读取时没有保持RecoveryBlocked");
+            }
             var restoredDecision = RecoveryFailurePolicy.Evaluate(
                 new RecoveryFailureReport
                 {
@@ -922,6 +938,14 @@ namespace AdaptiveControlTests
                 0, 0, 0, 0, 0, 0, 0, 0);
             Assert(counts.ActiveCycleCount == 5 && counts.SoftwareRecoveryCount == 0,
                 "正常活动圈仍被计入SoftwareRecoveryCount");
+            var recovering = EpbManager.BuildLogicalRecoveryCounts(
+                5, 0, 0, 0, 0, 0, 1, 0, 0);
+            Assert(recovering.ActiveCycleCount == 5 && recovering.SoftwareRecoveryCount == 1,
+                "已登记的活动圈恢复被当成普通活动圈而漏报");
+            var awaitingTerminal = EpbManager.BuildLogicalRecoveryCounts(
+                0, 0, 0, 0, 0, 0, 1, 0, 0);
+            Assert(awaitingTerminal.SoftwareRecoveryCount == 1,
+                "活动圈清场后尚未终态的恢复被错误视为静默");
         }
 
         private static void DaqBatchCorrelationIsSharedAndIdempotent()

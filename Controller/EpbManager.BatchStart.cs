@@ -1601,8 +1601,8 @@ namespace Controller
         }
 
         /// <summary>
-        /// 显式停止后的新批次只要求电机断能命令和程控电源关闭已确认；上一批次的
-        /// 压力证据、写盘、连续性和逻辑清场结果不再作为新批次许可条件。
+        /// 显式停止后的新批次仍要求断能及实际电流、压力安全；只能丢弃上一批次的
+        /// 写盘、连续性和逻辑清场历史检查，不能丢弃物理安全证明。
         /// 新批次仍会重新执行实时 DAQ、电源、液压和完整学习预检。
         /// </summary>
         internal static bool CanDiscardHistoricalStopChecksForExplicitRestart(
@@ -1610,7 +1610,7 @@ namespace Controller
             bool explicitlyStopped)
         {
             return explicitlyStopped &&
-                   safety?.CanReleaseAcquisition == true;
+                   safety?.PhysicalSafetyConfirmed == true;
         }
 
         private async Task<BatchStartResult> StartBatchCoreAsync(
@@ -2728,9 +2728,44 @@ namespace Controller
             return true;
         }
 
+        private void AssertPowerRecoveryOwnerCurrent(RecoveryIncidentHandle owner, int[] channels)
+        {
+            if (owner == null) return;
+            lock (_recoveryAdmissionGate)
+            {
+                if (IsEnergizationRevoked || RequiresProcessRestart ||
+                    _recoveryIncidentCoordinator.HasSafetyConflict(_activeBatchId,
+                        Interlocked.Read(ref _runEpoch), channels, owner.CoordinatorOwner))
+                    throw new RecoveryExecutionRejectedException("PowerRetryRecoveryOwnerInvalid");
+            }
+        }
+
+        private async Task EnsureRecoveryPowerSupplyReadyAsync(int[] channels, CancellationToken token,
+            RecoveryIncidentHandle recoveryOwner = null)
+        {
+            if (_powerSupply == null)
+                throw new InvalidOperationException("RecoveryPowerSupplyMissing");
+            var disabled = await EnsurePowerSupplyReadyBeforeStartAsync(channels, token,
+                recoveryOwner: recoveryOwner).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            ValidateRecoveryPowerReadyResult(channels, disabled);
+        }
+
+        internal static void ValidateRecoveryPowerReadyResult(int[] channels, int[] disabled)
+        {
+            if (channels == null || channels.Length == 0 || disabled == null)
+                throw new InvalidOperationException("RecoveryPowerReadyResultMissing");
+            var rejected = channels.Intersect(disabled).Distinct().OrderBy(channel => channel).ToArray();
+            if (rejected.Length > 0)
+                throw new InvalidOperationException(
+                    "RecoveryPowerReadyRejected:EPB=" + string.Join(",", rejected));
+        }
+
         private async Task<int[]> EnsurePowerSupplyReadyBeforeStartAsync(
             int[] selected,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             var channels = (selected ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
             var disabled = Array.Empty<int>();
@@ -2739,7 +2774,7 @@ namespace Controller
                     WaitForPreviousCycleExecutionAsync,
                     async ct =>
                     {
-                        disabled = await EnsurePowerSupplyReadyBeforeStartCoreAsync(channels, ct)
+                        disabled = await EnsurePowerSupplyReadyBeforeStartCoreAsync(channels, ct, startupParent, recoveryOwner)
                             .ConfigureAwait(false);
                     },
                     "PowerReadyBeforeStart",
@@ -2794,7 +2829,9 @@ namespace Controller
 
         private async Task<int[]> EnsurePowerSupplyReadyBeforeStartCoreAsync(
             int[] channels,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             if (_powerSupply == null) return Array.Empty<int>();
 
@@ -2819,7 +2856,11 @@ namespace Controller
                 var attemptStartedUtc = DateTime.UtcNow;
                 try
                 {
-                    await _powerSupply.PrepareAndEnableAsync(pending, token).ConfigureAwait(false);
+                    AssertPowerRecoveryOwnerCurrent(recoveryOwner, pending);
+                    var powerAction = TrackRecoveryHardwareAction(pending,
+                        _powerSupply.PrepareAndEnableAsync(pending, token));
+                    await powerAction.ConfigureAwait(false);
+                    AssertPowerRecoveryOwnerCurrent(recoveryOwner, pending);
                     _log?.Info(
                         $"程控电源启动实时预检通过：Groups=[{string.Join(",", groupIds)}] " +
                         $"Attempt={attempt}。",
@@ -2830,7 +2871,7 @@ namespace Controller
                 {
                     throw;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!(ex is RecoveryExecutionRejectedException))
                 {
                     var protectionGroups = groupIds
                         .Where(groupId =>
@@ -2913,7 +2954,9 @@ namespace Controller
                                     attempt,
                                     delayMs: 0,
                                     residualBaseline: true,
-                                    token: token)
+                                    token: token,
+                                    startupParent: startupParent,
+                                    recoveryOwner: recoveryOwner)
                                 .ConfigureAwait(false);
                         }
                         catch (SoftwareSelfHealingRetryException retryEx)
@@ -2943,7 +2986,9 @@ namespace Controller
                                 attempt,
                                 delayMs,
                                 residualBaseline: false,
-                                token: token)
+                                token: token,
+                                startupParent: startupParent,
+                                recoveryOwner: recoveryOwner)
                             .ConfigureAwait(false);
                         if (succeeded)
                             return disabled.Distinct().OrderBy(channel => channel).ToArray();
@@ -2964,17 +3009,21 @@ namespace Controller
             int attempt,
             int delayMs,
             bool residualBaseline,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             var channels = (pending ?? Array.Empty<int>())
                 .Where(channel => channel >= 1 && channel <= 12)
                 .Distinct()
                 .OrderBy(channel => channel)
                 .ToArray();
-            if (channels.Any(channel =>
-                    _channelRuntimeStateStore.Get(channel)?.State ==
-                    ChannelRuntimeState.Recovering))
+            if (recoveryOwner != null)
             {
+                AssertPowerRecoveryOwnerCurrent(recoveryOwner, channels);
+                if (residualBaseline && !Enumerable.Range(1, 12).All(
+                        recoveryOwner.Contract.SafetyAffectedChannels.Contains))
+                    throw new RecoveryExecutionRejectedException("PowerRetryColdBaselineScopeNotOwned");
                 if (residualBaseline)
                     await EstablishColdStartSafeBaselineAsync(channels, token)
                         .ConfigureAwait(false);
@@ -2982,11 +3031,13 @@ namespace Controller
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
                 try
                 {
-                    await _powerSupply.PrepareAndEnableAsync(channels, token)
+                    AssertPowerRecoveryOwnerCurrent(recoveryOwner, channels);
+                    await TrackRecoveryHardwareAction(channels, _powerSupply.PrepareAndEnableAsync(channels, token))
                         .ConfigureAwait(false);
+                    AssertPowerRecoveryOwnerCurrent(recoveryOwner, channels);
                     return true;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!(ex is RecoveryExecutionRejectedException))
                 {
                     throw new SoftwareSelfHealingRetryException(
                         "程控电源启动恢复worker未通过。",
@@ -3010,11 +3061,13 @@ namespace Controller
                         await Task.Delay(delayMs, token).ConfigureAwait(false);
                     try
                     {
-                        await _powerSupply.PrepareAndEnableAsync(channels, token)
+                        AssertPowerRecoveryOwnerCurrent(recoveryIncident, channels);
+                        await TrackRecoveryHardwareAction(channels, _powerSupply.PrepareAndEnableAsync(channels, token))
                             .ConfigureAwait(false);
+                        AssertPowerRecoveryOwnerCurrent(recoveryIncident, channels);
                         succeeded = true;
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (!(ex is RecoveryExecutionRejectedException))
                     {
                         throw new SoftwareSelfHealingRetryException(
                             "程控电源启动恢复worker未通过。",
@@ -3052,7 +3105,9 @@ namespace Controller
                                 recoveryOwnerId: contract.OwnerId,
                                 recoveryOwnerGeneration: contract.RunEpoch);
                     },
-                    out recoveryIncident))
+                    out recoveryIncident,
+                    safetyAffectedChannels: residualBaseline ? Enumerable.Range(1, 12) : channels,
+                    startupParent: startupParent))
                 throw new InvalidOperationException(
                     "程控电源启动恢复事务建立失败，已保持安全终态。");
 
@@ -3678,7 +3733,8 @@ namespace Controller
                                     ch,
                                     cycleNumber,
                                     DateTime.UtcNow,
-                                    _activeBatchId,
+                                    formalParticipantLease.RunId,
+                                    formalParticipantLease.RunEpoch,
                                     attemptKind,
                                     token,
                                     out var cycleAttempt))
@@ -3759,13 +3815,13 @@ namespace Controller
                             }
                             finally
                             {
-                                // 必须在释放 execution tombstone 前取得本圈不可变引用；
-                                // 下一圈获准复用 Runner 后会替换 LastCycleOutcome。
+                                // 必须在释放 execution tombstone 前复制本圈结果；
+                                // 后续提交不与 Runner 共享可变结果对象。
                                 cycleOutcome = periodHardLimitReached
                                     ? Adaptive.EpbCycleOutcome.HardFault(
                                         Adaptive.EpbCurrentStage.Faulted,
                                         "PeriodOverrunHardLimit")
-                                    : runner.LastCycleOutcome;
+                                    : runner.LastCycleOutcome.Snapshot();
                                 if (periodHardLimitReached)
                                 {
                                     cycleOutcome.PhysicalActionElapsedMs = PeriodMs * 2L;
@@ -3809,7 +3865,8 @@ namespace Controller
                                 ReportFormalControlSoftwareRecovery(
                                     ch,
                                     cycleNumber,
-                                    cycleOutcome.Reason);
+                                    cycleOutcome.Reason,
+                                    cycleAttempt);
                             }
 
                             if (!ok)
@@ -3831,7 +3888,7 @@ namespace Controller
                                         cycleAttempt.RunId,
                                         cycleAttempt.RunEpoch,
                                         ch,
-                                        cycleNumber))
+                                        cycleNumber, cycleAttempt.AttemptId))
                                 {
                                     AbortFormalCycleAttempt(
                                         cycleAttempt,
@@ -3891,7 +3948,8 @@ namespace Controller
                                     ch,
                                     cycleNumber,
                                     "CycleFinalizer",
-                                    ex);
+                                    ex,
+                                    cycleAttempt);
                             }
 
                         CyclePersistenceFinished:
@@ -4238,7 +4296,9 @@ namespace Controller
             Dictionary<int, DateTime> t0OfGroup,
             int learnCycles,
             ElectricalStaggerPlan staggerPlan,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             // —— 保护：无任务直接返回 —— //
             if (groups == null || groups.Count == 0 || learnCycles <= 0)
@@ -4402,7 +4462,9 @@ namespace Controller
                                                 k + 1,
                                                 learningRunId,
                                                 learningEvidence,
-                                                channelToken)
+                                                channelToken,
+                                                startupParent,
+                                                recoveryOwner)
                                             .ConfigureAwait(false);
                                     }
                                     finally
@@ -4501,7 +4563,9 @@ namespace Controller
             int learningOrdinal,
             Guid runId,
             LearningEvidenceContext learningEvidence,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             if (runner == null) throw new ArgumentNullException(nameof(runner));
             var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
@@ -4556,8 +4620,7 @@ namespace Controller
                             }
                             if (learningCycleNumber != 0)
                             {
-                                MarkCurrentCycleNumber(channel, learningCycleNumber);
-                                _currentAttemptIdByChannel.TryGetValue(channel, out trustedAttemptId);
+                                trustedAttemptId = MarkCurrentCycleNumber(channel, learningCycleNumber);
                             }
 
                             if (GetEpbControlMode(channel) == Adaptive.EpbControlMode.AdaptiveCurrent)
@@ -4581,6 +4644,7 @@ namespace Controller
                                     await SealLearningCycleAsync(
                                             channel,
                                             learningCycleNumber,
+                                            trustedAttemptId,
                                             runId,
                                             learningEvidence,
                                             learningOrdinal,
@@ -4613,6 +4677,8 @@ namespace Controller
                                             attemptToken)
                                         .ConfigureAwait(false);
 
+                                    // 重建落盘圈之前撤销上一尝试的证据身份；新圈未建立时不得沿用旧值。
+                                    trustedAttemptId = 0;
                                     try
                                     {
                                         learningCycleNumber =
@@ -4626,8 +4692,7 @@ namespace Controller
                                     }
                                     if (learningCycleNumber != 0)
                                     {
-                                        MarkCurrentCycleNumber(channel, learningCycleNumber);
-                                        _currentAttemptIdByChannel.TryGetValue(channel, out trustedAttemptId);
+                                        trustedAttemptId = MarkCurrentCycleNumber(channel, learningCycleNumber);
                                     }
                                     outcome = await runner.RunOneAdaptiveLearningAsync(
                                             PeriodMs,
@@ -4653,7 +4718,7 @@ namespace Controller
                                     throw new InvalidOperationException(
                                         $"EPB[{channel}] 自适应学习圈失败：" +
                                         $"阶段={outcome.Stage}，原因={outcome.Reason}");
-                                trustedOutcome = outcome;
+                                trustedOutcome = outcome.Snapshot();
                                 trustedCycleNumber = learningCycleNumber;
                                 _watchdogConsecutiveSoftwareAborts[channel] = 0;
                             }
@@ -4676,6 +4741,7 @@ namespace Controller
                             await SealLearningCycleAsync(
                                     channel,
                                     learningCycleNumber,
+                                    trustedAttemptId,
                                     runId,
                                     learningEvidence,
                                     learningOrdinal,
@@ -4754,6 +4820,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         learningCycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         learningOrdinal,
@@ -4770,6 +4837,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         learningCycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         learningOrdinal,
@@ -4789,6 +4857,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         learningCycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         learningOrdinal,
@@ -4808,6 +4877,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         learningCycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         learningOrdinal,
@@ -4835,7 +4905,9 @@ namespace Controller
                                 channel,
                                 runId,
                                 attempt,
-                                attemptToken)
+                                attemptToken,
+                                startupParent,
+                                recoveryOwner)
                             .ConfigureAwait(false);
                         _log?.Warn(
                             $"EPB[{channel}] 学习圈证据失败已作废，不取消其它通道或整批启动。" +
@@ -4869,14 +4941,22 @@ namespace Controller
             int channel,
             Guid runId,
             int attempt,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             // If a higher-level recovery already owns this channel, its real
             // worker remains authoritative; this callback only performs the
             // retry's physical cleanup within that worker.
-            if (_channelRuntimeStateStore.Get(channel)?.State ==
-                ChannelRuntimeState.Recovering)
+            if (recoveryOwner != null)
             {
+                lock (_recoveryAdmissionGate)
+                {
+                    if (_recoveryIncidentCoordinator.HasSafetyConflict(runId,
+                            Interlocked.Read(ref _runEpoch), new[] { channel }, recoveryOwner.CoordinatorOwner) ||
+                        runId != _activeBatchId)
+                        throw new RecoveryExecutionRejectedException("LearningRetryRecoveryOwnerInvalid");
+                }
                 RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                 await AbortHydraulicLeaseForChannelAsync(
                         channel,
@@ -4924,7 +5004,8 @@ namespace Controller
                             recoveryOwnerId: contract.OwnerId,
                             recoveryOwnerGeneration: contract.RunEpoch);
                     },
-                    out recoveryIncident))
+                    out recoveryIncident,
+                    startupParent: startupParent))
                 throw new InvalidOperationException(
                     $"EPB[{channel}] 学习恢复事务建立失败，已保持安全终态。");
 
@@ -4954,6 +5035,7 @@ namespace Controller
         private async Task SealLearningCycleAsync(
             int channel,
             int cycleNumber,
+            long originalAttemptId,
             Guid runId,
             LearningEvidenceContext learningEvidence,
             int learningOrdinal,
@@ -5021,10 +5103,8 @@ namespace Controller
                         $"EPB[{channel}] 学习圈封存异常后的软件作废也未确认：{abortEx.Message}",
                         "落盘");
                 }
-                if (abortCommitted &&
-                    _currentCycleNumberByChannel.TryGetValue(channel, out var abortCurrent) &&
-                    abortCurrent == cycleNumber)
-                    ClearCurrentCycleNumber(channel);
+                if (abortCommitted)
+                    ClearCurrentCycleNumberForAttempt(channel, cycleNumber, originalAttemptId);
 
                 if (!abortCommitted)
                     throw new SoftwareSelfHealingRetryException(
@@ -5044,11 +5124,7 @@ namespace Controller
                 return;
             }
 
-            if (_currentCycleNumberByChannel.TryGetValue(channel, out var current) &&
-                current == cycleNumber)
-            {
-                ClearCurrentCycleNumber(channel);
-            }
+            ClearCurrentCycleNumberForAttempt(channel, cycleNumber, originalAttemptId);
 
             // 报警后台已取得封存权时，学习收尾只退出，不重复生成文件或改写状态。
             if (!evidence.WasClaimed)
@@ -5325,7 +5401,7 @@ namespace Controller
                     out var created);
                 if (!runner.IsBoundToExecutionPermit(permit))
                 {
-                    _runnerRuntime.Remove(channel, DetachRunnerEvents);
+                    _runnerRuntime.RemoveExact(channel, runner, DetachRunnerEvents);
                     runner = _runnerRuntime.GetOrCreate(
                         channel,
                         () => CreateRunner(channel),
@@ -5334,7 +5410,7 @@ namespace Controller
                 }
                 if (!_channelExecutionFence.IsCurrent(permit))
                 {
-                    _runnerRuntime.Remove(channel, DetachRunnerEvents);
+                    _runnerRuntime.RemoveExact(channel, runner, DetachRunnerEvents);
                     throw new InvalidOperationException(
                         $"EPB[{channel}] Runner创建期间执行授权已撤销；已丢弃迟到实例。");
                 }
@@ -5482,7 +5558,7 @@ namespace Controller
                     out var created);
                 if (!_channelExecutionFence.IsCurrent(permit))
                 {
-                    _timerRuntime.Remove(ch, value =>
+                    _timerRuntime.RemoveExact(ch, timer, value =>
                     {
                         DetachTimerRuntimeObserver(ch, value);
                         try { value.Stop(); } catch { }
@@ -5627,7 +5703,8 @@ namespace Controller
         private async Task<HydraulicCycleLease> EnterHydraulicStartupPhaseWithSelfHealingAsync(
             HydraulicGenerationKey initialKey,
             IReadOnlyList<int> channelsInGroup,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null)
         {
             if (initialKey == null) throw new ArgumentNullException(nameof(initialKey));
             if (initialKey.PhaseKind == HydraulicPhaseKind.Recovery)
@@ -5720,7 +5797,8 @@ namespace Controller
                                 token,
                                 attempt,
                                 delayMs,
-                                forceReleaseReason)
+                                forceReleaseReason,
+                                startupParent)
                             .ConfigureAwait(false);
                     }
                     catch (Exception retryEx) when (
@@ -5750,7 +5828,8 @@ namespace Controller
             CancellationToken token,
             int attempt,
             int delayMs,
-            string completedForceReleaseReason)
+            string completedForceReleaseReason,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null)
         {
             if (key == null) throw new ArgumentNullException(nameof(key));
             if (intent == null) throw new ArgumentNullException(nameof(intent));
@@ -5809,7 +5888,8 @@ namespace Controller
                                 recoveryOwnerGeneration: contract.RunEpoch);
                     },
                     out recoveryIncident,
-                    incidentId: intent.IncidentId))
+                    incidentId: intent.IncidentId,
+                    startupParent: startupParent))
                 throw new InvalidOperationException(
                     $"液压组{key.HydraulicId}恢复事务建立失败，已保持安全终态。");
 
@@ -5873,10 +5953,11 @@ namespace Controller
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (!string.IsNullOrWhiteSpace(device))
                 _faultConfirmationTracker.ResetScope($"Daq:{device}");
-            CompleteFormalSoftwareRecoveryAfterCommit(channel);
+            CompleteFormalSoftwareRecoveryAfterCommit(channel, attempt);
             // 完整正式圈已经通过控制与持久化提交，等价于本动作具备新鲜DAQ电流证据。
             // 电源通信降级确认按共享物理槽位去重，组内多个通道不会重复计圈。
-            _powerSupply?.RecordSuccessfulActionCycle(channel, groupCycleSlot);
+            _powerSupply?.RecordSuccessfulActionCycle(channel, groupCycleSlot,
+                attempt?.PowerOperationId ?? Guid.Empty, attempt?.PowerOperationEpoch ?? 0);
             TryClearChannelWarningOverlayAfterTrustedCycle(
                 channel,
                 attempt?.RunId ?? Guid.Empty,
@@ -6007,15 +6088,21 @@ namespace Controller
             Adaptive.FormalCycleFaultCommitResult result;
             try
             {
+                // 这里之前存在异步等待及外部观察者；当前批次可能已经换代。
+                // 故障证据只能关联原始耐久提交圈，不能重新认领全局当前运行。
+                if (attempt == null || attempt.RunId == Guid.Empty ||
+                    attempt.Channel != channel || attempt.Cycle != cycleNumber)
+                    throw new InvalidOperationException("正式圈故障提交缺少匹配的原始尝试身份。");
                 result = runner.CommitFormalCycleFaultEvidence(
-                    _activeBatchId,
-                    cycleNumber);
+                    attempt.RunId,
+                    attempt.Cycle,
+                    outcome);
             }
             catch (Exception ex)
             {
                 _log?.Error(
                     $"EPB[{channel}] 正式圈已完成，但卡钳异常证据提交失败：" +
-                    $"RunId={_activeBatchId:N} Cycle={cycleNumber} {ex.Message}",
+                    $"RunId={attempt?.RunId ?? Guid.Empty:N} Cycle={cycleNumber} {ex.Message}",
                     "报警",
                     ex);
                 return false;
@@ -6093,7 +6180,8 @@ namespace Controller
         /// <summary>正式圈落盘成功后提交本圈卡钳异常候选，并返回是否达到永久报警门槛。</summary>
         Adaptive.FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(
             Guid testRunId,
-            int cycleNumber);
+            int cycleNumber,
+            Adaptive.EpbCycleOutcome committedOutcome);
 
         /// <summary>
         /// 使用自适应状态机执行一个启动学习圈；不增加正式成功圈计数。

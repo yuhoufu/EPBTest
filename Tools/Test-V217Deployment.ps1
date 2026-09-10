@@ -89,6 +89,10 @@ try {
     $interrupted = Join-Path $root '.retired-injected-interruption'
     Move-Item -LiteralPath (Join-Path $root 'Current') -Destination $interrupted
     @{ retired=$interrupted } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'install-transaction.json') -Encoding UTF8
+    Expect-Failure { Install-CurrentSlot $source $root } '中断事务缺少Current身份必须拒绝'
+    Check (Test-Path -LiteralPath $interrupted -PathType Container) '拒绝不完整事务后保留退役槽'
+    @{ retired=$interrupted; current=(Join-Path $root 'Current') } | ConvertTo-Json |
+        Set-Content -LiteralPath (Join-Path $root 'install-transaction.json') -Encoding UTF8
     Install-CurrentSlot $source $root
     Check (-not (Test-CurrentSlotReplacementRequired $source $root)) '中断于Current移走后可恢复并重新安装'
     $identityPath = Join-Path $source 'build-identity.json'

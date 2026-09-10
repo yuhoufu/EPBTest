@@ -577,6 +577,33 @@ namespace MTTFTest.RecoveryControl
             });
         }
 
+        // Audit evidence only, never a reusable authorization to terminate.
+        // The caller must re-read the owned stage immediately before termination.
+        public void RecordMainRetirementIntent(string transactionId, long epoch,
+            RecoveryProcessIdentity owner, string sessionId, RecoveryProcessIdentity main, DateTime nowUtc)
+        {
+            if (!Guid.TryParse(sessionId, out var session) || session == Guid.Empty)
+                throw new InvalidOperationException("RecoveryMainRetirementSessionRequired");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                AssertOwner(state, transactionId, epoch, owner, nowUtc);
+                AssertActionSession(state, sessionId);
+                var tx = state.Transaction;
+                if (tx.Stage != RecoveryStage.SafeStop || nowUtc.Ticks >= tx.StageDeadlineUtcTicks ||
+                    main?.IsValid() != true || state.Intent.MainProcess?.Matches(main) != true ||
+                    tx.SafetyAuthorityId != null || tx.LaunchOperationId != null)
+                    throw new InvalidOperationException("RecoveryMainRetirementIntentUnavailable");
+                var directory = PathOf("action-history");
+                Directory.CreateDirectory(directory);
+                AtomicWrite(Path.Combine(directory, Guid.NewGuid().ToString("N") + ".main-retirement-intent.json"),
+                    Json().Serialize(new { SchemaVersion = 1, state.InstallationId, Transaction = tx,
+                        SessionId = sessionId, MainProcess = main, RequestedUtcTicks = nowUtc.Ticks,
+                        Reason = "FullyStalledMain;IndependentPhysicalSafetyStillRequired" }));
+                return true;
+            });
+        }
+
         // Caller verifies the old safety worker against its durable Supervisor
         // record. No process is stopped here and historical launches stay intact.
         public void ReconcileAdoptedSafetyAction(string transactionId, long epoch, RecoveryProcessIdentity owner,

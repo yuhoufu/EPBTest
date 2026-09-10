@@ -47,6 +47,9 @@ try{
     $RecoveryMode='RecoverStalled'
     $report.approvedModes=@('RecoverExited','RecoverStalled')
     $report.checks+=@{id='stalledRecovery';passed=$true;evidencePath='fixture.txt';evidenceSha256=$evidenceHash}
+    foreach ($id in @('forcedStalledRecovery','forcedStalledRecoveryInterlocks')) {
+        $report.checks+=@{id=$id;passed=$true;evidencePath='fixture.txt';evidenceSha256=$evidenceHash}
+    }
     $reportBytes=[Text.Encoding]::UTF8.GetBytes(($report|ConvertTo-Json -Depth 10))
     $identity=Get-Content (Join-Path $guard 'guard-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
     . $code

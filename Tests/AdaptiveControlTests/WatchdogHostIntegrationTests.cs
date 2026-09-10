@@ -230,6 +230,7 @@ namespace AdaptiveControlTests
                 PowerOff = true,
                 PressureSafe = true,
                 PersistenceDrained = false,
+                CurrentSafe = true,
                 LogicalQuiescent = true,
                 HardwareResourcesReleased = true,
                 ExecutionAuthorizationRevoked = true,
@@ -331,6 +332,10 @@ namespace AdaptiveControlTests
                 DataAuditState = WatchdogDataAuditState.Drained
             };
             Assert(
+                !WatchdogRecoveryReadinessPolicy.IsCompleteStopProof(closing),
+                "缺少实测电流证据的关闭围栏仍允许免Handoff恢复");
+            closing.CurrentSafe = true;
+            Assert(
                 WatchdogRecoveryReadinessPolicy.IsCompleteStopProof(closing),
                 "完整StopCompleted关闭围栏未被接受为无Handoff替代证明");
             WatchdogSafetyHandoffWaitOutcome outcome;
@@ -368,6 +373,12 @@ namespace AdaptiveControlTests
                 ExecutionAuthorizationRevoked = true,
                 CallbacksIsolated = true
             };
+            Assert(!WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
+                "历史压力安全回执缺少电流证据仍放行恢复");
+            var pressureOnlyHash = SupervisorSafetyAuthorityStore.ComputeReceiptSha256(handoff);
+            handoff.CurrentSafe = true;
+            Assert(pressureOnlyHash != SupervisorSafetyAuthorityStore.ComputeReceiptSha256(handoff),
+                "电流证据未纳入安全权威回执摘要");
             Assert(
                 WatchdogRecoveryReadinessPolicy.IsCompleteSafetyHandoffProof(handoff),
                 "完整Handoff安全证明未放行");
@@ -547,6 +558,7 @@ namespace AdaptiveControlTests
             closing.MotorsOff = true;
             closing.PowerOff = true;
             closing.PressureSafe = true;
+            closing.CurrentSafe = true;
             closing.PersistenceDrained = true;
             closing.LogicalQuiescent = true;
             Assert(

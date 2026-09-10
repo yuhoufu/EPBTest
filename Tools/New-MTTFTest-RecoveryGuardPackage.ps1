@@ -3,6 +3,7 @@
 param(
     [string]$OutputDirectory = '',
     [string]$MainReleaseDirectory = '',
+    [string]$MsBuild = '',
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
     [switch]$SkipBuild
 )
@@ -64,9 +65,18 @@ if (-not [string]::IsNullOrWhiteSpace($MainReleaseDirectory)) {
     $sharedSourceHash = (Get-FileHash -LiteralPath $sharedSource).Hash
 }
 if (-not $SkipBuild) {
-    $msbuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe'
-    if (-not (Test-Path -LiteralPath $msbuild)) { $msbuild = (Get-Command msbuild.exe -ErrorAction Stop).Source }
-    & $msbuild (Join-Path $repo 'MTTFTest.RecoveryGuard\MTTFTest.RecoveryGuard.csproj') /t:Rebuild /p:Configuration=$Configuration /p:Platform=AnyCPU /v:minimal /nologo
+    $guardMsBuildPath = $MsBuild
+    if ([string]::IsNullOrWhiteSpace($guardMsBuildPath)) {
+        $guardMsBuildPath = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe'
+        if (-not (Test-Path -LiteralPath $guardMsBuildPath -PathType Leaf)) {
+            $guardMsBuildPath = (Get-Command msbuild.exe -ErrorAction Stop).Source
+        }
+    }
+    $guardMsBuildPath = [IO.Path]::GetFullPath($guardMsBuildPath)
+    if (-not (Test-Path -LiteralPath $guardMsBuildPath -PathType Leaf)) {
+        throw "指定的 MSBuild 不存在：$guardMsBuildPath"
+    }
+    & $guardMsBuildPath (Join-Path $repo 'MTTFTest.RecoveryGuard\MTTFTest.RecoveryGuard.csproj') /t:Rebuild /p:Configuration=$Configuration /p:Platform=AnyCPU /v:minimal /nologo
     if ($LASTEXITCODE -ne 0) { throw 'RecoveryGuard 独立构建失败。' }
 }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {

@@ -260,11 +260,15 @@ namespace AdaptiveControlTests
             var manager = (EpbManager)FormatterServices.GetUninitializedObject(typeof(EpbManager));
             var cycleRegistry = new ConcurrentDictionary<int, int>();
             var attemptRegistry = new ConcurrentDictionary<int, long>();
-            var pendingRecovery = new ConcurrentDictionary<int, int>();
+            var pendingRecovery = new ConcurrentDictionary<string, EpbManager.FormalPendingCycle>();
+            var runId = Guid.NewGuid();
+            SetPrivateField(manager, "_activeBatchId", runId);
+            SetPrivateField(manager, "_runEpoch", 1L);
             foreach (var channel in new[] { 4, 5, 7, 8, 9 })
                 cycleRegistry[channel] = 101;
             SetPrivateField(manager, "_currentCycleNumberByChannel", cycleRegistry);
             SetPrivateField(manager, "_currentAttemptIdByChannel", attemptRegistry);
+            SetPrivateField(manager, "_cycleAttempts", new CycleAttemptRegistry());
             SetPrivateField(manager, "_formalPersistenceRecoveryPendingCycles", pendingRecovery);
             SetPrivateField(manager, "_log", Config.NullLogger.Instance);
 
@@ -278,12 +282,16 @@ namespace AdaptiveControlTests
             cycleRegistry[5] = 202;
             attemptRegistry[4] = 7;
             attemptRegistry[5] = 8;
-            pendingRecovery[4] = 202;
+            pendingRecovery[$"{runId:N}:1:4"] = new EpbManager.FormalPendingCycle(202, 50);
+            var oldRecoveryKey = $"{Guid.NewGuid():N}:1:5";
+            pendingRecovery[oldRecoveryKey] = new EpbManager.FormalPendingCycle(202, 50);
             manager.SweepCurrentCycleRegistryForRestartQuiescence();
             Assert(cycleRegistry.TryGetValue(4, out var retained) && retained == 202,
                 "仍等待耐久恢复的圈身份被清场误删");
             Assert(!cycleRegistry.ContainsKey(5),
-                "无待办的通道圈身份未随清场移除");
+                "旧运行同圈号待办错误保护了当前运行的圈投影");
+            Assert(pendingRecovery.TryGetValue(oldRecoveryKey, out var oldPending) && oldPending.Cycle == 202,
+                "当前运行清场删除了旧运行未收口证据");
         }
 
         private static void SetPrivateField(object instance, string fieldName, object value)
@@ -458,26 +466,34 @@ namespace AdaptiveControlTests
                 });
                 // 前一会话的资源收口是异步的：带重试轮询直到 sidecar 附着成功。
                 WatchdogAttachResult start = null;
+                string lastAttachFailure = "No attach result returned";
+                string firstAttachFailure = null;
+                var attachAttempts = 0;
                 var startDeadline = Environment.TickCount + 30000;
                 while (Environment.TickCount - startDeadline < 0)
                 {
                     WatchdogAttachResult attempt;
+                    attachAttempts++;
                     try
                     {
                         attempt = WatchdogRuntime.StartSessionAsync(new[] { 4 })
                             .GetAwaiter().GetResult();
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        lastAttachFailure = ex.ToString();
+                        if (firstAttachFailure == null) firstAttachFailure = lastAttachFailure;
                         Thread.Sleep(1000);
                         continue;
                     }
                     if (attempt != null && attempt.Attached) { start = attempt; break; }
+                    lastAttachFailure = attempt?.Warning ?? "Null attach result or missing warning";
+                    if (firstAttachFailure == null) firstAttachFailure = lastAttachFailure;
                     Thread.Sleep(1000);
                 }
                 Assert(start != null,
                     $"{label}未达到真实 Runtime/Sidecar Attached：" +
-                    (start?.Warning ?? "<null>"));
+                    $"Attempts={attachAttempts}; FirstFailure={firstAttachFailure}; LastFailure={lastAttachFailure}");
                 sessionId = start.SessionId;
                 var composite = WatchdogRuntime.CaptureTransportSnapshot();
                 Assert(composite != null && composite.IsStable && composite.Context != null,

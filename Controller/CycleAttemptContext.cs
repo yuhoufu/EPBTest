@@ -89,7 +89,9 @@ namespace Controller
             long attemptId,
             CycleAttemptKind kind,
             int cycle,
-            CancellationTokenSource attemptCts = null)
+            CancellationTokenSource attemptCts = null,
+            Guid powerOperationId = default,
+            long powerOperationEpoch = 0)
         {
             if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
             if (attemptId <= 0) throw new ArgumentOutOfRangeException(nameof(attemptId));
@@ -99,6 +101,8 @@ namespace Controller
             Device = device ?? string.Empty;
             DaqGeneration = Math.Max(0, daqGeneration);
             DaqBeginSequence = Math.Max(0, daqBeginSequence);
+            PowerOperationId = powerOperationId;
+            PowerOperationEpoch = powerOperationEpoch;
             Channel = channel;
             AttemptId = attemptId;
             Kind = kind;
@@ -117,6 +121,8 @@ namespace Controller
         /// </summary>
         public long DaqGeneration { get; }
         public long DaqBeginSequence { get; }
+        public Guid PowerOperationId { get; }
+        public long PowerOperationEpoch { get; }
         public int Channel { get; }
         public long AttemptId { get; }
         public CycleAttemptKind Kind { get; }
@@ -396,6 +402,9 @@ namespace Controller
         public int Count => _current.Count;
 
         public bool TryRegister(CycleAttemptContext context)
+            => TryRegisterWithProjection(context, null);
+
+        private bool TryRegisterWithProjection(CycleAttemptContext context, Action publishProjection)
         {
             if (context == null) throw new ArgumentNullException(nameof(context));
             lock (GetChannelGate(context.Channel))
@@ -407,6 +416,7 @@ namespace Controller
 
                 if (!_current.TryAdd(context.Channel, context)) return false;
                 _lastExecution[context.Channel] = context;
+                publishProjection?.Invoke();
                 return true;
             }
         }
@@ -415,8 +425,11 @@ namespace Controller
         /// 先把身份放入 registry，再调用同步 Begin。Begin 阻塞或抛出时身份始终可观察且不移除。
         /// </summary>
         public bool TryRegisterBeforeBegin(CycleAttemptContext context, Action begin)
+            => TryRegisterBeforeBegin(context, null, begin);
+
+        internal bool TryRegisterBeforeBegin(CycleAttemptContext context, Action publishProjection, Action begin)
         {
-            if (!TryRegister(context)) return false;
+            if (!TryRegisterWithProjection(context, publishProjection)) return false;
             begin?.Invoke();
             return true;
         }
@@ -434,10 +447,15 @@ namespace Controller
         }
 
         public bool TryRemoveExact(CycleAttemptContext context)
+            => TryRemoveExact(context, null);
+
+        internal bool TryRemoveExact(CycleAttemptContext context, Action clearProjection)
         {
             if (context == null) return false;
             lock (GetChannelGate(context.Channel))
             {
+                if (!IsCurrent(context)) return false;
+                clearProjection?.Invoke();
                 var removed =
                     ((ICollection<KeyValuePair<int, CycleAttemptContext>>)_current)
                     .Remove(new KeyValuePair<int, CycleAttemptContext>(context.Channel, context));
@@ -485,6 +503,13 @@ namespace Controller
             var winner = await Task.WhenAny(completion, timeout).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             return winner == completion;
+        }
+
+        internal T WithChannelProjectionGate<T>(int channel, Func<T> action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            // 仅用于短小的内存投影事务，禁止在 action 中执行持久化或硬件操作。
+            lock (GetChannelGate(channel)) return action();
         }
 
         private object GetChannelGate(int channel)

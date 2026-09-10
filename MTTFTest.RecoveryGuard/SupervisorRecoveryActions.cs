@@ -6,6 +6,57 @@ using MTTFTest.RecoveryControl;
 
 namespace MTTFTest.RecoveryGuard
 {
+    internal static class StalledMainRetirementPolicy
+    {
+        internal static bool CanRetire(RecoveryControlState state, RecoveryGuardSettings settings, DateTime now)
+        {
+            if (settings == null || settings.Mode != RecoveryGuardMode.RecoverStalled || now.Kind != DateTimeKind.Utc)
+                return false;
+            var tx = state?.Transaction;
+            var intent = state?.Intent;
+            var observation = state?.Observation;
+            var snapshot = observation?.LastSnapshot;
+            if (intent?.DesiredState != RecoveryDesiredState.Run || intent.MainProcess?.IsValid() != true ||
+                !Guid.TryParse(intent.WatchdogSessionId, out var watchdogSession) || watchdogSession == Guid.Empty ||
+                tx?.Stage != RecoveryStage.SafeStop || tx.OwnershipReleased || tx.WorkerRetirementRequestedUtcTicks != 0 ||
+                tx.AuthorizationId != intent.AuthorizationId || tx.IntentVersion != intent.IntentVersion ||
+                tx.Owner?.IsValid() != true || tx.Owner.Matches(intent.MainProcess) ||
+                !Guid.TryParseExact(tx.TransactionId, "N", out var transactionId) || transactionId == Guid.Empty ||
+                !string.Equals(state.MainExecutablePath, intent.MainProcess.ExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+                tx.Epoch != state.LastTakeoverEpoch || tx.LeaseUntilUtcTicks <= now.Ticks ||
+                tx.StageDeadlineUtcTicks <= now.Ticks || tx.StageStartedUtcTicks <= 0 ||
+                observation?.Established != true || observation.Expired ||
+                observation.SuspectCount < settings.ConfirmationCount ||
+                snapshot?.SourceAvailable != true || snapshot.MainProcess?.Matches(intent.MainProcess) != true ||
+                snapshot.RunId != intent.RunId || snapshot.ConfigurationIdentity != intent.ConfigurationIdentity ||
+                snapshot.Authorization == null || snapshot.Authorization.InstallationId != state.InstallationId ||
+                snapshot.Authorization.AuthorizationId != intent.AuthorizationId ||
+                snapshot.Authorization.IntentVersion != intent.IntentVersion ||
+                snapshot.Channels == null || snapshot.Channels.Any(channel => channel == null) || observation.ChannelClocks == null)
+                return false;
+            var grace = TimeSpan.FromSeconds(Math.Min(30, Math.Max(5, settings.StageTimeoutSeconds / 2)));
+            if (now.Ticks - tx.StageStartedUtcTicks < grace.Ticks) return false;
+            var staleBefore = now.AddSeconds(-settings.BusinessStallSeconds).Ticks;
+            var channels = snapshot.Channels.Where(channel => channel != null && channel.Eligible &&
+                !channel.Completed && !channel.PermanentlyIsolated && !channel.ManuallyExcluded).ToArray();
+            if (channels.Length == 0 || channels.Select(channel => channel.Channel).Distinct().Count() != channels.Length)
+                return false;
+            // A single stalled channel is not evidence that the entire Main
+            // cannot cooperate. Require every participating business clock to
+            // be stale and preserve legitimate bounded phase waits.
+            foreach (var channel in channels)
+            {
+                if (channel.StageDeadlineUtcTicks > now.Ticks) return false;
+                var clocks = observation.ChannelClocks.Where(clock => clock != null && clock.Channel == channel.Channel).ToArray();
+                if (clocks.Length != 1 || clocks[0].SampleProgressUtcTicks <= 0 ||
+                    clocks[0].ControlProgressUtcTicks <= 0 || clocks[0].PersistedProgressUtcTicks <= 0 ||
+                    clocks[0].SampleProgressUtcTicks > staleBefore || clocks[0].ControlProgressUtcTicks > staleBefore ||
+                    clocks[0].PersistedProgressUtcTicks > staleBefore) return false;
+            }
+            return true;
+        }
+    }
+
     internal interface IRecoverySupervisorTransport
     {
         Task<RecoveryGuardSafetyPrepareResponse> PrepareSafetyAsync(RecoveryGuardSafetyPrepareRequest request, CancellationToken token);
@@ -32,15 +83,23 @@ namespace MTTFTest.RecoveryGuard
         private readonly IRecoverySupervisorTransport _transport;
         private readonly Func<DateTime> _now;
         private readonly Func<RecoveryProcessIdentity, ProcessObservation> _probe;
+        private readonly RecoveryGuardSettings _settings;
+        private readonly Action _demandRetirementAllowed;
+        private readonly Func<RecoveryProcessIdentity, string, Action, bool> _retireMain;
         public int MaximumCallSeconds => 25;
 
         internal SupervisorRecoveryActions(RecoveryControlStore store, IRecoverySupervisorTransport transport,
-            Func<DateTime> now, Func<RecoveryProcessIdentity, ProcessObservation> probe)
+            Func<DateTime> now, Func<RecoveryProcessIdentity, ProcessObservation> probe,
+            RecoveryGuardSettings settings = null, Action demandRetirementAllowed = null,
+            Func<RecoveryProcessIdentity, string, Action, bool> retireMain = null)
         {
             _store = store ?? throw new ArgumentNullException(nameof(store));
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _now = now ?? throw new ArgumentNullException(nameof(now));
             _probe = probe ?? throw new ArgumentNullException(nameof(probe));
+            _settings = settings;
+            _demandRetirementAllowed = demandRetirementAllowed;
+            _retireMain = retireMain ?? RecoveryWorkerRetirement.RetireExactMainProcess;
         }
 
         public async Task<RecoveryActionResult> ExecuteAsync(RecoveryControlState context, CancellationToken cancellationToken)
@@ -110,8 +169,36 @@ namespace MTTFTest.RecoveryGuard
                 return Result(RecoveryActionOutcome.Blocked, "RecoveryActionRequiresReconciliation");
             if (tx.Stage == RecoveryStage.SafeStop)
             {
-                if (_probe(state.Intent.MainProcess) != ProcessObservation.Exited)
-                    return Result(RecoveryActionOutcome.Blocked, "ActiveMainIndependentSafetyProofRequired");
+                var mainObservation = _probe(state.Intent.MainProcess);
+                if (mainObservation == ProcessObservation.ExactAlive)
+                {
+                    if (_demandRetirementAllowed != null && StalledMainRetirementPolicy.CanRetire(state, _settings, _now()) &&
+                        tx.SafetyAuthorityId == null && tx.LaunchOperationId == null)
+                    {
+                        _demandRetirementAllowed();
+                        _store.RecordMainRetirementIntent(tx.TransactionId, tx.Epoch, tx.Owner,
+                            sessionId, state.Intent.MainProcess, _now());
+                        var exited = _retireMain(state.Intent.MainProcess, state.MainExecutablePath, () =>
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            _demandRetirementAllowed();
+                            var latest = _store.ReadOwnedStage(tx.TransactionId, tx.Epoch, tx.Owner,
+                                RecoveryStage.SafeStop, _now(), sessionId);
+                            if (!StalledMainRetirementPolicy.CanRetire(latest, _settings, _now()) ||
+                                latest.Intent.MainProcess?.Matches(state.Intent.MainProcess) != true ||
+                                latest.Transaction.SafetyAuthorityId != null || latest.Transaction.LaunchOperationId != null)
+                                throw new InvalidOperationException("RecoveryMainRetirementAuthorityChanged");
+                            // Store reads and commissioning checks can take time;
+                            // cancellation during those checks still vetoes termination.
+                            cancellationToken.ThrowIfCancellationRequested();
+                        });
+                        return Result(RecoveryActionOutcome.Pending, exited
+                            ? "StalledMainRetired;IndependentSafetyRequired" : "StalledMainRetirementExitPending");
+                    }
+                    return Result(RecoveryActionOutcome.Pending, "ActiveMainSafeStopPending");
+                }
+                if (mainObservation != ProcessObservation.Exited)
+                    return Result(RecoveryActionOutcome.Blocked, "ActiveMainIdentityUnproven");
                 if (tx.SafetyAuthorityId == null)
                 {
                     var prepared = await _transport.PrepareSafetyAsync(new RecoveryGuardSafetyPrepareRequest

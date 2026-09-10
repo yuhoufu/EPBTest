@@ -16,6 +16,7 @@ namespace AdaptiveControlTests
         public static int RunRecoveryEvidenceRegression()
         {
             var passed = 0;
+            Run("恢复卸压输出不依赖压力读取且保留命令失败", RecoveryReleaseOutputDoesNotReadPressure, ref passed);
             Run("DAQ压力失新不再阻塞协调器安全重建", StalePressureAllowsDeenergizedCoordinatorRebuild, ref passed);
             return passed;
         }
@@ -23,6 +24,10 @@ namespace AdaptiveControlTests
         public static int RunAll()
         {
             var passed = 0;
+            Run("已取消建压入口不访问输出或压力", CancelledBuildDoesNotTouchOutputs, ref passed);
+            Run("单次液压清场输出失败不得返回成功", RunOnceRejectsUnconfirmedRelease, ref passed);
+            Run("旧保持清理不得移除替代任务", OldHoldCleanupPreservesReplacement, ref passed);
+            Run("恢复卸压输出不依赖压力读取且保留命令失败", RecoveryReleaseOutputDoesNotReadPressure, ref passed);
             Run("双液压全局槽仅并发建压一次并共享电机锚点", GlobalSlotBuildsTogetherAndSharesAnchor, ref passed);
             Run("全局槽成员快照不可变", GlobalSlotMembershipIsImmutable, ref passed);
             Run("单液压失败时健康组释压并跳过半槽", GlobalSlotFailureReleasesHealthyGroup, ref passed);
@@ -38,6 +43,8 @@ namespace AdaptiveControlTests
             Run("已完成液压代次不阻碍不同成员重新开始", CompletedGenerationAllowsFreshMembership, ref passed);
             Run("液压通道作用域作废后代次完整归还", ChannelLeaseScopesAlwaysCloseGeneration, ref passed);
             Run("已完成ForceRelease仅按精确原因退役旧租约", ForceReleasedScopeRetirementIsExact, ref passed);
+            Run("停止卸压可使用独立原始压力而不等待控制消费者", StopReleaseUsesRawPressureEvidence, ref passed);
+            Run("停止原始压力无效不能回退到缓存安全值", StopReleaseRejectsInvalidRawEvidence, ref passed);
             Run("StopAll强制撤权不等待缺员液压屏障", StopAllForceAbortDoesNotWaitForMissingMember, ref passed);
             Run("液压组重建替换旧Gate并递增Epoch", RebuildGroupRestoresFreshStartHealth, ref passed);
             Run("DAQ压力失新不再阻塞协调器安全重建", StalePressureAllowsDeenergizedCoordinatorRebuild, ref passed);
@@ -54,6 +61,96 @@ namespace AdaptiveControlTests
             Run("未知液压异常不得绕过连续确认", UnknownHydraulicFaultIsNotHardware, ref passed);
             Run("报警电源组仅在无兄弟通道活动时关闭", PowerGroupIdlePredicateIsScoped, ref passed);
             return passed;
+        }
+
+        private static void OldHoldCleanupPreservesReplacement()
+        {
+            var entries = new ConcurrentDictionary<int, TaskCompletionSource<bool>>();
+            var oldHold = new TaskCompletionSource<bool>();
+            var replacement = new TaskCompletionSource<bool>();
+            entries[2] = replacement;
+            Assert(!HydraulicController.RemoveExactHoldEntry(entries, 2, oldHold) &&
+                ReferenceEquals(entries[2], replacement), "旧完成移除了新保持");
+            Assert(!HydraulicController.RemoveExactHoldEntry(entries, 2, null), "空身份清理获准");
+            Assert(HydraulicController.RemoveExactHoldEntry(entries, 2, replacement) && entries.IsEmpty,
+                "精确保持身份未清理");
+            Assert(!HydraulicController.RemoveExactHoldEntry(entries, 2, replacement), "重复清理未幂等");
+        }
+
+        private static void RunOnceRejectsUnconfirmedRelease()
+        {
+            // Empty mappings deliberately reject output without opening NI hardware.
+            using var outputs = new IO.NI.DoController(new DoConfig());
+            using var analog = new IO.NI.AoController(new AoConfig());
+            var config = new TestConfig();
+            config.Hydraulics.Add(new HydraulicItem { Id = 2, Enabled = true });
+            var controller = new HydraulicController(outputs, config, _ => 0.0, analog);
+            try
+            {
+                controller.RunOnceAsync(2, CancellationToken.None).GetAwaiter().GetResult();
+                throw new Exception("未确认卸压输出被布尔返回值掩盖");
+            }
+            catch (InvalidOperationException ex)
+            {
+                Assert(ex.Message.StartsWith("HydraulicReleaseOutputUnconfirmed:", StringComparison.Ordinal),
+                    "清场失败未保留明确输出错误");
+            }
+        }
+
+        private static void CancelledBuildDoesNotTouchOutputs()
+        {
+            using var outputs = new IO.NI.DoController(new DoConfig());
+            using var analog = new IO.NI.AoController(new AoConfig());
+            var config = new TestConfig();
+            config.Hydraulics.Add(new HydraulicItem { Id = 2, Enabled = true });
+            var controller = new HydraulicController(outputs, config,
+                new Func<int, double>(_ => { throw new Exception("取消后读取压力"); }), analog);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            var coordinator = NewCoordinator(() => 0, () => Task.CompletedTask,
+                stableMs: 0, timeoutMs: 300);
+            try
+            {
+                coordinator.EnterElectricalPhaseAsync(8, cancellation.Token).GetAwaiter().GetResult();
+                throw new Exception("取消的液压成员登记未拒绝");
+            }
+            catch (OperationCanceledException ex)
+            {
+                Assert(ex.CancellationToken == cancellation.Token, "成员登记取消身份丢失");
+            }
+            Assert(!controller.RunOnceAsync(2, cancellation.Token).GetAwaiter().GetResult(),
+                "已取消单次液压运行不应成功");
+            try
+            {
+                controller.BuildAndQualifyAsync(2, 1, cancellation.Token).GetAwaiter().GetResult();
+                throw new Exception("已取消建压未拒绝");
+            }
+            catch (OperationCanceledException ex)
+            {
+                Assert(ex.CancellationToken == cancellation.Token, "取消身份丢失");
+            }
+        }
+
+        private static void RecoveryReleaseOutputDoesNotReadPressure()
+        {
+            var calls = 0;
+            var failure = new InvalidOperationException("release-output-failed");
+            var coordinator = NewCoordinator(
+                () => { throw new Exception("输出阶段不应读取压力"); },
+                () => { calls++; return Task.CompletedTask; }, stableMs: 100, timeoutMs: 300);
+            coordinator.IssueRecoveryReleaseOutputAsync(2).GetAwaiter().GetResult();
+            Assert(calls == 1, "采样不可用时未发出卸压输出");
+            coordinator = NewCoordinator(() => 0,
+                () => { throw failure; }, stableMs: 100, timeoutMs: 300);
+            try
+            {
+                coordinator.IssueRecoveryReleaseOutputAsync(2).GetAwaiter().GetResult();
+                throw new Exception("卸压输出失败被吞掉");
+            }
+            catch (InvalidOperationException ex)
+            {
+                Assert(ReferenceEquals(ex, failure), "卸压输出失败证据丢失");
+            }
         }
 
         private static void GlobalSlotBuildsTogetherAndSharesAnchor()
@@ -1097,6 +1194,33 @@ namespace AdaptiveControlTests
                     2,
                     "exact-release"),
                 "同一旧租约被重复退役。");
+        }
+
+        private static void StopReleaseUsesRawPressureEvidence()
+        {
+            var commands = 0;
+            var coordinator = NewCoordinator(
+                () => throw new InvalidOperationException("control consumer stalled"),
+                () => { commands++; return Task.CompletedTask; }, stableMs: 0, timeoutMs: 100);
+            coordinator.ForceReleaseAsync(2, "stop-raw-evidence", id =>
+            {
+                Assert(commands == 1, "必须先实际请求卸压再读取安全证据");
+                return new IO.NI.PressureSample(id, 0, DateTime.UtcNow, Stopwatch.GetTimestamp());
+            }).GetAwaiter().GetResult();
+            Assert(commands == 1, "卸压命令遗漏或重复");
+        }
+
+        private static void StopReleaseRejectsInvalidRawEvidence()
+        {
+            var coordinator = NewCoordinator(() => 0, () => Task.CompletedTask, stableMs: 0, timeoutMs: 40);
+            var rejected = false;
+            try
+            {
+                coordinator.ForceReleaseAsync(2, "invalid-stop-raw-evidence",
+                    id => new IO.NI.PressureSample(id, double.NaN, DateTime.MinValue, 0)).GetAwaiter().GetResult();
+            }
+            catch (HydraulicReleaseTimeoutException) { rejected = true; }
+            Assert(rejected, "原始压力无效时错误使用了默认安全缓存");
         }
 
         private static void PowerGroupIdlePredicateIsScoped()

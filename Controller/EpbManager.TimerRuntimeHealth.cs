@@ -1055,7 +1055,8 @@ namespace Controller
                                     new[] { channel },
                                     plan,
                                     "TimerRuntimeSelfHealing",
-                                    recoveryToken)
+                                    recoveryToken,
+                                    recoveryIncident)
                                 .ConfigureAwait(false);
                             if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
 

@@ -25,6 +25,27 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 4 && args[0] == "--guard-live-stop-child")
+                    return RecoveryGuardLiveStopTests.RunChild(args[1], args[2], args[3]);
+                if (args.Length == 1 && args[0] == "--guard-live-stop")
+                {
+                    _passed += RecoveryGuardLiveStopTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--project-log")
+                {
+                    _passed += ProjectLogStoreTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--safety-feedback")
+                {
+                    _passed += SafetyFeedbackWindowTests.RunAll();
+                    _passed += PhysicalSafetyBatchTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length >= 3 && args[0] == "--safety-supervised-child")
                 {
                     File.AppendAllText(Path.GetFullPath(args[1]), Process.GetCurrentProcess().Id + Environment.NewLine);
@@ -569,6 +590,7 @@ namespace AdaptiveControlTests
                 // before broader controller suites that intentionally leave terminal evidence.
                 _passed += RecoveryCoordinationTests.RunAll();
                 _passed += CycleAttemptLifecycleTests.RunAll();
+                _passed += RecoveryProductionSeamTests.RunAll();
                 _passed += PowerSupplyTelemetryRecorderTests.RunAll();
                 _passed += HistoricalStorageBudgetTests.RunAll();
                 _passed += WatchdogJournalStorageTests.RunAll();
@@ -797,6 +819,9 @@ namespace AdaptiveControlTests
                 _passed += V216StabilityTests.RunAll();
                 _passed += V217StabilityTests.RunAll();
                 _passed += I0049RecoveryTests.RunAll();
+                _passed += SafetyFeedbackWindowTests.RunAll();
+                _passed += PhysicalSafetyBatchTests.RunAll();
+                _passed += RecoveryGuardLiveStopTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -5186,6 +5211,7 @@ namespace AdaptiveControlTests
             {
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = false,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true
             };
             Assert(!powerMissing.CanReleaseAcquisition,
@@ -5195,6 +5221,7 @@ namespace AdaptiveControlTests
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = false,
                 PowerDisposition = PowerShutdownDisposition.CommunicationUnavailableSkipped,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true,
                 PersistenceBoundaryConfirmed = true,
                 LogicalQuiescenceConfirmed = true
@@ -5205,7 +5232,7 @@ namespace AdaptiveControlTests
                    !communicationUnavailable.PhysicalSafetyConfirmed &&
                    !communicationUnavailable.CanRestartInProcess,
                 "通讯断联跳过没有严格限定为只允许退出且保留断电未确认事实");
-            Assert(EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
+            Assert(!EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
                        pressureOnly,
                        explicitlyStopped: true) &&
                    !EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
@@ -5214,12 +5241,13 @@ namespace AdaptiveControlTests
                    !EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
                        powerMissing,
                        explicitlyStopped: true),
-                "显式停止后的重启放宽未限定为已确认电机断能和电源关闭");
+                "显式停止后的重启丢弃了必要的物理安全证明");
 
             var motorMissing = new StopSafetyResult
             {
                 MotorOffCommandSucceeded = false,
                 PowerOffConfirmed = true,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true
             };
             Assert(!motorMissing.CanReleaseAcquisition,
@@ -5229,6 +5257,7 @@ namespace AdaptiveControlTests
             {
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = true,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true,
                 PersistenceBoundaryConfirmed = true,
                 LogicalQuiescenceConfirmed = true
@@ -5329,6 +5358,7 @@ namespace AdaptiveControlTests
             {
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = true,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true,
                 PersistenceBoundaryConfirmed = true,
                 LogicalQuiescenceConfirmed = activeCyclePending.IsQuiescent,
@@ -5590,6 +5620,33 @@ namespace AdaptiveControlTests
                     .GetResult();
                 Assert(newStartup == 2, "新启动可能被上一批次的迟到清理覆盖");
                 Assert(oldStartup.GetAwaiter().GetResult() == 1, "旧启动任务未正常完成测试收尾");
+
+                var singleStarted = new ManualResetEventSlim(false);
+                var allowSingleCleanup = new ManualResetEventSlim(false);
+                try
+                {
+                    var single = gate.RunAsync(
+                        async () =>
+                        {
+                            singleStarted.Set();
+                            await Task.Run(() => allowSingleCleanup.Wait()).ConfigureAwait(false);
+                        },
+                        CancellationToken.None);
+                    Assert(singleStarted.Wait(1000), "单通道启动没有进入共用生命周期门禁");
+                    var batchBehindSingle = gate.RunAsync(
+                        () => Task.FromResult(3), CancellationToken.None);
+                    Assert(!batchBehindSingle.Wait(100), "批量启动越过了仍在收尾的单通道启动");
+                    allowSingleCleanup.Set();
+                    single.GetAwaiter().GetResult();
+                    Assert(batchBehindSingle.GetAwaiter().GetResult() == 3,
+                        "单通道启动退出后批量启动未获得同一门禁");
+                }
+                finally
+                {
+                    allowSingleCleanup.Set();
+                    singleStarted.Dispose();
+                    allowSingleCleanup.Dispose();
+                }
             }
             finally
             {
@@ -6600,7 +6657,7 @@ namespace AdaptiveControlTests
 
             public void ReplaceModel(EpbAdaptiveProfile profile) => _profile = profile?.Clone();
             public Controller.Adaptive.EpbCycleOutcome LastCycleOutcome { get; } = new Controller.Adaptive.EpbCycleOutcome();
-            public Controller.Adaptive.FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(Guid testRunId, int cycleNumber)
+            public Controller.Adaptive.FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(Guid testRunId, int cycleNumber, Controller.Adaptive.EpbCycleOutcome committedOutcome)
                 => new Controller.Adaptive.FormalCycleFaultCommitResult();
             public Task<Controller.Adaptive.EpbCycleOutcome> RunOneAdaptiveLearningAsync(int targetPeriodMs, CancellationToken token)
                 => Task.FromResult(LastCycleOutcome);

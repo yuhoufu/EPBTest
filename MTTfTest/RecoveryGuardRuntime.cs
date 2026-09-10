@@ -12,6 +12,30 @@ namespace MTEmbTest
 {
     internal static class RecoveryGuardRuntime
     {
+        internal static bool TryProjectRecoveryStage(ChannelRuntimeStateChangedEvent channel,
+            InfrastructureRecoverySource source, Guid runId, long runEpoch,
+            out string stage, out long started, out long deadline)
+        {
+            stage = null; started = 0; deadline = 0;
+            if (!RecoveryOwnershipPolicy.IsOwnerCurrent(channel) || source?.ActiveRecovery != true ||
+                runId == Guid.Empty || runEpoch <= 0 || source.RunId != runId || source.RunEpoch != runEpoch ||
+                channel.RunEpoch != runEpoch || source.CorrelationId == Guid.Empty ||
+                source.CorrelationId != channel.RecoveryOwnerId ||
+                !(source.ExpectedRecoveryChannels?.Contains(channel.Channel) ?? false) ||
+                !(source.RecoveringChannels?.Contains(channel.Channel) ?? false) ||
+                (source.OrphanRecoveryChannels?.Contains(channel.Channel) ?? false) ||
+                string.IsNullOrWhiteSpace(source.Stage) || source.StageStartedUtcTicks <= 0 ||
+                source.HardDeadlineUtcTicks <= source.StageStartedUtcTicks ||
+                source.RecoveryHardDeadlineUtcTicks <= source.StageStartedUtcTicks ||
+                source.HardDeadlineUtcTicks > DateTime.MaxValue.Ticks ||
+                source.RecoveryHardDeadlineUtcTicks > DateTime.MaxValue.Ticks)
+                return false;
+            stage = "Recovery:" + source.CorrelationId.ToString("N") + ":" + source.StageOrdinal + ":" + source.Stage;
+            started = source.StageStartedUtcTicks;
+            deadline = Math.Min(source.HardDeadlineUtcTicks, source.RecoveryHardDeadlineUtcTicks);
+            return true;
+        }
+
         private sealed class RunLease
         {
             internal RecoveryAuthorizationToken Token;
@@ -52,6 +76,10 @@ namespace MTEmbTest
         private static string _lastObservedStop;
         private static Action<string, string> _externalFence;
         private static string _lastObservedFence;
+        private static readonly object AutomaticStopGate = new object();
+        private static Func<StopContext, Task<StopSafetyResult>> _automaticStop;
+        private static Task _automaticStopTask;
+        private static string _lastAutomaticStop;
 
         internal static void Attach(EpbManager manager, GlobalConfig config)
         {
@@ -72,6 +100,7 @@ namespace MTEmbTest
                 RunId = runId,
                 RequestedUtc = DateTime.UtcNow
             }, CancellationToken.None);
+            _automaticStop = context => manager.StopForExternalRecoveryAsync(context);
             if (Volatile.Read(ref _worker) == null)
             {
                 var thread = new Thread(PublishLoop) { IsBackground = true, Name = "MTTFTest.RecoveryGuardPublisher" };
@@ -330,14 +359,55 @@ namespace MTEmbTest
                 takeover.IntentVersion != lease.Token.IntentVersion || takeover.Epoch <= lease.Token.TakeoverEpoch)
                 return;
             var identity = takeover.TransactionId + ":" + takeover.Epoch;
-            if (_lastObservedFence == identity) return;
-            Interlocked.Exchange(ref lease.Revoked, 1);
-            // Revoke execution and enqueue OFF using the controller's existing
-            // external-recovery boundary. This is not a confirmed safe-stop
-            // receipt, and it must not turn automatic takeover into user Stop.
-            _externalFence?.Invoke(lease.RunId, "RecoveryGuardTakeover:" + identity);
-            _lastObservedFence = identity;
+            if (_lastObservedFence != identity)
+            {
+                Interlocked.Exchange(ref lease.Revoked, 1);
+                // Revocation alone is not a safe-stop receipt.
+                _externalFence?.Invoke(lease.RunId, "RecoveryGuardTakeover:" + identity);
+                _lastObservedFence = identity;
+            }
+            var stop = _automaticStop;
+            if (stop == null || lease.Process?.Matches(RecoveryProcessProbe.Current()) != true) return;
+            var request = RecoveryGuardLiveStop.TryCreate(authority, lease.Token, lease.Process, lease.RunId, DateTime.UtcNow);
+            if (request == null) return;
+            lock (AutomaticStopGate)
+            {
+                if (_lastAutomaticStop == request.Key || _automaticStopTask?.IsCompleted == false) return;
+                _lastAutomaticStop = request.Key;
+                _automaticStopTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var retired = await request.RunAsync(
+                            () => Store.ReadOwnedStage(request.TransactionId, request.Epoch, request.Owner,
+                                RecoveryStage.SafeStop, DateTime.UtcNow, request.SessionId),
+                            stop,
+                            () => Environment.Exit(0),
+                            process => RecoveryProcessProbe.Observe(process, RecoveryProcessProbe.ReadBootId()) == ProcessObservation.ExactAlive,
+                            () => DateTime.UtcNow).ConfigureAwait(false);
+                        if (!retired) Report(new InvalidOperationException(
+                            "RecoveryGuardAutomaticSafeStopUnconfirmed:" + request.Key + "; Reason=" + request.RejectionReason));
+                    }
+                    catch (Exception ex)
+                    {
+                        lock (AutomaticStopGate)
+                        {
+                            // Only pending old-core retirement may reopen this
+                            // phase's attempt slot. The publisher still checks
+                            // the lease/deadline/intent and active task on every
+                            // scan; no timeout or safety failure is made success.
+                            if (ShouldRetryAutomaticStop(ex, request.Key, _lastAutomaticStop))
+                                _lastAutomaticStop = null;
+                        }
+                        Report(ex);
+                    }
+                });
+            }
         }
+
+        internal static bool ShouldRetryAutomaticStop(Exception error, string failedKey, string currentKey)
+            => error is RecoveryStopPendingException && !string.IsNullOrEmpty(failedKey) &&
+               string.Equals(failedKey, currentKey, StringComparison.Ordinal);
 
         private static void CommitTerminal(TerminalRequest request)
         {

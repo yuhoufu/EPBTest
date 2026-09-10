@@ -3,9 +3,17 @@
 param([Parameter(Mandatory=$true)][string]$BaseBundleDirectory,
     [Parameter(Mandatory=$true)][string]$OutputRoot)
 $ErrorActionPreference='Stop'
+function Assert-AutomaticBundleSourceUnchanged([string]$Repository, [string]$ExpectedCommit) {
+    $currentCommit = [string](& git -C $Repository rev-parse --verify HEAD 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $ExpectedCommit -notmatch '^[0-9a-fA-F]{40}$' -or
+        $currentCommit.Trim() -cne $ExpectedCommit) { throw 'AutomaticBundleSourceChanged' }
+    $status = @(& git -C $Repository status --porcelain --untracked-files=all 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'AutomaticBundleSourceChanged' }
+}
 $repo=Split-Path $PSScriptRoot -Parent
 if(@(git -C $repo status --porcelain).Count -ne 0 -or $LASTEXITCODE -ne 0){throw 'AutomaticBundleRequiresCleanSource'}
 $commit=([string](git -C $repo rev-parse HEAD)).Trim()
+Assert-AutomaticBundleSourceUnchanged $repo $commit
 $base=[IO.Path]::GetFullPath($BaseBundleDirectory)
 & (Join-Path $base 'Verify-FieldPackage.ps1')|Out-Null
 $id=Get-Content (Join-Path $base 'bundle-identity.json') -Raw -Encoding UTF8|ConvertFrom-Json
@@ -30,6 +38,7 @@ $files=@(Get-ChildItem $output -File -Recurse|ForEach-Object {@{name=$_.FullName
 @{schemaVersion=1;productVersion=$id.productVersion;componentCommit=$id.gitCommit;deploymentToolsCommit=$commit;
     recoveryMode='RecoverExited';supportedRecoveryModes=@('RecoverExited','RecoverStalled');fieldAcceptanceRequired=$true;files=$files}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $output 'automatic-bundle.json') -Encoding UTF8
 & (Join-Path $output 'Install-AutomaticRecoveryBundle.ps1') -Mode ValidatePackage
+Assert-AutomaticBundleSourceUnchanged $repo $commit
 $seven=Join-Path $env:ProgramFiles '7-Zip\7z.exe'
 Push-Location (Split-Path $output -Parent)
 try{
@@ -38,6 +47,7 @@ try{
     & $seven t ($output+'.7z')|Out-Host
     if($LASTEXITCODE -ne 0){throw 'ArchiveTestFailed'}
 }finally{Pop-Location}
+Assert-AutomaticBundleSourceUnchanged $repo $commit
 $hash=(Get-FileHash ($output+'.7z')).Hash
 $hash|Set-Content ($output+'.7z.sha256') -Encoding ASCII
 @{archive=($output+'.7z');sha256=$hash;recoveryMode='RecoverExited';supportedRecoveryModes=@('RecoverExited','RecoverStalled');fieldAcceptanceRequired=$true}|ConvertTo-Json

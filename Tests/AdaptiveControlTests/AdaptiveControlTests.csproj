@@ -50,6 +50,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="SafetyFeedbackWindowTests.cs" />
+    <Compile Include="PhysicalSafetyBatchTests.cs" />
+    <Compile Include="RecoveryGuardLiveStopTests.cs" />
     <Compile Include="RecoveryGuardRuntimeTests.cs" />
     <Compile Include="RecoveryGuardSupervisorTests.cs" />
     <Compile Include="SafetyAgentReconciliationTests.cs" />

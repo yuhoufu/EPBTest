@@ -280,29 +280,84 @@ namespace Controller
         internal int TimeoutMs { get; }
     }
 
+    internal sealed class RecoveryStageTaskRegistry
+    {
+        private readonly object _gate = new object();
+        private readonly HashSet<Task> _tasks = new HashSet<Task>();
+
+        internal bool HasPending
+        {
+            get { lock (_gate) return _tasks.Any(task => !task.IsCompleted); }
+        }
+
+        internal void Track(Task task)
+        {
+            if (task == null) throw new ArgumentNullException(nameof(task));
+            lock (_gate) _tasks.Add(task);
+            task.ContinueWith(completed =>
+            {
+                // Keep the real task until completion, even if its deadline
+                // wrapper and software owner have already returned.
+                if (completed.IsFaulted) { var ignored = completed.Exception; }
+                lock (_gate) _tasks.Remove(completed);
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        // Use only from outside the tracked actions. Admission must prevent
+        // unrelated new work; this observes completion, not physical safety.
+        internal async Task WaitForTrackedTasksAsync()
+        {
+            while (true)
+            {
+                Task[] pending;
+                lock (_gate) pending = _tasks.Where(task => !task.IsCompleted).ToArray();
+                if (pending.Length == 0) return;
+                try { await Task.WhenAll(pending).ConfigureAwait(false); }
+                catch
+                {
+                    // Fault/cancellation are terminal task outcomes, never a
+                    // safe-current/pressure proof. Observe every actual task.
+                    foreach (var task in pending)
+                        if (task.IsFaulted) { var observed = task.Exception; }
+                }
+            }
+        }
+    }
+
     internal static class RecoveryStageDeadline
     {
         internal static async Task RunAsync(
             string stage,
             int timeoutMs,
             Func<CancellationToken, Task> action,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryStageTaskRegistry actions = null,
+            RecoveryStageTaskRegistry retirementActions = null)
         {
             if (action == null) throw new ArgumentNullException(nameof(action));
             token.ThrowIfCancellationRequested();
             var boundedMs = Math.Max(1, timeoutMs);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var stageToken = linked.Token;
             var actionTask = Task.Factory.StartNew(
-                    () => action(linked.Token),
-                    CancellationToken.None,
+                    () =>
+                    {
+                        stageToken.ThrowIfCancellationRequested();
+                        return action(stageToken);
+                    },
+                    stageToken,
                     TaskCreationOptions.DenyChildAttach,
                     TaskScheduler.Default)
                 .Unwrap();
+            actions?.Track(actionTask);
+            retirementActions?.Track(actionTask);
             var deadlineTask = Task.Delay(boundedMs, token);
             var completed = await Task.WhenAny(actionTask, deadlineTask).ConfigureAwait(false);
             if (completed == actionTask)
             {
                 await actionTask.ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
                 return;
             }
 

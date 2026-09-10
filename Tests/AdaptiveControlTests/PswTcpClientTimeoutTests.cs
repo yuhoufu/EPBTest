@@ -19,7 +19,35 @@ namespace AdaptiveControlTests
             Run("程控电源查询超时不遗留未观察NetworkStream异常", TimeoutObservesDisposedReadTask, ref passed);
             Run("电源快照时间戳取轮询完成且保护设定低频读取", SnapshotTimestampUsesPollCompletion, ref passed);
             Run("安全OFF优先于已排队遥测且半行回读超时关闭连接", SafetyOffPrecedesQueuedTelemetry, ref passed);
+            Run("电源事务入场拒绝已取消命令且入场后保持配对", CommandAdmissionPreservesCancellationBoundary, ref passed);
             return passed;
+        }
+
+        private static void CommandAdmissionPreservesCancellationBoundary()
+        {
+            var method = typeof(PswTcpClient).GetMethod("ExecuteAdmittedAsync", BindingFlags.Static | BindingFlags.NonPublic)
+                .MakeGenericMethod(typeof(int));
+            using (var cancellation = new CancellationTokenSource())
+            {
+                cancellation.Cancel();
+                var called = false;
+                Func<CancellationToken, Task<int>> action = token => { called = true; return Task.FromResult(1); };
+                bool rejected = false;
+                try { method.Invoke(null, new object[] { action, cancellation.Token }); }
+                catch (TargetInvocationException ex) when (ex.InnerException is OperationCanceledException) { rejected = true; }
+                if (!rejected || called) throw new Exception("入场前已取消的电源命令仍执行");
+            }
+            using (var cancellation = new CancellationTokenSource())
+            {
+                Func<CancellationToken, Task<int>> action = token =>
+                {
+                    cancellation.Cancel();
+                    if (token.CanBeCanceled) throw new Exception("在途配对事务被调用方取消令牌拆断");
+                    return Task.FromResult(7);
+                };
+                var result = (Task<int>)method.Invoke(null, new object[] { action, cancellation.Token });
+                if (result.GetAwaiter().GetResult() != 7) throw new Exception("入场事务未完成");
+            }
         }
 
         private static void SafetyOffPrecedesQueuedTelemetry()

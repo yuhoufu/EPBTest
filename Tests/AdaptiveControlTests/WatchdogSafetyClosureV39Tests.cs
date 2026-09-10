@@ -30,6 +30,7 @@ namespace AdaptiveControlTests
             closing.MotorsOff = true;
             closing.PowerOff = true;
             closing.PressureSafe = true;
+            closing.CurrentSafe = true;
             closing.PersistenceDrained = true;
             closing.LogicalQuiescent = true;
             Assert(closing.IsValidFor(closing.SessionId), "schema v1未被兼容读取");
@@ -47,6 +48,7 @@ namespace AdaptiveControlTests
             closing.MotorsOff = true;
             closing.PowerOff = true;
             closing.PressureSafe = true;
+            closing.CurrentSafe = true;
             closing.PersistenceDrained = true;
             closing.LogicalQuiescent = false;
             Assert(!closing.IsSafetyTerminal &&

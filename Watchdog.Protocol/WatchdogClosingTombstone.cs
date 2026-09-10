@@ -66,6 +66,7 @@ namespace MTTFTest.Watchdog.Protocol
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
         public bool PressureSafe { get; set; }
+        public bool CurrentSafe { get; set; }
         public bool PersistenceDrained { get; set; }
         public bool LogicalQuiescent { get; set; }
         public bool DataContinuityVerified { get; set; }
@@ -122,7 +123,7 @@ namespace MTTFTest.Watchdog.Protocol
             SchemaVersion >= 2 &&
             State == WatchdogClosingTombstoneState.Terminal &&
             SafetyStage == WatchdogClosingSafetyStage.Terminal &&
-            MotorsOff && PowerOff && PressureSafe && PersistenceDrained && LogicalQuiescent;
+            MotorsOff && PowerOff && PressureSafe && CurrentSafe && PersistenceDrained && LogicalQuiescent;
 
         public bool HasExactOldProcessExitProof =>
             SchemaVersion >= 5 && OldProcessExitProven && OldProcessId > 0 &&

@@ -65,6 +65,9 @@ namespace Controller.Adaptive
 
     public sealed class EpbCycleOutcome
     {
+        /// <summary>在 Runner 仍归本圈所有时复制结果，后续提交独立持有该副本。</summary>
+        public EpbCycleOutcome Snapshot() => (EpbCycleOutcome)MemberwiseClone();
+
         public EpbCycleOutcomeKind Kind { get; set; }
         public EpbCurrentStage Stage { get; set; }
         public string Reason { get; set; }

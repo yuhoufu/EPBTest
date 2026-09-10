@@ -14,9 +14,190 @@ namespace AdaptiveControlTests
 {
     internal static class RecoveryCoordinationTests
     {
+        private static void AffectedGroupFailureSafetyCommandMatrix()
+        {
+            foreach (var failed in new[] { "", "epb4", "power2", "release1", "feedback", "mapping" })
+            {
+                var trace = new List<string>();
+                var succeeded = false;
+                var groups = failed == "mapping" ? new[] { 0, 2 } : new[] { 1, 2, 2 };
+                Action<string> command = name =>
+                {
+                    trace.Add(name);
+                    if (failed == name) throw new InvalidOperationException("injected:" + name);
+                };
+                try
+                {
+                    EpbManager.RunAffectedGroupFailureSafetyAsync(new[] { 4, 5, 4 }, groups, 1,
+                        channel => { trace.Add("epb" + channel); return failed != "epb" + channel; },
+                        group => { command("power" + group); return Task.CompletedTask; },
+                        group => { command("release" + group); return Task.CompletedTask; },
+                        () => { },
+                        () => { trace.Add("feedback"); return Task.FromResult((failed != "feedback", "unsafe")); })
+                        .GetAwaiter().GetResult();
+                    succeeded = true;
+                }
+                catch (AggregateException ex)
+                {
+                    Assert(ex.InnerExceptions.Count == 1, "失败命令未完整保留");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Assert(failed == "feedback" && ex.Message == "unsafe", "反馈失败原因错误");
+                }
+                var expected = new List<string> { "epb4", "epb5" };
+                if (failed != "mapping") expected.Add("power1");
+                expected.Add("power2");
+                expected.Add("release1");
+                if (failed == "" || failed == "feedback") expected.Add("feedback");
+                Assert(trace.SequenceEqual(expected), "安全清场漏掉输出、重复输出或提前使用反馈:" + failed);
+                Assert(succeeded == (failed == ""), "失败清场错误确认安全:" + failed);
+            }
+
+            var revoked = false;
+            var calls = new List<string>();
+            try
+            {
+                EpbManager.RunAffectedGroupFailureSafetyAsync(new[] { 4, 5 }, new[] { 2 }, 1,
+                    channel => { calls.Add("epb" + channel); revoked = true; return true; },
+                    group => { calls.Add("power"); return Task.CompletedTask; },
+                    group => { calls.Add("release"); return Task.CompletedTask; },
+                    () => { if (revoked) throw new OperationCanceledException("superseded"); },
+                    () => { calls.Add("feedback"); return Task.FromResult((true, "")); })
+                    .GetAwaiter().GetResult();
+                throw new Exception("旧恢复失去权限后仍成功");
+            }
+            catch (OperationCanceledException) { }
+            Assert(calls.SequenceEqual(new[] { "epb4" }), "旧恢复继续操作继任者输出");
+        }
+
+        private static void RecoverySafetyBoundaryAwaitsCommandsAndFeedback()
+        {
+            foreach (var revokeDuringFeedback in new[] { false, true })
+            {
+                var off = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var feedbackEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var feedback = new TaskCompletionSource<(bool ok, string error)>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var current = 1;
+                var releaseCalls = 0;
+                var boundary = EpbManager.RunRecoverySafetyBoundaryAsync(new Func<Task>[]
+                {
+                    () => off.Task,
+                    () => { Interlocked.Increment(ref releaseCalls); return Task.CompletedTask; }
+                },
+                () =>
+                {
+                    if (Volatile.Read(ref current) == 0)
+                        throw new InvalidOperationException("async-superseded");
+                },
+                () => { feedbackEntered.TrySetResult(true); return feedback.Task; });
+
+                Assert(!boundary.IsCompleted && releaseCalls == 0 && !feedbackEntered.Task.IsCompleted,
+                    "OFF未完成时提前进入卸压或反馈");
+                if (!revokeDuringFeedback) Interlocked.Exchange(ref current, 0);
+                off.SetResult(true);
+                if (revokeDuringFeedback)
+                {
+                    Assert(feedbackEntered.Task.Wait(5000), "安全反馈阶段未进入");
+                    Assert(!boundary.IsCompleted && Volatile.Read(ref releaseCalls) == 1,
+                        "反馈未完成时提前放行或重复卸压");
+                    Interlocked.Exchange(ref current, 0);
+                    feedback.SetResult((true, string.Empty));
+                }
+                try
+                {
+                    boundary.GetAwaiter().GetResult();
+                    throw new Exception("异步等待期间所有权失效仍放行");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Assert(ex.Message == "async-superseded", "异步失效身份原因丢失");
+                }
+                Assert(Volatile.Read(ref releaseCalls) == (revokeDuringFeedback ? 1 : 0),
+                    "旧恢复在命令等待结束后操作继任输出");
+            }
+        }
+
+        private static void RecoverySafetyBoundaryOrdering()
+        {
+            var trace = new System.Collections.Generic.List<string>();
+            var commands = new Func<Task>[]
+            {
+                () => { trace.Add("off"); throw new InvalidOperationException("injected"); },
+                () => { trace.Add("release"); return Task.CompletedTask; }
+            };
+            try
+            {
+                EpbManager.RunRecoverySafetyBoundaryAsync(commands, () => { },
+                    () => { trace.Add("feedback"); return Task.FromResult((true, "")); }).GetAwaiter().GetResult();
+                throw new Exception("断能失败意外放行");
+            }
+            catch (AggregateException ex) { Assert(ex.InnerExceptions.Count == 1, "未保留命令失败"); }
+            Assert(trace.SequenceEqual(new[] { "off", "release" }), "失败未尝试卸压或误调用反馈放行");
+
+            var current = true;
+            trace.Clear();
+            commands[0] = () => { trace.Add("off"); current = false; return Task.CompletedTask; };
+            try
+            {
+                EpbManager.RunRecoverySafetyBoundaryAsync(commands,
+                    () => { if (!current) throw new InvalidOperationException("superseded"); },
+                    () => Task.FromResult((true, ""))).GetAwaiter().GetResult();
+                throw new Exception("旧身份意外放行");
+            }
+            catch (InvalidOperationException ex) { Assert(ex.Message == "superseded", "失效身份原因丢失"); }
+            Assert(trace.SequenceEqual(new[] { "off" }), "旧身份继续操作继任输出");
+
+            current = true;
+            try
+            {
+                EpbManager.RunRecoverySafetyBoundaryAsync(new Func<Task>[] { () => Task.CompletedTask },
+                    () => { if (!current) throw new InvalidOperationException("late-superseded"); },
+                    () => { current = false; return Task.FromResult((true, "")); }).GetAwaiter().GetResult();
+                throw new Exception("反馈完成后的旧身份意外放行");
+            }
+            catch (InvalidOperationException ex) { Assert(ex.Message == "late-superseded", "反馈后未重新验证所有权"); }
+
+            foreach (var safe in new[] { false, true })
+            {
+                trace.Clear();
+                commands[0] = () => { trace.Add("off"); return Task.CompletedTask; };
+                var passed = false;
+                try
+                {
+                    EpbManager.RunRecoverySafetyBoundaryAsync(commands, () => { },
+                        () => { trace.Add("feedback"); return Task.FromResult((safe, "unsafe")); }).GetAwaiter().GetResult();
+                    passed = true;
+                }
+                catch (InvalidOperationException ex) { Assert(!safe && ex.Message == "unsafe", "反馈失败原因错误"); }
+                Assert(passed == safe && trace.SequenceEqual(new[] { "off", "release", "feedback" }),
+                    "安全反馈顺序或放行结果错误");
+            }
+        }
+
+        private static void RecoveryOffFailureCollection()
+        {
+            var failures = new System.Collections.Generic.List<Exception>();
+            var calls = 0;
+            var failure = new InvalidOperationException("InjectedOffFailure");
+            EpbManager.CollectRecoveryOffFailure(4, () => { calls++; return false; }, failures);
+            EpbManager.CollectRecoveryOffFailure(5, () => { calls++; throw failure; }, failures);
+            EpbManager.CollectRecoveryOffFailure(6, () => { calls++; return true; }, failures);
+            Assert(calls == 3 && failures.Count == 2 &&
+                failures[0].Message == "AffectedGroupEpbOffUnconfirmed:EPB4" &&
+                ReferenceEquals(failures[1], failure), "OFF失败丢失或中断后续安全命令");
+            EpbManager.CollectRecoveryOffFailure(7, null, failures);
+            Assert(failures.Count == 3, "缺失OFF命令不得作为成功");
+        }
+
         internal static int RunAll()
         {
             var passed = 0;
+            Run("恢复电源预检拒绝被禁用通道和缺失结果", RecoveryPowerReadyRejectsDisabledChannels, ref passed);
+            Run("整组失败清场逐路断能卸压并拒绝失败反馈与旧所有者", AffectedGroupFailureSafetyCommandMatrix, ref passed);
+            Run("恢复安全边界等待真实异步完成并拒绝迟到所有权", RecoverySafetyBoundaryAwaitsCommandsAndFeedback, ref passed);
+            Run("恢复安全边界命令失败卸压与反馈放行顺序", RecoverySafetyBoundaryOrdering, ref passed);
+            Run("恢复OFF逐路尝试且保留拒绝与异常", RecoveryOffFailureCollection, ref passed);
             Run("EPB8从Slot506起才进入液压成员快照", FutureSlotEligibilityIsAtomic, ref passed);
             Run("液压超时与DAQ恢复只有一个所有者", HigherRecoveryPreemptsAndWaitsForHydraulic, ref passed);
             Run("双DAQ批次对同一液压组共享引用计数所有权", SameDaqBatchSharesHydraulicOwnership, ref passed);
@@ -27,6 +208,7 @@ namespace AdaptiveControlTests
             Run("TaskCovered且owner投影暂缺时从不可变契约自修复", CoveredTaskRepairsMissingOwnerProjection, ref passed);
             Run("冗余断电矩阵只在DO成功且电源新鲜低电流时放行", RedundantPowerOffProofMatrixIsFailSafe, ref passed);
             Run("电源应急latch旧incident不得清除新generation", EmergencyPowerLatchRemovalIsExact, ref passed);
+            Run("电源锁存证据清理不得吞掉同代新请求", EmergencyPowerLatchEvidenceRemovalIsAtomic, ref passed);
             Run("启动OFF晚完成必须与同代组恢复共同终结", StartupOffLateCompletionJoinsGroupRecovery, ref passed);
             Run("启动OFF恢复硬截止和旧run均保持失败安全", StartupOffJoinFailsClosed, ref passed);
             Run("同进程恢复持续进展越过30秒且仅60秒停滞或300秒总限接管", InProcessRecoveryLeaseUsesMaterialProgress, ref passed);
@@ -41,6 +223,8 @@ namespace AdaptiveControlTests
             Run("硬件确认先OFF和提交本次运行隔离再发布诊断", ConfirmedHardwareIsolationOrderIsSafetyFirst, ref passed);
             Run("启动组级硬件隔离后仅健康通道继续", StartupInfrastructureIsolationKeepsHealthyChannels, ref passed);
             Run("恢复阶段忽略取消仍受硬期限约束", IgnoredCancellationCannotHoldRecoveryStage, ref passed);
+            Run("恢复阶段预取消不执行且动作完成不掩盖撤权", RecoveryStageCancellationIsNotSuccess, ref passed);
+            Run("恢复超时保留真实在途动作直到迟到终态", RecoveryStageRetainsPendingAction, ref passed);
             Run("DAQ恢复先到必须等待整组截止且重入后才能提交", RecoveryWaitsForCutoffAndRejoin, ref passed);
             Run("迟到旧代清理不得删除新代液压参与状态", LateCleanupCannotTouchNewParticipantVersion, ref passed);
             Run("连续100次恢复故障无所有权和Failure=1残留", HundredFaultsLeaveNoOwnerOrResetLoop, ref passed);
@@ -339,6 +523,8 @@ namespace AdaptiveControlTests
         private static void DaqRejoinFailureRequiresImmediateRollback()
         {
             Assert(EpbManager.RequiresImmediateDaqRejoinSafetyRollback(
+                       "JointPhysicalSafetyBeforePowerEnable") &&
+                   EpbManager.RequiresImmediateDaqRejoinSafetyRollback(
                        "PowerEnableThenMechanicalRelease") &&
                    EpbManager.RequiresImmediateDaqRejoinSafetyRollback(
                        "RejoinAndCommit") &&
@@ -738,8 +924,147 @@ namespace AdaptiveControlTests
                 "旧incident/generation清除了新事务建立的电源latch");
         }
 
+        private static void EmergencyPowerLatchEvidenceRemovalIsAtomic()
+        {
+            var businessLatch = new EmergencyPowerGroupLatch();
+            var businessSnapshot = businessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            var businessRun = Guid.NewGuid();
+            var verificationId = Guid.NewGuid();
+            var requiredMembers = new[] { 4, 5 };
+            Assert(businessLatch.TryArmBusinessVerification(4, businessSnapshot, businessRun, 2,
+                requiredMembers, 100, verificationId), "无法登记整组业务验证");
+            Assert(!businessLatch.TryArmBusinessVerification(4, businessSnapshot, businessRun, 2,
+                new[] { 4 }, 100, Guid.NewGuid()), "另一个验证覆盖了原待验证集合");
+            businessLatch.InvalidateBusinessVerification(4, businessSnapshot, Guid.NewGuid());
+            var replacementVerificationId = Guid.NewGuid();
+            Assert(businessLatch.TryArmBusinessVerification(4, businessSnapshot, businessRun, 2,
+                requiredMembers, 100, replacementVerificationId, replaceAfterFreshSafety: true),
+                "重新确认安全后的新验证不能替换旧集合");
+            businessLatch.InvalidateBusinessVerification(4, businessSnapshot, verificationId);
+            requiredMembers[1] = 6;
+            using (var old = new CycleAttemptContext(businessRun, 2, "Dev1", 4, 100, CycleAttemptKind.FormalRecovery, 1))
+            using (var firstBusiness = new CycleAttemptContext(businessRun, 2, "Dev1", 4, 101, CycleAttemptKind.FormalRecovery, 1))
+            using (var second = new CycleAttemptContext(businessRun, 2, "Dev1", 5, 102, CycleAttemptKind.FormalRecovery, 1))
+            {
+                old.CompleteOnce(() => true, null);
+                Assert(!businessLatch.ConfirmBusinessCycle(4, old, true), "旧attempt计入恢复验证");
+                Assert(!businessLatch.ConfirmBusinessCycle(4, second, true), "未提交圈计入恢复验证");
+                firstBusiness.CompleteOnce(() => true, null);
+                second.CompleteOnce(() => true, null);
+                Assert(!businessLatch.ConfirmBusinessCycle(4, firstBusiness, true) &&
+                       !businessLatch.ConfirmBusinessCycle(4, firstBusiness, true) && businessLatch.ContainsKey(4),
+                    "单成员或重复提交提前清除整组锁存");
+                Assert(businessLatch.ConfirmBusinessCycle(4, second, true) && !businessLatch.ContainsKey(4),
+                    "冻结的必要成员全部提交后未解除原锁存");
+            }
+            var replacement = businessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            Assert(businessLatch.TryArmBusinessVerification(4, replacement, businessRun, 2, new[] { 4 }, 200, verificationId),
+                "新锁存无法登记业务验证");
+            businessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            using (var late = new CycleAttemptContext(businessRun, 2, "Dev1", 4, 201, CycleAttemptKind.FormalRecovery, 2))
+            {
+                late.CompleteOnce(() => true, null);
+                Assert(!businessLatch.ConfirmBusinessCycle(4, late, true) && businessLatch.ContainsKey(4),
+                    "新故障后旧业务验证仍可清除锁存");
+            }
+            var readinessLatch = new EmergencyPowerGroupLatch();
+            var readiness = readinessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            Assert(!readinessLatch.IsControlReadyCurrent(4, readiness), "待完成信号被当成当前就绪");
+            Assert(readinessLatch.TryMarkControlReady(4, readiness) &&
+                   readiness.ControlReady.Result.Status == EmergencyPowerGroupCompletionStatus.ControlReady &&
+                   !readiness.ControlReady.Result.Recovered && !readiness.Completion.IsCompleted &&
+                   readinessLatch.ContainsKey(4), "预检就绪错误完成业务恢复或删除锁存");
+            Assert(readinessLatch.IsControlReadyCurrent(4, readiness) &&
+                   !readinessLatch.IsControlReadyCurrent(5, readiness), "就绪身份未限制到精确组");
+            var newFault = readinessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            Assert(!newFault.ControlReady.IsCompleted &&
+                   !readinessLatch.IsControlReadyCurrent(4, readiness) &&
+                   !readinessLatch.TryMarkControlReady(4, readiness) &&
+                   !readinessLatch.TryRemoveUnchanged(4, readiness), "新故障复用了旧就绪或清理证据");
+            Assert(!readinessLatch.TryFailUnchanged(4, readiness, "OldWorkerLateFailure") &&
+                   !newFault.ControlReady.IsCompleted && !newFault.Completion.IsCompleted,
+                "旧任务失败污染同关联号的新故障请求");
+            var superseding = readinessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            Assert(newFault.ControlReady.Result.Status == EmergencyPowerGroupCompletionStatus.Superseded &&
+                   !superseding.ControlReady.IsCompleted, "重复故障未撤销旧预检等待");
+            Assert(readinessLatch.TryMarkControlReady(4, superseding) &&
+                   readinessLatch.IsControlReadyCurrent(4, superseding), "新请求无法建立自己的就绪");
+            Assert(readinessLatch.TryFailUnchanged(4, superseding, "FailureAfterReady"),
+                "精确当前请求未能记录失败");
+            Assert(!readinessLatch.IsControlReadyCurrent(4, superseding) &&
+                   !readinessLatch.TryMarkControlReady(4, superseding), "迟到失败未撤销已完成的就绪信号");
+            readinessLatch.Clear();
+            Assert(!readinessLatch.IsControlReadyCurrent(4, superseding), "清理后就绪仍有效");
+            var clearPending = readinessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            readinessLatch.Clear();
+            Assert(clearPending.ControlReady.Result.Status == EmergencyPowerGroupCompletionStatus.Superseded,
+                "清理遗留未结束的预检等待");
+            var latch = new EmergencyPowerGroupLatch();
+            Assert(!latch.TryCapture(4, out _) && !latch.TryRemoveUnchanged(4, default),
+                "空锁存或默认证据获得清理许可");
+            var first = latch.Register(4, Guid.NewGuid(), DateTime.UtcNow, true);
+            Assert(latch.TryCapture(4, out var beforeFault), "无法冻结活动请求版本");
+            var repeated = latch.Register(4, Guid.NewGuid(), DateTime.UtcNow, true);
+            Assert(repeated.Generation == first.Generation &&
+                   !latch.TryRemoveUnchanged(4, beforeFault) && latch.ContainsKey(4),
+                "旧证据清除了同代次新增的故障请求");
+            Assert(latch.TryFail(4, first.CorrelationId, "OriginalFailedSafe"), "未记录原失败回执");
+            Assert(latch.TryCapture(4, out var latest) &&
+                   !latch.TryRemoveUnchanged(5, latest) &&
+                   latch.TryRemoveUnchanged(4, latest), "精确当前版本未能清理");
+            Assert(first.Completion.GetAwaiter().GetResult().Status ==
+                   EmergencyPowerGroupCompletionStatus.FailedSafe,
+                "清理把历史失败回执改写为恢复成功");
+            var next = latch.Register(4, first.CorrelationId, DateTime.UtcNow, true);
+            Assert(next.IsFirst && next.ShouldPublishNonDaqFault &&
+                   !latch.TryRemoveUnchanged(4, latest), "新代次未重新发布或被旧证据清除");
+
+            for (var iteration = 0; iteration < 64; iteration++)
+            {
+                var concurrent = new EmergencyPowerGroupLatch();
+                concurrent.Register(4, Guid.NewGuid(), DateTime.UtcNow, true);
+                Assert(concurrent.TryCapture(4, out var frozen), "并发样本缺少原锁存");
+                using (var start = new ManualResetEventSlim(false))
+                {
+                    var removal = Task.Run(() =>
+                    {
+                        start.Wait();
+                        return concurrent.TryRemoveUnchanged(4, frozen);
+                    });
+                    var registration = Task.Run(() =>
+                    {
+                        start.Wait();
+                        return concurrent.Register(4, Guid.NewGuid(), DateTime.UtcNow, true);
+                    });
+                    start.Set();
+                    Task.WaitAll(removal, registration);
+                    var newRequest = registration.Result;
+                    Assert(concurrent.TryCapture(4, out var remaining) &&
+                           remaining.Generation == newRequest.Generation &&
+                           remaining.RequestCount == newRequest.RequestCount &&
+                           !newRequest.Completion.IsCompleted,
+                        "Register与清理交错丢失了新增故障锁存");
+                    Assert(removal.Result
+                            ? newRequest.IsFirst && newRequest.ShouldPublishNonDaqFault
+                            : !newRequest.IsFirst && remaining.RequestCount == 2,
+                        "并发清理结果不满足先清理或先登记的线性化顺序");
+                }
+            }
+        }
+
         private static void StartupOffLateCompletionJoinsGroupRecovery()
         {
+            var readinessLatch = new EmergencyPowerGroupLatch();
+            var registration = readinessLatch.Register(4, Guid.NewGuid(), DateTime.UtcNow);
+            var pendingOff = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var preflight = StartupPositioningOffRecoveryJoin.WaitAsync(pendingOff.Task,
+                registration.ControlReady, 5000, () => true, CancellationToken.None);
+            Assert(readinessLatch.TryMarkControlReady(4, registration) && !preflight.IsCompleted,
+                "预检就绪越过精确OFF等待");
+            pendingOff.SetResult(true);
+            Assert(preflight.GetAwaiter().GetResult().Status == EmergencyPowerGroupCompletionStatus.ControlReady &&
+                   !registration.Completion.IsCompleted && readinessLatch.ContainsKey(4),
+                "预检等待仍依赖最终业务完成或提前清除了锁存");
             var exactOff = new TaskCompletionSource<bool>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             var group = new TaskCompletionSource<EmergencyPowerGroupCompletion>(
@@ -1134,6 +1459,96 @@ namespace AdaptiveControlTests
                        pausedTerminal.Contains("Dev2=Terminal") &&
                        pausedTerminal.Contains("Dev2=HeldForManualPause"),
                     "暂停Withdraw与Ready参与者未全部终结");
+            });
+        }
+
+        private static void RecoveryPowerReadyRejectsDisabledChannels()
+        {
+            EpbManager.ValidateRecoveryPowerReadyResult(new[] { 4, 5 }, Array.Empty<int>());
+            EpbManager.ValidateRecoveryPowerReadyResult(new[] { 4, 5 }, new[] { 7 });
+            foreach (var disabled in new[] { null, new[] { 4 }, new[] { 5, 4, 4 } })
+            {
+                try
+                {
+                    EpbManager.ValidateRecoveryPowerReadyResult(new[] { 4, 5 }, disabled);
+                    throw new Exception("预检返回禁用通道仍允许机械恢复");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Assert(ex.Message.StartsWith(disabled == null ?
+                        "RecoveryPowerReadyResultMissing" : "RecoveryPowerReadyRejected:EPB="),
+                        "电源预检拒绝原因丢失");
+                }
+            }
+        }
+
+        private static void RecoveryStageCancellationIsNotSuccess()
+        {
+            RunAsync(async () =>
+            {
+                foreach (var cancelBeforeEntry in new[] { true, false })
+                {
+                    using var cancellation = new CancellationTokenSource();
+                    var calls = 0;
+                    if (cancelBeforeEntry) cancellation.Cancel();
+                    try
+                    {
+                        await RecoveryStageDeadline.RunAsync("CancellationRace", 5000,
+                            _ =>
+                            {
+                                Interlocked.Increment(ref calls);
+                                cancellation.Cancel();
+                                return Task.CompletedTask;
+                            }, cancellation.Token);
+                        throw new Exception("取消的恢复阶段错误返回成功");
+                    }
+                    catch (OperationCanceledException) { }
+                    Assert(calls == (cancelBeforeEntry ? 0 : 1), "预取消仍调用动作或动作重复执行");
+                }
+            });
+        }
+
+        private static void RecoveryStageRetainsPendingAction()
+        {
+            RunAsync(async () =>
+            {
+                foreach (var failLate in new[] { false, true })
+                {
+                    var registry = new RecoveryStageTaskRegistry();
+                    var incidentRegistry = new RecoveryStageTaskRegistry();
+                    var action = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var stage = RecoveryStageDeadline.RunAsync("PendingOutput", 200,
+                        _ => { entered.TrySetResult(true); return action.Task; }, CancellationToken.None,
+                        registry, incidentRegistry);
+                    Assert(await Task.WhenAny(entered.Task, Task.Delay(5000)) == entered.Task,
+                        "在途动作未启动");
+                    try { await stage; throw new Exception("在途动作未超时"); }
+                    catch (RecoveryStageTimeoutException) { }
+                    Assert(registry.HasPending, "阶段超时丢失真实硬件动作");
+                    Assert(incidentRegistry.HasPending, "阶段超时丢失该次恢复的真实动作");
+                    var incidentRetirement = incidentRegistry.WaitForTrackedTasksAsync();
+                    Assert(!incidentRetirement.IsCompleted, "该次恢复在实际动作退出前完成退役");
+                    var retirement = registry.WaitForTrackedTasksAsync();
+                    Assert(!retirement.IsCompleted, "等待接口把阶段超时误判为实际动作退出");
+                    var lateAction = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    registry.Track(lateAction.Task);
+                    if (failLate) action.SetException(new InvalidOperationException("late-output-failure"));
+                    else action.SetResult(true);
+                    Assert(await Task.WhenAny(incidentRetirement, Task.Delay(5000)) == incidentRetirement,
+                        "该次恢复的实际动作终态后仍未完成退役");
+                    await incidentRetirement;
+                    var observation = Task.Delay(30);
+                    Assert(await Task.WhenAny(retirement, observation) == observation,
+                        "等待接口遗漏等待期间新增的实际动作");
+                    lateAction.SetCanceled();
+                    Assert(await Task.WhenAny(retirement, Task.Delay(5000)) == retirement,
+                        "实际动作终态后等待接口未返回");
+                    await retirement;
+                    var clock = Stopwatch.StartNew();
+                    while (registry.HasPending && clock.ElapsedMilliseconds < 5000) await Task.Delay(10);
+                    Assert(!registry.HasPending, "真实终态后在途动作未回收");
+                }
             });
         }
 

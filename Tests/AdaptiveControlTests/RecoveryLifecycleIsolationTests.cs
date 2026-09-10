@@ -12,6 +12,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
+            Run("人工液压恢复回退拒绝旧Run和失效所有权", HydraulicResumeRollbackIsRunScoped, ref passed);
             Run("预警overlay不修改Recovering生命周期身份", WarningOverlayDoesNotMutateLifecycle, ref passed);
             Run("V19学习落盘恢复报警时间线保持原owner", V19TimelineKeepsLearningOwner, ref passed);
             Run("Recovering必须携带当前run结构化owner", ExplicitRecoveryOwnerIsRequired, ref passed);
@@ -27,6 +28,18 @@ namespace AdaptiveControlTests
             Run("Recovery registry快照独立于迟到Bind和终态清理", RecoveryRegistrySnapshotIsStable, ref passed);
             Run("Heartbeat只复用稳定不可变聚合快照", HeartbeatAggregateCloneIsStableUnderConcurrency, ref passed);
             return passed;
+        }
+
+        private static void HydraulicResumeRollbackIsRunScoped()
+        {
+            var run = Guid.NewGuid();
+            Assert(EpbManager.CanRollbackHydraulicResume(run, 2, run, 2, true), "当前owner不能执行安全回退");
+            Assert(!EpbManager.CanRollbackHydraulicResume(run, 2, Guid.NewGuid(), 2, true) &&
+                !EpbManager.CanRollbackHydraulicResume(run, 2, run, 3, true) &&
+                !EpbManager.CanRollbackHydraulicResume(run, 2, run, 2, false) &&
+                !EpbManager.CanRollbackHydraulicResume(Guid.Empty, 2, Guid.Empty, 2, true) &&
+                !EpbManager.CanRollbackHydraulicResume(run, 0, run, 0, true),
+                "旧运行、无所有权或空身份获得回退权限");
         }
 
         private static void WarningOverlayDoesNotMutateLifecycle()

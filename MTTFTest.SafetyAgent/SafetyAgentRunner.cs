@@ -62,7 +62,7 @@ namespace MTTFTest.SafetyAgent
         bool ConfirmDoOff();
         bool ConfirmAoZero();
         bool ConfirmPowerOff();
-        bool ConfirmPressureSafe();
+        bool ConfirmCurrentAndPressureSafe();
     }
 
     public interface ISafetyHardwareFactory
@@ -91,6 +91,9 @@ namespace MTTFTest.SafetyAgent
                         receipt.State < WatchdogSafetyHandoffState.Accepted)
                         return 3;
                     if (receipt.IsSafetyCompleted) return 0;
+                    // A historical terminal receipt cannot be upgraded in place:
+                    // its immutable terminal state has no fresh current proof.
+                    if (receipt.State == WatchdogSafetyHandoffState.Completed) return 3;
 
                     var snapshot = WatchdogSafetyConfigSnapshotStore.Validate(
                         args.JournalDirectory,
@@ -105,7 +108,9 @@ namespace MTTFTest.SafetyAgent
                     using (var hardware = factory.Create(snapshot.ConfigDirectory, snapshot.Runtime))
                     {
                         receipt = ReadExact(args);
-                        if (receipt.Stage < WatchdogSafetyStage.DoOffConfirmed)
+                        // Repeat idempotent safe commands for every worker run.
+                        // A durable stage from an interrupted worker cannot prove
+                        // that current physical outputs still have that state.
                         {
                             if (!hardware.ConfirmDoOff())
                                 throw new SafetyHardwareUnavailableException("SafetyDoOffUnconfirmed");
@@ -113,7 +118,6 @@ namespace MTTFTest.SafetyAgent
                                 "DO=OFF confirmed", value => value.MotorsOff = true);
                         }
                         receipt = ReadExact(args);
-                        if (receipt.Stage < WatchdogSafetyStage.AoZeroConfirmed)
                         {
                             if (!hardware.ConfirmAoZero())
                                 throw new SafetyHardwareUnavailableException("SafetyAoZeroUnconfirmed");
@@ -121,7 +125,6 @@ namespace MTTFTest.SafetyAgent
                                 "AO=0 confirmed", null);
                         }
                         receipt = ReadExact(args);
-                        if (receipt.Stage < WatchdogSafetyStage.PowerOffConfirmed)
                         {
                             if (!hardware.ConfirmPowerOff())
                             {
@@ -139,23 +142,27 @@ namespace MTTFTest.SafetyAgent
                                 value => value.PowerOff = true);
                         }
                         receipt = ReadExact(args);
-                        if (receipt.Stage < WatchdogSafetyStage.PressureSafeConfirmed)
                         {
-                            if (!hardware.ConfirmPressureSafe())
-                                throw new SafetyHardwareUnavailableException("SafetyPressureUnconfirmed");
+                            if (!hardware.ConfirmCurrentAndPressureSafe())
+                                throw new SafetyHardwareUnavailableException("SafetyCurrentOrPressureUnconfirmed");
                             Advance(args, receipt, WatchdogSafetyStage.PressureSafeConfirmed,
-                                "Pressure safe confirmed", value => value.PressureSafe = true);
+                                "Fresh current and pressure jointly safe confirmed", value =>
+                                {
+                                    value.PressureSafe = true;
+                                    value.CurrentSafe = true;
+                                });
                         }
                     }
 
                     receipt = ReadExact(args);
                     Advance(args, receipt, WatchdogSafetyStage.Completed,
-                        "SafetyHandoffCompleted:DO=OFF;Power=OFF;AO=0;PressureSafe",
+                        "SafetyHandoffCompleted:DO=OFF;Power=OFF;AO=0;FreshCurrentAndPressureSafe",
                         value =>
                         {
                             value.MotorsOff = true;
                             value.PowerOff = true;
                             value.PressureSafe = true;
+                            value.CurrentSafe = true;
                             value.State = WatchdogSafetyHandoffState.Completed;
                             value.FailureCode = string.Empty;
                             value.FailureDomain = RecoveryFailureDomain.None;

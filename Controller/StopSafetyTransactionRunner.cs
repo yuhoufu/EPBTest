@@ -459,6 +459,11 @@ namespace Controller
                 var startedUtc = _clock.UtcNow;
                 var runId = _runIdProvider();
                 var runEpoch = _runEpochProvider();
+                if (context.RequireFreshPhysicalEvidence && context.RetainedRunId != Guid.Empty)
+                {
+                    runId = context.RetainedRunId;
+                    runEpoch = context.RetainedRunEpoch;
+                }
                 var cts = new CancellationTokenSource();
                 var lease = new StopSafetyTransactionLease(
                     transactionId,
@@ -763,6 +768,14 @@ namespace Controller
                 StopSafetyResult cachedResult = null;
                 lock (_gate)
                 {
+                    // The hard deadline can expire the lease before publishing
+                    // its cached timeout. Preserve the pending stage even in
+                    // that publication gap; the parent core may return first.
+                    if (stageTask != null && !stageTask.IsCompleted &&
+                        (_orphanCore == null ||
+                         ReferenceEquals(_orphanCore, _transactionCoreTask) ||
+                         _orphanCore.IsCompleted))
+                        _orphanCore = stageTask;
                     if (_cachedTimedOut != null)
                     {
                         // The process deadline may win the same virtual-clock
@@ -770,21 +783,12 @@ namespace Controller
                         // enters.  Preserve the actual stuck stage as the
                         // single orphan rather than clearing the parent core
                         // when it returns the already-cached timeout.
-                        if (stageTask != null && !stageTask.IsCompleted &&
-                            (_orphanCore == null ||
-                             ReferenceEquals(_orphanCore, _transactionCoreTask) ||
-                             _orphanCore.IsCompleted))
-                            _orphanCore = stageTask;
                         cachedResult = (_cachedTerminalResult ?? _cachedTimedOut)
                             .Clone(reused: true);
                     }
                 }
-                if (cachedResult != null)
-                {
-                    ObserveOrphan(stageTask, lease);
-                    return cachedResult;
-                }
-                return timeout;
+                ObserveOrphan(stageTask, lease);
+                return cachedResult ?? timeout;
             }
 
             // Keep the terminal heartbeat/cache path free of synchronous

@@ -358,7 +358,7 @@ namespace Controller
         private readonly HydraulicRecoveryOwnershipCoordinator _recoveryOwnership =
             new HydraulicRecoveryOwnershipCoordinator();
         private readonly ConcurrentDictionary<long, byte> _affectedGroupResetInProgress = new();
-        private readonly ConcurrentDictionary<long, byte> _activeCycleLimitRecoveries = new();
+        private readonly ConcurrentDictionary<int, RecoveryStageTaskRegistry> _affectedGroupStageActions = new();
         // 调度锁和重试次数必须使用同一个 (runEpoch, hydraulicGroup) 身份。若这里只按
         // hydraulicGroup 加锁，旧 run 尚未退出的 finally 会先吞掉新 run 的调度，再把
         // 共享键删除，导致新 run 永久没有恢复任务。
@@ -1087,12 +1087,18 @@ namespace Controller
             string reason,
             Guid correlationId,
             string faultCode = null,
-            long recoveryStartedTicks = 0)
+            long recoveryStartedTicks = 0,
+            Guid? originalRunId = null,
+            long? originalRunEpoch = null)
         {
             if (recoveryStartedTicks <= 0)
                 recoveryStartedTicks = Stopwatch.GetTimestamp();
-            var runId = _activeBatchId;
-            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var runId = originalRunId ?? _activeBatchId;
+            var runEpoch = originalRunEpoch ?? Interlocked.Read(ref _runEpoch);
+            if (originalRunId.HasValue != originalRunEpoch.HasValue)
+                throw new ArgumentException("恢复重登记必须同时提供原始 RunId 和 RunEpoch。");
+            if (originalRunId.HasValue &&
+                (runEpoch <= 0 || !IsAffectedGroupResetRunCurrent(runId, runEpoch))) return;
             // 故障码必须在第一次调度时冻结并跨异常/重登记原样传递；若只保留人类可读
             // reason，QueueFull/Worker/RawPermanent 会在第3次仍被误判为可无限局部抖动。
             var frozenFaultCode = string.IsNullOrWhiteSpace(faultCode) ? reason : faultCode;
@@ -1134,7 +1140,7 @@ namespace Controller
                     ? Guid.NewGuid()
                     : correlationId;
                 RecoveryIncidentHandle recoveryIncident = null;
-                Func<Task> BuildRecoveryWorker()
+                Func<Task> BuildRecoveryWorker(RecoveryContractSnapshot executionContract)
                 {
                     return async () =>
                     {
@@ -1190,10 +1196,13 @@ namespace Controller
                                 await ExecuteAffectedGroupResetAsync(
                                         eligible,
                                         $"InfrastructureSelfHealing:{reason}:Attempt={attempt}",
-                                        recoveryCorrelationId,
+                                        executionContract.IncidentId,
                                         runId,
                                         runEpoch,
-                                        RecoveryTargetPhase.Formal)
+                                        RecoveryTargetPhase.Formal,
+                                        executionContract.OwnerId,
+                                        executionContract.SafetyAffectedChannels.ToArray(),
+                                        recoveryIncident)
                                     .ConfigureAwait(false);
 
                                 var stillRecovering = eligible.Any(channel =>
@@ -1268,20 +1277,37 @@ namespace Controller
                         }
                         finally
                         {
-                            // 只释放当前 run 的精确调度身份；旧任务不得删除新 run 的锁。
-                            _isolatedInfrastructureRecoveryScheduled.TryRemove(recoveryKey, out _);
-                            if (reschedule)
-                                ScheduleIsolatedInfrastructureRecovery(
-                                    requested,
-                                    reason,
-                                    recoveryCorrelationId,
-                                    frozenFaultCode,
-                                    recoveryStartedTicks);
-                            recoveryIncident?.CompleteAfterTerminal(contract =>
-                                CommitRecoveryIncidentStateForRelease(
-                                    contract,
-                                    "IsolatedInfrastructureRecoveryTerminal",
-                                    "受影响组恢复执行体已结束；已完成终态复核。"));
+                            try
+                            {
+                                recoveryIncident?.CompleteAfterTerminal(contract =>
+                                    CommitRecoveryIncidentStateForRelease(
+                                        contract,
+                                        "IsolatedInfrastructureRecoveryTerminal",
+                                        "受影响组恢复执行体已结束；已完成终态复核。"));
+                            }
+                            finally
+                            {
+                                if (recoveryIncident != null)
+                                {
+                                    // Do not await our own worker. Keep the scheduling marker
+                                    // until the coordinator confirms real worker retirement.
+                                    var handoff = RunAfterRecoveryWorkerExitAsync(
+                                        recoveryIncident.WorkerTask,
+                                        () => recoveryIncident.TerminalPublished != 0,
+                                        () =>
+                                        {
+                                            _isolatedInfrastructureRecoveryScheduled.TryRemove(recoveryKey, out _);
+                                            if (reschedule && IsAffectedGroupResetRunCurrent(runId, runEpoch))
+                                                ScheduleIsolatedInfrastructureRecovery(
+                                                    requested, reason, recoveryCorrelationId,
+                                                    frozenFaultCode, recoveryStartedTicks,
+                                                    runId, runEpoch);
+                                            return Task.CompletedTask;
+                                        });
+                                    ObserveNonRecoveryLifecycleTask(handoff,
+                                        "InfrastructureRecoveryRetirementHandoff", requested);
+                                }
+                            }
                         }
                     };
                 }
@@ -1294,7 +1320,7 @@ namespace Controller
                     RecoveryTargetPhase.Formal,
                     recoveryCorrelationId,
                     requested,
-                    _ => BuildRecoveryWorker(),
+                    BuildRecoveryWorker,
                     contract =>
                     {
                         foreach (var channel in contract.Channels ?? Array.Empty<int>())
@@ -1312,7 +1338,8 @@ namespace Controller
                                 recoveryOwnerId: contract.OwnerId,
                                 recoveryOwnerGeneration: contract.RunEpoch);
                     },
-                    out recoveryIncident);
+                    out recoveryIncident,
+                    safetyAffectedChannels: GetAffectedHydraulicSafetyScope(requested));
                 if (!started || recoveryIncident == null)
                 {
                     _isolatedInfrastructureRecoveryScheduled.TryRemove(
@@ -1494,14 +1521,30 @@ namespace Controller
             }), "AffectedGroupRecoveryDeadline");
         }
 
+        private Task TrackRecoveryHardwareAction(int[] channels, Task action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            foreach (var hydraulicId in channels.Select(GetHydraulicGroupForChannel).Distinct())
+                _affectedGroupStageActions.GetOrAdd(hydraulicId,
+                    _ => new RecoveryStageTaskRegistry()).Track(action);
+            return action;
+        }
+
         private async Task ExecuteAffectedGroupResetAsync(
             int[] requestedChannels,
             string reason,
             Guid correlationId,
             Guid expectedRunId,
             long expectedRunEpoch,
-            RecoveryTargetPhase targetPhase)
+            RecoveryTargetPhase targetPhase,
+            Guid recoveryOwnerId = default,
+            int[] safetyAffectedChannels = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
+            // Registered incidents can have an IncidentId distinct from the
+            // fault/owner correlation. Keep lifecycle correlation and owner
+            // identity separate throughout this execution.
+            var ownerId = recoveryOwnerId == Guid.Empty ? correlationId : recoveryOwnerId;
             var requested = (requestedChannels ?? Array.Empty<int>())
                 .Where(channel => channel >= 1 && channel <= 12)
                 .Distinct()
@@ -1565,14 +1608,43 @@ namespace Controller
                     _affectedGroupResetInProgress.TryRemove(resetKey, out _);
                     continue;
                 }
+                var physicalChannels = (safetyAffectedChannels ?? channels)
+                    .Concat(channels)
+                    .Where(channel => GetHydraulicGroupForChannel(channel) == hydraulicGroupId)
+                    .Distinct().OrderBy(channel => channel).ToArray();
+                // Reject before entering cleanup: that path publishes to channels,
+                // which must never include members outside the frozen contract.
+                if (recoveryOwner != null && !IsRecoveryExecutionScopeContained(
+                        recoveryOwner.Contract, channels, physicalChannels))
+                {
+                    _affectedGroupResetInProgress.TryRemove(resetKey, out _);
+                    throw new RecoveryExecutionRejectedException("AffectedGroupRecoveryScopeChanged");
+                }
+                var physicalIdentities = physicalChannels.ToDictionary(
+                    channel => channel,
+                    channel => _channelExecutionFence.Capture(channel));
                 var executionPermits = channels.ToDictionary(
                     channel => channel,
                     channel => _channelExecutionFence.Capture(channel));
                 Func<bool> executionPermitsCurrent = () => executionPermits.All(pair =>
-                    IsChannelExecutionPermitCurrent(pair.Key, pair.Value));
+                    IsChannelExecutionPermitCurrent(pair.Key, pair.Value)) &&
+                    physicalIdentities.All(pair => _channelExecutionFence.IsUnchanged(pair.Value));
                 HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease lease = null;
+                var businessRejoinPublished = false;
+                var businessVerificationId = Guid.NewGuid();
+                var powerFaultSnapshots = new Dictionary<int, EmergencyPowerGroupRegistration>();
+                foreach (var electricalId in physicalChannels.Select(GetElectricalGroupId).Where(id => id > 0).Distinct())
+                    if (_emergencyPowerGroupLatch.TryCapture(electricalId, out var faultSnapshot))
+                        powerFaultSnapshots.Add(electricalId, faultSnapshot);
+                var stageActions = _affectedGroupStageActions.GetOrAdd(hydraulicGroupId,
+                    _ => new RecoveryStageTaskRegistry());
+                Task RunGroupStageAsync(string stage, int timeoutMs,
+                    Func<CancellationToken, Task> action, CancellationToken token) =>
+                    RecoveryStageDeadline.RunAsync(stage, timeoutMs, action, token, stageActions);
                 try
                 {
+                    if (stageActions.HasPending)
+                        throw new SoftwareSelfHealingRetryException("AffectedGroupPreviousHardwareActionPending");
                     if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
                         !executionPermitsCurrent())
                         return;
@@ -1604,25 +1676,14 @@ namespace Controller
 
                     var cutoffUtc = DateTime.UtcNow;
                     var cutoffCycles = CaptureSoftwareRecoveryCycles(channels);
+                    var cutoffBoundaries = CaptureCycleDaqBoundaries(cutoffCycles);
                     if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
                         !executionPermitsCurrent())
                         return;
-                    if (!TrySealSoftwareRecoveryCycleWindows(
-                            cutoffCycles,
-                            cutoffUtc,
-                            reason,
-                            () => IsAffectedGroupResetRunCurrent(
-                                      expectedRunId,
-                                      expectedRunEpoch) &&
-                                  executionPermitsCurrent()))
-                    {
-                        if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
-                        throw new SoftwareSelfHealingRetryException(
-                            "受影响组截止时间窗封闭失败；保持断能并持续清场重试。");
-                    }
 
                     // 先完成与人工Stop相同的内存清场和安全断电。此时即使后续预检失败，
                     // 通道也已经处于明确隔离态，不会继续显示一个永不结束的旧恢复。
+                    var offCommandFailures = new List<Exception>();
                     foreach (var channel in channels)
                     {
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
@@ -1639,7 +1700,7 @@ namespace Controller
                             allowSystemFaultReset: true,
                             recoveryOwnerKind: RecoveryOwnerKind.AffectedGroupRecovery,
                             recoveryTargetPhase: RecoveryTargetPhase.Formal,
-                            recoveryOwnerId: correlationId,
+                            recoveryOwnerId: ownerId,
                             recoveryOwnerGeneration: expectedRunEpoch);
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
                         try { CancelCyclePauseCts(channel); } catch { }
@@ -1652,20 +1713,36 @@ namespace Controller
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
                         UnmarkHydraulicParticipant(channel);
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
-                        try { CommandEpbOffHighPriority(channel, "AffectedGroupReset"); } catch { }
+                    }
+                    // Safety-only members retain their pause/stop and business
+                    // state. They receive OFF, never a timer or resume grant.
+                    foreach (var channel in physicalChannels)
+                    {
+                        if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
+                            !executionPermitsCurrent()) return;
+                        CollectRecoveryOffFailure(channel,
+                            () => CommandEpbOffHighPriority(channel, "AffectedGroupReset"),
+                            offCommandFailures);
                     }
 
                     // 先完成电源断能，再恢复“只读采样能力”。压力安全门不能使用陈旧值，
                     // 但也不能要求一个已停止的DAQ先提供新鲜压力才允许修复DAQ。
                     if (_powerSupply != null)
                     {
-                        foreach (var electricalGroupId in channels
+                        foreach (var electricalGroupId in physicalChannels
                                      .Select(GetElectricalGroupId)
-                                     .Where(id => id > 0)
                                      .Distinct())
                         {
                             if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
-                            await RecoveryStageDeadline.RunAsync(
+                            if (electricalGroupId <= 0)
+                            {
+                                offCommandFailures.Add(new InvalidOperationException(
+                                    "AffectedGroupElectricalSafetyScopeMissing"));
+                                continue;
+                            }
+                            try
+                            {
+                                await RunGroupStageAsync(
                                     "AffectedGroupPowerDisable",
                                     RecoveryStageTimeoutMs,
                                     ct => _powerSupply.DisableGroupAsync(
@@ -1673,9 +1750,36 @@ namespace Controller
                                         "AffectedGroupPressureSensingRearm:" + reason,
                                         ct),
                                     recoveryCts.Token)
-                                .ConfigureAwait(false);
+                                    .ConfigureAwait(false);
+                            }
+                            catch (Exception powerOffError) when (
+                                IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) &&
+                                executionPermitsCurrent() && !recoveryCts.IsCancellationRequested)
+                            {
+                                // One failed OFF must not skip the remaining
+                                // groups or hydraulic release. It still blocks
+                                // all subsequent feedback-based reenergization.
+                                offCommandFailures.Add(powerOffError);
+                            }
                             if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
                         }
+                    }
+
+                    if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
+                        !executionPermitsCurrent() || recoveryCts.IsCancellationRequested) return;
+                    try
+                    {
+                        await RunGroupStageAsync(
+                            "AffectedGroupReleaseOutputBeforeSensing",
+                            RecoveryStageTimeoutMs,
+                            _ => _hydCoordinator.IssueRecoveryReleaseOutputAsync(hydraulicGroupId),
+                            recoveryCts.Token).ConfigureAwait(false);
+                    }
+                    catch (Exception releaseError) when (
+                        IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) &&
+                        executionPermitsCurrent() && !recoveryCts.IsCancellationRequested)
+                    {
+                        offCommandFailures.Add(releaseError);
                     }
 
                     var devices = channels
@@ -1683,17 +1787,21 @@ namespace Controller
                         .Where(device => !string.IsNullOrWhiteSpace(device))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToArray();
-                    foreach (var device in devices)
+                    var sensingDevices = physicalChannels
+                        .Select(channel => _acq.GetDeviceForEpbChannel(channel))
+                        .Where(device => !string.IsNullOrWhiteSpace(device))
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                    foreach (var device in sensingDevices)
                     {
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
                         IO.NI.DaqRecoveryResult[] ready = null;
-                        await RecoveryStageDeadline.RunAsync(
+                        await RunGroupStageAsync(
                                 "AffectedGroupPressureSensingRearm",
                                 RecoveryStageTimeoutMs,
                                 async ct =>
                                 {
                                     ready = await _acq.EnsureChannelsReadyAsync(
-                                            channels.Where(channel => string.Equals(
+                                            physicalChannels.Where(channel => string.Equals(
                                                     _acq.GetDeviceForEpbChannel(channel),
                                                     device,
                                                     StringComparison.OrdinalIgnoreCase))
@@ -1713,7 +1821,7 @@ namespace Controller
                     }
 
                     if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
-                    await RecoveryStageDeadline.RunAsync(
+                    await RunGroupStageAsync(
                             "AffectedGroupForceRelease",
                             RecoveryMechanicalReleaseTimeoutMs,
                             _ => _hydCoordinator.ForceReleaseAsync(
@@ -1722,6 +1830,36 @@ namespace Controller
                             recoveryCts.Token)
                         .ConfigureAwait(false);
                     if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
+
+                    // Still attempt power OFF and hydraulic release above when
+                    // an EPB OFF fails, but never rejoin on a swallowed failure.
+                    if (offCommandFailures.Count > 0)
+                        throw new AggregateException("AffectedGroupSafeCommandsUnconfirmed", offCommandFailures);
+
+                    var safetyHydraulics = _cfg.Test.Hydraulics
+                        .Where(group => group.Id == hydraulicGroupId && group.Enabled).ToArray();
+                    if (_powerSupply == null || safetyHydraulics.Length != 1)
+                        throw new InvalidOperationException("AffectedGroupPhysicalSafetyScopeMissing");
+                    var physicalSafety = await ConfirmJointPhysicalSafetyAsync(
+                        physicalChannels, safetyHydraulics,
+                        () => IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) &&
+                            executionPermitsCurrent(),
+                        recoveryCts.Token).ConfigureAwait(false);
+                    if (!physicalSafety.ok)
+                        throw new InvalidOperationException(physicalSafety.error);
+
+                    // Recorder locking and durable I/O cannot precede the safe
+                    // outputs. Keep the original pre-cleanup DAQ cutoff even
+                    // when read-only acquisition was rearmed in the meantime.
+                    if (!TrySealSoftwareRecoveryCycleWindows(
+                            cutoffCycles,
+                            cutoffUtc,
+                            reason,
+                            () => IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) &&
+                                executionPermitsCurrent() && !recoveryCts.IsCancellationRequested,
+                            cutoffBoundaries))
+                        throw new SoftwareSelfHealingRetryException(
+                            "受影响组截止时间窗封闭失败；保持断能并持续清场重试。");
 
                     if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
                             cutoffCycles,
@@ -1760,7 +1898,7 @@ namespace Controller
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
                             !executionPermitsCurrent())
                             return;
-                        await RecoveryStageDeadline.RunAsync(
+                        await RunGroupStageAsync(
                                 "AffectedGroupPowerEnable",
                                 RecoveryStageTimeoutMs,
                                 ct => _powerSupply.PrepareAndEnableAsync(channels, ct),
@@ -1775,14 +1913,15 @@ namespace Controller
                     if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
                         !executionPermitsCurrent())
                         return;
-                    await RecoveryStageDeadline.RunAsync(
+                    await RunGroupStageAsync(
                             "AffectedGroupMechanicalRelease",
                             RecoveryMechanicalReleaseTimeoutMs,
                             ct => EnsureMotorReleasedBeforeFormalRejoinAsync(
                                 channels,
                                 plan,
                                 reason,
-                                ct),
+                                ct,
+                                recoveryOwner),
                             recoveryCts.Token)
                         .ConfigureAwait(false);
 
@@ -1793,6 +1932,19 @@ namespace Controller
                     if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
                         !executionPermitsCurrent())
                         return;
+                    foreach (var fault in powerFaultSnapshots)
+                    {
+                        var businessChannels = channels.Where(channel => GetElectricalGroupId(channel) == fault.Key).ToArray();
+                        if (businessChannels.Length == 0) continue;
+                        var electricalScope = _cfg.Test.Groups.FirstOrDefault(group => group.Id == fault.Key);
+                        if (electricalScope == null || electricalScope.Members.Any(channel => !physicalChannels.Contains(channel)))
+                            throw new RecoveryExecutionRejectedException("AffectedGroupBusinessSafetyScopeIncomplete");
+                        if (!_emergencyPowerGroupLatch.TryArmBusinessVerification(fault.Key, fault.Value,
+                                expectedRunId, expectedRunEpoch, businessChannels,
+                                Interlocked.Read(ref _cycleAttemptSequence), businessVerificationId,
+                                replaceAfterFreshSafety: true))
+                            throw new RecoveryExecutionRejectedException("AffectedGroupBusinessProofSuperseded");
+                    }
                     RejoinFormalChannelsAtSharedFutureSlot(
                         channels,
                         plan,
@@ -1800,6 +1952,7 @@ namespace Controller
                         "受影响组已完成Stop→Start等价清场并从未来完整槽重新加入",
                         allowTerminalReset: false,
                         allowSystemFaultReset: true);
+                    businessRejoinPublished = true;
                     _log.Info(
                         $"受影响液压组{hydraulicGroupId}自动清场完成，" +
                         $"Channels=[{string.Join(",", channels)}] Reason={reason}",
@@ -1818,26 +1971,83 @@ namespace Controller
                             "液压协调");
                         continue;
                     }
-                    foreach (var channel in channels)
+                    var failureSafety = "PhysicalSafetyUnconfirmed";
+                    try
                     {
-                        if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
-                            !executionPermitsCurrent())
-                            break;
-                        try { CommandEpbOffHighPriority(channel, "AffectedGroupResetFailed"); }
-                        catch { }
+                        Action verifyCleanupAuthority = () =>
+                        {
+                            if (lease == null || lease.Token.IsCancellationRequested ||
+                                !IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
+                                !executionPermitsCurrent())
+                                throw new OperationCanceledException("AffectedGroupFailureCleanupAuthorityLost");
+                        };
+                        verifyCleanupAuthority();
+                        await RunAffectedGroupFailureSafetyAsync(
+                            physicalChannels, physicalChannels.Select(GetElectricalGroupId).Distinct().ToArray(),
+                            hydraulicGroupId,
+                            channel => CommandEpbOffHighPriority(channel, "AffectedGroupResetFailed"),
+                            electricalGroupId => RunGroupStageAsync(
+                                "AffectedGroupFailurePowerDisable", RecoveryStageTimeoutMs,
+                                ct => _powerSupply != null
+                                    ? _powerSupply.DisableGroupAsync(electricalGroupId, "AffectedGroupResetFailed", ct)
+                                    : throw new InvalidOperationException("AffectedGroupPowerSupplyMissing"),
+                                lease.Token),
+                            group => RunGroupStageAsync(
+                                "AffectedGroupFailureRelease", RecoveryStageTimeoutMs,
+                                _ => _hydCoordinator.IssueRecoveryReleaseOutputAsync(group), lease.Token),
+                            verifyCleanupAuthority,
+                            async () =>
+                            {
+                                if (stageActions.HasPending)
+                                    return (false, "AffectedGroupHardwareActionStillPending");
+                                var cleanupHydraulics = _cfg.Test.Hydraulics
+                                    .Where(item => item.Enabled && item.Id == hydraulicGroupId).ToArray();
+                                if (cleanupHydraulics.Length != 1)
+                                    return (false, "AffectedGroupFailureHydraulicScopeMissing");
+                                return await ConfirmJointPhysicalSafetyAsync(physicalChannels, cleanupHydraulics,
+                                    () => !lease.Token.IsCancellationRequested &&
+                                          IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) &&
+                                          executionPermitsCurrent(), lease.Token).ConfigureAwait(false);
+                            }).ConfigureAwait(false);
+                        failureSafety = "FreshCurrentAndPressureSafe";
                     }
+                    catch (Exception cleanupError)
+                    {
+                        failureSafety = "PhysicalSafetyUnconfirmed:" + cleanupError.Message;
+                    }
+                    // A revoked worker must not publish a terminal state over
+                    // the successor that now owns the outputs.
+                    if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch) ||
+                        !executionPermitsCurrent() || (lease != null && lease.Token.IsCancellationRequested))
+                        continue;
                     PublishIsolatedSoftwareFault(
                         "AffectedGroupResetFailed",
-                        $"Hydraulic={hydraulicGroupId} Reason={reason} Error={ex.Message}",
+                        $"Hydraulic={hydraulicGroupId} Reason={reason} Error={ex.Message} Safety={failureSafety}",
                         channels,
                         correlationId);
                 }
                 finally
                 {
+                    if (!businessRejoinPublished)
+                        foreach (var fault in powerFaultSnapshots)
+                            _emergencyPowerGroupLatch.InvalidateBusinessVerification(fault.Key, fault.Value, businessVerificationId);
                     lease?.Dispose();
                     _affectedGroupResetInProgress.TryRemove(resetKey, out _);
                 }
             }
+        }
+
+        internal static void CollectRecoveryOffFailure(
+            int channel, Func<bool> command, ICollection<Exception> failures)
+        {
+            if (failures == null) throw new ArgumentNullException(nameof(failures));
+            try
+            {
+                if (command?.Invoke() != true)
+                    failures.Add(new InvalidOperationException(
+                        $"AffectedGroupEpbOffUnconfirmed:EPB{channel}"));
+            }
+            catch (Exception ex) { failures.Add(ex); }
         }
 
         internal static bool CanExecuteAffectedGroupReset(
@@ -1863,13 +2073,77 @@ namespace Controller
                    ownerGenerationCurrent;
         }
 
+        internal static async Task<bool> RunAfterRecoveryWorkerExitAsync(
+            Task predecessor, Func<bool> retirementConfirmed, Func<Task> successor)
+        {
+            if (predecessor == null || retirementConfirmed == null || successor == null)
+                throw new ArgumentNullException(nameof(predecessor));
+            try { await predecessor.ConfigureAwait(false); }
+            catch (Exception) { /* Failure is not retirement; verify the contract below. */ }
+            if (!retirementConfirmed()) return false;
+            await successor().ConfigureAwait(false);
+            return true;
+        }
+
+        internal static bool CanResetRetiredRecoveryTerminal(
+            RecoveryContractSnapshot retired, RecoveryContractSnapshot successor,
+            ChannelRuntimeStateChangedEvent current)
+        {
+            return retired != null && successor != null && current != null &&
+                   retired.RunId == successor.RunId && retired.RunEpoch == successor.RunEpoch &&
+                   current.RunId == retired.RunId && current.RunEpoch == retired.RunEpoch &&
+                   retired.Channels.Contains(current.Channel) &&
+                   successor.Channels.Contains(current.Channel) &&
+                   current.State == ChannelRuntimeState.StartBlocked &&
+                   current.CorrelationId == retired.IncidentId;
+        }
+
+        internal static bool IsRecoveryExecutionScopeContained(
+            RecoveryContractSnapshot contract, int[] channels, int[] physicalChannels)
+        {
+            return contract != null && channels != null && channels.Length > 0 &&
+                   physicalChannels != null && physicalChannels.Length > 0 &&
+                   contract.Channels != null && contract.SafetyAffectedChannels != null &&
+                   channels.All(channel => channel >= 1 && channel <= 12 &&
+                       contract.Channels.Contains(channel) && physicalChannels.Contains(channel)) &&
+                   physicalChannels.All(channel => channel >= 1 && channel <= 12 &&
+                       contract.SafetyAffectedChannels.Contains(channel));
+        }
+
+        internal static int[] GetAffectedHydraulicSafetyScope(IEnumerable<int> channels)
+        {
+            var groups = (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Select(GetHydraulicGroupForChannel)
+                .Distinct().ToArray();
+            return Enumerable.Range(1, 12)
+                .Where(channel => groups.Contains(GetHydraulicGroupForChannel(channel)))
+                .ToArray();
+        }
+
+        private void ScheduleAffectedGroupResetAfterRetirement(
+            RecoveryIncidentHandle predecessor, int[] channels, string reason)
+        {
+            if (predecessor == null) return;
+            var retiredContract = predecessor.Contract.Clone();
+            var requested = channels.ToArray();
+            var handoff = RunAfterRecoveryWorkerExitAsync(predecessor.WorkerTask,
+                () => predecessor.TerminalPublished != 0 &&
+                      IsAffectedGroupResetRunCurrent(retiredContract.RunId, retiredContract.RunEpoch),
+                () => ExecuteAffectedGroupResetIncidentAsync(requested, reason,
+                    retiredContract.OwnerId, retiredContract.RunId, retiredContract.RunEpoch,
+                    RecoveryTargetPhase.Formal, retiredContract));
+            ObserveNonRecoveryLifecycleTask(handoff, "AffectedGroupRetirementHandoff", requested);
+        }
+
         private async Task ExecuteAffectedGroupResetIncidentAsync(
             int[] requestedChannels,
             string reason,
             Guid correlationId,
             Guid expectedRunId,
             long expectedRunEpoch,
-            RecoveryTargetPhase targetPhase)
+            RecoveryTargetPhase targetPhase,
+            RecoveryContractSnapshot retiredContract = null)
         {
             var channels = (requestedChannels ?? Array.Empty<int>())
                 .Where(channel => channel >= 1 && channel <= 12)
@@ -1881,9 +2155,23 @@ namespace Controller
                 expectedRunId != _activeBatchId ||
                 expectedRunEpoch != Interlocked.Read(ref _runEpoch))
                 return;
+            // Register the currently affected cohort, not only the reporter.
+            // This snapshot is also passed to the worker and terminal release.
+            var hydraulicGroups = channels.Select(GetHydraulicGroupForChannel).ToArray();
+            channels = channels.Concat(_timers.Keys)
+                .Concat(_runners.Keys)
+                .Concat(_hydraulicParticipants.Keys)
+                .Where(channel => hydraulicGroups.Contains(GetHydraulicGroupForChannel(channel)))
+                .Where(IsChannelEnabled)
+                .Where(channel => !IsAlarmStopRequested(channel))
+                .Where(channel => !_channelPausedUtc.ContainsKey(channel))
+                .Where(channel => !_manualStopRequestedChannels.ContainsKey(channel))
+                .Distinct().OrderBy(channel => channel).ToArray();
+            if (channels.Length == 0 ||
+                !IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
             var ownerId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
             RecoveryIncidentHandle incident = null;
-            Func<Task> BuildRecoveryWorker()
+            Func<Task> BuildRecoveryWorker(RecoveryContractSnapshot executionContract)
             {
                 return async () =>
                 {
@@ -1892,10 +2180,13 @@ namespace Controller
                         await ExecuteAffectedGroupResetAsync(
                                 channels,
                                 reason,
-                                ownerId,
+                                executionContract.IncidentId,
                                 expectedRunId,
                                 expectedRunEpoch,
-                                targetPhase)
+                                targetPhase,
+                                executionContract.OwnerId,
+                                executionContract.SafetyAffectedChannels.ToArray(),
+                                incident)
                             .ConfigureAwait(false);
                     }
                     finally
@@ -1917,7 +2208,7 @@ namespace Controller
                 targetPhase,
                 ownerId,
                 channels,
-                _ => BuildRecoveryWorker(),
+                BuildRecoveryWorker,
                 contract =>
                 {
                     foreach (var channel in contract.Channels ?? Array.Empty<int>())
@@ -1928,13 +2219,16 @@ namespace Controller
                             reason ?? "受影响组清场已建立真实执行任务。",
                             affectedChannels: contract.Channels,
                             correlationId: contract.IncidentId,
+                            allowTerminalReset: CanResetRetiredRecoveryTerminal(
+                                retiredContract, contract, _channelRuntimeStateStore.Get(channel)),
                             allowSystemFaultReset: true,
                             recoveryOwnerKind: contract.OwnerKind,
                             recoveryTargetPhase: contract.TargetPhase,
                             recoveryOwnerId: contract.OwnerId,
                             recoveryOwnerGeneration: contract.RunEpoch);
                 },
-                out incident);
+                out incident,
+                safetyAffectedChannels: GetAffectedHydraulicSafetyScope(channels));
             if (!started || incident == null) return;
             try
             {
@@ -1972,8 +2266,12 @@ namespace Controller
             var channel = update.EpbId;
             if (channel < 1 || channel > 12)
             {
-                await HandleActiveCycleDataLimitExceededBodyAsync(update)
-                    .ConfigureAwait(false);
+                if (_activeBatchId != Guid.Empty)
+                    PublishIsolatedSoftwareFault(
+                        "ActiveCycleIdentityMissing",
+                        $"活动圈达到上限但缺少有效EPB标识。Device={update.Device} " +
+                        $"Cycle={update.CycleNumber} Limit={update.RecordLimit}",
+                        GetDaqGroupChannels(update.Device), update.CorrelationId);
                 return;
             }
             var runId = _activeBatchId;
@@ -1981,20 +2279,38 @@ namespace Controller
             var recoveryCorrelation = update.CorrelationId == Guid.Empty
                 ? Guid.NewGuid()
                 : update.CorrelationId;
-            var lifecycleKey = ((long)channel << 32) |
-                               (uint)update.CycleNumber;
-            if (_activeCycleLimitRecoveries.ContainsKey(lifecycleKey)) return;
+            if (!_currentCycleNumberByChannel.TryGetValue(channel, out var eventCycle) ||
+                eventCycle != update.CycleNumber) return;
+            var affectedChannels = MergeInfrastructureRecoveryCohort(
+                    GetHydraulicGroupForChannel(channel), new[] { channel },
+                    _timers.Keys, _runners.Keys, _hydraulicParticipants.Keys)
+                .Where(IsChannelEnabled)
+                .Where(item => !IsAlarmStopRequested(item))
+                .Where(item => !_channelPausedUtc.ContainsKey(item))
+                .Where(item => !_manualStopRequestedChannels.ContainsKey(item))
+                .ToArray();
+            if (!affectedChannels.Contains(channel)) return;
 
             RecoveryIncidentHandle incident = null;
-            Func<Task> BuildRecoveryWorker()
+            Func<Task> BuildRecoveryWorker(RecoveryContractSnapshot executionContract)
             {
                 return async () =>
                 {
                     try
                     {
-                        await HandleActiveCycleDataLimitExceededBodyAsync(
-                                update,
-                                recoveryCorrelation)
+                        if (!IsAffectedGroupResetRunCurrent(runId, runEpoch) ||
+                            !_currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle) ||
+                            currentCycle != update.CycleNumber) return;
+                        await ExecuteAffectedGroupResetAsync(
+                                affectedChannels,
+                                $"ActiveCycleDataLimitExceeded:EPB={channel}:Cycle={update.CycleNumber}:Limit={update.RecordLimit}",
+                                executionContract.IncidentId,
+                                runId,
+                                runEpoch,
+                                RecoveryTargetPhase.Formal,
+                                executionContract.OwnerId,
+                                executionContract.SafetyAffectedChannels.ToArray(),
+                                incident)
                             .ConfigureAwait(false);
                     }
                     finally
@@ -2012,11 +2328,11 @@ namespace Controller
                 "ActiveCycleDataLimitRecovery",
                 runId,
                 runEpoch,
-                RecoveryOwnerKind.HydraulicGroupRecovery,
+                RecoveryOwnerKind.AffectedGroupRecovery,
                 RecoveryTargetPhase.Formal,
                 recoveryCorrelation,
-                new[] { channel },
-                _ => BuildRecoveryWorker(),
+                affectedChannels,
+                BuildRecoveryWorker,
                 contract =>
                 {
                     foreach (var affectedChannel in contract.Channels ?? Array.Empty<int>())
@@ -2033,7 +2349,8 @@ namespace Controller
                             recoveryOwnerId: contract.OwnerId,
                             recoveryOwnerGeneration: contract.RunEpoch);
                 },
-                out incident);
+                out incident,
+                safetyAffectedChannels: GetAffectedHydraulicSafetyScope(affectedChannels));
             if (!started || incident == null) return;
             try
             {
@@ -2064,175 +2381,5 @@ namespace Controller
             }
         }
 
-        private async Task HandleActiveCycleDataLimitExceededBodyAsync(
-            DaqPersistenceStateChanged update,
-            Guid recoveryCorrelation = default)
-        {
-            if (update == null) return;
-            var channel = update.EpbId;
-            if (channel < 1 || channel > 12)
-            {
-                PublishIsolatedSoftwareFault(
-                    "ActiveCycleIdentityMissing",
-                    $"活动圈达到上限但缺少有效EPB标识。Device={update.Device} " +
-                    $"Cycle={update.CycleNumber} Limit={update.RecordLimit}",
-                    GetDaqGroupChannels(update.Device),
-                    recoveryCorrelation == Guid.Empty
-                        ? update.CorrelationId
-                        : recoveryCorrelation);
-                return;
-            }
-
-            var expectedRunEpoch = Interlocked.Read(ref _runEpoch);
-            if (recoveryCorrelation == Guid.Empty)
-                recoveryCorrelation = update.CorrelationId == Guid.Empty
-                    ? Guid.NewGuid()
-                    : update.CorrelationId;
-            var lifecycleKey = ((long)channel << 32) |
-                               (uint)update.CycleNumber;
-            if (!_activeCycleLimitRecoveries.TryAdd(lifecycleKey, 0)) return;
-
-            var hydraulicGroupId = GetHydraulicGroupForChannel(channel);
-            HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease lease = null;
-            try
-            {
-                lease = await _recoveryOwnership.AcquireAsync(
-                        hydraulicGroupId,
-                        $"ACTIVE-CYCLE:{channel}:{update.CycleNumber}:{update.CorrelationId:N}",
-                        RecoveryOwnerPriority.Hydraulic,
-                        RecoveryOwnershipTakeoverTimeoutMs,
-                        CancellationToken.None)
-                    .ConfigureAwait(false);
-
-                if (expectedRunEpoch != Interlocked.Read(ref _runEpoch)) return;
-                if (!_currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle) ||
-                    currentCycle != update.CycleNumber)
-                {
-                    _log.Warn(
-                        $"忽略已过期的活动圈上限事件。EPB={channel} " +
-                        $"EventCycle={update.CycleNumber} CurrentCycle={currentCycle} " +
-                        $"Limit={update.RecordLimit}",
-                        "落盘");
-                    return;
-                }
-                    PublishRecoveryIncidentState(
-                        channel,
-                        ChannelRuntimeState.Recovering,
-                        "ActiveCycleDataLimitExceeded",
-                    $"活动圈数据达到上限，正在作废 EPB={channel} " +
-                    $"Cycle={update.CycleNumber} Limit={update.RecordLimit} 并重置液压代次。",
-                    affectedChannels: new[] { channel },
-                    correlationId: recoveryCorrelation,
-                    recoveryOwnerKind: RecoveryOwnerKind.HydraulicGroupRecovery,
-                    recoveryTargetPhase: RecoveryTargetPhase.Formal,
-                    recoveryOwnerId: recoveryCorrelation,
-                    recoveryOwnerGeneration: expectedRunEpoch);
-                if (_timers.TryGetValue(channel, out var timer))
-                    timer.Pause("ActiveCycleDataLimitExceeded");
-                CancelCyclePauseCts(channel);
-                try { CommandEpbOffHighPriority(channel, "ActiveCycleDataLimitExceeded"); }
-                catch { }
-                UnmarkHydraulicParticipant(channel);
-                var cutoffCycles = new Dictionary<int, int>
-                {
-                    [channel] = update.CycleNumber
-                };
-                var cutoffReason =
-                    $"ActiveCycleDataLimitExceeded EPB={channel} " +
-                    $"Cycle={update.CycleNumber} Limit={update.RecordLimit}";
-                TrySealSoftwareRecoveryCycleWindows(
-                    cutoffCycles,
-                    update.TimestampUtc,
-                    cutoffReason);
-                if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
-                        cutoffCycles,
-                        update.TimestampUtc,
-                        cutoffReason,
-                        _daqPersistenceRecoveryTimeoutMs,
-                        lease.Token)
-                    .ConfigureAwait(false))
-                    throw new InvalidOperationException(
-                        $"ActiveCycleDurableCleanupFailed EPB={channel} " +
-                        $"Cycle={update.CycleNumber} Limit={update.RecordLimit}");
-
-                await RecoveryStageDeadline.RunAsync(
-                        "ActiveCycleHydraulicGenerationReset",
-                        RecoveryMechanicalReleaseTimeoutMs,
-                        _ => _hydCoordinator.ForceReleaseAsync(
-                            hydraulicGroupId,
-                            $"ActiveCycleDataLimitExceeded:EPB={channel}:Cycle={update.CycleNumber}"),
-                        lease.Token)
-                    .ConfigureAwait(false);
-
-                var freshness = _acq.GetDaqFreshnessSnapshot(
-                    update.Device,
-                    _daqPersistenceResumeAgeMs);
-                if (freshness == null || !freshness.IsFresh)
-                {
-                    // 活动圈上限只负责圈生命周期清理。仅有独立的DAQ陈旧证据时，
-                    // 才以真实DAQ故障码进入设备恢复，绝不拿容量异常冒充DAQ故障。
-                    _log.Warn(
-                        $"活动圈已作废且液压代次已重置；另有DAQ陈旧证据，" +
-                        $"转入DaqSampleStale恢复。EPB={channel} Device={update.Device}",
-                        "AI");
-                    ObserveNonRecoveryLifecycleTask(BeginDaqAutoRecoveryAsync(
-                        update.Device,
-                        "DaqSampleStale",
-                        $"ActiveCycle cleanup completed; CallbackAge={freshness?.CallbackAgeMs:F1}ms " +
-                        $"ControlAge={freshness?.ControlProcessedAgeMs:F1}ms",
-                        recoveryCorrelation,
-                        restartDaq: true,
-                        eventUtc: DateTime.UtcNow),
-                        "BeginDaqAutoRecoveryAfterCycleCleanup",
-                        channel);
-                    return;
-                }
-
-                var plan = GetCompatibleStaggerPlan(new[] { channel });
-                await RecoveryStageDeadline.RunAsync(
-                        "ActiveCycleMechanicalRelease",
-                        RecoveryMechanicalReleaseTimeoutMs,
-                        ct => EnsureMotorReleasedBeforeFormalRejoinAsync(
-                            new[] { channel },
-                            plan,
-                            "ActiveCycleDataLimitExceeded",
-                            ct),
-                        lease.Token)
-                    .ConfigureAwait(false);
-                if (expectedRunEpoch != Interlocked.Read(ref _runEpoch)) return;
-
-                ResetTransientFaultStateForRestart(
-                    new[] { channel },
-                    "ActiveCycleDataLimitExceededRejoin");
-                RejoinFormalChannelsAtSharedFutureSlot(
-                    new[] { channel },
-                    plan,
-                    "ActiveCycleLifecycleRecovered",
-                    $"EPB={channel} Cycle={update.CycleNumber} 已作废；" +
-                    "DAQ保持原代次，液压代次重置后从未来完整槽重试",
-                    allowTerminalReset: false);
-                _log.Warn(
-                    $"ActiveCycleDataLimitExceeded 已按圈生命周期故障处理，未重建DAQ。" +
-                    $"EPB={channel} Cycle={update.CycleNumber} Limit={update.RecordLimit} " +
-                    $"Device={update.Device} DaqFresh=true",
-                    "落盘");
-            }
-            catch (Exception ex)
-            {
-                try { CommandEpbOffHighPriority(channel, "ActiveCycleRecoveryFailed"); }
-                catch { }
-                PublishIsolatedSoftwareFault(
-                    "ActiveCycleRecoveryFailed",
-                    $"EPB={channel} Cycle={update.CycleNumber} Limit={update.RecordLimit} " +
-                    $"Error={ex.Message}",
-                    new[] { channel },
-                    recoveryCorrelation);
-            }
-            finally
-            {
-                lease?.Dispose();
-                _activeCycleLimitRecoveries.TryRemove(lifecycleKey, out _);
-            }
-        }
     }
 }

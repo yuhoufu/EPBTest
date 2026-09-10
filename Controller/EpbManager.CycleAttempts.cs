@@ -16,11 +16,13 @@ namespace Controller
             int cycleNumber,
             DateTime beginUtc,
             Guid runId,
+            long runEpoch,
             CycleAttemptKind kind,
             CancellationToken parentToken,
             out CycleAttemptContext context)
         {
-            var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(parentToken);
+            context = null;
+            if (runEpoch <= 0 || !IsAffectedGroupResetRunCurrent(runId, runEpoch)) return false;
             var device = string.Empty;
             var daqGeneration = 0L;
             var daqBeginSequence = 0L;
@@ -36,9 +38,12 @@ namespace Controller
             }
             catch { }
 
+            var powerState = _powerSupply?.GetRuntimeState(GetElectricalGroupId(channel));
+            // 外部状态读取失败时尚未注册尝试，也不应留下关联到父令牌的 CTS。
+            var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(parentToken);
             var created = new CycleAttemptContext(
                 runId,
-                Interlocked.Read(ref _runEpoch),
+                runEpoch,
                 device,
                 daqGeneration,
                 daqBeginSequence,
@@ -46,7 +51,9 @@ namespace Controller
                 Interlocked.Increment(ref _cycleAttemptSequence),
                 kind,
                 cycleNumber,
-                attemptCts);
+                attemptCts,
+                powerState?.OperationId ?? Guid.Empty,
+                powerState?.OperationEpoch ?? 0);
             context = created;
 
             try
@@ -57,6 +64,8 @@ namespace Controller
                     // 三者均在 Recorder.BeginCycle 之前可见。
                     _currentCycleNumberByChannel[channel] = cycleNumber;
                     _currentAttemptIdByChannel[channel] = created.AttemptId;
+                }, () =>
+                {
                     if (recorder is ISequencedEpbCycleRecorder sequenced &&
                         !string.IsNullOrWhiteSpace(device))
                     {
@@ -75,6 +84,7 @@ namespace Controller
                     created.MarkBeginSucceeded();
                 });
                 if (accepted &&
+                    IsAffectedGroupResetRunCurrent(runId, runEpoch) &&
                     _cycleAttempts.IsCurrent(created) &&
                     created.BeginState == CycleAttemptBeginState.Begun &&
                     created.TerminalState == CycleAttemptTerminalState.Active &&
@@ -92,7 +102,7 @@ namespace Controller
                             cycleNumber,
                             "BeginCycleInvalidatedBeforeRunner",
                             new OperationCanceledException(
-                                "圈 Begin 返回时尝试已撤销或不再拥有当前身份。"));
+                                "圈 Begin 返回时尝试已撤销或不再拥有当前身份。"), created);
                     return false;
                 }
 
@@ -106,7 +116,7 @@ namespace Controller
                         "CycleAttemptRegistryOccupied",
                         new InvalidOperationException(
                             $"旧圈尝试尚未耐久收口。ExistingAttempt={existing.AttemptId} " +
-                            $"ExistingCycle={existing.Cycle} RequestedCycle={cycleNumber}"));
+                            $"ExistingCycle={existing.Cycle} RequestedCycle={cycleNumber}"), existing);
                 }
                 else if (_cycleAttempts.TryGetLastExecution(channel, out var executing))
                 {
@@ -117,7 +127,7 @@ namespace Controller
                         new InvalidOperationException(
                             $"旧圈Runner尚未退出，拒绝复用通道执行器。" +
                             $"ExistingAttempt={executing.AttemptId} " +
-                            $"ExistingCycle={executing.Cycle} RequestedCycle={cycleNumber}"));
+                            $"ExistingCycle={executing.Cycle} RequestedCycle={cycleNumber}"), executing);
                 }
                 return false;
             }
@@ -126,7 +136,7 @@ namespace Controller
                 // Begin 已经取得 registry 身份；异常时必须保留，供停止/报警/自恢复精确封圈。
                 created.MarkBeginFailed(ex);
                 _cycleAttempts.MarkExecutionCompleted(created);
-                ReportFormalPersistenceRecovery(channel, cycleNumber, "BeginCycle", ex);
+                ReportFormalPersistenceRecovery(channel, cycleNumber, "BeginCycle", ex, created);
                 return false;
             }
         }
@@ -232,14 +242,18 @@ namespace Controller
             DateTime endUtc)
         {
             if (context == null) return false;
-            return context.CompleteRecorderOnce(
+            var completed = context.CompleteRecorderOnce(
                 () => CompleteCycleAndScheduleEvidence(
                     recorder,
-                    context.Channel,
-                    context.Cycle,
+                    context,
                     finalSampleCount,
                     endUtc),
                 RemoveCycleAttemptAfterDurableTerminal);
+            // Complete 的 persist 回调不能重入 Abort：必须先释放失败的终态占用。
+            if (!completed && IsDaqClockCycleAborted(context.RunId, context.RunEpoch,
+                    context.Channel, context.Cycle, context.AttemptId))
+                AbortFormalCycleAttempt(context, recorder, endUtc, "AbortedBySoftwareRecovery");
+            return completed;
         }
 
         private bool AbortFormalCycleAttempt(
@@ -333,16 +347,16 @@ namespace Controller
 
         private void RemoveCycleAttemptAfterDurableTerminal(CycleAttemptContext context)
         {
-            if (!_cycleAttempts.TryRemoveExact(context)) return;
-
-            // 先以唯一 AttemptId 删除投影所有权。若新尝试已注册，旧 AttemptId 删除会失败，
-            // 从而绝不继续删除新尝试即使恰好复用了同一 Cycle 号。
-            var attemptRemoved =
-                ((ICollection<KeyValuePair<int, long>>)_currentAttemptIdByChannel)
-                .Remove(new KeyValuePair<int, long>(context.Channel, context.AttemptId));
-            if (attemptRemoved)
-                ((ICollection<KeyValuePair<int, int>>)_currentCycleNumberByChannel)
-                    .Remove(new KeyValuePair<int, int>(context.Channel, context.Cycle));
+            _cycleAttempts.TryRemoveExact(context, () =>
+            {
+                // 与新 attempt 注册投影共享通道锁，两项清理之间不允许新投影发布。
+                var attemptRemoved =
+                    ((ICollection<KeyValuePair<int, long>>)_currentAttemptIdByChannel)
+                    .Remove(new KeyValuePair<int, long>(context.Channel, context.AttemptId));
+                if (attemptRemoved)
+                    ((ICollection<KeyValuePair<int, int>>)_currentCycleNumberByChannel)
+                        .Remove(new KeyValuePair<int, int>(context.Channel, context.Cycle));
+            });
         }
     }
 }

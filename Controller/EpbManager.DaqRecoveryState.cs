@@ -1186,7 +1186,7 @@ namespace Controller
                     if (context.Phase.Current >= DaqRecoveryPhase.CutoffCompleted) return;
 
                     var pendingGroups = (context.PowerDisableTasksByGroup ??
-                                         new Dictionary<int, Task<(bool ok, string error)>>())
+                                         new Dictionary<int, Task<PowerSafetyDisableResult>>())
                         .Where(pair => pair.Key > 0 &&
                                        pair.Value != null &&
                                        !pair.Value.IsCompleted)
@@ -1200,7 +1200,7 @@ namespace Controller
                         : (context.PowerDisableTasks ?? Array.Empty<Task>())
                             .Count(task => task != null && !task.IsCompleted);
                     var energizedGroups = (context.PowerDisableTasksByGroup ??
-                                           new Dictionary<int, Task<(bool ok, string error)>>())
+                                           new Dictionary<int, Task<PowerSafetyDisableResult>>())
                         .Where(pair => pair.Key > 0)
                         .Select(pair => pair.Key)
                         .Where(id =>
@@ -1455,6 +1455,8 @@ namespace Controller
             int[] affectedChannels,
             Guid correlationId)
         {
+            var recoveryRunId = _activeBatchId;
+            var recoveryRunEpoch = Interlocked.Read(ref _runEpoch);
             var channels = (affectedChannels ?? Array.Empty<int>())
                 .Distinct()
                 .OrderBy(x => x)
@@ -1490,7 +1492,9 @@ namespace Controller
                         channels,
                         code,
                         fault.CorrelationId,
-                        code);
+                        code,
+                        originalRunId: recoveryRunId,
+                        originalRunEpoch: recoveryRunEpoch);
                     // ScheduleIsolatedInfrastructureRecovery owns the first
                     // Recovering publication.  Its transaction binds the
                     // actual reset worker before publishing this state; this

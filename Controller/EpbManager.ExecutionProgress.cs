@@ -44,7 +44,13 @@ namespace Controller
 
         private void ConfirmBusinessCycle(int channel, CycleAttemptContext attempt, Adaptive.EpbCycleOutcome outcome)
         {
+            if (attempt != null && attempt.Channel == channel && attempt.RunId == _activeBatchId &&
+                attempt.RunEpoch == Interlocked.Read(ref _runEpoch))
+                _emergencyPowerGroupLatch.ConfirmBusinessCycle(GetElectricalGroupId(channel), attempt,
+                    outcome != null && outcome.IsSuccess && outcome.MechanicalCycleCompleted);
             if (!_businessRejoinPending.TryGetValue(channel, out var pending) ||
+                pending.RunId != _activeBatchId ||
+                pending.RunEpoch != Interlocked.Read(ref _runEpoch) ||
                 !IsVerifiedBusinessRejoin(pending.RunId, pending.RunEpoch, pending.AfterAttempt,
                     attempt, outcome != null && outcome.IsSuccess && outcome.MechanicalCycleCompleted)) return;
             if (!((ICollection<KeyValuePair<int, ExecutionExpectation>>)_businessRejoinPending)

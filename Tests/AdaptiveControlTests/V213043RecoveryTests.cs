@@ -160,7 +160,7 @@ namespace AdaptiveControlTests
                 Assert(second == 0,
                     "相同Permit未能从最后有效阶段继续完成。ExitCode=" + second);
                 var completed = fixture.ReadReceipt();
-                Assert(completed.IsSafetyCompleted &&
+                Assert(completed.IsSafetyCompleted && completed.CurrentSafe &&
                        completed.Stage == WatchdogSafetyStage.Completed &&
                        completed.FailureDomain == RecoveryFailureDomain.None,
                     "续跑后未形成schema v3完整安全证据。");
@@ -168,9 +168,9 @@ namespace AdaptiveControlTests
                        Math.Abs(factory.LastRuntime.SampleRateHz - 2000) < 0.001 &&
                        factory.LastRuntime.SamplesPerChannel == 20,
                     "SafetyAgent读取了全局0/0，而不是快照中的2000/20。");
-                Assert(factory.DoCalls == 1 && factory.AoCalls == 1 &&
+                Assert(factory.DoCalls == 2 && factory.AoCalls == 2 &&
                        factory.PowerCalls == 2 && factory.PressureCalls == 1,
-                    "阶段续跑重复执行了已确认动作，或漏掉未确认动作。");
+                    "重试未重新执行断能卸压，或未重新确认电流和压力。");
 
                 var createCount = factory.CreateCount;
                 Assert(SafetyAgentRunner.Run(fixture.Arguments, factory) == 0 &&
@@ -1361,7 +1361,7 @@ namespace AdaptiveControlTests
                 public bool ConfirmDoOff() { _owner.DoCalls++; return true; }
                 public bool ConfirmAoZero() { _owner.AoCalls++; return true; }
                 public bool ConfirmPowerOff() { _owner.PowerCalls++; return !_failPower; }
-                public bool ConfirmPressureSafe() { _owner.PressureCalls++; return true; }
+                public bool ConfirmCurrentAndPressureSafe() { _owner.PressureCalls++; return true; }
                 public void Dispose() { }
             }
         }

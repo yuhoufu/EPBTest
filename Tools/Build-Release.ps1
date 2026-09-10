@@ -669,6 +669,83 @@ if ($noMandatorySoakSummary.Count -ne 1) {
     throw '正式发布流程仍包含强制长稳门禁。'
 }
 
+# 现场安装入口由 Windows PowerShell 5.1 执行。任务回滚是完整安装事务的
+# 提权边界，正式包必须在同一宿主下证明精确存在性、XML、OWNER/GROUP/DACL
+# 以及安装前运行状态均可恢复，不能只依赖 PS7 开发环境结果。
+$taskRestoreOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-RuntimeTaskRestore.ps1') 2>&1)
+$taskRestoreExitCode = $LASTEXITCODE
+foreach ($line in $taskRestoreOutput) { Write-Host ([string]$line) }
+$taskRestoreSummary = @($taskRestoreOutput |
+    ForEach-Object { [string]$_ } |
+    Where-Object { $_ -eq 'PASS task restore: exact existence, XML, OWNER/GROUP/DACL and prior running state' })
+if ($taskRestoreExitCode -ne 0 -or $taskRestoreSummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 任务回滚契约测试未通过。'
+}
+$installRollbackOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-InstallTransactionRollback.ps1') 2>&1)
+$installRollbackExitCode = $LASTEXITCODE
+foreach ($line in $installRollbackOutput) { Write-Host ([string]$line) }
+$installRollbackSummary = @($installRollbackOutput |
+    ForEach-Object { [string]$_ } | Where-Object { $_ -eq 'PASS install rollback 4/4' })
+if ($installRollbackExitCode -ne 0 -or $installRollbackSummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 安装总回滚顺序测试未通过。'
+}
+$installJournalOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-InstallTransactionJournal.ps1') 2>&1)
+$installJournalExitCode = $LASTEXITCODE
+foreach ($line in $installJournalOutput) { Write-Host ([string]$line) }
+$installJournalSummary = @($installJournalOutput |
+    ForEach-Object { [string]$_ } | Where-Object { $_ -eq 'PASS install transaction journal 2/2' })
+if ($installJournalExitCode -ne 0 -or $installJournalSummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 安装事务持久阶段测试未通过。'
+}
+$installRecoveryOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-InstallTransactionRecovery.ps1') 2>&1)
+$installRecoveryExitCode = $LASTEXITCODE
+foreach ($line in $installRecoveryOutput) { Write-Host ([string]$line) }
+$installRecoverySummary = @($installRecoveryOutput |
+    ForEach-Object { [string]$_ } | Where-Object { $_ -eq 'PASS install transaction recovery 3/3' })
+if ($installRecoveryExitCode -ne 0 -or $installRecoverySummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 安装事务崩溃恢复测试未通过。'
+}
+$markerRollbackOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-ConfiguredMarkerRollback.ps1') 2>&1)
+$markerRollbackExitCode = $LASTEXITCODE
+foreach ($line in $markerRollbackOutput) { Write-Host ([string]$line) }
+$markerRollbackSummary = @($markerRollbackOutput |
+    ForEach-Object { [string]$_ } | Where-Object { $_ -eq 'PASS configured marker rollback 3/3' })
+if ($markerRollbackExitCode -ne 0 -or $markerRollbackSummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 配置标记外层回滚测试未通过。'
+}
+$serviceRollbackOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-ServiceRegistryRollbackIntegration.ps1') 2>&1)
+$serviceRollbackExitCode = $LASTEXITCODE
+foreach ($line in $serviceRollbackOutput) { Write-Host ([string]$line) }
+$serviceRollbackSummary = @($serviceRollbackOutput |
+    ForEach-Object { [string]$_ } | Where-Object { $_ -eq 'PASS service registry rollback integration 1/1' })
+if ($serviceRollbackExitCode -ne 0 -or $serviceRollbackSummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 服务注册表精确回滚测试未通过。'
+}
+$aclRollbackOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-AclRollback.ps1') 2>&1)
+$aclRollbackExitCode = $LASTEXITCODE
+foreach ($line in $aclRollbackOutput) { Write-Host ([string]$line) }
+$aclRollbackSummary = @($aclRollbackOutput |
+    ForEach-Object { [string]$_ } | Where-Object { $_ -eq 'PASS ACL rollback 1/1' })
+if ($aclRollbackExitCode -ne 0 -or $aclRollbackSummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 部署目录 ACL 精确回滚测试未通过。'
+}
+$currentRollbackOutput = @(& powershell.exe -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-CurrentSlotRollback.ps1') 2>&1)
+$currentRollbackExitCode = $LASTEXITCODE
+foreach ($line in $currentRollbackOutput) { Write-Host ([string]$line) }
+$currentRollbackSummary = @($currentRollbackOutput |
+    ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS 16/16;' })
+if ($currentRollbackExitCode -ne 0 -or $currentRollbackSummary.Count -ne 1) {
+    throw 'Windows PowerShell 5.1 Current延迟提交/回滚测试未通过。'
+}
+
 # 回归期间也可能发生源码切换或编辑；identity 只能在第二次快照仍与开头一致且
 # 工作树完全干净时写入。该门禁有意不受 -AllowDirtyCandidate 绕过。
 Assert-SourceSnapshot -ExpectedCommit $commit `
@@ -689,6 +766,14 @@ $verification = [ordered]@{
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
     quickDeployCommandParse = $quickDeployParseSummary[0].Trim()
     releaseBuildNoMandatorySoak = $noMandatorySoakSummary[0].Trim()
+    runtimeTaskRollback = $taskRestoreSummary[0].Trim()
+    installTransactionRollback = $installRollbackSummary[0].Trim()
+    installTransactionJournal = $installJournalSummary[0].Trim()
+    installTransactionRecovery = $installRecoverySummary[0].Trim()
+    configuredMarkerRollback = $markerRollbackSummary[0].Trim()
+    serviceRegistryRollback = $serviceRollbackSummary[0].Trim()
+    aclRollback = $aclRollbackSummary[0].Trim()
+    currentSlotDeferredCommit = $currentRollbackSummary[0].Trim()
 }
 
 $publishedConfigs = New-OrdinalPathMap

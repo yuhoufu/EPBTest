@@ -113,7 +113,7 @@ namespace Controller
             {
                 groupCompletion = await StartupPositioningOffRecoveryJoin.WaitAsync(
                         exactOffCompletion,
-                        registration.Completion,
+                        registration.ControlReady,
                         RecoveryGroupHardDeadlineMs,
                         () => _activeBatchId == runId &&
                               Interlocked.Read(ref _runEpoch) == runEpoch,
@@ -126,9 +126,12 @@ namespace Controller
                     $"EPB[{channel}] 电源组恢复超过{RecoveryGroupHardDeadlineMs}ms。" +
                     $"CorrelationId={registration.CorrelationId:N}");
             }
-            if (groupCompletion?.Recovered != true)
+            // Preflight readiness is not final business recovery and must
+            // still belong to this exact request after the asynchronous join.
+            if (groupCompletion?.Status != EmergencyPowerGroupCompletionStatus.ControlReady ||
+                !_emergencyPowerGroupLatch.IsControlReadyCurrent(GetElectricalGroupId(channel), registration))
                 throw new SoftwareSelfHealingRetryException(
-                    $"EPB[{channel}] 电源组恢复未获得重新上电许可。" +
+                    $"EPB[{channel}] 电源组未获得当前请求的继续预检许可。" +
                     $"Status={groupCompletion?.Status} Reason={groupCompletion?.Reason}");
 
             var finalTelemetry = accepted
@@ -234,7 +237,9 @@ namespace Controller
             string reasonText,
             int delayMs,
             CancellationToken token,
-            string offReason)
+            string offReason,
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             var runEpoch = Interlocked.Read(ref _runEpoch);
             await EnsureStartupPositioningOutputOffAsync(
@@ -244,6 +249,18 @@ namespace Controller
                     offReason,
                     token)
                 .ConfigureAwait(false);
+            if (recoveryOwner != null)
+            {
+                if (_recoveryIncidentCoordinator.HasSafetyConflict(runId, runEpoch,
+                        new[] { channel }, recoveryOwner.CoordinatorOwner) || runId != _activeBatchId)
+                    throw new RecoveryExecutionRejectedException("PositioningRetryRecoveryOwnerInvalid");
+                await Task.Delay(delayMs, token).ConfigureAwait(false);
+                if (_recoveryIncidentCoordinator.HasSafetyConflict(runId, runEpoch,
+                        new[] { channel }, recoveryOwner.CoordinatorOwner) || runId != _activeBatchId ||
+                    runEpoch != Interlocked.Read(ref _runEpoch))
+                    throw new RecoveryExecutionRejectedException("PositioningRetryRecoveryOwnerInvalid");
+                return;
+            }
             if (_channelRuntimeStateStore.Get(channel)?.State ==
                 ChannelRuntimeState.Recovering)
             {
@@ -302,7 +319,8 @@ namespace Controller
                             recoveryOwnerId: contract.OwnerId,
                             recoveryOwnerGeneration: contract.RunEpoch);
                     },
-                    out recoveryIncident))
+                    out recoveryIncident,
+                    startupParent: startupParent))
                 throw new InvalidOperationException(
                     $"EPB[{channel}] 启动定位恢复事务建立失败，已保持安全终态。");
 

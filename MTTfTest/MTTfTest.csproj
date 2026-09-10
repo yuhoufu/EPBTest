@@ -217,6 +217,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="UnattendedRecovery.cs" />
     <Compile Include="RecoveryGuardRuntime.cs" />
+    <Compile Include="RecoveryGuardLiveStop.cs" />
     <Compile Include="WatchdogRuntime.cs" />
     <Compile Include="WatchdogRuntime.CallbackPipeline.cs" />
     <Compile Include="WatchdogRuntime.CallbackPipeline.Testing.cs" />

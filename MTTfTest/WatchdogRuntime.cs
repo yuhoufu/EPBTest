@@ -1910,6 +1910,9 @@ namespace MTEmbTest
             var daqRuntime = CaptureDaqRuntimeSettings();
             var runtime = new SafetyRuntimeSnapshot
             {
+                SafeCurrentThresholdA = Math.Min(
+                    Controller.Adaptive.EpbProgramSafetySettings.DefaultOffCurrentClearThresholdA,
+                    Controller.Adaptive.EpbProgramSafetySettings.Load().OffCurrentClearThresholdA),
                 SampleRateHz = daqRuntime.SampleRateHz,
                 SamplesPerChannel = daqRuntime.SamplesPerChannel,
                 PressureChannels = hydraulics
@@ -2717,6 +2720,9 @@ namespace MTEmbTest
                 var daqRuntime = CaptureDaqRuntimeSettings();
                 var safetyRuntime = new SafetyRuntimeSnapshot
                 {
+                    SafeCurrentThresholdA = Math.Min(
+                        Controller.Adaptive.EpbProgramSafetySettings.DefaultOffCurrentClearThresholdA,
+                        Controller.Adaptive.EpbProgramSafetySettings.Load().OffCurrentClearThresholdA),
                     SampleRateHz = daqRuntime.SampleRateHz,
                     SamplesPerChannel = daqRuntime.SamplesPerChannel,
                     PressureChannels = hydraulics.Select(value => "Pressure_" + value.Id).ToArray(),
@@ -2773,6 +2779,7 @@ namespace MTEmbTest
                     MotorsOff = safety.MotorOffCommandSucceeded,
                     PowerOff = safety.PowerOffConfirmed,
                     PressureSafe = safety.PressureSafeConfirmed,
+                    CurrentSafe = safety.CurrentSafeConfirmed,
                     PersistenceDrained = safety.PersistenceBoundaryConfirmed,
                     LogicalQuiescent = safety.LogicalQuiescenceConfirmed,
                     HardwareResourcesReleased = hardwareResourcesReleased,
@@ -3707,6 +3714,7 @@ namespace MTEmbTest
                 existing.MotorsOff = result.MotorOffCommandSucceeded;
                 existing.PowerOff = result.PowerOffConfirmed;
                 existing.PressureSafe = result.PressureSafeConfirmed;
+                existing.CurrentSafe = result.CurrentSafeConfirmed;
                 existing.PersistenceDrained = result.PersistenceBoundaryConfirmed;
                 existing.LogicalQuiescent = result.LogicalQuiescenceConfirmed;
                 existing.DataContinuityVerified = !result.DataContinuityCompromised;

@@ -524,7 +524,7 @@ namespace PowerSupply.Core
                 // An in-flight response must finish or time out as one paired
                 // transaction. OFF takes priority over every queued telemetry
                 // transaction; it never steals another query's response bytes.
-                return await action(CancellationToken.None).ConfigureAwait(false);
+                return await ExecuteAdmittedAsync(action, token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -537,6 +537,13 @@ namespace PowerSupply.Core
                 if (safetyPriority) Interlocked.Decrement(ref _pendingSafetyOff);
                 if (acquired) _gate.Release();
             }
+        }
+
+        private static Task<T> ExecuteAdmittedAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken token)
+        {
+            // Gate 已授予不等于仍获准发送。检查入场前取消；入场后保持请求/响应配对完整。
+            token.ThrowIfCancellationRequested();
+            return action(CancellationToken.None);
         }
 
         private static async Task<T> AwaitWithTimeout<T>(Task<T> task, int timeoutMs, CancellationToken token, string operation)

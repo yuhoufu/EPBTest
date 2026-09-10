@@ -299,6 +299,9 @@ namespace Controller
             CancellationTokenSource resumeCts = null;
             var channels = Array.Empty<int>();
             var powerEnableAttempted = false;
+            var businessVerificationId = Guid.NewGuid();
+            var businessResumeCommitted = false;
+            var powerFaultSnapshots = new Dictionary<int, EmergencyPowerGroupRegistration>();
             try
             {
                 if (!IsBatchSessionActive || CurrentBatchPauseState != BatchPauseState.Paused)
@@ -355,10 +358,23 @@ namespace Controller
                 }
                 // All structural, ownership and DAQ checks are complete before
                 // this first command that can energize a power group.
+                foreach (var groupId in channels.Select(GetElectricalGroupId).Where(id => id > 0).Distinct())
+                    if (_emergencyPowerGroupLatch.TryCapture(groupId, out var faultSnapshot))
+                        powerFaultSnapshots.Add(groupId, faultSnapshot);
+                await ConfirmBatchResumePhysicalSafetyAsync(preflight, resumeToken).ConfigureAwait(false);
+                EnsureBatchResumeGenerationUnchanged(resumePauseGeneration);
+                EnsureBatchResumePreflightCurrent(preflight);
                 powerEnableAttempted = true;
-                await EnsurePowerSupplyReadyBeforeStartAsync(channels, resumeToken).ConfigureAwait(false);
+                await EnsureRecoveryPowerSupplyReadyAsync(channels, resumeToken).ConfigureAwait(false);
                 EnsureBatchResumePreflightCurrent(preflight);
                 ResetTransientFaultStateForRestart(channels, "BatchResume");
+                foreach (var fault in powerFaultSnapshots)
+                    if (!_emergencyPowerGroupLatch.TryArmBusinessVerification(fault.Key, fault.Value,
+                            preflight.Pause.RunId, preflight.Pause.RunEpoch,
+                            channels.Where(channel => GetElectricalGroupId(channel) == fault.Key),
+                            Interlocked.Read(ref _cycleAttemptSequence), businessVerificationId,
+                            replaceAfterFreshSafety: true))
+                        throw new RecoveryExecutionRejectedException("BatchResumeBusinessProofSuperseded");
                 RejoinFormalChannelsAtSharedFutureSlot(
                     channels,
                     plan,
@@ -373,6 +389,7 @@ namespace Controller
                 _batchPausedChannels = Array.Empty<int>();
                 AdvanceManualPauseProgress(ManualPauseStage.Resumed, "同一批次已恢复运行");
                 SetBatchPauseState(BatchPauseState.Running, channels, "试验已恢复");
+                businessResumeCommitted = true;
             }
             catch (OperationCanceledException) when (
                 token.IsCancellationRequested ||
@@ -454,6 +471,9 @@ namespace Controller
             }
             finally
             {
+                if (!businessResumeCommitted)
+                    foreach (var fault in powerFaultSnapshots)
+                        _emergencyPowerGroupLatch.InvalidateBusinessVerification(fault.Key, fault.Value, businessVerificationId);
                 if (CurrentBatchPauseState != BatchPauseState.Running)
                     NotifyExternalManualPause();
                 resumeCts?.Dispose();
@@ -527,15 +547,24 @@ namespace Controller
             int[] channels,
             CancellationToken token)
         {
+            // Reject shared scope before entering rollback code that itself
+            // issues hydraulic OFF commands.
+            ValidateHydraulicResumeSafetyScope(hydraulicId, channels);
             await _pauseResumeGate.WaitAsync(token).ConfigureAwait(false);
             HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
             CancellationTokenSource linked = null;
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            Func<bool> ownsCurrentRun = () => CanRollbackHydraulicResume(
+                runId, runEpoch, _activeBatchId, Interlocked.Read(ref _runEpoch),
+                ownership != null && !ownership.Token.IsCancellationRequested);
+            var businessVerificationId = Guid.NewGuid();
+            var businessRejoinPublished = false;
+            var powerFaultSnapshots = new Dictionary<int, EmergencyPowerGroupRegistration>();
             try
             {
                 if (!IsBatchSessionActive || !IsFormalPhaseCommitted)
                     throw new InvalidOperationException("当前没有可执行液压组恢复的正式批次。");
-                var runId = _activeBatchId;
-                var runEpoch = Interlocked.Read(ref _runEpoch);
                 ownership = await _recoveryOwnership.AcquireAsync(
                         hydraulicId,
                         $"OPERATOR-HYDRAULIC:{hydraulicId}:{runId:N}",
@@ -545,6 +574,7 @@ namespace Controller
                     .ConfigureAwait(false);
                 linked = CancellationTokenSource.CreateLinkedTokenSource(token, ownership.Token);
                 var recoveryToken = linked.Token;
+                if (!ownsCurrentRun()) throw new InvalidOperationException("HydraulicResumeRunSuperseded");
 
                 foreach (var channel in channels)
                 {
@@ -566,7 +596,17 @@ namespace Controller
                     .ConfigureAwait(false);
                 EnsureStrictCurveControl(channels);
                 EnsureAdaptiveProfilesReady(channels);
-                await EnsurePowerSupplyReadyBeforeStartAsync(channels, recoveryToken)
+                foreach (var groupId in channels.Select(GetElectricalGroupId).Where(id => id > 0).Distinct())
+                    if (_emergencyPowerGroupLatch.TryCapture(groupId, out var faultSnapshot))
+                        powerFaultSnapshots.Add(groupId, faultSnapshot);
+                await ConfirmHydraulicResumePhysicalSafetyAsync(hydraulicId, channels,
+                    () => IsBatchSessionActive && _activeBatchId == runId &&
+                        Interlocked.Read(ref _runEpoch) == runEpoch && !recoveryToken.IsCancellationRequested,
+                    recoveryToken).ConfigureAwait(false);
+                recoveryToken.ThrowIfCancellationRequested();
+                if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch)
+                    throw new InvalidOperationException("HydraulicResumeRunSuperseded");
+                await EnsureRecoveryPowerSupplyReadyAsync(channels, recoveryToken)
                     .ConfigureAwait(false);
 
                 var plan = GetCompatibleStaggerPlan(channels);
@@ -595,6 +635,14 @@ namespace Controller
                 ResetTransientFaultStateForRestart(
                     channels,
                     "HydraulicGroupOperatorResume");
+                if (!ownsCurrentRun() || recoveryToken.IsCancellationRequested)
+                    throw new OperationCanceledException("HydraulicResumeBusinessProofSuperseded");
+                foreach (var fault in powerFaultSnapshots)
+                    if (!_emergencyPowerGroupLatch.TryArmBusinessVerification(fault.Key, fault.Value,
+                            runId, runEpoch, channels.Where(channel => GetElectricalGroupId(channel) == fault.Key),
+                            Interlocked.Read(ref _cycleAttemptSequence), businessVerificationId,
+                            replaceAfterFreshSafety: true))
+                        throw new RecoveryExecutionRejectedException("HydraulicResumeBusinessProofSuperseded");
                 RejoinFormalChannelsAtSharedFutureSlot(
                     channels,
                     plan,
@@ -611,9 +659,13 @@ namespace Controller
                     $"HydraulicGroupOperatorResumed Hydraulic={hydraulicId} " +
                     $"Channels=[{string.Join(",", channels)}] Run={runId:N}/{runEpoch}",
                     "液压协调");
+                businessRejoinPublished = true;
             }
             catch
             {
+                // A superseded operation must not release the new run's
+                // hydraulics or overwrite its channel state in error cleanup.
+                if (!ownsCurrentRun()) throw;
                 var reason =
                     $"液压硬件故障恢复预检未通过；液压{hydraulicId}整组保持OFF，健康组继续运行。";
                 try
@@ -626,6 +678,7 @@ namespace Controller
                 catch { }
                 foreach (var channel in channels)
                 {
+                    if (!ownsCurrentRun()) throw;
                     try { CommandEpbOffHighPriority(channel, "HydraulicGroupOperatorResumeRejected"); }
                     catch { }
                     _nonRecoverableChannelFaultLatch[channel] = 0;
@@ -637,7 +690,7 @@ namespace Controller
                         "HydraulicGroupOperatorResumeRejected",
                         reason,
                         affectedChannels: channels,
-                        correlationId: _activeBatchId,
+                        correlationId: runId,
                         allowTerminalReset: true,
                         allowSystemFaultReset: true);
                 }
@@ -645,10 +698,20 @@ namespace Controller
             }
             finally
             {
+                if (!businessRejoinPublished)
+                    foreach (var fault in powerFaultSnapshots)
+                        _emergencyPowerGroupLatch.InvalidateBusinessVerification(fault.Key, fault.Value, businessVerificationId);
                 linked?.Dispose();
                 ownership?.Dispose();
                 _pauseResumeGate.Release();
             }
+        }
+
+        internal static bool CanRollbackHydraulicResume(
+            Guid expectedRun, long expectedEpoch, Guid currentRun, long currentEpoch, bool ownsHydraulics)
+        {
+            return ownsHydraulics && expectedRun != Guid.Empty && expectedEpoch > 0 &&
+                expectedRun == currentRun && expectedEpoch == currentEpoch;
         }
 
         private void EnsureBatchResumeGenerationUnchanged(long expectedGeneration)
@@ -726,6 +789,114 @@ namespace Controller
                     throw new InvalidOperationException(
                         $"EPB[{channel}] DAQ恢复尚未终态，拒绝上电。");
             }
+        }
+
+        internal static bool IsHydraulicResumeScopeCovered(int hydraulicId, int[] channels,
+            int[][] electricalMembers, Func<int, bool> isEnabled)
+        {
+            if ((hydraulicId != 1 && hydraulicId != 2) || channels == null || channels.Length == 0 ||
+                electricalMembers == null || electricalMembers.Length == 0 ||
+                electricalMembers.Any(members => members == null || members.Length == 0) || isEnabled == null)
+                return false;
+            var physical = Enumerable.Range(hydraulicId == 1 ? 1 : 7, 6).ToArray();
+            var mapped = electricalMembers.SelectMany(members => members).ToArray();
+            return channels.All(physical.Contains) && mapped.All(physical.Contains) &&
+                   physical.All(mapped.Contains) && physical.Where(isEnabled).All(channels.Contains);
+        }
+
+        private void ValidateHydraulicResumeSafetyScope(int hydraulicId, int[] channels)
+        {
+            var physicalChannels = GetAffectedHydraulicSafetyScope(channels);
+            var hydraulics = _cfg.Test.Hydraulics
+                .Where(group => group.Enabled && group.Id == hydraulicId).ToArray();
+            var electrical = _cfg.Test.Groups
+                .Where(group => group.Members.Any(physicalChannels.Contains)).ToArray();
+            if (hydraulics.Length != 1 || _powerSupply == null || _hydCoordinator == null || _acq == null ||
+                !IsHydraulicResumeScopeCovered(hydraulicId, channels,
+                    electrical.Select(group => group.Members.ToArray()).ToArray(), IsChannelEnabled) ||
+                hydraulics[0].Members.Where(IsChannelEnabled).Any(channel => !channels.Contains(channel)))
+                throw new InvalidOperationException("HydraulicResumeSharedScopeNotExclusivelyOwned");
+        }
+
+        private async Task ConfirmHydraulicResumePhysicalSafetyAsync(
+            int hydraulicId, int[] channels, Func<bool> authorityCurrent, CancellationToken token)
+        {
+            ValidateHydraulicResumeSafetyScope(hydraulicId, channels);
+            var physicalChannels = GetAffectedHydraulicSafetyScope(channels);
+            var hydraulics = _cfg.Test.Hydraulics.Where(group => group.Enabled && group.Id == hydraulicId).ToArray();
+            var electrical = _cfg.Test.Groups.Where(group => group.Members.Any(physicalChannels.Contains)).ToArray();
+            var commands = new List<Func<Task>>();
+            foreach (var channel in physicalChannels)
+            {
+                commands.Add(() =>
+                {
+                    if (!CommandEpbOffHighPriority(channel, "HydraulicResumeSafety"))
+                        throw new InvalidOperationException("HydraulicResumeEpbOffUnconfirmed:" + channel);
+                    return Task.CompletedTask;
+                });
+            }
+            foreach (var group in electrical)
+            {
+                commands.Add(() => TrackRecoveryHardwareAction(physicalChannels,
+                    _powerSupply.DisableGroupAsync(group.Id, "HydraulicResumeSafety", token)));
+            }
+            commands.Add(() => TrackRecoveryHardwareAction(physicalChannels,
+                _hydCoordinator.ForceReleaseAsync(hydraulicId, "HydraulicResumeSafety",
+                    _acq.ReadPressureSafetySample)));
+            await RunRecoverySafetyBoundaryAsync(commands,
+                () => { if (!authorityCurrent()) throw new InvalidOperationException("HydraulicResumeAuthoritySuperseded"); },
+                () => ConfirmJointPhysicalSafetyAsync(physicalChannels, hydraulics, authorityCurrent, token))
+                .ConfigureAwait(false);
+        }
+
+        private async Task ConfirmBatchResumePhysicalSafetyAsync(
+            BatchResumePreflight preflight, CancellationToken token)
+        {
+            EnsureBatchResumePreflightCurrent(preflight);
+            token.ThrowIfCancellationRequested();
+            // Batch pause already owns the global power-OFF boundary. Reissue
+            // it here rather than treating historical pause feedback as fresh.
+            // DisableAll affects the complete physical rig. Logical selection
+            // must not exclude a disabled member from OFF or fresh feedback.
+            // This does not enlarge preflight.Channels or the resume cohort.
+            var channels = Enumerable.Range(1, 12).ToArray();
+            var hydraulics = SelectStopPhysicalSafetyHydraulics(_cfg.Test.Hydraulics);
+            var commands = new List<Func<Task>>();
+            foreach (var channel in channels)
+            {
+                commands.Add(() =>
+                {
+                    if (!CommandEpbOffHighPriority(channel, "BatchResumeSafety"))
+                        throw new InvalidOperationException("BatchResumeEpbOffUnconfirmed:" + channel);
+                    return Task.CompletedTask;
+                });
+            }
+            commands.Add(async () =>
+            {
+                if (_powerSupply == null) throw new InvalidOperationException("BatchResumePowerMissing");
+                // DisableAll touches both physical groups, including groups
+                // with no currently enabled logical member.
+                await TrackRecoveryHardwareAction(Enumerable.Range(1, 12).ToArray(),
+                    _powerSupply.DisableAllAsync("BatchResumeSafety", token)).ConfigureAwait(false);
+            });
+            foreach (var group in hydraulics)
+            {
+                commands.Add(async () =>
+                {
+                    if (_hydCoordinator == null || _acq == null)
+                        throw new InvalidOperationException("BatchResumeHydraulicFeedbackMissing");
+                    var physicalChannels = Enumerable.Range(1, 12)
+                        .Where(channel => GetHydraulicGroupForChannel(channel) == group.Id).ToArray();
+                    await TrackRecoveryHardwareAction(physicalChannels,
+                        _hydCoordinator.ForceReleaseAsync(group.Id, "BatchResumeSafety",
+                            _acq.ReadPressureSafetySample)).ConfigureAwait(false);
+                });
+            }
+            await RunRecoverySafetyBoundaryAsync(commands,
+                () => EnsureBatchResumePreflightCurrent(preflight),
+                () => ConfirmJointPhysicalSafetyAsync(channels, hydraulics,
+                    () => { EnsureBatchResumePreflightCurrent(preflight); return true; }, token))
+                .ConfigureAwait(false);
         }
 
         private async Task DisableBatchResumePowerBestEffortAsync(
@@ -854,7 +1025,7 @@ namespace Controller
                 await EnsureDaqReadyBeforeStartAsync(new[] { channel }, resumeToken).ConfigureAwait(false);
                 EnsureStrictCurveControl(new[] { channel });
                 EnsureAdaptiveProfilesReady(new[] { channel });
-                await EnsurePowerSupplyReadyBeforeStartAsync(new[] { channel }, resumeToken)
+                await EnsureRecoveryPowerSupplyReadyAsync(new[] { channel }, resumeToken)
                     .ConfigureAwait(false);
                 EnsureNoPermanentDataContinuityGap("单通道恢复上电门禁");
 
@@ -1248,9 +1419,9 @@ namespace Controller
                                     new[] { channel },
                                     attemptToken)
                                 .ConfigureAwait(false);
+                        long trustedAttemptId = 0;
                         try
                         {
-                            long trustedAttemptId = 0;
                             var trustedCycleNumber = 0;
                             try
                             {
@@ -1264,8 +1435,7 @@ namespace Controller
                             }
                             if (cycleNumber != 0)
                             {
-                                MarkCurrentCycleNumber(channel, cycleNumber);
-                                _currentAttemptIdByChannel.TryGetValue(channel, out trustedAttemptId);
+                                trustedAttemptId = MarkCurrentCycleNumber(channel, cycleNumber);
                             }
 
                             var outcome = await runner.RunOneAdaptiveLearningAsync(PeriodMs, attemptToken)
@@ -1292,6 +1462,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         cycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         qualificationOrdinal,
@@ -1309,11 +1480,13 @@ namespace Controller
                                 throw new InvalidOperationException(
                                     $"EPB[{channel}] 资格圈失败：{outcome.Stage}/{outcome.Reason}");
                             trustedCycleNumber = cycleNumber;
+                            var trustedOutcome = outcome.Snapshot();
                             _watchdogConsecutiveSoftwareAborts[channel] = 0;
 
                             await SealLearningCycleAsync(
                                     channel,
                                     cycleNumber,
+                                    trustedAttemptId,
                                     runId,
                                     learningEvidence,
                                     qualificationOrdinal,
@@ -1335,7 +1508,7 @@ namespace Controller
                                     runEpoch,
                                     trustedCycleNumber,
                                     trustedAttemptId,
-                                    outcome,
+                                    trustedOutcome,
                                     "Qualification");
                             }
                             catch (EpbAdaptiveProfilePersistenceFatalException fatalEx)
@@ -1383,6 +1556,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         cycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         qualificationOrdinal,
@@ -1399,6 +1573,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         cycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         qualificationOrdinal,
@@ -1418,6 +1593,7 @@ namespace Controller
                                 await SealLearningCycleAsync(
                                         channel,
                                         cycleNumber,
+                                        trustedAttemptId,
                                         runId,
                                         learningEvidence,
                                         qualificationOrdinal,
@@ -1839,7 +2015,8 @@ namespace Controller
                     operatorAcknowledged,
                     token,
                     unattendedRecovery,
-                    recoveryCorrelation);
+                    recoveryCorrelation,
+                    recoveryIncident);
             }
 
             var started = TryBeginRecoveryIncident(
@@ -1931,7 +2108,8 @@ namespace Controller
             bool operatorAcknowledged,
             CancellationToken token = default,
             bool unattendedRecovery = false,
-            Guid recoveryCorrelation = default)
+            Guid recoveryCorrelation = default,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             if (!operatorAcknowledged)
                 throw new InvalidOperationException("必须由操作员确认故障原因已排除后才能恢复。");
@@ -1962,6 +2140,8 @@ namespace Controller
             HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
             var hardDeadlineReached = false;
             var resetOnHardDeadline = IsBatchSessionActive;
+            var alarmRetirementActions = new RecoveryStageTaskRegistry();
+            RecoveryStageTaskRegistry alarmStageActions = null;
             var recoveryRunId = _activeBatchId;
             var recoveryRunEpoch = Interlocked.Read(ref _runEpoch);
             try
@@ -1983,6 +2163,10 @@ namespace Controller
                     deadlineLinked.Token,
                     ownership.Token);
                 var recoveryToken = ownershipLinked.Token;
+                alarmStageActions = _affectedGroupStageActions.GetOrAdd(
+                    GetHydraulicGroupForChannel(channel), _ => new RecoveryStageTaskRegistry());
+                if (alarmStageActions.HasPending)
+                    throw new InvalidOperationException("AlarmResumePreviousHardwareActionPending");
                 var remaining = GetRemainingMechanicalTargetCycles(channel);
                 if (remaining <= 0)
                     throw new InvalidOperationException($"EPB[{channel}] 已无剩余正式圈数。");
@@ -2020,7 +2204,7 @@ namespace Controller
                                     new[] { channel },
                                     2,
                                     ct),
-                            recoveryToken)
+                            recoveryToken, alarmRetirementActions)
                         .ConfigureAwait(false);
                     if (requiresFullRelearning &&
                         !PersistOperatorFullRelearningState(
@@ -2048,15 +2232,15 @@ namespace Controller
                         "AlarmResumeDaqReady",
                         RecoveryStageTimeoutMs,
                         ct => EnsureDaqReadyBeforeStartAsync(new[] { channel }, ct),
-                        resumeToken)
+                        resumeToken, alarmRetirementActions)
                     .ConfigureAwait(false);
                 EnsureStrictCurveControl(new[] { channel });
                 EnsureAdaptiveProfilesReady(new[] { channel });
                 await RecoveryStageDeadline.RunAsync(
                         "AlarmResumePowerReady",
                         RecoveryStageTimeoutMs,
-                        ct => EnsurePowerSupplyReadyBeforeStartAsync(new[] { channel }, ct),
-                        resumeToken)
+                        ct => EnsureRecoveryPowerSupplyReadyAsync(new[] { channel }, ct, recoveryOwner),
+                        resumeToken, alarmRetirementActions)
                     .ConfigureAwait(false);
 
                 var plan = GetCompatibleStaggerPlan(new[] { channel });
@@ -2072,10 +2256,11 @@ namespace Controller
                                     new[] { channel },
                                     null,
                                     plan,
-                                    ct)
+                                    ct,
+                                    recoveryOwner: recoveryOwner)
                                 .ConfigureAwait(false);
                         },
-                        resumeToken)
+                        resumeToken, alarmStageActions, alarmRetirementActions)
                     .ConfigureAwait(false);
                 if (positioningFailures.Length > 0)
                     throw new InvalidOperationException(
@@ -2110,10 +2295,11 @@ namespace Controller
                                         learningAnchors,
                                         learnCycles,
                                         plan,
-                                        ct)
+                                        ct,
+                                        recoveryOwner: recoveryOwner)
                                     .ConfigureAwait(false);
                             },
-                            resumeToken)
+                            resumeToken, alarmRetirementActions)
                         .ConfigureAwait(false);
                     if (learningFailed.Contains(channel))
                         throw new InvalidOperationException(
@@ -2139,7 +2325,7 @@ namespace Controller
                                     ct)
                                 .ConfigureAwait(false);
                         },
-                        resumeToken)
+                        resumeToken, alarmRetirementActions)
                     .ConfigureAwait(false);
                 if (qualificationFailed.Contains(channel))
                     throw new InvalidOperationException(
@@ -2204,6 +2390,9 @@ namespace Controller
             }
             finally
             {
+                await alarmRetirementActions.WaitForTrackedTasksAsync().ConfigureAwait(false);
+                if (alarmStageActions != null)
+                    await alarmStageActions.WaitForTrackedTasksAsync().ConfigureAwait(false);
                 resumeCts?.Dispose();
                 ownershipLinked?.Dispose();
                 deadlineLinked?.Dispose();
@@ -2338,7 +2527,8 @@ namespace Controller
             IEnumerable<int> channels,
             ElectricalStaggerPlan staggerPlan,
             string reason,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             var selected = (channels ?? Array.Empty<int>())
                 .Distinct()
@@ -2357,7 +2547,8 @@ namespace Controller
                         selected,
                         staggerPlan,
                         reason,
-                        ct),
+                        ct,
+                        recoveryOwner),
                     "MotorReleaseBeforeFormalRejoin",
                     token)
                 .ConfigureAwait(false);
@@ -2367,13 +2558,15 @@ namespace Controller
             int[] selected,
             ElectricalStaggerPlan staggerPlan,
             string reason,
-            CancellationToken token)
+            CancellationToken token,
+            RecoveryIncidentHandle recoveryOwner = null)
         {
             var failures = await PreReleaseBatchWithPlanAsync(
                     selected,
                     null,
                     staggerPlan,
-                    token)
+                    token,
+                    recoveryOwner: recoveryOwner)
                 .ConfigureAwait(false);
             if (failures.Length > 0)
                 throw new InvalidOperationException(

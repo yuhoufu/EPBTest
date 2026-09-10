@@ -528,6 +528,16 @@ namespace Controller
             bool allowTerminalReset = false,
             bool allowSystemFaultReset = false)
         {
+            TryPublish(next, out var published, allowTerminalReset, allowSystemFaultReset);
+            return published;
+        }
+
+        internal bool TryPublish(
+            ChannelRuntimeStateChangedEvent next,
+            out ChannelRuntimeStateChangedEvent published,
+            bool allowTerminalReset = false,
+            bool allowSystemFaultReset = false)
+        {
             if (next == null) throw new ArgumentNullException(nameof(next));
             if (next.Channel < 1 || next.Channel > 12)
                 throw new ArgumentOutOfRangeException(nameof(next.Channel));
@@ -540,16 +550,27 @@ namespace Controller
                 .ToArray();
             var candidate = next.Clone();
 
-            return _states.AddOrUpdate(
-                    candidate.Channel,
-                    _ => CloneWithRevision(candidate, 1),
-                    (_, current) => IsLatchedStop(current.State) &&
-                                    !allowTerminalReset &&
-                                    !(allowSystemFaultReset &&
-                                      current.State == ChannelRuntimeState.SystemFault)
-                        ? current
-                        : CloneWithRevision(candidate, current.Revision + 1))
-                .Clone();
+            while (true)
+            {
+                if (!_states.TryGetValue(candidate.Channel, out var current))
+                {
+                    var initial = CloneWithRevision(candidate, 1);
+                    if (!_states.TryAdd(candidate.Channel, initial)) continue;
+                    published = initial.Clone();
+                    return true;
+                }
+                if ((candidate.RunEpoch > 0 && current.RunEpoch > candidate.RunEpoch) ||
+                    IsLatchedStop(current.State) && !allowTerminalReset &&
+                    !(allowSystemFaultReset && current.State == ChannelRuntimeState.SystemFault))
+                {
+                    published = current.Clone();
+                    return false;
+                }
+                var replacement = CloneWithRevision(candidate, current.Revision + 1);
+                if (!_states.TryUpdate(candidate.Channel, replacement, current)) continue;
+                published = replacement.Clone();
+                return true;
+            }
         }
 
         private static ChannelRuntimeStateChangedEvent CloneWithRevision(
@@ -1341,6 +1362,7 @@ namespace Controller
         public bool PowerOffConfirmed { get; set; }
         public PowerShutdownDisposition PowerDisposition { get; set; }
         public bool PressureSafeConfirmed { get; set; }
+        public bool CurrentSafeConfirmed { get; set; }
         public bool PersistenceBoundaryConfirmed { get; set; }
         public bool RawStorageFlushed { get; set; }
         public bool DataContinuityCompromised { get; set; }
@@ -1367,7 +1389,8 @@ namespace Controller
         ///     discard the final batch or alarm evidence.
         /// </summary>
         public bool CanCloseApplication => CanReleaseAcquisition && PersistenceBoundaryConfirmed;
-        public bool PhysicalSafetyConfirmed => MotorOffCommandSucceeded && PowerOffConfirmed && PressureSafeConfirmed;
+        public bool PhysicalSafetyConfirmed => MotorOffCommandSucceeded && PowerOffConfirmed &&
+                                               PressureSafeConfirmed && CurrentSafeConfirmed;
         public bool FullyConfirmed => PhysicalSafetyConfirmed && PersistenceBoundaryConfirmed;
         public bool CanRestartInProcess => PhysicalSafetyConfirmed &&
                                            !RequiresProcessRestart && !TimedOut &&
@@ -1410,6 +1433,7 @@ namespace Controller
                 PowerOffConfirmed = PowerOffConfirmed,
                 PowerDisposition = PowerDisposition,
                 PressureSafeConfirmed = PressureSafeConfirmed,
+                CurrentSafeConfirmed = CurrentSafeConfirmed,
                 PersistenceBoundaryConfirmed = PersistenceBoundaryConfirmed,
                 RawStorageFlushed = RawStorageFlushed,
                 DataContinuityCompromised = DataContinuityCompromised,

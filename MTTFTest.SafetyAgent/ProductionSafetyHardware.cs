@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using MTTFTest.SafetyHardware;
 using MTTFTest.Watchdog.Protocol;
@@ -21,6 +22,7 @@ namespace MTTFTest.SafetyAgent
     {
         private readonly SafetyRuntimeSnapshot _runtime;
         private readonly SafetyHardwareConfiguration _configuration;
+        private readonly SafetyPhysicalChannel[] _feedbackChannels;
 
         public SafetyPowerOffReport LastPowerOffReport { get; private set; }
 
@@ -31,6 +33,7 @@ namespace MTTFTest.SafetyAgent
             _configuration = SafetyHardwareConfiguration.Load(
                 configDirectory,
                 _runtime.PressureChannels);
+            _feedbackChannels = SafetyPhysicalChannel.Load(configDirectory, _runtime.PressureChannels);
         }
 
         public bool ConfirmDoOff()
@@ -53,56 +56,33 @@ namespace MTTFTest.SafetyAgent
             return LastPowerOffReport.AllObservedOff;
         }
 
-        public bool ConfirmPressureSafe()
+        public bool ConfirmCurrentAndPressureSafe()
         {
-            using (var probe = new SafetyPressureProbe(
-                       _configuration.PressureChannels,
+            var commandsCompletedMs = Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
+            var limits = _feedbackChannels.Select(channel => channel.IsCurrent
+                ? _runtime.SafeCurrentThresholdA
+                : _runtime.ReleaseSafePressureBar[Array.IndexOf(_runtime.PressureChannels, channel.Name)]).ToArray();
+            var window = new SafetyFeedbackWindow(_feedbackChannels.Select(channel => channel.Name).ToArray(),
+                _feedbackChannels.Select(channel => channel.IsCurrent ? 0.0 : -double.MaxValue).ToArray(),
+                limits, commandsCompletedMs,
+                _runtime.PressureSampleMaxAgeMs, Math.Max(100, _runtime.ReleaseStableMs));
+            using (var probe = new SafetyPhysicalFeedbackProbe(
+                       _feedbackChannels,
                        _runtime.SampleRateHz,
-                       _runtime.SamplesPerChannel))
+                       _runtime.SamplesPerChannel,
+                       Math.Min(_runtime.PressureSampleMaxAgeMs, _runtime.ReleaseTimeoutMs)))
             {
-                foreach (var channel in _configuration.PressureChannels)
+                var deadline = Stopwatch.StartNew();
+                while (deadline.ElapsedMilliseconds <= _runtime.ReleaseTimeoutMs)
                 {
-                    var runtimeIndex = Array.FindIndex(
-                        _runtime.PressureChannels,
-                        value => string.Equals(
-                            value,
-                            channel.Name,
-                            StringComparison.OrdinalIgnoreCase));
-                    if (runtimeIndex < 0)
-                        throw new SafetyHardwareConfigurationException(
-                            "PressureChannelBindingMissing");
-
-                    var deadline = Stopwatch.StartNew();
-                    long stableSince = 0;
-                    while (deadline.ElapsedMilliseconds <= _runtime.ReleaseTimeoutMs)
-                    {
-                        var sample = probe.Read(channel.HydraulicId);
-                        var now = Stopwatch.GetTimestamp();
-                        var safe = sample.IsFinite &&
-                                   sample.AgeMs <= _runtime.PressureSampleMaxAgeMs &&
-                                   sample.ValueBar <=
-                                   _runtime.ReleaseSafePressureBar[runtimeIndex];
-                        if (safe)
-                        {
-                            if (stableSince == 0) stableSince = now;
-                            if ((now - stableSince) * 1000.0 / Stopwatch.Frequency >=
-                                _runtime.ReleaseStableMs)
-                                break;
-                        }
-                        else
-                        {
-                            stableSince = 0;
-                        }
-                        Thread.Sleep(10);
-                    }
-
-                    if (stableSince == 0 ||
-                        (Stopwatch.GetTimestamp() - stableSince) * 1000.0 /
-                        Stopwatch.Frequency < _runtime.ReleaseStableMs)
-                        return false;
+                    var frame = probe.Read();
+                    if (deadline.ElapsedMilliseconds > _runtime.ReleaseTimeoutMs) return false;
+                    if (window.Observe(frame, Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency))
+                        return true;
+                    Thread.Sleep(10);
                 }
             }
-            return true;
+            return false;
         }
 
         public void Dispose()

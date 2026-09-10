@@ -18,6 +18,21 @@ namespace RecoveryGuardTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--exact-main-retirement")
+                {
+                    Run("Stalled Main retirement requires all stale clocks and cooperative grace", StalledMainRetirementGate);
+                    Run("Forced Main retirement remains fenced and requires independent safety", ForcedMainRetirementIntegration);
+                    Run("Exact Main retirement targets only the isolated test process", ExactMainRetirement);
+                    Run("Exact Guard retirement remains role restricted", ExactWorkerRetirement);
+                    Console.WriteLine("PASS " + _passed + "/" + _passed);
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--live-main-action")
+                {
+                    Run("Live Main waits for safe retirement without starting a competing safety worker", LiveMainWaitsForRetirement);
+                    Console.WriteLine("PASS " + _passed + "/" + _passed);
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--commissioning-scope")
                 {
                     Run("Commissioning is bounded and cannot inherit another authorization", CommissioningScope);
@@ -105,6 +120,9 @@ namespace RecoveryGuardTests
                 Run("Worker retirement is durable, stop-aware and cannot renew or replace a live owner", WorkerRetirementFence);
                 Run("Idle worker retirement fences Claim and pulses without renewing trial trust", IdleWorkerRetirementFence);
                 Run("Exact Guard retirement uses the same process handle and leaves mismatched identities alive", ExactWorkerRetirement);
+                Run("Exact Main retirement rejects changed identity and final authority revocation", ExactMainRetirement);
+                Run("Stalled Main retirement preserves live channels and bounded waits", StalledMainRetirementGate);
+                Run("Forced Main retirement remains fenced and requires independent safety", ForcedMainRetirementIntegration);
                 Run("An adopted transaction fences the late old owner", AdoptFencesOwner);
                 Run("Adopted retired safety is archived before new safety and preserves stop", AdoptedSafetyReconciliation);
                 Run("Repeated worker heartbeat does not extend stage deadline", StageDeadline);
@@ -144,6 +162,7 @@ namespace RecoveryGuardTests
                 Run("Session rollover preserves authorization and requires created main proof", SessionRolloverCheckpointProof);
                 Run("Session rollover cannot activate after operator stop", SessionRolloverStopWins);
                 Run("Late safety response cannot bind across session rollover", LateSafetyResponseSessionFence);
+                Run("Live Main waits for safe retirement without starting a competing safety worker", LiveMainWaitsForRetirement);
                 Run("Late action completion cannot advance a new session", LateCompletionSessionFence);
                 Console.WriteLine("PASS " + _passed + "/" + _passed);
                 return 0;
@@ -1233,11 +1252,134 @@ namespace RecoveryGuardTests
             }
         }
 
+        private static void StalledMainRetirementGate()
+        {
+            using (var f = new Fixture())
+            {
+                f.Store.BindWatchdogSession(f.Token, f.Snapshot.RunId, f.Main, Guid.NewGuid().ToString("N"), f.Now);
+                f.Tick(600, false); f.Observe();
+                f.Tick(60, false);
+                Check(f.Observe().CanClaim, "stalled fixture must establish real claim evidence");
+                f.Store.Claim(Clone(f.Snapshot), ProcessObservation.ExactAlive, f.Owner, f.Now, f.Settings, false);
+                f.Advance(RecoveryStage.SafeStop);
+                var state = f.Store.Read();
+                Check(!StalledMainRetirementPolicy.CanRetire(state, f.Settings, f.Now), "cooperative grace bypassed");
+                var now = f.Now.AddSeconds(30);
+                Check(StalledMainRetirementPolicy.CanRetire(state, f.Settings, now), "fully stalled Main denied after grace");
+                foreach (var mutate in new Action<RecoveryControlState>[]
+                {
+                    s => s.Intent.DesiredState = RecoveryDesiredState.Stopped,
+                    s => s.Intent.WatchdogSessionId = null,
+                    s => s.Intent.WatchdogSessionId = "unproven",
+                    s => s.Intent.WatchdogSessionId = Guid.Empty.ToString("N"),
+                    s => s.Transaction.Stage = RecoveryStage.Launch,
+                    s => s.Transaction.LeaseUntilUtcTicks = now.Ticks,
+                    s => s.Transaction.WorkerRetirementRequestedUtcTicks = now.Ticks,
+                    s => s.Transaction.AuthorizationId = Guid.NewGuid().ToString("N"),
+                    s => s.Transaction.IntentVersion++,
+                    s => s.Transaction.Owner = Clone(s.Intent.MainProcess),
+                    s => s.Observation.LastSnapshot.Authorization.InstallationId = Guid.NewGuid().ToString("N"),
+                    s => s.MainExecutablePath = "unrelated.exe",
+                    s => s.Observation.LastSnapshot.Channels[0].StageDeadlineUtcTicks = now.AddSeconds(10).Ticks,
+                    s => s.Observation.ChannelClocks[0].SampleProgressUtcTicks = now.Ticks,
+                    s => s.Observation.ChannelClocks[0].ControlProgressUtcTicks = now.Ticks,
+                    s => s.Observation.ChannelClocks[0].PersistedProgressUtcTicks = now.Ticks,
+                    s => s.Observation.ChannelClocks.Clear(),
+                    s => s.Observation.LastSnapshot = null
+                })
+                {
+                    var changed = Clone(state); mutate(changed);
+                    Check(!StalledMainRetirementPolicy.CanRetire(changed, f.Settings, now),
+                        "unsafe or incomplete retirement evidence accepted");
+                }
+                f.Settings.Mode = RecoveryGuardMode.RecoverExited;
+                Check(!StalledMainRetirementPolicy.CanRetire(state, f.Settings, now), "RecoverExited gained termination authority");
+            }
+        }
+
+        private static void ForcedMainRetirementIntegration()
+        {
+            foreach (var interruption in new[] { "none", "stop", "maintenance", "cancel", "cancel-in-check" })
+            using (var f = new Fixture())
+            using (var cancellation = new CancellationTokenSource())
+            {
+                f.Store.BindWatchdogSession(f.Token, f.Snapshot.RunId, f.Main, Guid.NewGuid().ToString("N"), f.Now);
+                f.Tick(600, false); f.Observe(); f.Tick(60, false); f.Observe();
+                f.Store.Claim(Clone(f.Snapshot), ProcessObservation.ExactAlive, f.Owner, f.Now, f.Settings, false);
+                f.Advance(RecoveryStage.SafeStop);
+                f.Now = f.Now.AddSeconds(30);
+                var transport = new ActionTransport();
+                var retired = false;
+                var inhibited = false;
+                var permissionChecks = 0;
+                var actions = new SupervisorRecoveryActions(f.Store, transport, () => f.Now,
+                    identity => retired ? ProcessObservation.Exited : ProcessObservation.ExactAlive,
+                    f.Settings, () =>
+                    {
+                        permissionChecks++;
+                        if (interruption == "cancel-in-check" && permissionChecks == 2) cancellation.Cancel();
+                        if (inhibited) throw new InvalidOperationException("test maintenance");
+                    },
+                    (main, executable, beforeTerminate) =>
+                    {
+                        Check(main.Matches(f.Main), "retirement must target frozen Main");
+                        Check(Directory.GetFiles(Path.Combine(f.Root, "action-history"), "*.main-retirement-intent.json").Length == 1,
+                            "durable intent must precede termination");
+                        if (interruption == "stop") f.Stop();
+                        if (interruption == "maintenance") inhibited = true;
+                        if (interruption == "cancel") cancellation.Cancel();
+                        beforeTerminate();
+                        retired = true;
+                        return true;
+                    });
+                Exception failure = null;
+                RecoveryActionResult result = null;
+                try { result = actions.ExecuteAsync(f.Store.Read(), cancellation.Token).GetAwaiter().GetResult(); }
+                catch (InvalidOperationException ex) { failure = ex; }
+                catch (OperationCanceledException ex) { failure = ex; }
+                Check(transport.PrepareCalls == 0 && transport.ExecuteCalls == 0 && transport.LaunchCalls == 0,
+                    "termination must never count as independent safety or launch");
+                if (interruption != "none")
+                    Check(failure != null && !retired, "revocation immediately before termination must win");
+                else
+                {
+                    Check(failure == null && retired && result.Outcome == RecoveryActionOutcome.Pending &&
+                        f.Store.Read().Transaction.Stage == RecoveryStage.SafeStop,
+                        "retired Main must remain in SafeStop");
+                    actions.ExecuteAsync(f.Store.Read(), CancellationToken.None).GetAwaiter().GetResult();
+                    Check(transport.PrepareCalls == 1 && transport.ExecuteCalls == 0 && transport.LaunchCalls == 0,
+                        "exact exit must lead to independent safety preparation, never direct continuation");
+                }
+            }
+        }
+
         private static void ExactWorkerRetirement()
+        {
+            ExactProcessRetirement(false);
+        }
+
+        private static void ExactMainRetirement()
+        {
+            ExactProcessRetirement(true);
+        }
+
+        private static void ExactProcessRetirement(bool main)
         {
             using (var f = new Fixture())
             {
                 var executable = typeof(RecoveryExecutionEngine).Assembly.Location;
+                if (main)
+                {
+                    // A copied Guard status-only test process, never the trial application.
+                    var copied = Path.Combine(f.Root, "MTTFTest.exe");
+                    File.Copy(executable, copied);
+                    var core = typeof(RecoveryControlStore).Assembly.Location;
+                    File.Copy(core, Path.Combine(f.Root, Path.GetFileName(core)));
+                    executable = copied;
+                }
+                Func<RecoveryProcessIdentity, string, Action, bool> retire = main
+                    ? (Func<RecoveryProcessIdentity, string, Action, bool>)RecoveryWorkerRetirement.RetireExactMainProcess
+                    : RecoveryWorkerRetirement.RetireExactProcess;
                 var mutexName = (string)typeof(RecoveryControlStore).GetField("_mutexName",
                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(f.Store);
                 using (var gate = new Mutex(false, mutexName))
@@ -1254,14 +1396,14 @@ namespace RecoveryGuardTests
                             BootId = RecoveryProcessProbe.ReadBootId() };
                         var wrong = Clone(owner); wrong.StartUtcTicks--;
                         var callbacks = 0;
-                        Check(RecoveryWorkerRetirement.RetireExactProcess(wrong, executable, () => callbacks++) && !child.HasExited && callbacks == 0,
+                        Check(retire(wrong, executable, () => callbacks++) && !child.HasExited && callbacks == 0,
                             "different start identity leaves current process untouched");
-                        Throws(() => RecoveryWorkerRetirement.RetireExactProcess(owner, executable,
+                        Throws(() => retire(owner, executable,
                             () => { throw new InvalidOperationException("operator stop before terminate"); }), "operator stop");
                         Check(!child.HasExited, "last authority check can prevent termination");
-                        Check(RecoveryWorkerRetirement.RetireExactProcess(owner, executable, () => callbacks++) && child.WaitForExit(2000) && callbacks == 1,
+                        Check(retire(owner, executable, () => callbacks++) && child.WaitForExit(2000) && callbacks == 1,
                             "exact isolated Guard process exits after final authority check");
-                        Throws(() => RecoveryWorkerRetirement.RetireExactProcess(RecoveryProcessProbe.Current(), executable, () => { }), "TargetInvalid");
+                        Throws(() => retire(RecoveryProcessProbe.Current(), executable, () => { }), "TargetInvalid");
                     }
                     finally
                     {
@@ -1771,6 +1913,27 @@ namespace RecoveryGuardTests
                 Check(result.Outcome == RecoveryActionOutcome.Pending && result.Evidence.Contains("SessionChanged") &&
                     f.Store.Read().Transaction.SafetyAuthorityId == null && transport.ExecuteCalls == 0,
                     "reserved or activated rollover must discard old safety preparation response");
+            }
+        }
+
+        private static void LiveMainWaitsForRetirement()
+        {
+            using (var f = new Fixture())
+            {
+                f.Store.BindWatchdogSession(f.Token, f.Snapshot.RunId, f.Main, Guid.NewGuid().ToString("N"), f.Now);
+                f.Claim(); f.Advance(RecoveryStage.SafeStop);
+                var transport = new ActionTransport();
+                var actions = new SupervisorRecoveryActions(f.Store, transport, () => f.Now,
+                    identity => ProcessObservation.ExactAlive);
+                var result = actions.ExecuteAsync(f.Store.Read(), CancellationToken.None).GetAwaiter().GetResult();
+                Check(result.Outcome == RecoveryActionOutcome.Pending && result.Evidence == "ActiveMainSafeStopPending",
+                    "live Main must be given its bounded cooperative stop window");
+                Check(transport.PrepareCalls == 0 && transport.ExecuteCalls == 0 && transport.LaunchCalls == 0,
+                    "live Main must not overlap an independent safety worker or a new launch");
+                actions = new SupervisorRecoveryActions(f.Store, transport, () => f.Now,
+                    identity => ProcessObservation.Unknown);
+                result = actions.ExecuteAsync(f.Store.Read(), CancellationToken.None).GetAwaiter().GetResult();
+                Check(result.Outcome == RecoveryActionOutcome.Blocked, "unknown process identity must remain blocked");
             }
         }
 

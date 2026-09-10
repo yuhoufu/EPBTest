@@ -19,9 +19,71 @@ namespace AdaptiveControlTests
     /// </summary>
     internal static class RecoveryProductionSeamTests
     {
+        private static void InfrastructureRescheduleRejectsStaleIdentity()
+        {
+            var type = typeof(EpbManager);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var manager = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(type);
+            var current = Guid.NewGuid();
+            type.GetField("_activeBatchId", flags).SetValue(manager, current);
+            type.GetField("_runEpoch", flags).SetValue(manager, 12L);
+            var schedule = type.GetMethod("ScheduleIsolatedInfrastructureRecovery", flags);
+            // 不配置队列或硬件；过期请求必须在枚举通道和登记任务前返回。
+            foreach (var identity in new[] { Tuple.Create(Guid.NewGuid(), 12L),
+                         Tuple.Create(current, 11L), Tuple.Create(Guid.Empty, 12L) })
+                schedule.Invoke(manager, new object[] { new[] { 1 }, "fixture", Guid.NewGuid(),
+                    "fixture", 0L, identity.Item1, identity.Item2 });
+            foreach (var pair in new[] { new object[] { current, null }, new object[] { null, 12L } })
+            {
+                var rejected = false;
+                try
+                {
+                    schedule.Invoke(manager, new object[] { new[] { 1 }, "fixture", Guid.NewGuid(),
+                        "fixture", 0L, pair[0], pair[1] });
+                }
+                catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is ArgumentException)
+                {
+                    rejected = true;
+                }
+                if (!rejected) throw new InvalidOperationException("不成对的恢复身份未被拒绝");
+            }
+            foreach (var invalidEpoch in new[] { 0L, -1L })
+            {
+                type.GetField("_runEpoch", flags).SetValue(manager, invalidEpoch);
+                schedule.Invoke(manager, new object[] { new[] { 1 }, "fixture", Guid.NewGuid(),
+                    "fixture", 0L, current, invalidEpoch });
+            }
+        }
+
         internal static int RunAll()
         {
             var passed = 0;
+            Run("隔离恢复重登记拒绝过期或不成对运行身份", InfrastructureRescheduleRejectsStaleIdentity, ref passed);
+            Run("DAQ重试识别正常结束但OFF未确认的结果且不重试在途任务", PowerOffRetryUsesExecutionResult, ref passed);
+            Run("电源安全确认缺少硬件时不得返回成功", PowerSafetyRejectsMissingHardware, ref passed);
+            Run("DAQ迟到回滚在旧运行或已释放液压所有权时不访问硬件",
+                DaqRollbackRejectsStaleRunBeforeHardware, ref passed);
+            Run("Manager电源owner检查拒绝旧运行、撤权和退休身份",
+                ManagerPowerOwnerChecksActualEntry, ref passed);
+            Run("关联启动子恢复要求父预留存活且退休后不执行主体",
+                StartupChildRequiresLiveParent, ref passed);
+            Run("恢复安全范围重叠查询仅放行精确存活owner的业务成员",
+                RecoverySafetyConflictUsesExactLiveOwner, ref passed);
+            Run("Manager登记范围构造不把安全成员提升为续测owner",
+                ManagerAdmissionScopesDoNotGrantSafetyMembersOwnership,
+                ref passed);
+            Run("恢复接替等待真实worker退出且必须确认登记退休",
+                RecoveryHandoffWaitsForRetirement,
+                ref passed);
+            Run("恢复接替仅能重置同代同incident的StartBlocked",
+                RecoveryHandoffTerminalResetIsExact,
+                ref passed);
+            Run("Manager实际硬件任务按物理组登记且禁用成员不漏组",
+                ManagerHardwareActionTracksPhysicalGroups,
+                ref passed);
+            Run("Recovery既有生产事务名可登记且不放开任意Reset或Retry任务",
+                ProductionIncidentNamesAreRecognized,
+                ref passed);
             Run("Recovery reserve/factory/scheduler/bind/publish/observer故障均先OFF再安全终态",
                 AdmissionFailuresFailClosed,
                 ref passed);
@@ -45,6 +107,12 @@ namespace AdaptiveControlTests
                 ref passed);
             Run("Recovery重叠通道拒绝且不影响首incident，非重叠可并行",
                 RecoveryChannelOverlapIsAtomic,
+                ref passed);
+            Run("Recovery终态已提交但旧任务未退出时保留范围，退出后允许整组接替",
+                TerminalCommitRetainsScopeUntilWorkerExit,
+                ref passed);
+            Run("Recovery退出前终态变化必须重验，安全收尾失败保留登记且可重试",
+                WorkerExitRevalidatesTerminal,
                 ref passed);
             Run("Recovery物理安全组与逻辑owner集合严格分离",
                 RecoveryPhysicalAndLogicalScopesAreSeparated,
@@ -1465,6 +1533,666 @@ namespace AdaptiveControlTests
                 "Register部分写入后未完成OFF→全通道安全终态。");
         }
 
+        private static void ManagerPowerOwnerChecksActualEntry()
+        {
+            var seam = new FakeSeam();
+            var coordinator = seam.CreateCoordinator();
+            var run = Guid.NewGuid();
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var manager = (EpbManager)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(EpbManager));
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            void Set(string name, object value) => typeof(EpbManager).GetField(name, flags).SetValue(manager, value);
+            Set("_recoveryAdmissionGate", new object());
+            Set("_recoveryIncidentCoordinator", coordinator);
+            Set("_activeBatchId", run);
+            Set("_runEpoch", 1L);
+            var result = coordinator.TryBegin("AffectedGroupReset", run, 1,
+                RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal, Guid.NewGuid(),
+                new[] { 4 }, Enumerable.Range(1, 6), _ => () => release.Task,
+                seam.PublishRecovering, out var incident);
+            Assert(result == RecoveryIncidentCoordinator.BeginResult.Created, "测试恢复未登记。");
+            var owner = new EpbManager.RecoveryIncidentHandle(manager, incident);
+            var check = typeof(EpbManager).GetMethod("AssertPowerRecoveryOwnerCurrent", flags);
+            bool Rejected(int channel)
+            {
+                try { check.Invoke(manager, new object[] { owner, new[] { channel } }); return false; }
+                catch (System.Reflection.TargetInvocationException ex)
+                    when (ex.InnerException is InvalidOperationException &&
+                          ex.InnerException.Message == "PowerRetryRecoveryOwnerInvalid") { return true; }
+            }
+            try
+            {
+                Assert(Rejected(4), "未启动owner提前获得电源权限。");
+                Assert(incident.Start() && !Rejected(4) && Rejected(5), "精确业务成员授权不正确。");
+                Set("_activeBatchId", Guid.NewGuid());
+                Assert(Rejected(4), "旧run电源owner未被拒绝。");
+                Set("_activeBatchId", run);
+                Set("_runEpoch", 2L);
+                Assert(Rejected(4), "旧epoch电源owner未被拒绝。");
+                Set("_runEpoch", 1L);
+                Set("_energizationRevoked", 1);
+                Assert(Rejected(4), "撤权后仍放行电源owner。");
+                Set("_energizationRevoked", 0);
+                Set("_processRestartRequired", 1);
+                Assert(Rejected(4), "要求进程重启时仍放行电源owner。");
+                Set("_processRestartRequired", 0);
+                Assert(incident.CompleteAfterTerminal(seam.PublishTerminal) && Rejected(4),
+                    "已提交终态但尚未退出的owner仍获准。");
+            }
+            finally { release.TrySetResult(true); }
+            AwaitWorker(incident.WorkerTask);
+            Assert(Rejected(4), "已退休owner仍获准。");
+        }
+
+        private static void StartupChildRequiresLiveParent()
+        {
+            foreach (var retireBeforeStart in new[] { false, true })
+            {
+                var seam = new FakeSeam();
+                var coordinator = seam.CreateCoordinator();
+                var run = Guid.NewGuid();
+                Assert(coordinator.TryReserveStartup(run, 1, Enumerable.Range(1, 6), out var parent),
+                    "父启动预留失败。");
+                var parentWorker = new TaskCompletionSource<bool>();
+                parent.RetireAfter(parentWorker.Task);
+                var executed = 0;
+                var bodyEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var bodyRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                foreach (var wrongEpoch in new[] { false, true })
+                {
+                    var rejected = coordinator.TryBegin("AffectedGroupReset", run, wrongEpoch ? 2 : 1,
+                        RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal, Guid.NewGuid(),
+                        new[] { 4 }, wrongEpoch ? new[] { 4 } : new[] { 4, 7 },
+                        _ => () => { Interlocked.Increment(ref executed); return Task.CompletedTask; },
+                        seam.PublishRecovering, out _, startupParent: parent);
+                    Assert(rejected == RecoveryIncidentCoordinator.BeginResult.Rejected &&
+                           executed == 0 && seam.RegisteredIncident == null,
+                        "错误父代次或超出父范围的子恢复被登记。");
+                }
+                var result = coordinator.TryBegin("AffectedGroupReset", run, 1,
+                    RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal, Guid.NewGuid(),
+                    new[] { 4 }, Enumerable.Range(1, 6), _ => () =>
+                    {
+                        Interlocked.Increment(ref executed);
+                        bodyEntered.TrySetResult(true);
+                        return bodyRelease.Task;
+                    }, seam.PublishRecovering, out var child, startupParent: parent);
+                Assert(result == RecoveryIncidentCoordinator.BeginResult.Created,
+                    "精确父预留无法登记关联恢复。");
+                Assert(!coordinator.TryReserveStartup(run, 1, new[] { 5 }, out _),
+                    "关联恢复放行了无关启动。");
+                if (retireBeforeStart) parentWorker.SetResult(true);
+                Assert(child.Start(), "子恢复启动信号未释放。");
+                if (!retireBeforeStart)
+                {
+                    try
+                    {
+                        Assert(bodyEntered.Task.Wait(TimeSpan.FromSeconds(5)), "子恢复未进入主体。");
+                        Assert(!coordinator.HasSafetyConflict(run, 1, new[] { 4 }, child) &&
+                               coordinator.HasSafetyConflict(run, 1, new[] { 5 }, child) &&
+                               coordinator.HasSafetyConflict(run, 1, new[] { 4 }),
+                            "关联父例外扩大到安全成员或普通启动，或拒绝精确子owner。");
+                        parentWorker.SetResult(true);
+                        Assert(coordinator.HasSafetyConflict(run, 1, new[] { 4 }, child) &&
+                               !coordinator.TryReserveStartup(run, 1, new[] { 4 }, out _),
+                            "父退出后子owner例外未撤销或子任务占用提前释放。");
+                    }
+                    finally { bodyRelease.TrySetResult(true); }
+                }
+                try { child.WorkerTask.GetAwaiter().GetResult(); }
+                catch (InvalidOperationException) when (retireBeforeStart) { }
+                Assert(executed == (retireBeforeStart ? 0 : 1),
+                    "父退休后执行了主体，或存活父的子恢复未执行。");
+                Assert(coordinator.ActiveCount == 0, "子恢复未按安全终态收敛。");
+                parentWorker.TrySetResult(true);
+                Assert(!coordinator.IsStartupReservationCurrent(parent, run, 1, new[] { 4 }),
+                    "父退出后仍保留启动身份。");
+            }
+        }
+
+        private static void RecoverySafetyConflictUsesExactLiveOwner()
+        {
+            var seam = new FakeSeam();
+            var coordinator = seam.CreateCoordinator();
+            var run = Guid.NewGuid();
+            Assert(!coordinator.TryReserveStartup(run, 1, new[] { 0, 4 }, out _) &&
+                   !coordinator.TryReserveStartup(run, 1, Array.Empty<int>(), out _) &&
+                   !coordinator.TryReserveStartup(Guid.Empty, 1, new[] { 4 }, out _) &&
+                   !coordinator.TryReserveStartup(run, 0, new[] { 4 }, out _), "非法启动预留范围或身份被接受。");
+            var startupScope = new[] { 4 };
+            Assert(coordinator.TryReserveStartup(run, 1, startupScope, out var startup), "启动预留失败。");
+            Assert(startup.RunId == run && startup.RunEpoch == 1, "启动预留未冻结运行身份。");
+            Assert(coordinator.IsStartupReservationCurrent(startup, run, 1, new[] { 4 }) &&
+                   !coordinator.IsStartupReservationCurrent(startup, run, 2, new[] { 4 }) &&
+                   !coordinator.IsStartupReservationCurrent(startup, run, 1, new[] { 5 }) &&
+                   !new FakeSeam().CreateCoordinator().IsStartupReservationCurrent(startup, run, 1, new[] { 4 }),
+                "启动预留精确身份/范围校验失效。");
+            startupScope[0] = 7;
+            var startupWorker = new TaskCompletionSource<bool>();
+            startup.RetireAfter(startupWorker.Task);
+            Assert(!coordinator.TryReserveStartup(run, 1, new[] { 4 }, out _), "预留范围受调用方修改影响。");
+            Assert(coordinator.HasSafetyConflict(run, 1, new[] { 4 }) &&
+                   coordinator.HasSafetyConflict(Guid.NewGuid(), 2, new[] { 4 }) &&
+                   !coordinator.HasSafetyConflict(run, 1, new[] { 7 }),
+                "冲突查询遗漏启动预留或通过更换运行身份绕过物理占用。");
+            Assert(coordinator.TryReserveStartup(run, 1, new[] { 7 }, out var independent), "不重叠启动被阻断。");
+            independent.RetireAfter(Task.CompletedTask);
+            var startupBlocked = coordinator.TryBegin("AffectedGroupReset", run, 1,
+                RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal, Guid.NewGuid(),
+                new[] { 4 }, Enumerable.Range(1, 6), _ => () => Task.CompletedTask,
+                seam.PublishRecovering, out _);
+            Assert(startupBlocked == RecoveryIncidentCoordinator.BeginResult.Rejected &&
+                   seam.RegisteredIncident == null, "启动预检尚未退出时恢复已登记。");
+            Assert(!startupWorker.Task.Wait(1) && !coordinator.TryReserveStartup(run, 1, new[] { 4 }, out _),
+                "观察超时释放了实际未退出的启动。");
+            var duplicateRetirementRejected = false;
+            try { startup.RetireAfter(Task.CompletedTask); }
+            catch (InvalidOperationException) { duplicateRetirementRejected = true; }
+            Assert(duplicateRetirementRejected && !coordinator.TryReserveStartup(run, 1, new[] { 4 }, out _),
+                "替换退休任务提前释放预留。");
+            startupWorker.SetResult(true);
+            Assert(!coordinator.IsStartupReservationCurrent(startup, run, 1, new[] { 4 }), "已退休启动仍有授权身份。");
+            Assert(!coordinator.HasSafetyConflict(run, 1, new[] { 4 }), "实际退出后查询仍保留旧启动占用。");
+            Assert(coordinator.TryReserveStartup(run, 1, new[] { 4 }, out var replacement), "实际退出后预留未释放。");
+            replacement.RetireAfter(Task.CompletedTask);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var reservationObserved = false;
+            seam.BeforeReserve = () =>
+            {
+                Assert(seam.RegisteredIncident == null &&
+                       coordinator.HasSafetyConflict(run, 1, new[] { 5 }) &&
+                       !coordinator.HasSafetyConflict(run, 1, new[] { 7 }),
+                    "Reserve阶段的预留范围没有阻止冲突启动。");
+                reservationObserved = true;
+            };
+            var result = coordinator.TryBegin("AffectedGroupReset", run, 1,
+                RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal, Guid.NewGuid(),
+                new[] { 4 }, Enumerable.Range(1, 6), _ => () => release.Task,
+                seam.PublishRecovering, out var incident);
+            Assert(reservationObserved && result == RecoveryIncidentCoordinator.BeginResult.Created,
+                "未观察预留窗口或未建立安全范围事务。");
+            try
+            {
+                Assert(!coordinator.TryReserveStartup(run, 1, new[] { 5 }, out _),
+                    "恢复已预留整组时普通启动错误获准。");
+                Assert(coordinator.HasSafetyConflict(Guid.NewGuid(), 2, new[] { 5 }) &&
+                       !coordinator.HasSafetyConflict(Guid.NewGuid(), 2, new[] { 7 }),
+                    "更换运行身份绕过尚未退休恢复的物理占用，或错误阻断另一组。");
+                Assert(coordinator.HasSafetyConflict(run, 1, new[] { 5 }) &&
+                       !coordinator.HasSafetyConflict(run, 1, new[] { 7 }) &&
+                       coordinator.HasSafetyConflict(run, 1, new[] { 4 }, incident),
+                    "未识别单通道物理重叠，或未启动owner提前获准。");
+                Assert(incident.Start(), "owner无法启动。");
+                Assert(!coordinator.HasSafetyConflict(run, 1, new[] { 4 }, incident) &&
+                       coordinator.HasSafetyConflict(run, 1, new[] { 5 }, incident) &&
+                       coordinator.HasSafetyConflict(run, 2, new[] { 4 }, incident) &&
+                       coordinator.HasSafetyConflict(Guid.NewGuid(), 1, new[] { 4 }, incident),
+                    "精确owner不能通行或安全成员/其它运行错误通行。");
+                Assert(coordinator.HasSafetyConflict(run, 1, new[] { 0 }) &&
+                       coordinator.HasSafetyConflict(run, 1, Array.Empty<int>()), "非法范围错误放行。");
+                Assert(incident.CompleteAfterTerminal(seam.PublishTerminal) &&
+                       !incident.WorkerTask.IsCompleted && coordinator.ActiveCount == 1 &&
+                       coordinator.HasSafetyConflict(run, 1, new[] { 4 }, incident) &&
+                       coordinator.HasSafetyConflict(run, 1, new[] { 5 }),
+                    "终态已提交但worker未退出时，原owner仍可启动或安全范围提前释放。");
+            }
+            finally { release.TrySetResult(true); }
+            AwaitWorker(incident.WorkerTask);
+            Assert(!coordinator.HasSafetyConflict(run, 1, new[] { 5 }) &&
+                   coordinator.HasSafetyConflict(run, 1, new[] { 4 }, incident),
+                "终态后安全范围未释放，或旧owner仍可通行。");
+        }
+
+        private static void ManagerAdmissionScopesDoNotGrantSafetyMembersOwnership()
+        {
+            var fence = new ChannelExecutionFence();
+            var neverEnabled = fence.Capture(10);
+            Assert(fence.IsUnchanged(neverEnabled) && !fence.IsCurrent(neverEnabled),
+                "未启用成员无法保留安全身份，或被授予执行权限。");
+            var revoked = fence.Revoke(10);
+            Assert(!fence.IsUnchanged(neverEnabled) && fence.IsUnchanged(revoked) &&
+                   !fence.IsCurrent(revoked), "撤权身份变化未被检测或错误获得执行许可。");
+            var authorized = fence.Authorize(10, 3);
+            Assert(!fence.IsUnchanged(revoked) && fence.IsUnchanged(authorized) &&
+                   fence.IsCurrent(authorized), "新授权未使旧安全观察失效。");
+            fence.Authorize(10, 3);
+            Assert(!fence.IsUnchanged(authorized) && !fence.IsUnchanged(default),
+                "同run新代次或默认身份错误通过安全观察。");
+            // EPB5 is enabled but deliberately absent from the caller's resume
+            // cohort (for example, manually paused). EPB10 is disabled.
+            var requested = new[] { 4, 4, 10, 0, 13 };
+            var physical = new[] { 5, 10, 5, -1, 13 };
+            var scopes = EpbManager.BuildRecoveryAdmissionScopes(
+                requested, physical, channel => channel != 10);
+            Assert(scopes.ownedChannels.SequenceEqual(new[] { 4 }) &&
+                   scopes.safetyAffected.SequenceEqual(new[] { 4, 5, 10 }),
+                "安全范围中的启用成员被提升为owner，或禁用成员丢失安全覆盖。");
+            requested[0] = 12;
+            physical[0] = 12;
+            Assert(scopes.ownedChannels.SequenceEqual(new[] { 4 }) &&
+                   scopes.safetyAffected.SequenceEqual(new[] { 4, 5, 10 }),
+                "调用方数组变化改写已冻结的登记范围。");
+            var legacy = EpbManager.BuildRecoveryAdmissionScopes(new[] { 4, 10 }, null,
+                channel => channel == 4);
+            Assert(legacy.ownedChannels.SequenceEqual(new[] { 4 }) &&
+                   legacy.safetyAffected.SequenceEqual(new[] { 4, 10 }), "旧调用范围行为改变。");
+            var safetyOnly = EpbManager.BuildRecoveryAdmissionScopes(null, new[] { 5 }, _ => true);
+            Assert(safetyOnly.ownedChannels.Length == 0 &&
+                   safetyOnly.safetyAffected.SequenceEqual(new[] { 5 }),
+                "仅有安全范围时凭空建立续测owner。");
+            Assert(EpbManager.GetAffectedHydraulicSafetyScope(new[] { 4, 4, 0, 13 })
+                       .SequenceEqual(Enumerable.Range(1, 6)) &&
+                   EpbManager.GetAffectedHydraulicSafetyScope(new[] { 10 })
+                       .SequenceEqual(Enumerable.Range(7, 6)) &&
+                   EpbManager.GetAffectedHydraulicSafetyScope(new[] { 4, 10 })
+                       .SequenceEqual(Enumerable.Range(1, 12)) &&
+                   EpbManager.GetAffectedHydraulicSafetyScope(null).Length == 0,
+                "整组安全范围漏掉物理成员或混入未受影响组。");
+            var wholeGroup = EpbManager.BuildRecoveryAdmissionScopes(new[] { 4 },
+                EpbManager.GetAffectedHydraulicSafetyScope(new[] { 4 }), _ => true);
+            Assert(wholeGroup.ownedChannels.SequenceEqual(new[] { 4 }) &&
+                   wholeGroup.safetyAffected.SequenceEqual(Enumerable.Range(1, 6)),
+                "全组安全登记错误扩大续测授权。");
+            Assert(EpbManager.IsHydraulicResumeScopeCovered(1, new[] { 4 },
+                new[] { Enumerable.Range(1, 3).ToArray(), Enumerable.Range(4, 3).ToArray() }, ch => ch == 4),
+                "同组禁用成员的完整物理映射被拒绝。");
+            Assert(!EpbManager.IsHydraulicResumeScopeCovered(1, new[] { 4 },
+                new[] { Enumerable.Range(1, 5).ToArray() }, ch => ch == 4), "缺少禁用通道映射仍获准。");
+            Assert(!EpbManager.IsHydraulicResumeScopeCovered(1, new[] { 4 },
+                new[] { Enumerable.Range(1, 7).ToArray() }, ch => ch == 4), "禁用跨组成员仍获准被操作。");
+            Assert(!EpbManager.IsHydraulicResumeScopeCovered(1, new[] { 4 },
+                new[] { Enumerable.Range(1, 6).ToArray() }, ch => ch == 4 || ch == 5),
+                "同组另一个启用通道未被协调仍获准恢复。");
+            Assert(!EpbManager.IsHydraulicResumeScopeCovered(1, new[] { 0, 4 },
+                new[] { Enumerable.Range(1, 6).ToArray() }, ch => ch == 4), "无效业务通道被忽略。");
+            var contract = new RecoveryContractSnapshot(Guid.NewGuid(), Guid.NewGuid(), 1,
+                Guid.NewGuid(), RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal,
+                "ScopeTest", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(1),
+                new[] { 4 }, Enumerable.Range(1, 6));
+            Assert(EpbManager.IsRecoveryExecutionScopeContained(contract, new[] { 4 },
+                Enumerable.Range(1, 6).ToArray()), "已登记整组物理范围被拒绝。");
+            Assert(!EpbManager.IsRecoveryExecutionScopeContained(contract, new[] { 4, 5 },
+                Enumerable.Range(1, 6).ToArray()), "安全成员被擅自提升为续测成员。");
+            Assert(!EpbManager.IsRecoveryExecutionScopeContained(contract, new[] { 4 },
+                new[] { 4, 7 }), "未登记的物理成员进入执行范围。");
+            Assert(!EpbManager.IsRecoveryExecutionScopeContained(contract, new[] { 4 },
+                new[] { 1, 2 }), "续测成员未被物理安全范围覆盖。");
+            Assert(!EpbManager.IsRecoveryExecutionScopeContained(null, new[] { 4 }, new[] { 4 }) &&
+                   !EpbManager.IsRecoveryExecutionScopeContained(contract, Array.Empty<int>(), new[] { 4 }),
+                "缺少契约或空续测范围获准执行。");
+        }
+
+        private static void PowerOffRetryUsesExecutionResult()
+        {
+            Assert(EpbManager.ShouldRetryPowerOffTask(null, 1), "缺失任务未重试");
+            var pending = new TaskCompletionSource<PowerSafetyDisableResult>();
+            Assert(!EpbManager.ShouldRetryPowerOffTask(pending.Task, 1), "在途 OFF 被重复提交");
+            pending.SetResult(new PowerSafetyDisableResult { ElectricalGroupId = 1, Outcome = PowerSafetyDisableOutcome.TimedOut });
+            Assert(EpbManager.ShouldRetryPowerOffTask(pending.Task, 1), "正常结束的超时回执永久阻塞重试");
+            Assert(EpbManager.ShouldRetryPowerOffTask(Task.FromResult<PowerSafetyDisableResult>(null), 1), "空回执未重试");
+            var now = DateTime.UtcNow;
+            var receipt = new PowerSafetyDisableResult
+            {
+                ElectricalGroupId = 1, OperationGeneration = 2,
+                ConfirmedOff = true, Outcome = PowerSafetyDisableOutcome.ConfirmedOff,
+                StartedUtc = now, CompletedUtc = now
+            };
+            Assert(!EpbManager.ShouldRetryPowerOffTask(Task.FromResult(receipt), 1), "有效 OFF 被重复提交");
+            Assert(EpbManager.ShouldRetryPowerOffTask(Task.FromResult(receipt), 2), "其它组回执阻止重试");
+            receipt.OperationGeneration = 0;
+            Assert(EpbManager.ShouldRetryPowerOffTask(Task.FromResult(receipt), 1), "无执行身份回执阻止重试");
+            var cancelled = new TaskCompletionSource<PowerSafetyDisableResult>();
+            cancelled.SetCanceled();
+            Assert(EpbManager.ShouldRetryPowerOffTask(cancelled.Task, 1), "取消任务未重试");
+            var failed = Task.FromException<PowerSafetyDisableResult>(new InvalidOperationException("test"));
+            Assert(EpbManager.ShouldRetryPowerOffTask(failed, 1), "异常任务未重试");
+            var observed = failed.Exception;
+        }
+
+        private static void PowerSafetyRejectsMissingHardware()
+        {
+            var manager = (EpbManager)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(EpbManager));
+            var method = typeof(EpbManager).GetMethod("ConfirmElectricalGroupOffSafetyAsync",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var task = (Task<PowerSafetyDisableResult>)method.Invoke(manager, new object[] { 1, "missing-hardware-test" });
+            var result = task.GetAwaiter().GetResult();
+            Assert(!result.ConfirmedOff && result.Error == "PowerOffHardwareMissing", "缺少电源对象被当成已实际断电确认");
+            var receipts = typeof(EpbManager).GetMethod("HasDaqRecoveryPowerOffReceipts",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var contextType = typeof(EpbManager).GetNestedType("DaqAutoRecoveryContext", System.Reflection.BindingFlags.NonPublic);
+            var context = Activator.CreateInstance(contextType, true);
+            Assert(!(bool)receipts.Invoke(manager, new object[] { null }) &&
+                   !(bool)receipts.Invoke(manager, new[] { context }),
+                "缺少DAQ上下文或电源硬件时回执检查错误通过");
+            var correlation = Guid.NewGuid();
+            contextType.GetField("CorrelationId").SetValue(context, correlation);
+            contextType.GetField("RunEpoch").SetValue(context, 2L);
+            contextType.GetField("RecoveryEpoch").SetValue(context, 3L);
+            typeof(EpbManager).GetField("_powerSupply", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .SetValue(manager, System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(PowerSupplyCoordinator)));
+            foreach (var channels in new[] { Array.Empty<int>(), new[] { 13 } })
+            {
+                contextType.GetField("AffectedChannels").SetValue(context, channels);
+                Assert(!(bool)receipts.Invoke(manager, new[] { context }), "空或无效通道范围通过回执检查");
+            }
+            var config = new GlobalConfig { Test = new TestConfig() };
+            var electrical = new ElectricalGroup { Id = 1 };
+            electrical.Members.Add(4);
+            config.Test.Groups.Add(electrical);
+            typeof(EpbManager).GetField("_cfg", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .SetValue(manager, config);
+            contextType.GetField("AffectedChannels").SetValue(context, new[] { 4, 5 });
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "部分通道漏映射仍通过回执检查");
+            contextType.GetField("AffectedChannels").SetValue(context, new[] { 4 });
+            contextType.GetField("RecoveryEpoch").SetValue(context, 3L);
+            var receiptType = typeof(EpbManager).GetNestedType("DaqRecoveryPowerOffReceipt", System.Reflection.BindingFlags.NonPublic);
+            var receipt = Activator.CreateInstance(receiptType, true);
+            receiptType.GetField("GroupId").SetValue(receipt, 1);
+            receiptType.GetField("RecoveryEpoch").SetValue(receipt, 3L);
+            receiptType.GetField("TaskCompleted").SetValue(receipt, true);
+            receiptType.GetField("OutputConfirmedOff").SetValue(receipt, true);
+            var evidence = new SafetyOffReceipt { Status = SafetyOffEvidenceStatus.ConfirmedOff,
+                TargetKind = SafetyOffTargetKind.PowerSupplyGroup, TargetId = 1, CorrelationId = correlation, RunEpoch = 2 };
+            receiptType.GetField("Evidence").SetValue(receipt, evidence);
+            var executedUtc = DateTime.UtcNow;
+            var execution = new PowerSafetyDisableResult { ElectricalGroupId = 1, OperationGeneration = 7,
+                StartedUtc = executedUtc, CompletedUtc = executedUtc, ConfirmedOff = true,
+                Outcome = PowerSafetyDisableOutcome.ConfirmedOff };
+            var executionTask = Task.FromResult(execution);
+            receiptType.GetField("PowerOperationEpoch").SetValue(receipt, 7L);
+            receiptType.GetField("SubmittedUtc").SetValue(receipt, executedUtc);
+            receiptType.GetField("TaskCompletedUtc").SetValue(receipt, executedUtc);
+            evidence.OperationGeneration = 7;
+            evidence.SubmittedUtc = executedUtc;
+            evidence.CompletedUtc = executedUtc;
+            receiptType.GetField("ExecutionTask").SetValue(receipt, executionTask);
+            var taskMap = new Dictionary<int, Task<PowerSafetyDisableResult>> { [1] = executionTask };
+            contextType.GetField("PowerDisableTasksByGroup").SetValue(context, taskMap);
+            var map = (System.Collections.IDictionary)contextType.GetField("PowerOffReceipts").GetValue(context);
+            map.Add(1, receipt);
+            Assert((bool)receipts.Invoke(manager, new[] { context }), "完整当前代次有效回执被错误拒绝");
+            taskMap[1] = Task.FromResult(new PowerSafetyDisableResult());
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "新任务发布后旧任务回执仍获准通过");
+            taskMap[1] = executionTask;
+            execution.ConfirmedOff = false;
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "实际任务未确认却因投影成功而通过");
+            execution.ConfirmedOff = true;
+            evidence.OperationGeneration = 8;
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "投影代次与实际执行不符仍通过");
+            evidence.OperationGeneration = 7;
+            evidence.CompletedUtc = executedUtc.AddSeconds(1);
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "投影时间与实际执行不符仍通过");
+            evidence.CompletedUtc = executedUtc;
+            var pendingExecution = new TaskCompletionSource<PowerSafetyDisableResult>();
+            taskMap[1] = pendingExecution.Task;
+            receiptType.GetField("ExecutionTask").SetValue(receipt, pendingExecution.Task);
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "在途任务因完成标志而通过");
+            taskMap[1] = executionTask;
+            receiptType.GetField("ExecutionTask").SetValue(receipt, executionTask);
+            evidence.TargetId = 2;
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "其它电源组回执被复用");
+            evidence.TargetId = 1;
+            evidence.CorrelationId = Guid.NewGuid();
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "其它恢复关联的回执被复用");
+            evidence.CorrelationId = correlation;
+            evidence.RunEpoch = 1;
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "旧运行回执被复用");
+            evidence.RunEpoch = 2;
+            receiptType.GetField("PowerOffPending").SetValue(receipt, true);
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "待确认回执被算成完成");
+            receiptType.GetField("PowerOffPending").SetValue(receipt, false);
+            receiptType.GetField("RecoveryEpoch").SetValue(receipt, 2L);
+            Assert(!(bool)receipts.Invoke(manager, new[] { context }), "旧代次回执通过当前恢复检查");
+        }
+
+        private static void DaqRollbackRejectsStaleRunBeforeHardware()
+        {
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var manager = (EpbManager)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(EpbManager));
+            var contextType = typeof(EpbManager).GetNestedType("DaqAutoRecoveryContext", System.Reflection.BindingFlags.NonPublic);
+            var context = Activator.CreateInstance(contextType, true);
+            var currentRun = Guid.NewGuid();
+            typeof(EpbManager).GetField("_activeBatchId", flags).SetValue(manager, currentRun);
+            typeof(EpbManager).GetField("_runEpoch", flags).SetValue(manager, 2L);
+            var coordinator = new HydraulicRecoveryOwnershipCoordinator();
+            using (var lease = coordinator.AcquireAsync(1, "rollback-test", RecoveryOwnerPriority.Daq,
+                1000, CancellationToken.None).GetAwaiter().GetResult())
+            {
+                contextType.GetField("Ownerships").SetValue(context, new[] { lease });
+                foreach (var condition in new[] { "old-run", "old-epoch", "released" })
+                {
+                    contextType.GetField("RunId").SetValue(context, condition == "old-run" ? Guid.NewGuid() : currentRun);
+                    contextType.GetField("RunEpoch").SetValue(context, condition == "old-epoch" ? 1L : 2L);
+                    contextType.GetField("OwnershipReleased").SetValue(context, condition == "released" ? 1 : 0);
+                    // All hardware and runtime dictionaries deliberately remain null:
+                    // the actual production method must reject before touching them.
+                    typeof(EpbManager).GetMethod("RollbackDaqRecoveryRejoinSafety", flags)
+                        .Invoke(manager, new[] { context, "RejoinAndCommit", "late-failure" });
+                }
+                contextType.GetField("RunId").SetValue(context, currentRun);
+                contextType.GetField("RunEpoch").SetValue(context, 2L);
+                contextType.GetField("OwnershipReleased").SetValue(context, 0);
+                Assert(coordinator.CancelGroup(1) && lease.Token.IsCancellationRequested,
+                    "未建立真实液压所有权撤权条件");
+                typeof(EpbManager).GetMethod("RollbackDaqRecoveryRejoinSafety", flags)
+                    .Invoke(manager, new[] { context, "RejoinAndCommit", "revoked-owner" });
+            }
+        }
+
+        private static void RecoveryHandoffWaitsForRetirement()
+        {
+            foreach (var outcome in new[] { "success", "fault", "cancel" })
+            foreach (var retired in new[] { false, true })
+            {
+                var completion = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var checks = 0;
+                var starts = 0;
+                var handoff = EpbManager.RunAfterRecoveryWorkerExitAsync(completion.Task,
+                    () => { checks++; return retired; },
+                    () => { starts++; return Task.CompletedTask; });
+                try
+                {
+                    Assert(!handoff.IsCompleted && checks == 0 && starts == 0,
+                        "原任务未退出就检查退休或启动后继。");
+                    if (outcome == "fault") completion.TrySetException(new InvalidOperationException("injected"));
+                    else if (outcome == "cancel") completion.TrySetCanceled();
+                    else completion.TrySetResult(true);
+                    Assert(handoff.GetAwaiter().GetResult() == retired && checks == 1 &&
+                           starts == (retired ? 1 : 0), "任务终态被误作登记已退休。");
+                }
+                finally { completion.TrySetResult(true); }
+            }
+        }
+
+        private static void RecoveryHandoffTerminalResetIsExact()
+        {
+            var run = Guid.NewGuid();
+            var retired = new RecoveryContractSnapshot(Guid.NewGuid(), run, 4, Guid.NewGuid(),
+                RecoveryOwnerKind.HydraulicGroupRecovery, RecoveryTargetPhase.Formal,
+                "HydraulicSoftwareRecovery", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(1), new[] { 4 });
+            var successor = new RecoveryContractSnapshot(Guid.NewGuid(), run, 4, Guid.NewGuid(),
+                RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal,
+                "AffectedGroupReset", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(1), new[] { 4, 5 });
+            var current = new ChannelRuntimeStateChangedEvent { Channel = 4, RunId = run,
+                RunEpoch = 4, State = ChannelRuntimeState.StartBlocked, CorrelationId = retired.IncidentId };
+            Assert(EpbManager.CanResetRetiredRecoveryTerminal(retired, successor, current),
+                "精确退休终态不能交给后继。");
+            foreach (var state in new[] { ChannelRuntimeState.AlarmStopped, ChannelRuntimeState.Paused,
+                         ChannelRuntimeState.InterlockStopped, ChannelRuntimeState.SystemFault })
+            {
+                current.State = state;
+                Assert(!EpbManager.CanResetRetiredRecoveryTerminal(retired, successor, current),
+                    "接替覆盖了非所属StartBlocked终态。");
+            }
+            current.State = ChannelRuntimeState.StartBlocked;
+            current.CorrelationId = Guid.NewGuid();
+            Assert(!EpbManager.CanResetRetiredRecoveryTerminal(retired, successor, current), "错误incident获准复位。");
+            current.CorrelationId = retired.IncidentId;
+            current.RunEpoch++;
+            Assert(!EpbManager.CanResetRetiredRecoveryTerminal(retired, successor, current), "新代次获准由旧任务复位。");
+            current.RunEpoch = 4;
+            current.Channel = 5;
+            Assert(!EpbManager.CanResetRetiredRecoveryTerminal(retired, successor, current), "扩组成员被当成原任务终态复位。");
+        }
+
+        private static void ManagerHardwareActionTracksPhysicalGroups()
+        {
+            using (var fixture = new EpbManagerTerminalFixture())
+            {
+                const System.Reflection.BindingFlags flags =
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var track = typeof(EpbManager).GetMethod("TrackRecoveryHardwareAction", flags);
+                var field = typeof(EpbManager).GetField("_affectedGroupStageActions", flags);
+                Assert(track != null && field != null, "生产硬件动作登记接线缺失。");
+                var ledgers = (ConcurrentDictionary<int, RecoveryStageTaskRegistry>)field.GetValue(fixture.Manager);
+                foreach (var outcome in new[] { "success", "fault", "cancel" })
+                {
+                    var completion = new TaskCompletionSource<bool>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    try
+                    {
+                        // EPB10 is disabled in this fixture, but belongs to the
+                        // second affected physical group and must still be tracked.
+                        var returned = (Task)track.Invoke(fixture.Manager,
+                            new object[] { new[] { 4, 4, 10 }, completion.Task });
+                        Assert(ReferenceEquals(returned, completion.Task),
+                            "登记替换了实际动作Task，可能丢失其真实终态。");
+                        Assert(ledgers.Count == 2 && ledgers[1].HasPending && ledgers[2].HasPending,
+                            "实际动作未同时覆盖两个物理组，或按启用状态漏掉组2。");
+                        if (outcome == "fault") completion.TrySetException(new InvalidOperationException("injected"));
+                        else if (outcome == "cancel") completion.TrySetCanceled();
+                        else completion.TrySetResult(true);
+                        try { completion.Task.GetAwaiter().GetResult(); }
+                        catch (InvalidOperationException) when (outcome == "fault") { }
+                        catch (OperationCanceledException) when (outcome == "cancel") { }
+                        Assert(SpinWait.SpinUntil(() => !ledgers[1].HasPending && !ledgers[2].HasPending, 5000),
+                            "动作真实终态后物理组登记未释放：" + outcome);
+                    }
+                    finally { completion.TrySetResult(true); }
+                }
+            }
+        }
+
+        private static void WorkerExitRevalidatesTerminal()
+        {
+            foreach (var blockTerminal in new[] { false, true })
+            {
+                var seam = new FakeSeam();
+                var coordinator = seam.CreateCoordinator();
+                RecoveryIncidentCoordinator.Incident current = null;
+                var result = Begin(coordinator, seam, _ => () =>
+                {
+                    Assert(current.CompleteAfterTerminal(seam.PublishTerminal),
+                        "初次终态未被接受。");
+                    // Model a late body/finally write after the earlier proof.
+                    lock (seam.StateGate)
+                    {
+                        seam.Terminal.Clear();
+                        foreach (var channel in current.Contract.Channels)
+                            seam.Recovering.Add(channel);
+                    }
+                    if (blockTerminal) seam.Failure = "terminal-persistent";
+                    return Task.CompletedTask;
+                }, out var incident);
+                Assert(result == RecoveryIncidentCoordinator.BeginResult.Created,
+                    "未建立退出重验测试任务。");
+                current = incident;
+                Assert(incident.Start(), "退出重验测试任务未启动。");
+                AwaitWorker(incident.WorkerTask);
+                Assert(seam.OffCount > 0 &&
+                       seam.LastTerminalReason == "RecoveryTerminalChangedBeforeWorkerExit",
+                    "退出时沿用了失效终态，没有请求安全收尾。");
+                if (blockTerminal)
+                {
+                    Assert(coordinator.ActiveCount == 1 && seam.Registry.ActiveCount == 1 &&
+                           seam.UnregisterCount == 0 && incident.TerminalPublished == 0,
+                        "退出重验失败仍释放了登记。");
+                    seam.Failure = null;
+                    Assert(incident.CompleteAfterTerminal(seam.PublishTerminal),
+                        "安全终态可提交后，退出任务不能重试释放。");
+                }
+                Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0 &&
+                       seam.TerminalCount == seam.ChannelCount,
+                    "退出重验成功后未完成终态释放。");
+            }
+        }
+
+        private static void ProductionIncidentNamesAreRecognized()
+        {
+            foreach (var name in new[] { "AffectedGroupReset", "RecoverableWarningRetry",
+                         "StartupPositioningFailureIncident" })
+            {
+                var seam = new FakeSeam();
+                var coordinator = seam.CreateCoordinator();
+                var result = coordinator.TryBegin(name, Guid.NewGuid(), 1,
+                    RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal,
+                    Guid.NewGuid(), new[] { 4 }, _ => () => Task.CompletedTask,
+                    seam.PublishRecovering, out var incident);
+                Assert(result == RecoveryIncidentCoordinator.BeginResult.Created && incident.Start(),
+                    "生产恢复任务名被登记器拒绝：" + name);
+                AwaitWorker(incident.WorkerTask);
+                Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
+                    "生产恢复任务结束后残留登记：" + name);
+            }
+            foreach (var name in new[] { "", "Reset", "Retry", "Incident", "OrdinaryWorker" })
+                Assert(!RecoveryTaskRegistry.IsRecoveryOperation(name),
+                    "非恢复任务被过宽的命名规则接纳：" + name);
+        }
+
+        private static void TerminalCommitRetainsScopeUntilWorkerExit()
+        {
+            var seam = new FakeSeam();
+            var coordinator = seam.CreateCoordinator();
+            var runId = Guid.NewGuid();
+            var terminalAccepted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var allowExit = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            RecoveryIncidentCoordinator.Incident current = null;
+            var result = Begin(coordinator, seam, _ => async () =>
+            {
+                terminalAccepted.TrySetResult(current.CompleteAfterTerminal(
+                    contract => seam.MarkTerminal(contract, onlyFirst: false)));
+                await allowExit.Task.ConfigureAwait(false);
+            }, out var first, runId, Guid.NewGuid(), new[] { 4 });
+            Assert(result == RecoveryIncidentCoordinator.BeginResult.Created, "未建立旧任务。");
+            current = first;
+            try
+            {
+                Assert(first.Start(), "旧任务无法启动。");
+                Assert(terminalAccepted.Task.Wait(5000) && terminalAccepted.Task.Result,
+                    "旧任务未提交可验证终态。");
+                Assert(!first.WorkerTask.IsCompleted && coordinator.ActiveCount == 1 &&
+                       seam.Registry.ActiveCount == 1 && first.TerminalPublished == 0,
+                    "终态提交提前释放仍在执行的旧任务登记。");
+                var reserves = seam.ReserveCount;
+                var overlap = coordinator.TryBegin("AffectedGroupReset", runId, 1,
+                    RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal,
+                    Guid.NewGuid(), new[] { 4, 5 }, _ => () => Task.CompletedTask,
+                    seam.PublishRecovering, out var rejected);
+                Assert(overlap == RecoveryIncidentCoordinator.BeginResult.Rejected &&
+                       rejected == null && seam.ReserveCount == reserves,
+                    "旧任务尚未退出时整组接替取得了重叠范围。");
+            }
+            finally
+            {
+                allowExit.TrySetResult(true);
+                AwaitWorker(first.WorkerTask);
+            }
+            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
+                "旧任务退出后登记未自动释放。");
+            var next = coordinator.TryBegin("AffectedGroupReset", runId, 1,
+                RecoveryOwnerKind.AffectedGroupRecovery, RecoveryTargetPhase.Formal,
+                Guid.NewGuid(), new[] { 4, 5 }, _ => () => Task.CompletedTask,
+                seam.PublishRecovering, out var successor);
+            Assert(next == RecoveryIncidentCoordinator.BeginResult.Created && successor.Start(),
+                "旧任务退出后整组接替未能执行。");
+            AwaitWorker(successor.WorkerTask);
+            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
+                "整组接替结束后残留登记。");
+        }
+
         private static void RecoveryChannelOverlapIsAtomic()
         {
             var seam = new FakeSeam();
@@ -1524,6 +2252,25 @@ namespace AdaptiveControlTests
                    seam.Registry.ActiveCount == 0 &&
                    seam.TerminalCount == seam.ChannelCount,
                 "重叠门禁测试终态后仍残留contract/lease。");
+
+            var successorResult = coordinator.TryBegin(
+                "PowerSupplySoftwareRecovery", runId, 1,
+                RecoveryOwnerKind.PowerRecovery, RecoveryTargetPhase.Formal,
+                Guid.NewGuid(), new[] { 4, 10 },
+                _ => () => Task.CompletedTask, seam.PublishRecovering,
+                out var successor);
+            Assert(successorResult == RecoveryIncidentCoordinator.BeginResult.Created &&
+                   successor != null && coordinator.ActiveCount == 1,
+                "旧执行体退出并完成终态后，扩大范围的新任务未能登记。");
+            var stalePublisherCalled = false;
+            Assert(!first.CompleteAfterTerminal(_ => stalePublisherCalled = true) &&
+                   !stalePublisherCalled && coordinator.ActiveCount == 1 &&
+                   seam.Registry.ActiveCount == 1,
+                "旧任务迟到终态误撤销新范围任务或发布旧状态。");
+            Assert(successor.Start(), "新范围任务无法启动。");
+            AwaitWorker(successor.WorkerTask);
+            Assert(coordinator.ActiveCount == 0 && seam.Registry.ActiveCount == 0,
+                "扩大范围任务结束后残留登记。");
         }
 
         private static void RecoveryPhysicalAndLogicalScopesAreSeparated()
@@ -1752,6 +2499,7 @@ namespace AdaptiveControlTests
             internal string Failure;
             internal int RegisterCount;
             internal int ReserveCount;
+            internal Action BeforeReserve;
             internal int OffCount;
             internal int UnregisterCount;
             internal bool ProbeCoordinatorGate;
@@ -1788,6 +2536,7 @@ namespace AdaptiveControlTests
                     {
                         Reserve = contract =>
                         {
+                            BeforeReserve?.Invoke();
                             ProbeGate("reserve");
                             Events.Enqueue("reserve");
                             Interlocked.Increment(ref ReserveCount);
@@ -1916,6 +2665,7 @@ namespace AdaptiveControlTests
 
             internal void MarkTerminal(RecoveryContractSnapshot contract, bool onlyFirst = false)
             {
+                if (Failure == "terminal-persistent") return;
                 lock (StateGate)
                 {
                     foreach (var channel in contract.Channels.Take(onlyFirst ? 1 : int.MaxValue))

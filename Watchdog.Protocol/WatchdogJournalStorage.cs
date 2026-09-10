@@ -211,7 +211,7 @@ namespace MTTFTest.Watchdog.Protocol
                 var schema = 0;
                 if (values.TryGetValue("SchemaVersion", out var rawSchema))
                     schema = Convert.ToInt32(rawSchema, CultureInfo.InvariantCulture);
-                if (schema == 2 || schema == 3 || schema == 4)
+                if (schema == 2 || schema == 3 || schema == 4 || schema == 5)
                 {
                     // Preserve every legacy field, especially RecoveryBlocked
                     // and its failure evidence; only the schema marker changes.
@@ -798,6 +798,8 @@ namespace MTTFTest.Watchdog.Protocol
         private long _droppedEvents;
         private long _lastLeaseUtcTicks;
         private int _spoolWritesSinceBudget;
+        private long _retentionElapsedTicks;
+        private long _spoolBudgetElapsedTicks;
 
         private sealed class PendingEvent
         {
@@ -856,6 +858,13 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public long DroppedEventCount => Interlocked.Read(ref _droppedEvents);
+
+        // 累计单调时钟耗时；只用于诊断，不参与安全或持久化完成判定。
+        public double RetentionElapsedMilliseconds =>
+            Interlocked.Read(ref _retentionElapsedTicks) * 1000.0 / Stopwatch.Frequency;
+
+        public double SpoolBudgetElapsedMilliseconds =>
+            Interlocked.Read(ref _spoolBudgetElapsedTicks) * 1000.0 / Stopwatch.Frequency;
 
         public WatchdogJournalStoreMode Mode => _mode;
 
@@ -1120,13 +1129,22 @@ namespace MTTFTest.Watchdog.Protocol
                 foreach (var error in errors) TryWriteError(error);
                 if (revocationReason != null) TryWriteProjectRevocation(revocationReason);
                 if (!IsClientAuditOnly && terminal != null) TryPublishTerminal(terminal);
-                if (!IsClientAuditOnly && retention && _source == "sidecar") TryEnforceRetention();
+                if (!IsClientAuditOnly && retention && _source == "sidecar")
+                {
+                    var started = Stopwatch.GetTimestamp();
+                    try { TryEnforceRetention(); }
+                    finally { Interlocked.Add(ref _retentionElapsedTicks, Stopwatch.GetTimestamp() - started); }
+                }
                 // Both authority and audit stores have an independent bounded
                 // emergency spool.  EnforceSpoolBudget selects the historical
                 // authority root for FullAuthority and this store's private
                 // client-audit directory for ClientAuditOnly.
                 if (Interlocked.Exchange(ref _spoolWritesSinceBudget, 0) > 0)
-                    EnforceSpoolBudget();
+                {
+                    var started = Stopwatch.GetTimestamp();
+                    try { EnforceSpoolBudget(); }
+                    finally { Interlocked.Add(ref _spoolBudgetElapsedTicks, Stopwatch.GetTimestamp() - started); }
+                }
 
                 lock (_gate)
                 {
@@ -1382,6 +1400,39 @@ namespace MTTFTest.Watchdog.Protocol
             catch { Interlocked.Increment(ref _droppedEvents); }
         }
 
+        internal static IEnumerable<FileInfo> EnumerateSpoolBudgetFiles(DirectoryInfo root, bool recursive)
+        {
+            var pending = new Stack<DirectoryInfo>();
+            pending.Push(root);
+            while (pending.Count > 0)
+            {
+                var directory = pending.Pop();
+                if ((directory.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                // 每个目录只枚举一次，同时取得子目录和文件元数据；不沿链接离开缓冲树。
+                foreach (var entry in directory.EnumerateFileSystemInfos())
+                {
+                    if ((entry.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    if (entry is DirectoryInfo child)
+                    {
+                        if (recursive) pending.Push(child);
+                    }
+                    else if (entry is FileInfo file &&
+                             file.Name.IndexOf(".pending.", StringComparison.OrdinalIgnoreCase) >= 0)
+                        yield return file;
+                }
+            }
+        }
+
+        internal static bool TryDeleteSpoolBudgetFile(string path)
+        {
+            try
+            {
+                File.Delete(path);
+                return true;
+            }
+            catch { return false; }
+        }
+
         private void EnforceSpoolBudget()
         {
             try
@@ -1395,27 +1446,33 @@ namespace MTTFTest.Watchdog.Protocol
                         "MTTFTest", "WatchdogSpoolV2");
                 if (!Directory.Exists(root)) return;
                 var cutoff = DateTime.UtcNow.AddDays(-WatchdogJournalPolicy.EmergencySpoolRetentionDays);
-                var searchOption = IsClientAuditOnly ? SearchOption.TopDirectoryOnly : SearchOption.AllDirectories;
-                var files = new DirectoryInfo(root).EnumerateFiles("*.pending.*", searchOption)
-                    .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
+                var files = EnumerateSpoolBudgetFiles(new DirectoryInfo(root), !IsClientAuditOnly)
                     .OrderBy(file => file.LastWriteTimeUtc)
                     .ToList();
-                foreach (var file in files.Where(file => file.LastWriteTimeUtc < cutoff).ToArray())
-                {
-                    TryDelete(file.FullName);
-                    files.Remove(file);
-                }
-                var total = files.Sum(SafeLength);
-                foreach (var file in files)
-                {
-                    if (total <= _policy.EmergencySpoolMaxBytes) break;
-                    var length = SafeLength(file);
-                    TryDelete(file.FullName);
-                    total -= length;
-                    Interlocked.Increment(ref _droppedEvents);
-                }
+                ApplySpoolBudget(files, cutoff, _policy.EmergencySpoolMaxBytes, ref _droppedEvents);
             }
             catch { }
+        }
+
+        internal static void ApplySpoolBudget(List<FileInfo> files, DateTime cutoff, long maxBytes,
+            ref long droppedEvents)
+        {
+            foreach (var file in files.Where(file => file.LastWriteTimeUtc < cutoff).ToArray())
+            {
+                if (TryDeleteSpoolBudgetFile(file.FullName)) files.Remove(file);
+            }
+            var total = files.Sum(SafeLength);
+            foreach (var file in files)
+            {
+                if (total <= maxBytes) break;
+                var length = SafeLength(file);
+                // 被其他进程占用时仍计入预算，不能把失败删除当作已释放容量。
+                if (TryDeleteSpoolBudgetFile(file.FullName))
+                {
+                    total -= length;
+                    Interlocked.Increment(ref droppedEvents);
+                }
+            }
         }
 
         private void TryEnforceRetention()

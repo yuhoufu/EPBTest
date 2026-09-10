@@ -120,6 +120,8 @@ namespace Controller
             private int _terminalPublished;
             private int _terminalPublishing;
             private int _terminalStateCommitted;
+            private int _workerExited;
+            private int _terminalCleanupStarted;
 
             private Incident(
                 RecoveryIncidentCoordinator owner,
@@ -143,6 +145,13 @@ namespace Controller
             internal int TerminalPublishing => Volatile.Read(ref _terminalPublishing);
             internal bool TerminalStateCommitted => Volatile.Read(ref _terminalStateCommitted) != 0;
             internal bool IsAborting => Volatile.Read(ref _aborting) != 0;
+            internal bool WorkerExited => Volatile.Read(ref _workerExited) != 0;
+            internal bool WorkerBodyQuiescent => WorkerExited ||
+                Volatile.Read(ref _cancelledBeforeStart) != 0;
+            internal void MarkWorkerExited() => Interlocked.Exchange(ref _workerExited, 1);
+            internal bool TryBeginTerminalCleanup() =>
+                Interlocked.CompareExchange(ref _terminalCleanupStarted, 1, 0) == 0;
+            internal void ResetTerminalCleanup() => Volatile.Write(ref _terminalCleanupStarted, 0);
 
             internal static Incident Create(
                 RecoveryIncidentCoordinator owner,
@@ -223,6 +232,7 @@ namespace Controller
                     TaskCreationOptions.RunContinuationsAsynchronously);
             internal readonly int BeginThreadId;
             internal Incident Incident;
+            internal StartupReservation StartupParent;
             internal RecoveryTaskRegistry.RecoveryTaskLease Lease;
             internal bool RegisterAttempted;
             internal int AbortStarted;
@@ -299,6 +309,122 @@ namespace Controller
             }
         }
 
+        private readonly Dictionary<Guid, StartupReservation> _startupReservations = new Dictionary<Guid, StartupReservation>();
+
+        internal sealed class StartupReservation
+        {
+            private readonly RecoveryIncidentCoordinator _coordinator;
+            private readonly Guid _id;
+            private int _retirementAttached;
+            private readonly int[] _channels;
+            private Task _worker;
+            internal Guid RunId { get; }
+            internal long RunEpoch { get; }
+
+            internal StartupReservation(RecoveryIncidentCoordinator coordinator, Guid id, Guid runId, long runEpoch, int[] channels)
+            {
+                _coordinator = coordinator;
+                _id = id;
+                RunId = runId;
+                RunEpoch = runEpoch;
+                _channels = channels.ToArray();
+            }
+
+            internal bool Overlaps(IEnumerable<int> channels) => _channels.Any(channels.Contains);
+
+            internal bool Matches(RecoveryIncidentCoordinator coordinator, Guid runId, long runEpoch, int[] channels)
+            {
+                // The coordinator calls this only while holding its admission gate.
+                return ReferenceEquals(coordinator, _coordinator) && RunId == runId && RunEpoch == runEpoch &&
+                    _coordinator._startupReservations.TryGetValue(_id, out var registered) &&
+                    ReferenceEquals(registered, this) && (_worker == null || !_worker.IsCompleted) &&
+                    channels.All(_channels.Contains);
+            }
+
+            // Attach the actual startup worker, never a timeout/wait wrapper.
+            // Cancellation alone does not release the physical safety scope.
+            internal void RetireAfter(Task worker)
+            {
+                if (worker == null) throw new ArgumentNullException(nameof(worker));
+                if (Interlocked.CompareExchange(ref _retirementAttached, 1, 0) != 0)
+                    throw new InvalidOperationException("Startup reservation already has a retirement worker.");
+                lock (_coordinator._gate) _worker = worker;
+                worker.ContinueWith(completed =>
+                {
+                    if (completed.IsFaulted) { var observed = completed.Exception; }
+                    lock (_coordinator._gate)
+                        _coordinator._startupReservations.Remove(_id);
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+        }
+
+        internal bool TryReserveStartup(Guid runId, long runEpoch,
+            IEnumerable<int> safetyAffectedChannels, out StartupReservation reservation)
+        {
+            reservation = null;
+            var requested = (safetyAffectedChannels ?? Array.Empty<int>()).ToArray();
+            if (runId == Guid.Empty || runEpoch <= 0 || requested.Length == 0 ||
+                requested.Any(channel => channel < 1 || channel > 12)) return false;
+            requested = requested.Distinct().OrderBy(channel => channel).ToArray();
+            lock (_gate)
+            {
+                // Physical work from an old run remains exclusive until its real worker exits.
+                if (_startupReservations.Values.Any(scope => scope.Overlaps(requested)) ||
+                    _activeByScope.Values.Any(entry => entry.Contract.SafetyAffectedChannels.Any(requested.Contains)))
+                    return false;
+                var id = Guid.NewGuid();
+                reservation = new StartupReservation(this, id, runId, runEpoch, requested);
+                _startupReservations.Add(id, reservation);
+                return true;
+            }
+        }
+
+        internal bool IsStartupReservationCurrent(StartupReservation reservation, Guid runId, long runEpoch,
+            IEnumerable<int> channels)
+        {
+            var requested = (channels ?? Array.Empty<int>()).ToArray();
+            if (reservation == null || requested.Length == 0 || requested.Any(channel => channel < 1 || channel > 12))
+                return false;
+            lock (_gate) return reservation.Matches(this, runId, runEpoch, requested);
+        }
+
+        // Read-only conflict observation. Callers must hold their admission gate
+        // across this check and runtime creation; this is not an enduring permit.
+        internal bool HasSafetyConflict(Guid runId, long runEpoch, IEnumerable<int> channels,
+            Incident requestingOwner = null)
+        {
+            var requested = (channels ?? Array.Empty<int>()).ToArray();
+            if (runId == Guid.Empty || runEpoch <= 0 || requested.Length == 0 ||
+                requested.Any(channel => channel < 1 || channel > 12)) return true;
+            lock (_gate)
+            {
+                if (requestingOwner != null &&
+                    (!_activeByScope.Values.Any(entry => ReferenceEquals(entry.Incident, requestingOwner)) ||
+                     requestingOwner.Contract.RunId != runId || requestingOwner.Contract.RunEpoch != runEpoch ||
+                     !requestingOwner.StartSignal.IsCompleted || requestingOwner.IsAborting ||
+                     requestingOwner.TerminalStateCommitted || requestingOwner.WorkerExited ||
+                     requested.Any(channel => !requestingOwner.Contract.OwnedChannels.Contains(channel))))
+                    return true;
+                StartupReservation associatedParent = null;
+                if (requestingOwner != null &&
+                    _activeByIncident.TryGetValue(requestingOwner.Contract.IncidentId, out var ownerEntry))
+                {
+                    associatedParent = ownerEntry.StartupParent;
+                    if (associatedParent != null && !associatedParent.Matches(this, runId, runEpoch,
+                            requestingOwner.Contract.SafetyAffectedChannels.ToArray()))
+                        return true;
+                }
+                if (_startupReservations.Values.Any(scope => scope.Overlaps(requested) &&
+                        !ReferenceEquals(scope, associatedParent)))
+                    return true;
+                return _activeByScope.Values.Any(entry =>
+                    // Match TryBegin's physical overlap rule: changing run
+                    // identity cannot erase a worker that has not retired.
+                    entry.Contract.SafetyAffectedChannels.Any(requested.Contains) &&
+                    (requestingOwner == null || !ReferenceEquals(entry.Incident, requestingOwner)));
+            }
+        }
+
         internal BeginResult TryBegin(
             string operation,
             Guid runId,
@@ -339,7 +465,8 @@ namespace Controller
             Func<RecoveryContractSnapshot, Func<Task>> workerFactory,
             Action<RecoveryContractSnapshot> publishRecovering,
             out Incident incident,
-            Guid incidentId = default)
+            Guid incidentId = default,
+            StartupReservation startupParent = null)
         {
             incident = null;
             var owned = NormalizeChannels(ownedChannels);
@@ -381,6 +508,11 @@ namespace Controller
             BeginEntry existing = null;
             lock (_gate)
             {
+                if (startupParent != null && !startupParent.Matches(this, runId, runEpoch, safetyAffected))
+                    return BeginResult.Rejected;
+                if (_startupReservations.Values.Any(reserved => reserved.Overlaps(safetyAffected) &&
+                        !ReferenceEquals(reserved, startupParent)))
+                    return BeginResult.Rejected;
                 if (_activeByScope.TryGetValue(scope, out existing))
                 {
                     // Same scope is a single begin transaction. The caller
@@ -397,6 +529,7 @@ namespace Controller
                 else
                 {
                     entry = new BeginEntry(scope, contract.Clone());
+                    entry.StartupParent = startupParent;
                     _activeByScope.Add(scope, entry);
                 }
             }
@@ -533,6 +666,15 @@ namespace Controller
                     incident.TerminalPublished != 0 ||
                     incident.TerminalStateCommitted)
                     return;
+                lock (_gate)
+                {
+                    if (!_activeByIncident.TryGetValue(incident.Contract.IncidentId, out var entry) ||
+                        !ReferenceEquals(entry.Incident, incident) ||
+                        (entry.StartupParent != null && !entry.StartupParent.Matches(this,
+                            incident.Contract.RunId, incident.Contract.RunEpoch,
+                            incident.Contract.SafetyAffectedChannels.ToArray())))
+                        throw new InvalidOperationException("Recovery startup parent is no longer current.");
+                }
                 incident.TaskLease.ReportProgress("WorkerStarted");
                 var bodyTask = body();
                 if (bodyTask == null)
@@ -580,6 +722,15 @@ namespace Controller
                     _port.PublishSafeTerminal?.Invoke(contract, reason, detail);
                 });
                 throw;
+            }
+            finally
+            {
+                // A body may publish its terminal before its final awaits or
+                // finally blocks have finished. Keep its scope reserved until
+                // all of that code has returned; a successor must not overlap it.
+                incident.MarkWorkerExited();
+                if (incident.TerminalStateCommitted && !incident.IsAborting)
+                    FinishTerminalCleanup(incident);
             }
         }
 
@@ -681,11 +832,47 @@ namespace Controller
 
             incident.MarkTerminalStateCommitted();
             incident.CancelBeforeStart();
+            // Completion accepts the verified terminal here, but registration
+            // and the task lease are retired only after the worker body exits.
+            // If Start never succeeded, cancelling its signal proves that no
+            // body can run. There is no body exit to wait for in that case.
+            if (!incident.WorkerBodyQuiescent)
+                return published && verified;
+            return published && verified && FinishTerminalCleanup(incident);
+        }
+
+        private bool FinishTerminalCleanup(Incident incident)
+        {
+            if (!incident.WorkerBodyQuiescent || !incident.TerminalStateCommitted ||
+                !incident.TryBeginTerminalCleanup())
+                return false;
+            BeginEntry entry;
+            lock (_gate)
+            {
+                if (!_activeByIncident.TryGetValue(incident.Contract.IncidentId, out entry) ||
+                    !ReferenceEquals(entry.Incident, incident))
+                    return false;
+            }
+            // The accepted terminal may predate the body's final awaits. Do
+            // not release a scope on that historical observation if late body
+            // code has since changed the authoritative state.
+            if (!IsTerminalCommitted(incident.Contract) &&
+                !ForceSafeTerminalOutsideGate(incident.Contract,
+                    "RecoveryTerminalChangedBeforeWorkerExit",
+                    "恢复任务退出时终态已变化，已重新请求断能与安全终态，确认前保留登记。"))
+            {
+                incident.ResetTerminalCleanup();
+                incident.ClearTerminalPublishing();
+                return false;
+            }
             var unregistered = EnsureUnregisteredOutsideGate(entry);
             var cleaned = unregistered && RemoveEntryAfterCleanup(entry);
             if (!cleaned)
+            {
+                incident.ResetTerminalCleanup();
                 incident.ClearTerminalPublishing();
-            return published && verified && cleaned;
+            }
+            return cleaned;
         }
 
         private bool IsTerminalCommitted(RecoveryContractSnapshot contract)

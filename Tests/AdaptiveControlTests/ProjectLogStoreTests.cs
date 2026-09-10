@@ -593,7 +593,11 @@ namespace AdaptiveControlTests
                 {
                     try
                     {
-                        return File.Exists(runPath) &&
+                        // Flush makes bytes visible before its caller publishes
+                        // the execution counter. Wait for both observations;
+                        // keep the existing timeout and coalescing bounds.
+                        return ProjectLogHub.SoftFlushExecutionCount > softBefore &&
+                               File.Exists(runPath) &&
                                ReadSharedText(runPath)
                                    .Contains("periodic-soft-flush");
                     }

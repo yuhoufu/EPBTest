@@ -381,7 +381,7 @@ namespace AdaptiveControlTests
             internal Task Retry(int channel, int delayMs, CancellationToken token) =>
                 (Task)typeof(EpbManager).GetMethod("RunStartupPositioningRetryIncidentAsync",
                     BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Manager,
-                    new object[] { channel, _runId, 1, "InjectedSampleStale", "一次采样瞬态", delayMs, token, "V216RetryOff" });
+                    new object[] { channel, _runId, 1, "InjectedSampleStale", "一次采样瞬态", delayMs, token, "V216RetryOff", null, null });
 
             internal ChannelRuntimeStateChangedEvent State(int channel) =>
                 Manager.GetChannelRuntimeStates().Single(state => state.Channel == channel);

@@ -809,6 +809,7 @@ namespace IO.NI
         // 1) 低时延快照（在 DAQ 回调线程中写入）：未滤波、用于控制逻辑/紧急读数
         private readonly ConcurrentDictionary<string, double> _lastFastValue = new();
         private readonly ConcurrentDictionary<int, FastEpbCurrentSample> _lastFastEpbSample = new();
+        private readonly ConcurrentDictionary<string, PhysicalSafetyBatchSample> _lastPhysicalSafetySample = new();
 
         // 2) 滤波后快照（在后台线程中写入）：已滤波、用于 UI / 统计 / 报表
         private readonly ConcurrentDictionary<string, double> _lastFilteredValue = new();
@@ -2667,6 +2668,13 @@ namespace IO.NI
             return new FastCurrentSnapshot(sample, ageMs, true);
         }
 
+        public PhysicalSafetyBatchSample ReadPhysicalSafetySample(string parameterName)
+        {
+            if (parameterName == null || !_lastPhysicalSafetySample.TryGetValue(parameterName, out var sample))
+                return null;
+            return IsCurrentGeneration(sample.Device, sample.Generation) ? sample : null;
+        }
+
         /// <summary>
         ///     明确读取“滤波后 / 平滑”的 EPB 电流快照（由后台线程写入）。
         ///     若不存在返回 0.0。
@@ -2699,6 +2707,17 @@ namespace IO.NI
             var key = $"Pressure_{id}";
             return _lastPressureSample.TryGetValue(key, out var sample)
                 ? sample
+                : new PressureSample(id, double.NaN, DateTime.MinValue, 0);
+        }
+
+        /// <summary>Stop-only unfiltered pressure evidence from the DAQ producer.
+        /// Does not depend on the control consumer or re-date a cached value.</summary>
+        public PressureSample ReadPressureSafetySample(int id)
+        {
+            var sample = ReadPhysicalSafetySample("Pressure_" + id);
+            return sample?.Valid == true
+                ? new PressureSample(id, sample.Maximum, sample.FirstSampleUtc,
+                    (long)(sample.FirstSampleMs * Stopwatch.Frequency / 1000.0))
                 : new PressureSample(id, double.NaN, DateTime.MinValue, 0);
         }
 
@@ -3178,8 +3197,27 @@ namespace IO.NI
 
         public void Stop()
         {
-            lock (_lifecycleGateDev1) StopDevice("Dev1");
-            lock (_lifecycleGateDev2) StopDevice("Dev2");
+            StopBothDevices(
+                () => { lock (_lifecycleGateDev1) StopDevice("Dev1"); },
+                () => { lock (_lifecycleGateDev2) StopDevice("Dev2"); });
+        }
+
+        internal static void StopBothDevices(Action stopFirst, Action stopSecond)
+        {
+            if (stopFirst == null) throw new ArgumentNullException(nameof(stopFirst));
+            if (stopSecond == null) throw new ArgumentNullException(nameof(stopSecond));
+            Exception firstFailure = null;
+            Exception secondFailure = null;
+            try { stopFirst(); }
+            catch (Exception ex) { firstFailure = ex; }
+            // A failed/timed-out Dev1 retirement cannot exempt Dev2 from Stop.
+            // Neither failure is suppressed or converted into safe evidence.
+            try { stopSecond(); }
+            catch (Exception ex) { secondFailure = ex; }
+            if (firstFailure != null && secondFailure != null)
+                throw new AggregateException("DaqDeviceStopFailures", firstFailure, secondFailure);
+            var failure = firstFailure ?? secondFailure;
+            if (failure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
         private object GetLifecycleGate(string device)
@@ -3601,6 +3639,17 @@ namespace IO.NI
                                     var isPressure = TryParsePressureId(rec.参数名, out var pressureId);
                                     if ((epbCh < 1 || epbCh > 12) && !isPressure) continue;
                                     var representative = ComputeFastRepresentative(raw, c, lastCol, rec);
+                                    var physicalSample = PhysicalSafetyBatchSample.Capture(
+                                        device, generation, sequence, timeline.BatchEndMonotonicTicks,
+                                        timeline.EffectiveSampleRateHz, raw, c,
+                                        rec.变换斜率, rec.变换截距, rec.零位漂移,
+                                        _aiMin, _aiMax, qualityFlags, timeline.BatchEndUtc);
+                                    // Do not acquire the task transition lock in a NI callback:
+                                    // StopDevice may be waiting for that callback to return.
+                                    // CAS ordering prevents late old callbacks overwriting a
+                                    // newer batch; readers additionally check current generation.
+                                    _lastPhysicalSafetySample.AddOrUpdate(rec.参数名, physicalSample,
+                                        (_, previous) => PhysicalSafetyBatchSample.Newer(previous, physicalSample));
                                     var sampleQuality = qualityFlags;
                                     if (double.IsNaN(representative) || double.IsInfinity(representative))
                                         sampleQuality |= FastSignalQualityFlags.NonFinite;
@@ -5695,16 +5744,26 @@ namespace IO.NI
             Volatile.Write(ref diag.ClockState, (int)ClockState.WarmingUp);
         }
 
-        private void StartDevice(string device)
+        internal static bool IsStoppedGenerationQuiesced(bool readerQuiesced,
+            bool dispatcherQuiesced, bool readThreadAlive, Task stopTask)
+            => readerQuiesced && dispatcherQuiesced && !readThreadAlive &&
+               stopTask?.Status == TaskStatus.RanToCompletion;
+
+        private void EnsurePreviousReadQuiesced(string device)
         {
             if (_quiescingReads.TryGetValue(device, out var previousRead))
             {
-                if (!previousRead.Quiesced.IsSet || previousRead.Dispatcher?.Quiesced.IsSet == false ||
-                    previousRead.ReadThread?.IsAlive == true ||
-                    previousRead.StopTask == null || previousRead.StopTask.Status != TaskStatus.RanToCompletion)
+                if (!IsStoppedGenerationQuiesced(previousRead.Quiesced.IsSet,
+                    previousRead.Dispatcher?.Quiesced.IsSet != false,
+                    previousRead.ReadThread?.IsAlive == true, previousRead.StopTask))
                     throw new InvalidOperationException("PreviousDaqGenerationNotQuiesced:" + device);
                 _quiescingReads.TryRemove(device, out _);
             }
+        }
+
+        private void StartDevice(string device)
+        {
+            EnsurePreviousReadQuiesced(device);
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(TwoDeviceAiAcquirer));
             var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
@@ -5804,6 +5863,10 @@ namespace IO.NI
 
         private void StopDevice(string device)
         {
+            // A prior timed-out Stop cleared the live task fields before NI
+            // Stop/Dispose finished. Repeated Stop must not report success
+            // until that retained generation really releases its resources.
+            EnsurePreviousReadQuiesced(device);
             var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
             var gate = isDev1 ? _taskGateDev1 : _taskGateDev2;
             NIDaqTask task;

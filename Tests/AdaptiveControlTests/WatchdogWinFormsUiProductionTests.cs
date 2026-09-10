@@ -1451,6 +1451,7 @@ namespace AdaptiveControlTests
                 CorrelationId = "production-stop-core-correlation",
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = true,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true,
                 PersistenceBoundaryConfirmed = true,
                 RawStorageFlushed = true,
@@ -1593,6 +1594,7 @@ namespace AdaptiveControlTests
                 SafetyBoundaryGeneration = 1,
                 MotorOffCommandSucceeded = true,
                 PowerOffConfirmed = true,
+                CurrentSafeConfirmed = true,
                 PressureSafeConfirmed = true,
                 PersistenceBoundaryConfirmed = true,
                 LogicalQuiescenceConfirmed = true

@@ -24,6 +24,13 @@ namespace EpbDiskWriterTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--housekeeping-reactivation-repro")
+                {
+                    for (var iteration = 1; iteration <= 20; iteration++)
+                        Run("Root重新激活重复验证 " + iteration, ReactivatedRootPreservesOwnedStaging);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--learning-timing-probe")
                     return RunLearningTimingProbe();
                 if (args.Length == 4 &&
@@ -2757,7 +2764,9 @@ VALUES(4,-1,'2026-08-16T12:00:00','2026-08-16T12:00:01',0,3,'learning_completed'
                             root, ".retention-staging-*", SearchOption.TopDirectoryOnly)
                         .SingleOrDefault();
                     Assert(reactivated && staging != null,
-                        "第一删除批次后未重建Root或未保留staging");
+                        "第一删除批次后未重建Root或未保留staging; " +
+                        $"Reactivated={reactivated}; Staging={staging ?? "missing"}; " +
+                        $"SourceExists={Directory.Exists(chain)}; Stats={service.Statistics}");
                     Assert(Directory.Exists(chain),
                         "Root重新激活目录未保留");
                 }

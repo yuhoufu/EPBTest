@@ -35,6 +35,10 @@ namespace AdaptiveControlTests
                 RetentionKeepsAuthorityFilesPaired, ref passed);
             Run("Watchdog保留器对近期会话同时执行数量与总字节上限", RetentionAppliesCountAndByteBudgets, ref passed);
             Run("Watchdog项目盘故障转入有界缓冲并按EventId回灌", EmergencySpoolIsBoundedAndReplayed, ref passed);
+            Run("Watchdog预算单遍扫描保留递归与audit隔离范围", SpoolEnumerationPreservesScope, ref passed);
+            Run("Watchdog预算扫描不穿越目录联接", SpoolEnumerationDoesNotFollowJunctions, ref passed);
+            Run("Watchdog预算删除失败不得报告容量释放", SpoolBudgetDeletionReportsFailure, ref passed);
+            Run("Watchdog预算循环保留被占用字节并继续淘汰", SpoolBudgetCountsLockedFiles, ref passed);
             Run("Watchdog本机撤权marker在项目盘故障时仍有效", LocalRevocationSurvivesProjectFailure, ref passed);
             Run("恢复批次提交marker在管道失效时仍可确认", RecoveryCommitMarkerSurvivesTransportFailure, ref passed);
             Run("Watchdog写盘不可用不阻塞监督事件登记", FailedStorageDoesNotBlockProducer, ref passed);
@@ -986,6 +990,110 @@ namespace AdaptiveControlTests
             });
         }
 
+        private static void SpoolBudgetCountsLockedFiles()
+        {
+            foreach (var expired in new[] { false, true })
+            WithTempRoot("SpoolBudgetLocked", root =>
+            {
+                var paths = new[] { "old.pending.json", "next.pending.json", "last.pending.json" }
+                    .Select(name => Path.Combine(root, name)).ToArray();
+                foreach (var path in paths) File.WriteAllBytes(path, new byte[8]);
+                var cutoff = DateTime.UtcNow.AddDays(-1);
+                File.SetLastWriteTimeUtc(paths[0], expired ? cutoff.AddDays(-1) : cutoff.AddHours(1));
+                long dropped = 0;
+                using (var locked = new FileStream(paths[0], FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    WatchdogJournalStore.ApplySpoolBudget(paths.Select(path => new FileInfo(path)).ToList(),
+                        cutoff, 8, ref dropped);
+                    Assert(File.Exists(paths[0]) && !File.Exists(paths[1]) && !File.Exists(paths[2]),
+                        "被占用文件未计入预算，导致提前停止淘汰 Expired=" + expired);
+                    Assert(dropped == 2, "删除失败污染丢弃计数");
+                }
+                // 锁释放后重新扫描，验证前次失败没有让证据永久逃逸出预算集合。
+                WatchdogJournalStore.ApplySpoolBudget(new DirectoryInfo(root).GetFiles().ToList(),
+                    cutoff, 0, ref dropped);
+                Assert(!File.Exists(paths[0]), "解除占用后预算无法收敛");
+                Assert(dropped == (expired ? 2 : 3), "保留期清理与容量淘汰计数混淆");
+            });
+        }
+
+        private static void SpoolBudgetDeletionReportsFailure()
+        {
+            WithTempRoot("SpoolLocked", root =>
+            {
+                var path = Path.Combine(root, "locked.pending.json");
+                File.WriteAllText(path, "retained-evidence");
+                using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    Assert(!WatchdogJournalStore.TryDeleteSpoolBudgetFile(path), "占用文件删除被误报为成功");
+                    Assert(File.ReadAllText(path) == "retained-evidence", "占用证据内容改变");
+                }
+                Assert(WatchdogJournalStore.TryDeleteSpoolBudgetFile(path) && !File.Exists(path),
+                    "释放文件后无法删除");
+                Assert(WatchdogJournalStore.TryDeleteSpoolBudgetFile(path), "已不存在文件不应阻塞预算收敛");
+            });
+        }
+
+        private static void SpoolEnumerationDoesNotFollowJunctions()
+        {
+            WithTempRoot("SpoolJunction", root =>
+            {
+                var scan = Directory.CreateDirectory(Path.Combine(root, "scan"));
+                var outside = Directory.CreateDirectory(Path.Combine(root, "outside"));
+                var sentinel = Path.Combine(outside.FullName, "keep.pending.json");
+                File.WriteAllText(sentinel, "external-evidence");
+                var link = Path.Combine(scan.FullName, "junction");
+                try
+                {
+                    using (var process = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                        Arguments = "/c mklink /J \"" + link + "\" \"" + outside.FullName + "\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    }))
+                    {
+                        var output = process.StandardOutput.ReadToEnd();
+                        var error = process.StandardError.ReadToEnd();
+                        process.WaitForExit();
+                        Assert(process.ExitCode == 0, "创建联接夹具失败：" + output + error);
+                    }
+                    Assert(!WatchdogJournalStore.EnumerateSpoolBudgetFiles(scan, true).Any(),
+                        "预算扫描穿越子目录联接");
+                    Assert(!WatchdogJournalStore.EnumerateSpoolBudgetFiles(new DirectoryInfo(link), true).Any(),
+                        "预算扫描接受联接根目录");
+                    Assert(File.ReadAllText(sentinel) == "external-evidence", "外部证据被修改");
+                }
+                finally
+                {
+                    // 只删除夹具中的联接本身，禁止递归删除联接目标。
+                    if (Directory.Exists(link)) Directory.Delete(link, false);
+                }
+            });
+        }
+
+        private static void SpoolEnumerationPreservesScope()
+        {
+            WithTempRoot("SpoolEnumeration", root =>
+            {
+                Directory.CreateDirectory(Path.Combine(root, "nested", "session"));
+                foreach (var name in new[] { "root.pending.json", "other.txt", "nested/UPPER.PENDING.LOG",
+                             "nested/session/event.pending.json", "nested/session/ignored.json" })
+                    File.WriteAllText(Path.Combine(root, name), "evidence");
+                foreach (var recursive in new[] { false, true })
+                {
+                    var expected = new DirectoryInfo(root).GetFiles("*.pending.*",
+                        recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+                        .Select(file => file.FullName).OrderBy(path => path).ToArray();
+                    var actual = WatchdogJournalStore.EnumerateSpoolBudgetFiles(new DirectoryInfo(root), recursive)
+                        .Select(file => file.FullName).OrderBy(path => path).ToArray();
+                    Assert(expected.SequenceEqual(actual), "预算扫描范围发生变化 Recursive=" + recursive);
+                }
+            });
+        }
+
         private static void EmergencySpoolIsBoundedAndReplayed()
         {
             WithTempRoot("Spool", root =>
@@ -1002,8 +1110,31 @@ namespace AdaptiveControlTests
                 {
                     store.PublishSnapshot("{\"SchemaVersion\":2,\"State\":\"TakeoverRequested\"}");
                     store.Record(first);
-                    Assert(store.Flush(TimeSpan.FromSeconds(10)), "故障盘写入未转入应急缓冲");
                     var spool = WatchdogJournalPaths.LocalSpoolDirectory(project, session);
+                    var flushWatch = Stopwatch.StartNew();
+                    var flushed = store.Flush(TimeSpan.FromSeconds(10));
+                    flushWatch.Stop();
+                    // Flush 等待整个 worker 批次（含保留清理），超时不等于未写入 spool。
+                    // 在 Dispose 等待 worker 前保留现场，避免事后文件掩盖超时瞬间状态。
+                    string spoolEvidence;
+                    try
+                    {
+                        spoolEvidence = Directory.Exists(spool)
+                            ? string.Join(",", new DirectoryInfo(spool).GetFiles()
+                                .Select(file => file.Name + ":" + file.Length))
+                            : "Missing";
+                    }
+                    catch (Exception ex)
+                    {
+                        spoolEvidence = "InspectionFailed:" + ex.GetType().Name;
+                    }
+                    Console.WriteLine("METRIC EmergencySpool FlushCompleted=" + flushed +
+                        " ElapsedMs=" + flushWatch.ElapsedMilliseconds +
+                        " RetentionMs=" + store.RetentionElapsedMilliseconds.ToString("F1", CultureInfo.InvariantCulture) +
+                        " SpoolBudgetMs=" + store.SpoolBudgetElapsedMilliseconds.ToString("F1", CultureInfo.InvariantCulture) +
+                        " Dropped=" + store.DroppedEventCount + " Files=" + spoolEvidence);
+                    Assert(flushed, "故障盘写入批次未在10秒内完成；Spool=" + spoolEvidence +
+                        " Dropped=" + store.DroppedEventCount);
                     Assert(Directory.Exists(spool) && new DirectoryInfo(spool).GetFiles().Any(),
                         "项目盘异常时未建立本机应急缓冲");
                     Assert(new DirectoryInfo(spool).GetFiles().Sum(file => file.Length) <= policy.EmergencySpoolMaxBytes,
@@ -1259,14 +1390,33 @@ namespace AdaptiveControlTests
                             " --journal-heartbeat-checkpoint-seconds 60 --journal-emergency-spool-max-bytes 8388608",
                         UseShellExecute = false,
                         CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
                         WindowStyle = ProcessWindowStyle.Hidden
                     });
                     Assert(sidecar != null, "无法启动独立Watchdog Sidecar");
+                    var sidecarOutput = sidecar.StandardOutput.ReadToEndAsync();
+                    var sidecarError = sidecar.StandardError.ReadToEndAsync();
 
                     using (var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut,
                                PipeOptions.Asynchronous))
                     {
-                        pipe.Connect(5000);
+                        var connectClock = Stopwatch.StartNew();
+                        try { pipe.Connect(5000); }
+                        catch (TimeoutException ex)
+                        {
+                            sidecar.Refresh();
+                            var processState = sidecar.HasExited ? "Exited:" + sidecar.ExitCode : "Alive";
+                            var output = sidecarOutput.Status == TaskStatus.RanToCompletion
+                                ? sidecarOutput.Result : "<stream still open>";
+                            var error = sidecarError.Status == TaskStatus.RanToCompletion
+                                ? sidecarError.Result : "<stream still open>";
+                            throw new TimeoutException(
+                                "SidecarPipeConnectTimeout ElapsedMs=" + connectClock.ElapsedMilliseconds +
+                                " PID=" + sidecar.Id + " State=" + processState +
+                                " DummyAlive=" + !dummy.HasExited +
+                                " Stdout=" + output + " Stderr=" + error, ex);
+                        }
                         using (var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, true))
                         using (var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true)
                                { AutoFlush = true })

@@ -54,7 +54,9 @@ function Assert-GuardAcceptanceReport {
         'repeatedFailures', 'cooldownAndExpiry', 'powerLossBoundary', 'panelStop',
         'transactionInterruption', 'coordinatorLoss', 'maintenanceAndClock', 'persistentBudget',
         'dataReconciliation', 'businessRecovery', 'exitedRecovery', 'physicalSafety')
-    if ('RecoverStalled' -cin $modes) { $required += 'stalledRecovery' }
+    if ('RecoverStalled' -cin $modes) {
+        $required += @('stalledRecovery', 'forcedStalledRecovery', 'forcedStalledRecoveryInterlocks')
+    }
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach ($check in @($Report.checks)) {
         if ($null -eq $check -or -not $seen.Add([string]$check.id) -or $check.id -cnotin $required -or

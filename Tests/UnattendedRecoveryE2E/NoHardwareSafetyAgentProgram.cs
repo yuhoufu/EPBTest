@@ -85,6 +85,8 @@ namespace MTTFTest.UnattendedRecoveryNoHardwareSafetyAgent
                     completed.MotorsOff = true;
                     completed.PowerOff = true;
                     completed.PressureSafe = true;
+                    // Synthetic evidence exclusively for the no-hardware harness.
+                    completed.CurrentSafe = true;
                     completed.LogicalQuiescent = true;
                     completed.HardwareResourcesReleased = true;
                     completed.ExecutionAuthorizationRevoked = true;

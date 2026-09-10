@@ -596,9 +596,87 @@ namespace Controller
         }
         private readonly ConcurrentDictionary<int, SoftWarningMaintenanceState>
             _softWarningMaintenance = new();
-        private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
-        private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
-        private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryPendingCycles = new();
+        internal sealed class FormalRecoveryCounter
+        {
+            internal FormalRecoveryCounter(int count, long lastFaultAttemptId)
+            {
+                Count = count;
+                LastFaultAttemptId = lastFaultAttemptId;
+            }
+
+            internal int Count { get; }
+            internal long LastFaultAttemptId { get; }
+        }
+
+        private readonly ConcurrentDictionary<string, FormalRecoveryCounter> _formalPersistenceRecoveryAttempts = new();
+        private readonly ConcurrentDictionary<string, FormalRecoveryCounter> _formalControlRecoveryAttempts = new();
+
+        internal static int RecordFormalRecoveryFault(
+            ConcurrentDictionary<string, FormalRecoveryCounter> records, string key, long attemptId)
+        {
+            if (attemptId <= 0) throw new ArgumentOutOfRangeException(nameof(attemptId));
+            return records.AddOrUpdate(key, new FormalRecoveryCounter(1, attemptId),
+                (_, old) => new FormalRecoveryCounter(old.Count < int.MaxValue ? old.Count + 1 : int.MaxValue,
+                    Math.Max(old.LastFaultAttemptId, attemptId))).Count;
+        }
+
+        internal static bool TryConsumeFormalRecoveryCounter(
+            ConcurrentDictionary<string, FormalRecoveryCounter> records, string key,
+            long committedAttemptId, out int count)
+        {
+            count = 0;
+            if (committedAttemptId <= 0 || !records.TryGetValue(key, out var record) ||
+                committedAttemptId <= record.LastFaultAttemptId) return false;
+            // 只消费观察到的不可变对象。并发登记新故障会替换对象，旧提交不能删除它。
+            if (!((ICollection<KeyValuePair<string, FormalRecoveryCounter>>)records)
+                .Remove(new KeyValuePair<string, FormalRecoveryCounter>(key, record))) return false;
+            count = record.Count;
+            return true;
+        }
+        private static string FormalRecoveryRunKey(Guid runId, long runEpoch, int channel)
+            => $"{runId:N}:{runEpoch}:{channel}";
+        internal sealed class FormalPendingCycle
+        {
+            internal FormalPendingCycle(int cycle, long attemptId)
+            {
+                Cycle = cycle;
+                AttemptId = attemptId;
+            }
+            internal int Cycle { get; }
+            internal long AttemptId { get; }
+        }
+        private readonly ConcurrentDictionary<string, FormalPendingCycle> _formalPersistenceRecoveryPendingCycles = new();
+
+        private bool RemoveFormalPendingCycleAfterDurableTerminal(
+            Guid runId, long runEpoch, int channel, int cycle, long attemptId)
+        {
+            if (attemptId <= 0) return false;
+            lock (_formalPersistenceRecoveryPendingCycles)
+            {
+                var key = FormalRecoveryRunKey(runId, runEpoch, channel);
+                if (!_formalPersistenceRecoveryPendingCycles.TryGetValue(key, out var pending) ||
+                    pending.Cycle != cycle || pending.AttemptId != attemptId) return false;
+                return ((ICollection<KeyValuePair<string, FormalPendingCycle>>)_formalPersistenceRecoveryPendingCycles)
+                    .Remove(new KeyValuePair<string, FormalPendingCycle>(key, pending));
+            }
+        }
+
+        private void FinalizeFormalPendingCycleAfterDurableTerminal(
+            Guid runId, long runEpoch, int channel, int cycle, long attemptId)
+        {
+            if (attemptId <= 0) return;
+            lock (_formalPersistenceRecoveryPendingCycles)
+            {
+                var key = FormalRecoveryRunKey(runId, runEpoch, channel);
+                RemoveFormalPendingCycleAfterDurableTerminal(
+                    runId, runEpoch, channel, cycle, attemptId);
+                if (_formalPersistenceRecoveryPendingCycles.TryGetValue(key, out var remaining) &&
+                    remaining.Cycle == cycle && remaining.AttemptId == attemptId)
+                    throw new InvalidOperationException(
+                        $"FormalPendingCycleTerminalCleanupFailed: Run={runId:N}/{runEpoch} " +
+                        $"Channel={channel} Cycle={cycle} Attempt={attemptId}");
+            }
+        }
         private sealed class RollingHistoricalSnapshotRequest
         {
             internal string Key;
@@ -750,36 +828,30 @@ namespace Controller
 
         private bool CompleteCycleAndScheduleEvidence(
             IEpbCycleRecorder recorder,
-            int channel,
-            int cycleNumber,
+            CycleAttemptContext attempt,
             int finalSampleCount,
             DateTime endUtc)
         {
-            if (recorder == null) return true;
+            if (attempt == null) throw new ArgumentNullException(nameof(attempt));
+            var channel = attempt.Channel;
+            var cycleNumber = attempt.Cycle;
             // DAQ恢复入口会在硬件安全动作前锁存事故圈。任何迟到的旧Runner/兼容
             // 回调都只能重复确认 AbortedBySoftwareRecovery，不能把同一圈改写为
             // 正式 completed；持久化作废由当前 attempt 或恢复 Finalizer 的唯一所有者负责。
             if (IsDaqClockCycleAborted(
-                    _activeBatchId,
-                    Interlocked.Read(ref _runEpoch),
+                    attempt.RunId,
+                    attempt.RunEpoch,
                     channel,
-                    cycleNumber))
+                    cycleNumber, attempt.AttemptId))
             {
-                if (_cycleAttempts.TryGetCurrent(channel, out var recoveryAttempt) &&
-                    recoveryAttempt.Cycle == cycleNumber)
-                {
-                    AbortFormalCycleAttempt(
-                        recoveryAttempt,
-                        recorder,
-                        endUtc,
-                        "AbortedBySoftwareRecovery");
-                }
-                _log.Warn(
+                // 返回失败后，由 CompleteFormalCycleAttempt 释放终态占用再作废原 attempt。
+                _log?.Warn(
                     $"EPB[{channel}] 迟到圈完成回调被DAQ恢复事故标记拦截。" +
                     $"Cycle={cycleNumber} Status=AbortedBySoftwareRecovery；跳过正式完成。",
                     "落盘");
                 return false;
             }
+            if (recorder == null) return true;
             try
             {
                 finalSampleCount = FinalizeCyclePersistence(
@@ -796,7 +868,8 @@ namespace Controller
                     channel,
                     cycleNumber,
                     "CompleteCycle",
-                    ex);
+                    ex,
+                    attempt);
                 return false;
             }
 
@@ -1121,49 +1194,37 @@ namespace Controller
             QueuePendingWarningSnapshotsForCycle(channel, cycleNumber);
         }
 
-        private bool TryBeginFormalCycle(
-            IEpbCycleRecorder recorder,
-            int channel,
-            int cycleNumber,
-            DateTime beginUtc)
-        {
-            if (recorder == null)
-            {
-                MarkCurrentCycleNumber(channel, cycleNumber);
-                return true;
-            }
-            try
-            {
-                recorder.BeginCycle(channel, cycleNumber, beginUtc);
-                MarkCurrentCycleNumber(channel, cycleNumber);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
-                ReportFormalPersistenceRecovery(channel, cycleNumber, "BeginCycle", ex);
-                return false;
-            }
-        }
-
         private void PreserveFormalCycleForPersistenceRecovery(
             int channel,
             int cycleNumber,
             string stage,
-            Exception cause)
+            Exception cause,
+            CycleAttemptContext originalAttempt)
         {
-            _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
-            ReportFormalPersistenceRecovery(channel, cycleNumber, stage, cause);
+            ReportFormalPersistenceRecovery(channel, cycleNumber, stage, cause, originalAttempt);
         }
 
         private void ReportFormalPersistenceRecovery(
             int channel,
             int cycleNumber,
             string stage,
-            Exception cause)
+            Exception cause,
+            CycleAttemptContext originalAttempt)
         {
-            var attempt = _formalPersistenceRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
-            _formalPersistenceRecoveryPendingCycles[channel] = cycleNumber;
+            if (originalAttempt == null) throw new ArgumentNullException(nameof(originalAttempt));
+            var recoveryRunId = originalAttempt.RunId;
+            var recoveryRunEpoch = originalAttempt.RunEpoch;
+            if (originalAttempt.Channel != channel || originalAttempt.Cycle != cycleNumber ||
+                !IsAffectedGroupResetRunCurrent(recoveryRunId, recoveryRunEpoch)) return;
+            int attempt;
+            lock (_formalPersistenceRecoveryPendingCycles)
+            {
+                var recoveryKey = FormalRecoveryRunKey(recoveryRunId, recoveryRunEpoch, channel);
+                if (HasNewerFormalRecoveryFault(recoveryKey, originalAttempt.AttemptId)) return;
+                attempt = RecordFormalRecoveryFault(_formalPersistenceRecoveryAttempts,
+                    recoveryKey, originalAttempt.AttemptId);
+                _formalPersistenceRecoveryPendingCycles[recoveryKey] = new FormalPendingCycle(cycleNumber, originalAttempt.AttemptId);
+            }
             _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
             if (_timers.TryGetValue(channel, out var timer))
             {
@@ -1185,16 +1246,31 @@ namespace Controller
             ScheduleIsolatedInfrastructureRecovery(
                 new[] { channel },
                 $"FormalPersistence:{stage}:Cycle={cycleNumber}",
-                _activeBatchId,
-                offConfirmed ? "FormalPersistence" : "FormalPersistenceOutputOffPending");
+                recoveryRunId,
+                offConfirmed ? "FormalPersistence" : "FormalPersistenceOutputOffPending",
+                originalRunId: recoveryRunId,
+                originalRunEpoch: recoveryRunEpoch);
         }
 
         private void ReportFormalControlSoftwareRecovery(
             int channel,
             int cycleNumber,
-            string reason)
+            string reason,
+            CycleAttemptContext originalAttempt)
         {
-            var attempt = _formalControlRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
+            if (originalAttempt == null) throw new ArgumentNullException(nameof(originalAttempt));
+            var recoveryRunId = originalAttempt.RunId;
+            var recoveryRunEpoch = originalAttempt.RunEpoch;
+            if (originalAttempt.Channel != channel || originalAttempt.Cycle != cycleNumber ||
+                !IsAffectedGroupResetRunCurrent(recoveryRunId, recoveryRunEpoch)) return;
+            int attempt;
+            lock (_formalPersistenceRecoveryPendingCycles)
+            {
+                if (HasNewerFormalRecoveryFault(
+                    FormalRecoveryRunKey(recoveryRunId, recoveryRunEpoch, channel), originalAttempt.AttemptId)) return;
+                attempt = RecordFormalRecoveryFault(_formalControlRecoveryAttempts,
+                    FormalRecoveryRunKey(recoveryRunId, recoveryRunEpoch, channel), originalAttempt.AttemptId);
+            }
             // 第一处控制软件异常就是执行权撤销边界：先停 Timer/圈 token/Runner，
             // 再做 OFF 与有界恢复。Recovering 状态绝不允许旧运行对象继续发起物理圈。
             if (_timers.TryGetValue(channel, out var timer))
@@ -1218,20 +1294,38 @@ namespace Controller
             ScheduleIsolatedInfrastructureRecovery(
                 new[] { channel },
                 $"FormalControl:Cycle={cycleNumber}:{reason}",
-                _activeBatchId,
-                offConfirmed ? "FormalControl" : "FormalControlOutputOffPending");
+                recoveryRunId,
+                offConfirmed ? "FormalControl" : "FormalControlOutputOffPending",
+                originalRunId: recoveryRunId,
+                originalRunEpoch: recoveryRunEpoch);
         }
 
-        private void CompleteFormalSoftwareRecoveryAfterCommit(int channel)
+        // 调用方持有 pending 锁，控制/落盘故障共享同一尝试顺序边界。
+        private bool HasNewerFormalRecoveryFault(string key, long attemptId)
         {
-            var hadPersistence = _formalPersistenceRecoveryAttempts.TryRemove(
-                channel,
-                out var persistenceAttempts);
-            _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
-            var hadControl = _formalControlRecoveryAttempts.TryRemove(
-                channel,
-                out var controlAttempts);
-            if (!hadPersistence && !hadControl) return;
+            return attemptId <= 0 ||
+                (_formalPersistenceRecoveryAttempts.TryGetValue(key, out var persistence) &&
+                    persistence.LastFaultAttemptId > attemptId) ||
+                (_formalControlRecoveryAttempts.TryGetValue(key, out var control) &&
+                    control.LastFaultAttemptId > attemptId);
+        }
+
+        private void CompleteFormalSoftwareRecoveryAfterCommit(int channel, CycleAttemptContext originalAttempt)
+        {
+            if (originalAttempt == null || originalAttempt.Channel != channel ||
+                !IsAffectedGroupResetRunCurrent(originalAttempt.RunId, originalAttempt.RunEpoch)) return;
+            var recoveryKey = FormalRecoveryRunKey(originalAttempt.RunId, originalAttempt.RunEpoch, channel);
+            FormalRecoveryCounter persistence;
+            FormalRecoveryCounter control;
+            lock (_formalPersistenceRecoveryPendingCycles)
+            {
+                _formalPersistenceRecoveryAttempts.TryGetValue(recoveryKey, out persistence);
+                _formalControlRecoveryAttempts.TryGetValue(recoveryKey, out control);
+                if (!CanCommitFormalRecoveryRecords(originalAttempt, persistence, control)) return;
+            }
+            var persistenceAttempts = persistence?.Count ?? 0;
+            var controlAttempts = control?.Count ?? 0;
+            var committed = false;
 
             PublishChannelRuntimeState(
                 channel,
@@ -1240,12 +1334,94 @@ namespace Controller
                 $"正式圈软件自愈完成；此前控制作废{controlAttempts}次、落盘作废{persistenceAttempts}次，" +
                 "本圈已可靠完成。",
                 affectedChannels: new[] { channel },
-                correlationId: _activeBatchId,
-                allowTerminalReset: false);
+                correlationId: originalAttempt.RunId,
+                allowTerminalReset: false,
+                runIdOverride: originalAttempt.RunId,
+                runEpochOverride: originalAttempt.RunEpoch,
+                publicationTransaction: (requested, publish) =>
+                {
+                    if (requested.State != ChannelRuntimeState.Running ||
+                        requested.RunId != originalAttempt.RunId ||
+                        requested.RunEpoch != originalAttempt.RunEpoch) return false;
+                    committed = TryCommitFormalRecoveryRecords(originalAttempt, persistence, control, publish);
+                    return committed;
+                });
+            if (!committed) return;
             _log.Info(
                 $"EPB[{channel}] 正式圈软件自愈完成。" +
                 $"ControlDiscarded={controlAttempts} PersistenceDiscarded={persistenceAttempts}。",
                 "EPB");
+        }
+
+        // 调用方持有 pending 锁；所有生产故障登记也使用同一短锁。
+        private bool CanCommitFormalRecoveryRecords(CycleAttemptContext attempt,
+            FormalRecoveryCounter persistence, FormalRecoveryCounter control)
+        {
+            if (attempt == null || attempt.AttemptId <= 0 ||
+                !IsAffectedGroupResetRunCurrent(attempt.RunId, attempt.RunEpoch) ||
+                (persistence == null && control == null)) return false;
+            var key = FormalRecoveryRunKey(attempt.RunId, attempt.RunEpoch, attempt.Channel);
+            _formalPersistenceRecoveryAttempts.TryGetValue(key, out var currentPersistence);
+            _formalControlRecoveryAttempts.TryGetValue(key, out var currentControl);
+            return ReferenceEquals(persistence, currentPersistence) && ReferenceEquals(control, currentControl) &&
+                (persistence == null || attempt.AttemptId > persistence.LastFaultAttemptId) &&
+                (control == null || attempt.AttemptId > control.LastFaultAttemptId) &&
+                (!_formalPersistenceRecoveryPendingCycles.TryGetValue(key, out var pending) ||
+                    (pending.Cycle == attempt.Cycle && pending.AttemptId > 0 && pending.AttemptId < attempt.AttemptId));
+        }
+
+        private bool TryCommitFormalRecoveryRecords(CycleAttemptContext attempt,
+            FormalRecoveryCounter persistence, FormalRecoveryCounter control, Func<bool> publish)
+        {
+            lock (_formalPersistenceRecoveryPendingCycles)
+            {
+                if (!CanCommitFormalRecoveryRecords(attempt, persistence, control)) return false;
+                var key = FormalRecoveryRunKey(attempt.RunId, attempt.RunEpoch, attempt.Channel);
+                _formalPersistenceRecoveryPendingCycles.TryGetValue(key, out var pending);
+
+                // 先精确摘除本次提交所消费的旧证据，再执行状态发布。这样 publish
+                // 即使同步重入并登记更新故障，也只会创建/替换为更新对象，旧提交无法
+                // 在发布之后误删它。更重要的是：一旦 publish 返回 true，本方法绝不
+                // 因重入变化反报 false，避免“Running 已发布、事务却声称失败”。
+                if (persistence != null &&
+                    !((ICollection<KeyValuePair<string, FormalRecoveryCounter>>)_formalPersistenceRecoveryAttempts)
+                        .Remove(new KeyValuePair<string, FormalRecoveryCounter>(key, persistence))) return false;
+                if (control != null &&
+                    !((ICollection<KeyValuePair<string, FormalRecoveryCounter>>)_formalControlRecoveryAttempts)
+                        .Remove(new KeyValuePair<string, FormalRecoveryCounter>(key, control)))
+                {
+                    if (persistence != null) _formalPersistenceRecoveryAttempts.TryAdd(key, persistence);
+                    return false;
+                }
+                if (pending != null)
+                {
+                    if (!((ICollection<KeyValuePair<string, FormalPendingCycle>>)_formalPersistenceRecoveryPendingCycles)
+                        .Remove(new KeyValuePair<string, FormalPendingCycle>(key, pending)))
+                    {
+                        if (persistence != null) _formalPersistenceRecoveryAttempts.TryAdd(key, persistence);
+                        if (control != null) _formalControlRecoveryAttempts.TryAdd(key, control);
+                        return false;
+                    }
+                }
+
+                var published = false;
+                try
+                {
+                    published = publish();
+                    return published;
+                }
+                finally
+                {
+                    if (!published)
+                    {
+                        // 只在键仍为空时恢复旧证据；发布回调若重入登记了更新故障，
+                        // 其更新对象拥有优先权，绝不能被旧对象覆盖。
+                        if (persistence != null) _formalPersistenceRecoveryAttempts.TryAdd(key, persistence);
+                        if (control != null) _formalControlRecoveryAttempts.TryAdd(key, control);
+                        if (pending != null) _formalPersistenceRecoveryPendingCycles.TryAdd(key, pending);
+                    }
+                }
+            }
         }
 
         internal static bool IsFormalCycleCountable(

@@ -86,6 +86,7 @@
     <Compile Include="HostRuntimeProbe.cs" />
     <Compile Include="IAppLogger.cs" />
     <Compile Include="PeakCaptureWatermark.cs" />
+    <Compile Include="PhysicalSafetyBatchSample.cs" />
     <Compile Include="PreallocatedSpscRing.cs" />
     <Compile Include="CoalescingTaskSupervisor.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
