@@ -18,6 +18,12 @@ namespace RecoveryGuardTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--i0009")
+                {
+                    Run("旧Run接管与人工重新开始互斥且精确匹配", LegacyTerminationRunFence);
+                    Console.WriteLine("PASS " + _passed + "/" + _passed);
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--exact-main-retirement")
                 {
                     Run("Stalled Main retirement requires all stale clocks and cooperative grace", StalledMainRetirementGate);
@@ -158,6 +164,7 @@ namespace RecoveryGuardTests
                 Run("Supervisor actions reconcile created main without another launch", SupervisorActionsReconcileLaunch);
                 Run("Recovery action binding rejects replacement identities", ActionBindingRejectsReplacement);
                 Run("Lost launch response resumes reconciliation after cooldown", LostLaunchResponseResumesStage);
+                Run("旧Run接管不得终止同进程的新试验", LegacyTerminationRunFence);
                 Run("Action resume cannot bypass cooldown or operator stop", ResumeActionRespectsAdmission);
                 Run("Session rollover preserves authorization and requires created main proof", SessionRolloverCheckpointProof);
                 Run("Session rollover cannot activate after operator stop", SessionRolloverStopWins);
@@ -175,6 +182,58 @@ namespace RecoveryGuardTests
             test();
             _passed++;
             Console.WriteLine("PASS " + name);
+        }
+
+        private static void LegacyTerminationRunFence()
+        {
+            using (var f = new Fixture())
+            {
+                var session = Guid.NewGuid().ToString("N");
+                var oldRun = f.Store.Read().Intent.RunId;
+                f.Store.BindWatchdogSession(f.Token, oldRun, f.Main, session, f.Now);
+                var calls = 0;
+                Check(!f.Store.TryTerminateLegacyRun(session, oldRun, f.Main.ProcessId,
+                    f.Main.StartUtcTicks + 1, f.Now, () => calls++), "PID reuse must reject termination");
+                Check(!f.Store.TryTerminateLegacyRun("other", oldRun, f.Main.ProcessId,
+                    f.Main.StartUtcTicks, f.Now, () => calls++), "wrong session must reject termination");
+                Check(f.Store.TryTerminateLegacyRun(session, oldRun, f.Main.ProcessId,
+                    f.Main.StartUtcTicks, f.Now, () => calls++), "exact authorized run reaches termination port");
+                f.Store.SetOperatorIntent(f.Token.AuthorizationId, f.Token.IntentVersion,
+                    RecoveryDesiredState.Stopped, "manual restart");
+                Check(!f.Store.TryTerminateLegacyRun(session, oldRun, f.Main.ProcessId,
+                    f.Main.StartUtcTicks, f.Now, () => calls++), "manual stop fences old takeover");
+                var nextRun = Guid.NewGuid().ToString("N");
+                var next = f.Store.BeginManualRun(nextRun, nextRun, "config-hash", f.Main, f.Now);
+                f.Store.BindWatchdogSession(next, nextRun, f.Main, session, f.Now);
+                Check(!f.Store.TryTerminateLegacyRun(session, oldRun, f.Main.ProcessId,
+                    f.Main.StartUtcTicks, f.Now, () => calls++), "same process new run must survive stale takeover");
+                Check(calls == 1, "only the exact live authorization may dispatch termination");
+                using (var entered = new ManualResetEventSlim())
+                using (var release = new ManualResetEventSlim())
+                using (var stopStarted = new ManualResetEventSlim())
+                {
+                    var termination = Task.Run(() => f.Store.TryTerminateLegacyRun(session, nextRun,
+                        f.Main.ProcessId, f.Main.StartUtcTicks, f.Now, () =>
+                        {
+                            entered.Set();
+                            Check(release.Wait(2000), "bounded termination fixture release");
+                        }));
+                    Check(entered.Wait(2000), "termination reached atomic fence");
+                    var stop = Task.Run(() =>
+                    {
+                        stopStarted.Set();
+                        return f.Store.SetOperatorIntent(next.AuthorizationId, next.IntentVersion,
+                            RecoveryDesiredState.Stopped, "concurrent manual admission fence");
+                    });
+                    try
+                    {
+                        Check(stopStarted.Wait(1000) && !stop.Wait(50), "manual intent must not interleave with final termination");
+                    }
+                    finally { release.Set(); }
+                    Check(termination.GetAwaiter().GetResult(), "exact termination completes");
+                    stop.GetAwaiter().GetResult();
+                }
+            }
         }
 
         private static void WorkerDispatchPolicy()

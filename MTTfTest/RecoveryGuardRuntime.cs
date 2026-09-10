@@ -38,6 +38,7 @@ namespace MTEmbTest
 
         private sealed class RunLease
         {
+            internal readonly object TerminalGate = new object();
             internal RecoveryAuthorizationToken Token;
             internal RecoveryProcessIdentity Process;
             internal RecoveryRevocationSignal Signal;
@@ -411,15 +412,20 @@ namespace MTEmbTest
 
         private static void CommitTerminal(TerminalRequest request)
         {
-            var intent = Store.Read().Intent;
-            if (intent?.AuthorizationId == request.Lease.Token.AuthorizationId &&
-                (intent.IntentVersion == request.Lease.Token.IntentVersion ||
-                 (request.State == RecoveryDesiredState.Stopped && intent.DesiredState == RecoveryDesiredState.Paused &&
-                  intent.IntentVersion == request.Lease.Token.IntentVersion + 1 && intent.RunId == request.Lease.RunId)))
+            // Checkpoint persistence and the publisher can consume the same
+            // terminal concurrently. Serialize only this lease, never another run.
+            lock (request.Lease.TerminalGate)
             {
-                if (intent.DesiredState == RecoveryDesiredState.Run ||
-                    (intent.DesiredState == RecoveryDesiredState.Paused && request.State == RecoveryDesiredState.Stopped))
-                    Store.SetOperatorIntent(intent.AuthorizationId, intent.IntentVersion, request.State, request.Reason);
+                var intent = Store.Read().Intent;
+                if (intent?.AuthorizationId == request.Lease.Token.AuthorizationId &&
+                    (intent.IntentVersion == request.Lease.Token.IntentVersion ||
+                     (request.State == RecoveryDesiredState.Stopped && intent.DesiredState == RecoveryDesiredState.Paused &&
+                      intent.IntentVersion == request.Lease.Token.IntentVersion + 1 && intent.RunId == request.Lease.RunId)))
+                {
+                    if (intent.DesiredState == RecoveryDesiredState.Run ||
+                        (intent.DesiredState == RecoveryDesiredState.Paused && request.State == RecoveryDesiredState.Stopped))
+                        Store.SetOperatorIntent(intent.AuthorizationId, intent.IntentVersion, request.State, request.Reason);
+                }
             }
         }
 

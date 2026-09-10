@@ -24,14 +24,19 @@ namespace MTTFTest.SafetyHardware
             var test = XDocument.Load(Path.Combine(configDirectory, "TestConfig.xml"));
             var required = new HashSet<string>(pressureNames, StringComparer.Ordinal);
             var currentNames = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var record in test.Descendants("Record"))
+            // EpbCycleRunnerConfig also contains Record elements, but those
+            // describe timing, not enabled physical feedback channels.
+            var records = test.Root?.Element("EpbRecords")?.Elements("Record");
+            if (records == null)
+                throw new SafetyHardwareConfigurationException("PhysicalFeedbackCurrentChannelsMissing");
+            foreach (var record in records)
             {
                 bool enabled;
                 if (!bool.TryParse((string)record.Element("Enabled"), out enabled))
                     throw new SafetyHardwareConfigurationException("PhysicalFeedbackChannelEnabledInvalid");
                 if (!enabled) continue;
                 int id;
-                if (!int.TryParse((string)record.Element("Id"), out id) || id < 1 ||
+                if (!int.TryParse((string)record.Element("Id"), out id) || id < 1 || id > 12 ||
                     !currentNames.Add("EPB" + id.ToString(CultureInfo.InvariantCulture) + "_current"))
                     throw new SafetyHardwareConfigurationException("PhysicalFeedbackChannelIdInvalid");
             }

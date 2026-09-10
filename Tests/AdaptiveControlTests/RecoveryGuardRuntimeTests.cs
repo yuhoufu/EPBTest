@@ -29,8 +29,30 @@ namespace AdaptiveControlTests
             BudgetCooldownPreservesIntent();
             AdmissionWaitsForVerify(false);
             AdmissionWaitsForVerify(true);
-            Console.WriteLine("PASS RecoveryGuard 主程序桥接 9/9 暂停、继续、启动身份、完成发布、预算冷却及Verify等待/停止");
-            return 9;
+            ConcurrentTerminalCommit();
+            Console.WriteLine("PASS RecoveryGuard 主程序桥接 10/10 暂停、继续、启动身份、完成发布、预算冷却及Verify等待/停止、并发终态");
+            return 10;
+        }
+
+        private static void ConcurrentTerminalCommit()
+        {
+            using (var scope = new Scope())
+            {
+                Admit(scope.Run, RunAdmissionOrigin.ManualStart);
+                var before = scope.Store.Read().Intent.IntentVersion;
+                var requestType = Runtime.GetNestedType("TerminalRequest", BindingFlags.NonPublic);
+                var request = Activator.CreateInstance(requestType, true);
+                var fields = BindingFlags.Instance | BindingFlags.NonPublic;
+                requestType.GetField("Lease", fields).SetValue(request, Runtime.GetField("_lease", Static).GetValue(null));
+                requestType.GetField("State", fields).SetValue(request, RecoveryDesiredState.Stopped);
+                requestType.GetField("Reason", fields).SetValue(request, "ManualStop");
+                // Invoke the actual writer, so a CAS exception cannot be hidden
+                // by the checkpoint's diagnostic catch.
+                Parallel.For(0, 16, _ => Call("CommitTerminal", request));
+                var after = scope.Store.Read().Intent;
+                Check(after.DesiredState == RecoveryDesiredState.Stopped && after.IntentVersion == before + 1,
+                    "concurrent checkpoint and publisher terminal must advance intent only once");
+            }
         }
 
         private static void BudgetCooldownPreservesIntent()

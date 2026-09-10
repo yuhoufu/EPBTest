@@ -19,7 +19,8 @@ namespace Controller
         {
             Rejected = 0,
             ExistingSameScope = 1,
-            Created = 2
+            Created = 2,
+            ScopeBusy = 3
         }
 
         /// <summary>
@@ -466,7 +467,8 @@ namespace Controller
             Action<RecoveryContractSnapshot> publishRecovering,
             out Incident incident,
             Guid incidentId = default,
-            StartupReservation startupParent = null)
+            StartupReservation startupParent = null,
+            bool reportScopeBusy = false)
         {
             incident = null;
             var owned = NormalizeChannels(ownedChannels);
@@ -512,7 +514,7 @@ namespace Controller
                     return BeginResult.Rejected;
                 if (_startupReservations.Values.Any(reserved => reserved.Overlaps(safetyAffected) &&
                         !ReferenceEquals(reserved, startupParent)))
-                    return BeginResult.Rejected;
+                    return reportScopeBusy ? BeginResult.ScopeBusy : BeginResult.Rejected;
                 if (_activeByScope.TryGetValue(scope, out existing))
                 {
                     // Same scope is a single begin transaction. The caller
@@ -524,7 +526,7 @@ namespace Controller
                     // A different cohort may not steal even one channel from
                     // the first incident. This returns before Reserve, OFF or
                     // any state publication.
-                    return BeginResult.Rejected;
+                    return reportScopeBusy ? BeginResult.ScopeBusy : BeginResult.Rejected;
                 }
                 else
                 {

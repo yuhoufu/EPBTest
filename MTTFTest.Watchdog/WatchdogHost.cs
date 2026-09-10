@@ -1835,6 +1835,8 @@ namespace MTTFTest.Watchdog
                         ref _validatedAttachEpoch);
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
                     _journal.CurrentProcessStartUtcTicks = message.Heartbeat.ProcessStartUtcTicks;
+                    if (TakeoverRunWasSuperseded(_journal.LastHeartbeat?.RunId, message.Heartbeat.RunId))
+                        CancelAutomaticTakeover("NewRunObserved:" + message.Heartbeat.RunId);
                     _journal.LastHeartbeat = message.Heartbeat;
                     var verifiedActiveRunChanged =
                         WatchdogRecoveryChannelIntentPolicy.TryCaptureLastVerifiedActiveRun(
@@ -2902,8 +2904,22 @@ namespace MTTFTest.Watchdog
             }
         }
 
+        internal static bool TakeoverRunWasSuperseded(string expectedRunId, string currentRunId)
+        {
+            return Guid.TryParse(currentRunId, out var current) && current != Guid.Empty &&
+                Guid.TryParse(expectedRunId, out var expected) && expected != Guid.Empty && current != expected;
+        }
+
         private void BeginTakeover(string reason)
         {
+            var match = Regex.Match(reason ?? string.Empty, @"(?:^|;)ExpectedRunId=([a-fA-F0-9-]+)");
+            var expectedRunId = match.Success ? match.Groups[1].Value :
+                _journal.LastVerifiedActiveRun?.RunId ?? _journal.RunId;
+            if (TakeoverRunWasSuperseded(expectedRunId, _journal.LastHeartbeat?.RunId))
+            {
+                Record("TakeoverRequestSuperseded", "Expected=" + expectedRunId);
+                return;
+            }
             if (_journal.RecoveryBlocked || _journal.ManualStopRequested || IsSessionRevoked() ||
                 Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0) return;
             var oldIdentity = FreezeCurrentProcessIdentity("AutomaticTakeoverBegin");
@@ -2943,7 +2959,7 @@ namespace MTTFTest.Watchdog
                 0,
                 _journal.RecoveryAttempt + 1);
             Send(WatchdogMessageType.RequestStopAll, reason, correlationId);
-            _ = Task.Run(() => TakeoverAsync(reason, transaction, oldIdentity));
+            _ = Task.Run(() => TakeoverAsync(reason, transaction, oldIdentity, expectedRunId));
         }
 
         private void CancelAutomaticTakeover(string reason)
@@ -3132,7 +3148,8 @@ namespace MTTFTest.Watchdog
         private async Task TakeoverAsync(
             string reason,
             TakeoverTransactionLease transaction,
-            OldProcessIdentitySnapshot oldIdentity)
+            OldProcessIdentitySnapshot oldIdentity,
+            string expectedRunId)
         {
             try
             {
@@ -3142,7 +3159,8 @@ namespace MTTFTest.Watchdog
                     0,
                     _journal.RecoveryAttempt + 1);
                 var deadline = ResolveOldProcessExitDeadlineTimestamp(oldIdentity);
-                while (!_journal.ManualStopRequested &&
+                while (!TakeoverRunWasSuperseded(expectedRunId, _journal.LastHeartbeat?.RunId) &&
+                       !_journal.ManualStopRequested &&
                        !IsSessionRevoked() &&
                        Stopwatch.GetTimestamp() < deadline)
                 {
@@ -3151,6 +3169,11 @@ namespace MTTFTest.Watchdog
                         oldIdentity.ProcessStartUtcTicks);
                     if (observation != DurableRelaunchProcessObservation.Alive) break;
                     await Task.Delay(250, transaction.CancellationToken).ConfigureAwait(false);
+                }
+                if (TakeoverRunWasSuperseded(expectedRunId, _journal.LastHeartbeat?.RunId))
+                {
+                    CancelAutomaticTakeover("NewRunSupersededPendingTakeover");
+                    return;
                 }
                 if (_journal.ManualStopRequested ||
                     IsSessionRevoked() ||
@@ -3181,23 +3204,32 @@ namespace MTTFTest.Watchdog
                             return;
                     }
 
+                    var terminationSuperseded = false;
                     var pipeline = await AutomaticTakeoverStageExecutor.ExecuteAsync(
                             _automaticTakeover,
                             transaction,
                             () => !_journal.ManualStopRequested &&
                                   !IsSessionRevoked() &&
-                                  _automaticTakeover.IsAuthorized(transaction),
+                                  _automaticTakeover.IsAuthorized(transaction) &&
+                                  !TakeoverRunWasSuperseded(expectedRunId, _journal.LastHeartbeat?.RunId),
                             () => oldProcess == null
                                 ? Task.CompletedTask
                                 : CaptureMiniDumpBeforeTerminationAsync(
                                     oldProcess,
                                     "AutomaticTakeover:" + reason),
-                            () => ApproveRelaunchPermit(reason),
+                            () => ApproveRelaunchPermit(reason, expectedRunId),
                             oldProcess == null || oldProcess.HasExited
                                 ? (Func<bool>)null
                                 : () =>
                                 {
-                                    oldProcess.Kill();
+                                    if (TakeoverRunWasSuperseded(expectedRunId, _journal.LastHeartbeat?.RunId) ||
+                                        !_relaunchCoordinator.TryTerminateApprovedRun(expectedRunId,
+                                            oldIdentity.ProcessId, oldIdentity.ProcessStartUtcTicks,
+                                            () => oldProcess.Kill()))
+                                    {
+                                        terminationSuperseded = true;
+                                        return false;
+                                    }
                                     var exited = oldProcess.WaitForExit(
                                         WatchdogRecoveryReadinessPolicy
                                             .ForcedExitConfirmationSeconds * 1000);
@@ -3224,6 +3256,12 @@ namespace MTTFTest.Watchdog
                         .ConfigureAwait(false);
                     if (!pipeline.Succeeded)
                     {
+                        if (terminationSuperseded)
+                        {
+                            CancelAutomaticTakeover("RunAuthorizationSupersededBeforeTermination");
+                            Record("TakeoverTerminationSuppressed", expectedRunId);
+                            return;
+                        }
                         if (string.Equals(
                                 pipeline.Failure,
                                 "TerminationRejected",
@@ -4774,7 +4812,7 @@ namespace MTTFTest.Watchdog
                    record.State == DurableRelaunchPermitState.Approved;
         }
 
-        private long ApproveRelaunchPermit(string reason)
+        private long ApproveRelaunchPermit(string reason, string expectedRunId = null)
         {
             RecoveryFailureReport report;
             RecoveryFailureClassification classification;
@@ -4816,6 +4854,11 @@ namespace MTTFTest.Watchdog
                     RecoveryProgressToken = _journal.RecoveryProgressToken,
                     RecoveryProcessSource = _journal.RecoveryProcessSource
                 };
+            }
+            if (TakeoverRunWasSuperseded(expectedRunId, report.RunId))
+            {
+                Record("TakeoverRunSuperseded", "Expected=" + expectedRunId + ";Current=" + report.RunId);
+                return 0;
             }
             var correlation = Guid.NewGuid().ToString("N");
             var decision = RegisterRecoveryFailure(

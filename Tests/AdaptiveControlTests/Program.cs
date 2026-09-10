@@ -25,6 +25,12 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--i0009")
+                {
+                    _passed += I0009IncidentTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 4 && args[0] == "--guard-live-stop-child")
                     return RecoveryGuardLiveStopTests.RunChild(args[1], args[2], args[3]);
                 if (args.Length == 1 && args[0] == "--guard-live-stop")
@@ -590,6 +596,7 @@ namespace AdaptiveControlTests
                 // before broader controller suites that intentionally leave terminal evidence.
                 _passed += RecoveryCoordinationTests.RunAll();
                 _passed += CycleAttemptLifecycleTests.RunAll();
+                _passed += I0009IncidentTests.RunAll();
                 _passed += RecoveryProductionSeamTests.RunAll();
                 _passed += PowerSupplyTelemetryRecorderTests.RunAll();
                 _passed += HistoricalStorageBudgetTests.RunAll();

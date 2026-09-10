@@ -3379,7 +3379,8 @@ namespace Controller
             out RecoveryIncidentHandle incident,
             Guid incidentId = default,
             IEnumerable<int> safetyAffectedChannels = null,
-            RecoveryIncidentCoordinator.StartupReservation startupParent = null)
+            RecoveryIncidentCoordinator.StartupReservation startupParent = null,
+            Action onScopeBusy = null)
         {
             incident = null;
             var (ownedChannels, safetyAffected) = BuildRecoveryAdmissionScopes(
@@ -3406,7 +3407,14 @@ namespace Controller
                     publishRecovering,
                     out var createdIncident,
                     incidentId,
-                    startupParent);
+                    startupParent,
+                    reportScopeBusy: onScopeBusy != null);
+                if (result == RecoveryIncidentCoordinator.BeginResult.ScopeBusy ||
+                    result == RecoveryIncidentCoordinator.BeginResult.ExistingSameScope && onScopeBusy != null)
+                {
+                    onScopeBusy?.Invoke();
+                    return false;
+                }
                 if (result != RecoveryIncidentCoordinator.BeginResult.Created ||
                     createdIncident == null)
                 {

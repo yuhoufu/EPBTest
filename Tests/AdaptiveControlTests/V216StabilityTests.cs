@@ -23,6 +23,7 @@ namespace AdaptiveControlTests
             StartupRetryOldEpochCannotReauthorize();
             StartupRetryRevocationCannotReauthorize();
             ConcurrentStartupRetriesKeepTheirOwners();
+            DuplicateStartupRetryWaitsForOwner();
             DaqReadQueueDoesNotRunBusinessOnReader();
             DaqFreshnessUsesOneCommittedBatch();
             DaqOldGenerationCannotPublish();
@@ -30,7 +31,7 @@ namespace AdaptiveControlTests
             TerminalSessionsNeverRestart();
             AuthorityReceiptRoundTripPreservesHash();
             OverdueStaggerDoesNotCaptureCallerContext();
-            return 12;
+            return 13;
         }
 
         private sealed class HeldSynchronizationContext : SynchronizationContext
@@ -316,6 +317,23 @@ namespace AdaptiveControlTests
                     fixture.Retry(channel, 20, CancellationToken.None))).GetAwaiter().GetResult();
                 foreach (var channel in StartupFixture.Channels) fixture.AssertReady(channel);
                 Console.WriteLine("PASS V216 T03 六通道真实启动重试互不覆盖owner");
+            }
+        }
+
+        private static void DuplicateStartupRetryWaitsForOwner()
+        {
+            using (var fixture = new StartupFixture())
+            {
+                var first = fixture.Retry(4, 1500, CancellationToken.None);
+                fixture.WaitRecovering(4);
+                fixture.Retry(4, 1, CancellationToken.None).GetAwaiter().GetResult();
+                Assert(!first.IsCompleted && fixture.Manager.HasActiveRecoveryContract(4, 41),
+                    "重复启动重试不得结束或替换原owner");
+                Assert(fixture.State(4).State == ChannelRuntimeState.Recovering,
+                    "等待原owner期间不得发布新的就绪态");
+                first.GetAwaiter().GetResult();
+                fixture.AssertReady(4);
+                Console.WriteLine("PASS I0009 真实Manager重复重试合并且只由原owner提交就绪");
             }
         }
 

@@ -211,6 +211,20 @@ namespace MTTFTest.Watchdog
             }
         }
 
+        internal bool TryTerminateApprovedRun(string runId, int processId, long processStartUtcTicks, Action terminate)
+        {
+            var permit = Snapshot;
+            if (permit?.State != DurableRelaunchPermitState.Approved ||
+                !Guid.TryParse(runId, out var expected) || expected == Guid.Empty ||
+                !Guid.TryParse(permit.RunId, out var approved) || expected != approved)
+                return false;
+            if (_recoveryControl.IsRegisteredOrPending)
+                return _recoveryControl.TryTerminateLegacyRun(_sessionId, runId,
+                    processId, processStartUtcTicks, DateTime.UtcNow, terminate);
+            terminate();
+            return true;
+        }
+
         internal DurableRelaunchResult BeginLaunch(DurableRelaunchPermitIdentity identity) =>
             BeginLaunch(identity, string.Empty);
 

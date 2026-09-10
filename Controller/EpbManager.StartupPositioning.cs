@@ -261,14 +261,8 @@ namespace Controller
                     throw new RecoveryExecutionRejectedException("PositioningRetryRecoveryOwnerInvalid");
                 return;
             }
-            if (_channelRuntimeStateStore.Get(channel)?.State ==
-                ChannelRuntimeState.Recovering)
-            {
-                await Task.Delay(delayMs, token).ConfigureAwait(false);
-                return;
-            }
-
             var ownerId = Guid.NewGuid();
+            var scopeBusy = false;
             RecoveryIncidentHandle recoveryIncident = null;
             Func<Task> BuildRecoveryWorker()
             {
@@ -320,9 +314,26 @@ namespace Controller
                             recoveryOwnerGeneration: contract.RunEpoch);
                     },
                     out recoveryIncident,
-                    startupParent: startupParent))
-                throw new InvalidOperationException(
-                    $"EPB[{channel}] 启动定位恢复事务建立失败，已保持安全终态。");
+                    startupParent: startupParent,
+                    onScopeBusy: () => scopeBusy = true))
+            {
+                if (scopeBusy)
+                {
+                    // DAQ may reserve the group after our output-off await.
+                    // Wait without publishing state or stealing its worker;
+                    // the startup loop must revalidate DAQ/execution admission.
+                    await Task.Delay(delayMs, token).ConfigureAwait(false);
+                    token.ThrowIfCancellationRequested();
+                    if (runId != _activeBatchId || runEpoch != Interlocked.Read(ref _runEpoch) ||
+                        IsEnergizationRevoked)
+                        throw new OperationCanceledException("StartupRetrySuperseded", token);
+                    return;
+                }
+                throw new SoftwareSelfHealingExhaustedException(
+                    "StartupPositioningRecoveryRegistration", attempt,
+                    new InvalidOperationException(
+                        $"EPB[{channel}] 启动定位恢复事务建立失败，已保持安全终态。"), channel);
+            }
 
             try
             {

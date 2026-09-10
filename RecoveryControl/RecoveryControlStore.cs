@@ -235,6 +235,28 @@ namespace MTTFTest.RecoveryControl
             }, _mutexName + ".PermitMutation");
         }
 
+        // Keep the final, non-waiting process termination atomic with manual
+        // run admission. PID identity alone cannot distinguish two runs in one UI.
+        public bool TryTerminateLegacyRun(string sessionId, string runId,
+            int processId, long processStartUtcTicks, DateTime nowUtc, Action terminate)
+        {
+            if (terminate == null) throw new ArgumentNullException(nameof(terminate));
+            return Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state.Intent?.DesiredState != RecoveryDesiredState.Run ||
+                    string.IsNullOrWhiteSpace(runId) || !SameRolloverRun(state.Intent.RunId, runId) ||
+                    state.Intent.WatchdogSessionId != sessionId ||
+                    state.Intent.MainProcess?.ProcessId != processId ||
+                    state.Intent.MainProcess.StartUtcTicks != processStartUtcTicks ||
+                    state.Transaction != null && !state.Transaction.OwnershipReleased)
+                    return false;
+                AssertIntent(state, state.Token(), nowUtc);
+                terminate();
+                return true;
+            });
+        }
+
         public void AssertGuardCreatedAttachment(string sessionId, string operationId,
             RecoveryProcessIdentity process, DateTime nowUtc)
         {

@@ -277,8 +277,11 @@ namespace AdaptiveControlTests
                                 main.ProcessId, main.StartUtcTicks, out denied), "missing prior safety history cannot be fabricated by attachment");
                             foreach (var stage in new[] { RecoveryReplacementState.Approved, RecoveryReplacementState.OldProcessExitProven,
                                 RecoveryReplacementState.SafetyAgentRunning, RecoveryReplacementState.SafetyCompleted, RecoveryReplacementState.MainLaunchIntent })
-                                Check(RecoveryReplacementTransactionStore.Advance(project, session, persisted.Generation,
-                                    persisted.PermitId, stage, "fixture verified event").Succeeded, "fixture supplies prerequisite history");
+                            {
+                                var prerequisite = RecoveryReplacementTransactionStore.Advance(project, session, persisted.Generation,
+                                    persisted.PermitId, stage, "fixture verified event");
+                                Check(prerequisite.Succeeded, "fixture supplies prerequisite history: " + stage + ";" + prerequisite.Reason);
+                            }
                             Check(!adapter.TryRefreshGuardCreatedProcess(persisted.Generation, persisted.PermitId, persisted.PermitNonce,
                                 main.ProcessId + 1, main.StartUtcTicks, out denied), "wrong attached PID rejected");
                             Check(adapter.TryRefreshGuardCreatedProcess(persisted.Generation, persisted.PermitId, persisted.PermitNonce,
