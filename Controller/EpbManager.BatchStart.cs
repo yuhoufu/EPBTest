@@ -1052,7 +1052,74 @@ namespace Controller
         /// “重新开始”清场屏障：先合并/完成旧批次的安全停止，再等待旧启动调用彻底退出。
         /// 返回前不会遗留仍可能提交 StopChannel/StopAll 的旧启动尾声，调用方可以在同一次请求中直接启动新批次。
         /// </summary>
-        public async Task<StopSafetyResult> PrepareForFreshRestartAsync(
+        internal sealed class StartupRecoveryCleanupIdentity
+        {
+            internal Guid RunId;
+            internal long RunEpoch;
+        }
+
+        private StartupRecoveryCleanupIdentity _startupRecoveryCleanup;
+
+        internal static bool CanJoinPendingStartupStop(StopSafetyResult result,
+            StartupRecoveryCleanupIdentity owner, long generation, bool hardRestartRequired)
+        {
+            return owner != null && owner.RunId != Guid.Empty && owner.RunEpoch > 0 &&
+                result != null && result.RunId == owner.RunId && result.RunEpoch == owner.RunEpoch &&
+                result.SafetyTransactionId != Guid.Empty && result.SafetyBoundaryGeneration == generation &&
+                result.LastStage == StopSafetyStage.Completed && result.LogicalCleanupPending &&
+                result.FullyConfirmed && !result.DataContinuityCompromised &&
+                !result.TimedOut && !hardRestartRequired;
+        }
+
+        internal static StopSource ResolveStartupCleanupSource(bool circuitOpen,
+            bool expectedCancellation, Guid startupRunId, long startupRunEpoch,
+            StartupRecoveryCleanupIdentity recovery)
+        {
+            if (circuitOpen) return StopSource.SystemFault;
+            return expectedCancellation && recovery != null && startupRunId != Guid.Empty &&
+                   startupRunEpoch > 0 && recovery.RunId == startupRunId &&
+                   recovery.RunEpoch == startupRunEpoch
+                ? StopSource.SystemFault : StopSource.StartupRollback;
+        }
+
+        public Task<StopSafetyResult> PrepareForFreshRestartAsync(
+            StopContext context,
+            CancellationToken token = default,
+            bool discardHistoricalStopChecks = false)
+        {
+            return ExecuteStartupRecoveryCleanupAsync(context,
+                () => PrepareForFreshRestartCoreAsync(context, token, discardHistoricalStopChecks));
+        }
+
+        internal async Task<StopSafetyResult> ExecuteStartupRecoveryCleanupAsync(
+            StopContext context, Func<Task<StopSafetyResult>> cleanup)
+        {
+            StartupRecoveryCleanupIdentity ownership = null;
+            if (context?.Source == StopSource.SystemFault &&
+                Guid.TryParse(context.RunId, out var requestedRun) &&
+                requestedRun != Guid.Empty && requestedRun == _activeBatchId &&
+                Interlocked.Read(ref _runEpoch) > 0)
+            {
+                ownership = new StartupRecoveryCleanupIdentity
+                {
+                    RunId = requestedRun,
+                    RunEpoch = Interlocked.Read(ref _runEpoch)
+                };
+                if (Interlocked.CompareExchange(ref _startupRecoveryCleanup, ownership, null) != null)
+                    throw new RecoveryStopPendingException();
+            }
+            try
+            {
+                return await cleanup().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (ownership != null)
+                    Interlocked.CompareExchange(ref _startupRecoveryCleanup, null, ownership);
+            }
+        }
+
+        private async Task<StopSafetyResult> PrepareForFreshRestartCoreAsync(
             StopContext context,
             CancellationToken token = default,
             bool discardHistoricalStopChecks = false)
@@ -1107,7 +1174,12 @@ namespace Controller
                     $"Pressure={safety.PressureSafeConfirmed}," +
                     $"Persistence={safety.PersistenceBoundaryConfirmed}," +
                     $"Logical={safety.LogicalQuiescenceConfirmed}," +
-                    $"RequiresRestart={safety.RequiresProcessRestart},TimedOut={safety.TimedOut}");
+                    $"RequiresRestart={safety.RequiresProcessRestart},TimedOut={safety.TimedOut}; " +
+                    $"CurrentSafe={safety.CurrentSafeConfirmed},DataGap={safety.DataContinuityCompromised}," +
+                    $"DataGapError={safety.DataContinuityError},LogicalPending={safety.LogicalCleanupPending}," +
+                    $"HardRestartLatch={RequiresProcessRestart},Outcome={safety.Outcome},Stage={safety.LastStage}," +
+                    $"Transaction={safety.SafetyTransactionId:N},Generation={safety.SafetyBoundaryGeneration}," +
+                    $"CurrentGeneration={Interlocked.Read(ref _stopSafetyGeneration)}");
                 }
 
                 if (!safety.CanRestartInProcess)
@@ -1692,10 +1764,14 @@ namespace Controller
             var sessionToken = BeginBatchSession(token);
             var startFaults = new List<ChannelStartFault>();
             var completedDuringStart = new List<int>(alreadyTargetCompleted);
+            var startupRunId = Guid.Empty;
+            var startupRunEpoch = 0L;
             try
             {
                 _activeBatchId = Guid.NewGuid();
                 InitializeRunChainIdentity(chainIdentity, _activeBatchId);
+                startupRunId = _activeBatchId;
+                startupRunEpoch = Interlocked.Read(ref _runEpoch);
                 _daqLivenessLogTransitions.BeginSession(
                     _activeBatchId,
                     Interlocked.Read(ref _runEpoch));
@@ -2273,9 +2349,10 @@ namespace Controller
                     await StopAllAsync(
                             new StopContext
                             {
-                                Source = circuitOpen
-                                    ? StopSource.SystemFault
-                                    : StopSource.StartupRollback,
+                                // 仅正在等待本启动栈退出的同代恢复事务可以保留恢复授权。
+                                // 人工停止仍独立撤权；普通启动失败和迟到旧代取消不能借用豁免。
+                                Source = ResolveStartupCleanupSource(circuitOpen, expectedCancellation,
+                                    startupRunId, startupRunEpoch, Volatile.Read(ref _startupRecoveryCleanup)),
                                 Reason = ex.Message,
                                 Initiator = nameof(StartBatchSynchronizedWithResultAsync),
                                 CorrelationId = _activeBatchId == Guid.Empty
@@ -4935,6 +5012,16 @@ namespace Controller
                     allowTerminalReset: false);
         }
 
+        internal static async Task ExecuteLearningRetryCleanupAsync(Func<Task> cleanup,
+            Func<bool> commitRetryTerminal, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            await cleanup().ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            if (!commitRetryTerminal())
+                throw new InvalidOperationException("LearningRetryTerminalRejected");
+        }
+
         private async Task RunLearningRetryIncidentAsync(
             IEpbCycleRunner runner,
             EpbAdaptiveProfile modelBeforeLogicalCycle,
@@ -4970,14 +5057,20 @@ namespace Controller
             RecoveryIncidentHandle recoveryIncident = null;
             Func<Task> BuildRecoveryWorker()
             {
-                return async () =>
-                {
-                    RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
-                    await AbortHydraulicLeaseForChannelAsync(
-                            channel,
-                            "LearningPersistenceSelfHealing")
-                        .ConfigureAwait(false);
-                };
+                return () => ExecuteLearningRetryCleanupAsync(async () =>
+                    {
+                        RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
+                        await AbortHydraulicLeaseForChannelAsync(
+                                channel,
+                                "LearningPersistenceSelfHealing")
+                            .ConfigureAwait(false);
+                    },
+                    () => recoveryIncident.CompleteAfterTerminal(contract =>
+                        CommitRecoveryIncidentStateForRetry(
+                            contract,
+                            ChannelRuntimeState.Learning,
+                            "LearningPersistenceRetryReady",
+                            "学习圈失败尝试已安全封存，准备重做同一逻辑学习圈。")), token);
             }
 
             if (!TryBeginRecoveryIncident(
@@ -5009,27 +5102,17 @@ namespace Controller
                 throw new InvalidOperationException(
                     $"EPB[{channel}] 学习恢复事务建立失败，已保持安全终态。");
 
-            try
-            {
-                _taskSupervisor.Observe(
-                    recoveryIncident.WorkerTask,
-                    "LearningPersistenceSelfHealing",
-                    _activeBatchId,
-                    channel);
-                if (!recoveryIncident.Start())
-                    throw new InvalidOperationException(
-                        $"EPB[{channel}] 学习恢复worker启动许可被拒绝。");
-                await recoveryIncident.WorkerTask.ConfigureAwait(false);
-            }
-            finally
-            {
-                recoveryIncident.CompleteAfterTerminal(contract =>
-                    CommitRecoveryIncidentStateForRetry(
-                        contract,
-                        ChannelRuntimeState.Learning,
-                        "LearningPersistenceRetryReady",
-                        "学习圈失败尝试已安全封存，准备重做同一逻辑学习圈。"));
-            }
+            _taskSupervisor.Observe(
+                recoveryIncident.WorkerTask,
+                "LearningPersistenceSelfHealing",
+                _activeBatchId,
+                channel);
+            if (!recoveryIncident.Start())
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 学习恢复worker启动许可被拒绝。");
+            // 终态必须由worker在返回前提交；异常/取消由协调器保持安全终态，
+            // 不能在外层finally把失败事务重新发布为Learning。
+            await recoveryIncident.WorkerTask.ConfigureAwait(false);
         }
 
         private async Task SealLearningCycleAsync(

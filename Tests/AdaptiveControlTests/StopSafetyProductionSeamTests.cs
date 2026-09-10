@@ -29,6 +29,10 @@ namespace AdaptiveControlTests
         internal static int RunProductionAcceptance()
         {
             var passed = 0;
+            Run("人工停止加入恢复事务仍同步撤权且不重复物理停止",
+                ManualStopJoiningRecoveryRevokesAuthorization, ref passed);
+            Run("恢复等待启动尾声时复用同代已安全停止事务",
+                StartupTailKeepsPendingStopIdentity, ref passed);
             Run("EpbManager.StopAllAsync真实十阶段与虚拟12秒液压",
                 EpbManagerStopAllRunsProductionStages, ref passed);
             Run("停止后外部恢复保留原Run范围并重新执行安全事务",
@@ -135,6 +139,96 @@ namespace AdaptiveControlTests
                     renewed.FullyConfirmed && renewed.RawStorageFlushed && !renewed.ReusedPreviousResult,
                     "旧核心退出后必须允许新安全事务重新确认，不能永久停留在旧超时结果。Stage=" +
                     renewed.LastStage + "; Outcome=" + renewed.Outcome);
+            }
+        }
+
+        private static void StartupTailKeepsPendingStopIdentity()
+        {
+            using (var fixture = new ProductionManagerFixture(new FailingPowerSupply(fail: false)))
+            {
+                const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                var type = typeof(EpbManager);
+                var run = Guid.NewGuid();
+                type.GetField("_activeBatchId", fields).SetValue(fixture.Manager, run);
+                type.GetField("_runEpoch", fields).SetValue(fixture.Manager, 1L);
+                var gate = (BatchStartLifecycleGate)type.GetField("_batchLifecycleGate", fields).GetValue(fixture.Manager);
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                fixture.Manager.ConfigureStopSafetyProductionSeams(
+                    hydraulicAdapter: new ProductionHydraulicAdapter(immediateSuccess: true));
+                var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var startup = gate.RunAsync(async () =>
+                {
+                    await release.Task.ConfigureAwait(false);
+                    await fixture.Manager.StopAllAsync(new StopContext
+                    {
+                        Source = StopSource.SystemFault,
+                        Initiator = nameof(EpbManager.StartBatchSynchronizedWithResultAsync)
+                    }).ConfigureAwait(false);
+                }, CancellationToken.None);
+                var recovery = fixture.Manager.PrepareForFreshRestartAsync(new StopContext
+                {
+                    Source = StopSource.SystemFault, RunId = run.ToString("N")
+                });
+                StopSafetyResult first;
+                try
+                {
+                    var stop = (Task<StopSafetyResult>)type.GetField("_stopSafetyTask", fields).GetValue(fixture.Manager);
+                    Assert(stop != null && stop.Wait(TimeSpan.FromSeconds(5)), "首个安全事务未完成。");
+                    first = stop.Result;
+                    Assert(first.LogicalCleanupPending && first.FullyConfirmed, "未重现仅启动尾声未退出的安全结果。");
+                    var owner = new EpbManager.StartupRecoveryCleanupIdentity { RunId = run, RunEpoch = 1 };
+                    Assert(!EpbManager.CanJoinPendingStartupStop(first, null, first.SafetyBoundaryGeneration, false) &&
+                        !EpbManager.CanJoinPendingStartupStop(first, owner, first.SafetyBoundaryGeneration + 1, false) &&
+                        !EpbManager.CanJoinPendingStartupStop(first, owner, first.SafetyBoundaryGeneration, true),
+                        "缺少拥有者、过期代次或硬锁存不应复用。");
+                    foreach (var reason in new[] { "pressure", "current", "persistence", "gap", "timeout", "run", "epoch" })
+                    {
+                        var unsafeResult = first.Clone();
+                        if (reason == "pressure") unsafeResult.PressureSafeConfirmed = false;
+                        if (reason == "current") unsafeResult.CurrentSafeConfirmed = false;
+                        if (reason == "persistence") unsafeResult.PersistenceBoundaryConfirmed = false;
+                        if (reason == "gap") unsafeResult.DataContinuityCompromised = true;
+                        if (reason == "timeout") unsafeResult.TimedOut = true;
+                        if (reason == "run") unsafeResult.RunId = Guid.NewGuid();
+                        if (reason == "epoch") unsafeResult.RunEpoch++;
+                        Assert(!EpbManager.CanJoinPendingStartupStop(unsafeResult, owner,
+                            first.SafetyBoundaryGeneration, false), "不安全或过期结果被复用：" + reason);
+                    }
+                }
+                finally { release.TrySetResult(true); }
+                startup.GetAwaiter().GetResult();
+                var result = recovery.GetAwaiter().GetResult();
+                Assert(result.CanRestartInProcess && result.SafetyTransactionId == first.SafetyTransactionId &&
+                    fixture.PowerDisableCallCount == 1, "启动尾声更换停止身份导致逻辑收敛失败或重复断能。");
+            }
+        }
+
+        private static void ManualStopJoiningRecoveryRevokesAuthorization()
+        {
+            using (var fixture = new ProductionManagerFixture(new FailingPowerSupply(fail: false)))
+            {
+                var hydraulic = new ProductionHydraulicAdapter();
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                fixture.Manager.ConfigureStopSafetyProductionSeams(hydraulicAdapter: hydraulic);
+                var barriers = 0;
+                fixture.Manager.RunAuthorizationRevocationBarrier += context =>
+                {
+                    Assert(context.Source == StopSource.ManualUi, "恢复内部清场错误撤权。");
+                    Interlocked.Increment(ref barriers);
+                };
+                var recovery = fixture.Manager.StopAllAsync(new StopContext { Source = StopSource.SystemFault });
+                try
+                {
+                    Assert(hydraulic.Started.Wait(TimeSpan.FromSeconds(2)), "恢复停止未进入反馈阶段。");
+                    Assert(barriers == 0, "SystemFault 不应撤销业务恢复授权。");
+                    var manual = fixture.Manager.StopAllAsync(new StopContext { Source = StopSource.ManualUi });
+                    Assert(barriers == 1 && ReferenceEquals(manual, recovery),
+                        "人工停止未同步撤权，或未合并在途停止。");
+                    Assert(fixture.PowerDisableCallCount == 1, "重复执行了物理停止。");
+                }
+                finally { hydraulic.Complete(true, string.Empty); }
+                recovery.GetAwaiter().GetResult();
             }
         }
 

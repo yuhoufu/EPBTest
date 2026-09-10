@@ -2048,6 +2048,7 @@ namespace MTEmbTest
                             Source = StopSource.SystemFault,
                             Reason = "同进程无人值守恢复：" + reason,
                             Initiator = nameof(UnattendedRecoveryCoordinator),
+                            RunId = fault?.RunId.ToString("N"),
                             CorrelationId = correlationId,
                             RequestedUtc = DateTime.UtcNow
                         },

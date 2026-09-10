@@ -58,6 +58,10 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
+            Run("现场学习重试在worker退出前提交终态", LearningRetryCommitsBeforeWorkerExit, ref passed);
+            Run("现场学习清理失败取消和拒绝终态不得恢复", LearningRetryFailureDoesNotPublishReady, ref passed);
+            Run("现场启动回滚仅同运行同代恢复取消保留授权", StartupRollbackRecoveryIdentityIsExact, ref passed);
+            Run("恢复清场所有权拒绝重复并在成功异常取消后释放", StartupCleanupOwnershipLifetime, ref passed);
             Run("隔离恢复重登记拒绝过期或不成对运行身份", InfrastructureRescheduleRejectsStaleIdentity, ref passed);
             Run("DAQ重试识别正常结束但OFF未确认的结果且不重试在途任务", PowerOffRetryUsesExecutionResult, ref passed);
             Run("电源安全确认缺少硬件时不得返回成功", PowerSafetyRejectsMissingHardware, ref passed);
@@ -1349,6 +1353,102 @@ namespace AdaptiveControlTests
             Assert(rejected == RecoveryIncidentCoordinator.BeginResult.Rejected &&
                    rejectedSeam.Events.IsEmpty,
                 "无owner身份未在任何reserve/硬件动作前拒绝。");
+        }
+
+        private static void LearningRetryCommitsBeforeWorkerExit()
+        {
+            var seam = new FakeSeam();
+            var coordinator = seam.CreateCoordinator();
+            RecoveryIncidentCoordinator.Incident current = null;
+            var cleaned = false;
+            var result = Begin(coordinator, seam, _ => () =>
+                EpbManager.ExecuteLearningRetryCleanupAsync(
+                    async () => { await Task.Yield(); cleaned = true; },
+                    () => current.CompleteAfterTerminal(contract =>
+                    {
+                        Assert(cleaned, "清理完成前提交了重试终态。");
+                        seam.MarkTerminal(contract);
+                    }), CancellationToken.None), out var incident);
+            current = incident;
+            Assert(result == RecoveryIncidentCoordinator.BeginResult.Created && incident.Start(), "重试未启动。");
+            AwaitWorker(incident.WorkerTask);
+            Assert(cleaned && seam.OffCount == 0 && coordinator.ActiveCount == 0 &&
+                   seam.Registry.ActiveCount == 0,
+                "合法重试触发了漏终态兜底或遗留owner。");
+        }
+
+        private static void LearningRetryFailureDoesNotPublishReady()
+        {
+            foreach (var mode in new[] { "cleanup-fault", "cancel", "rejected" })
+            {
+                using (var cancellation = new CancellationTokenSource())
+                {
+                    var commits = 0;
+                    var failed = false;
+                    try
+                    {
+                        EpbManager.ExecuteLearningRetryCleanupAsync(() =>
+                        {
+                            if (mode == "cleanup-fault") throw new InvalidOperationException("fixture");
+                            if (mode == "cancel") cancellation.Cancel();
+                            return Task.CompletedTask;
+                        }, () => { commits++; return false; }, cancellation.Token).GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException || ex is OperationCanceledException)
+                    { failed = true; }
+                    Assert(failed && commits == (mode == "rejected" ? 1 : 0),
+                        "失败清理发布了可重试终态或拒绝终态未阻止续测。");
+                }
+            }
+        }
+
+        private static void StartupCleanupOwnershipLifetime()
+        {
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var type = typeof(EpbManager);
+            foreach (var outcome in new[] { "success", "failure", "cancel" })
+            {
+                var manager = (EpbManager)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(type);
+                var run = Guid.NewGuid();
+                type.GetField("_activeBatchId", flags).SetValue(manager, run);
+                type.GetField("_runEpoch", flags).SetValue(manager, 7L);
+                var ownerField = type.GetField("_startupRecoveryCleanup", flags);
+                var context = new StopContext { Source = StopSource.SystemFault, RunId = run.ToString("N") };
+                var pending = new TaskCompletionSource<StopSafetyResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var task = manager.ExecuteStartupRecoveryCleanupAsync(context, () => pending.Task);
+                Assert(ownerField.GetValue(manager) != null && !task.IsCompleted, "等待期间未持有清场所有权。");
+                var duplicateRejected = false;
+                try
+                {
+                    manager.ExecuteStartupRecoveryCleanupAsync(context,
+                        () => throw new Exception("重复清场不应执行")).GetAwaiter().GetResult();
+                }
+                catch (RecoveryStopPendingException) { duplicateRejected = true; }
+                Assert(duplicateRejected && ownerField.GetValue(manager) != null, "重复请求移除了原所有权。");
+                if (outcome == "success") pending.SetResult(new StopSafetyResult());
+                else if (outcome == "failure") pending.SetException(new TimeoutException("fixture"));
+                else pending.SetCanceled();
+                try { task.GetAwaiter().GetResult(); }
+                catch (Exception ex) when (ex is TimeoutException || ex is OperationCanceledException) { }
+                Assert(ownerField.GetValue(manager) == null, "完成或失败后仍有恢复豁免。");
+                manager.ExecuteStartupRecoveryCleanupAsync(context,
+                    () => Task.FromResult(new StopSafetyResult())).GetAwaiter().GetResult();
+                Assert(ownerField.GetValue(manager) == null, "后续清场泄漏所有权。");
+            }
+        }
+
+        private static void StartupRollbackRecoveryIdentityIsExact()
+        {
+            var run = Guid.NewGuid();
+            var owner = new EpbManager.StartupRecoveryCleanupIdentity { RunId = run, RunEpoch = 7 };
+            Assert(EpbManager.ResolveStartupCleanupSource(false, true, run, 7, owner) == StopSource.SystemFault,
+                "同代恢复取消错误撤销运行授权。");
+            Assert(EpbManager.ResolveStartupCleanupSource(false, false, run, 7, owner) == StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupCleanupSource(false, true, Guid.NewGuid(), 7, owner) == StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupCleanupSource(false, true, run, 8, owner) == StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupCleanupSource(false, true, run, 7, null) == StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupCleanupSource(false, true, Guid.Empty, 0, owner) == StopSource.StartupRollback,
+                "普通失败、旧代或无拥有者的取消借用了恢复豁免。");
         }
 
         private static void WorkerIsSuspendedUntilExplicitStart()

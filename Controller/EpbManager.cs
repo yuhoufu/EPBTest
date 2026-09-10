@@ -12074,6 +12074,15 @@ namespace Controller
                     // a second core behind an already-running safety action.
                     return CompleteStopRequestForSource(_stopSafetyTask, context.Source);
                 }
+                // 恢复拥有者正在 Join 当前启动栈。它已确认物理/持久化安全，
+                // 此栈的 catch 只能加入同一停止，不能新建代次使拥有者的清场凭证过期。
+                // 仅允许同运行同代的内部启动尾声；人工停止和外部新鲜安全确认不复用。
+                if (context.Source == StopSource.SystemFault && !context.RequireFreshPhysicalEvidence &&
+                    context.Initiator == nameof(StartBatchSynchronizedWithResultAsync) &&
+                    CanJoinPendingStartupStop(_lastStopSafetyResult,
+                        Volatile.Read(ref _startupRecoveryCleanup),
+                        Interlocked.Read(ref _stopSafetyGeneration), RequiresProcessRestart))
+                    return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
                 if (IsFinalExitStopSource(context.Source) &&
                     TryResumeStopPersistenceForClose(out var retainedClose)) return retainedClose;
                 if (_stopSafetyTask != null && _activeStopSafetyRunner?.HasOrphanCore == true)
@@ -12272,6 +12281,12 @@ namespace Controller
 
         private void InstallStopPreemptionFence(StopContext context)
         {
+            // 每个调用者都必须撤权，包括加入正在进行的 SystemFault 停止的人工停止。
+            // 不能仅在物理事务的 Freeze 阶段通知，否则合并请求会丢失人工意图。
+            if (context != null && context.Source != StopSource.SystemFault)
+                NotifyRunAuthorizationRevoking(context.Source, context.Reason, context.Initiator,
+                    Guid.TryParse(context.CorrelationId, out var correlation) ? correlation : Guid.NewGuid(),
+                    context.FaultScope);
             // This is the synchronous linearization point for every StopAll
             // caller.  It runs before the shared stop-task lock and before any
             // stage worker can wait on a recovery/channel gate.  Existing
@@ -13919,6 +13934,12 @@ namespace Controller
                 _log.Info("重新开始逻辑清场不变量全部通过：" + logical, "EPB");
             else
                 _log.Error("重新开始逻辑清场失败：" + result.LogicalError, "EPB");
+            _log.Info($"RestartCleanupDecision Transaction={result.SafetyTransactionId:N} " +
+                $"Generation={result.SafetyBoundaryGeneration} CurrentGeneration={Interlocked.Read(ref _stopSafetyGeneration)} " +
+                $"LogicalCleanupCompleted={logicalCleanupCompleted} LogicalPending={result.LogicalCleanupPending} " +
+                $"HardRestartLatch={RequiresProcessRestart} RequiresRestart={result.RequiresProcessRestart} " +
+                $"DataGap={result.DataContinuityCompromised} CurrentSafe={result.CurrentSafeConfirmed} " +
+                $"CanRestart={result.CanRestartInProcess}", "EPB");
             return result;
         }
 

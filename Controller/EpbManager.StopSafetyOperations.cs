@@ -414,15 +414,7 @@ namespace Controller
                 foreach (var channel in Enumerable.Range(1, 12))
                     _manualStopRequestedChannels[channel] = 0;
             }
-            if (context.Source != StopSource.SystemFault)
-                NotifyRunAuthorizationRevoking(
-                    context.Source,
-                    context.Reason,
-                    context.Initiator,
-                    Guid.TryParse(context.CorrelationId, out var requestedCorrelation)
-                        ? requestedCorrelation
-                        : Guid.NewGuid(),
-                    context.FaultScope);
+            // 授权撤销已在 StopAll 入场执行，合并到本事务的人工请求也不能遗漏。
             // Freeze is a non-blocking producer barrier.  The process-wide
             // energization fence and execution-permit cancellation were
             // installed synchronously at StopAll admission.  Here we only
