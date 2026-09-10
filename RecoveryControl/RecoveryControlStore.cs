@@ -1533,18 +1533,7 @@ namespace MTTFTest.RecoveryControl
 
         internal static void RetryTransientReplacement(Action replace, Func<bool> sourceExists)
         {
-            // A sharing/replace-remove conflict can be transient on Windows.
-            // Keep the durable source and atomic replacement; never truncate the
-            // destination or claim success after an ambiguous/missing source.
-            for (var attempt = 0; ; attempt++)
-            {
-                try { replace(); return; }
-                catch (IOException ex) when (attempt < 4 && sourceExists() &&
-                    ((ex.HResult & 0xffff) == 32 || (ex.HResult & 0xffff) == 33 || (ex.HResult & 0xffff) == 1175))
-                {
-                    Thread.Sleep(20 * (attempt + 1));
-                }
-            }
+            DurableIO.AtomicFileReplacement.Retry(replace, sourceExists);
         }
 
         private static string Hash(string value)

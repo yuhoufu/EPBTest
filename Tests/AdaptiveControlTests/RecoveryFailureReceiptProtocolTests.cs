@@ -1062,7 +1062,7 @@ namespace AdaptiveControlTests
                     var authority = created.Authority;
                     var first = authority.RegisterFailureAndDecide(OperationWithBudget(session, 8));
                     Assert(first.Durable && first.Record != null && first.Record.State == DurableRelaunchPermitState.Approved,
-                        "active " + state + " evidence setup failed");
+                        "active " + state + " evidence setup failed: " + first.CommitStatus + ":" + first.Reason);
                     if (state != DurableRelaunchPermitState.Approved)
                     {
                         var executable = Path.GetFullPath(Process.GetCurrentProcess().MainModule.FileName);
@@ -1082,20 +1082,19 @@ namespace AdaptiveControlTests
                         };
                         launch.LaunchSpecSha256 = DurableLaunchCanonical.Sha256(launch);
                         var prepared = authority.PrepareLaunchIntent(launch);
-                        Assert(prepared.Succeeded, "active launch fixture prepare failed");
+                        Assert(prepared.Succeeded, "active launch fixture prepare failed: " + prepared.Reason);
                         if (state == DurableRelaunchPermitState.Started ||
                             state == DurableRelaunchPermitState.Attached)
                         {
-                            Assert(authority.ConsumeLaunchIntent(prepared.Capability).Succeeded,
-                                "active launch fixture consume failed");
-                            Assert(authority.CommitStarted(
-                                    prepared.Capability,
-                                    9007,
-                                    900700).Succeeded,
-                                "active launch fixture started failed");
+                            var consumed = authority.ConsumeLaunchIntent(prepared.Capability);
+                            Assert(consumed.Succeeded, "active launch fixture consume failed: " + consumed.Reason);
+                            var started = authority.CommitStarted(prepared.Capability, 9007, 900700);
+                            Assert(started.Succeeded, "active launch fixture started failed: " + started.Reason);
                             if (state == DurableRelaunchPermitState.Attached)
-                                Assert(authority.CommitAttached(prepared.Capability).Succeeded,
-                                    "active launch fixture attached failed");
+                            {
+                                var attached = authority.CommitAttached(prepared.Capability);
+                                Assert(attached.Succeeded, "active launch fixture attached failed: " + attached.Reason);
+                            }
                         }
                     }
                     var valid = authority.Snapshot;

@@ -23,6 +23,7 @@
     <Reference Include="System.Core" />
     <Reference Include="System.Web.Extensions" />
     <Compile Include="RecoveryContracts.cs" />
+    <Compile Include="AtomicFileReplacement.cs" />
     <Compile Include="RecoveryControlStore.cs" />
     <Compile Include="RecoveryDecisionPolicy.cs" />
     <Compile Include="RecoveryProcessIdentity.cs" />

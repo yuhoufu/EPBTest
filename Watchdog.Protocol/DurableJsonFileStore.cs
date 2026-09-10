@@ -155,7 +155,8 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public void ReplaceNoBackup(string temporaryPath, string targetPath) =>
-            File.Replace(temporaryPath, targetPath, null, true);
+            DurableIO.AtomicFileReplacement.Retry(
+                () => File.Replace(temporaryPath, targetPath, null, true), () => File.Exists(temporaryPath));
 
         public void MoveNew(string temporaryPath, string targetPath) => File.Move(temporaryPath, targetPath);
 

@@ -59,7 +59,8 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public void Replace(string temporaryPath, string targetPath) =>
-            File.Replace(temporaryPath, targetPath, null, true);
+            DurableIO.AtomicFileReplacement.Retry(
+                () => File.Replace(temporaryPath, targetPath, null, true), () => File.Exists(temporaryPath));
 
         public void Delete(string path)
         {

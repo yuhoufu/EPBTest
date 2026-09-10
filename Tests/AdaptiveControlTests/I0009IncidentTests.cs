@@ -23,6 +23,9 @@ namespace AdaptiveControlTests
             PhysicalConfiguration();
             Console.WriteLine("PASS I0009 真实双Record配置与缺失反馈拒绝");
             count++;
+            AtomicReplacement();
+            Console.WriteLine("PASS I0009 凭据瞬态替换重试与永久失败封闭");
+            count++;
             var oldRun = Guid.NewGuid().ToString("N");
             var newRun = Guid.NewGuid().ToString("N");
             Check(WatchdogHost.TakeoverRunWasSuperseded(oldRun, newRun), "同进程新Run必须撤销旧接管");
@@ -30,6 +33,34 @@ namespace AdaptiveControlTests
             Check(!WatchdogHost.TakeoverRunWasSuperseded(oldRun, ""), "清场空Run不是新试验");
             Console.WriteLine("PASS I0009 重复开始与清场心跳运行身份");
             return count + 1;
+        }
+
+        private static void AtomicReplacement()
+        {
+            foreach (var code in new[] { 32, 33, 1175 })
+            {
+                var calls = 0;
+                MTTFTest.DurableIO.AtomicFileReplacement.Retry(() =>
+                {
+                    if (++calls < 3) throw new IOException("transient", unchecked((int)0x80070000) | code);
+                }, () => true);
+                Check(calls == 3, "瞬态替换未成功重试");
+            }
+            foreach (var scenario in new[] { 0, 1, 2 })
+            {
+                var calls = 0;
+                var rejected = false;
+                try
+                {
+                    MTTFTest.DurableIO.AtomicFileReplacement.Retry(() =>
+                    {
+                        calls++;
+                        throw new IOException("persistent", unchecked((int)0x80070000) | (scenario == 2 ? 5 : 1175));
+                    }, () => scenario != 1);
+                }
+                catch (IOException) { rejected = true; }
+                Check(rejected && calls == (scenario == 0 ? 5 : 1), "永久或不确定失败不得放行");
+            }
         }
 
         private static void ScopeCompetition(int[] channels)
