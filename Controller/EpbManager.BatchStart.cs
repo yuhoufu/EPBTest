@@ -2353,6 +2353,7 @@ namespace Controller
                                 // 人工停止仍独立撤权；普通启动失败和迟到旧代取消不能借用豁免。
                                 Source = ResolveStartupCleanupSource(circuitOpen, expectedCancellation,
                                     startupRunId, startupRunEpoch, Volatile.Read(ref _startupRecoveryCleanup)),
+                                RunId = startupRunId.ToString("N"),
                                 Reason = ex.Message,
                                 Initiator = nameof(StartBatchSynchronizedWithResultAsync),
                                 CorrelationId = _activeBatchId == Guid.Empty

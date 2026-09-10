@@ -163,6 +163,7 @@ namespace AdaptiveControlTests
                     await fixture.Manager.StopAllAsync(new StopContext
                     {
                         Source = StopSource.SystemFault,
+                        RunId = run.ToString("N"),
                         Initiator = nameof(EpbManager.StartBatchSynchronizedWithResultAsync)
                     }).ConfigureAwait(false);
                 }, CancellationToken.None);

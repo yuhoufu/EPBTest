@@ -12079,6 +12079,9 @@ namespace Controller
                 // 仅允许同运行同代的内部启动尾声；人工停止和外部新鲜安全确认不复用。
                 if (context.Source == StopSource.SystemFault && !context.RequireFreshPhysicalEvidence &&
                     context.Initiator == nameof(StartBatchSynchronizedWithResultAsync) &&
+                    _activeBatchId == Guid.Empty && !IsBatchSessionActive &&
+                    Guid.TryParse(context.RunId, out var cleanupRun) &&
+                    cleanupRun != Guid.Empty && cleanupRun == _lastStopSafetyResult?.RunId &&
                     CanJoinPendingStartupStop(_lastStopSafetyResult,
                         Volatile.Read(ref _startupRecoveryCleanup),
                         Interlocked.Read(ref _stopSafetyGeneration), RequiresProcessRestart))
