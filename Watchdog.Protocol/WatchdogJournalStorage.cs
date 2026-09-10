@@ -472,7 +472,7 @@ namespace MTTFTest.Watchdog.Protocol
                     new UTF8Encoding(false));
                 using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
                     stream.Flush(true);
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                if (File.Exists(path)) DurableIO.AtomicFileReplacement.Retry(() => File.Replace(temporary, path, null), () => File.Exists(temporary)); else File.Move(temporary, path);
             }
             finally { TryDelete(temporary); }
         }
@@ -653,7 +653,7 @@ namespace MTTFTest.Watchdog.Protocol
                 File.WriteAllText(temporary, payload, new UTF8Encoding(false));
                 using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
                     stream.Flush(true);
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                if (File.Exists(path)) DurableIO.AtomicFileReplacement.Retry(() => File.Replace(temporary, path, null), () => File.Exists(temporary)); else File.Move(temporary, path);
             }
             finally
             {
@@ -681,7 +681,7 @@ namespace MTTFTest.Watchdog.Protocol
                            FileAccess.ReadWrite,
                            FileShare.Read))
                     stream.Flush(true);
-                if (File.Exists(path)) File.Replace(temporary, path, null);
+                if (File.Exists(path)) DurableIO.AtomicFileReplacement.Retry(() => File.Replace(temporary, path, null), () => File.Exists(temporary));
                 else File.Move(temporary, path);
             }
             finally
@@ -1747,7 +1747,7 @@ namespace MTTFTest.Watchdog.Protocol
                 File.WriteAllText(temporary, content ?? string.Empty, new UTF8Encoding(false));
                 using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
                     stream.Flush(true);
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                if (File.Exists(path)) DurableIO.AtomicFileReplacement.Retry(() => File.Replace(temporary, path, null), () => File.Exists(temporary)); else File.Move(temporary, path);
             }
             finally { TryDelete(temporary); }
         }

@@ -1296,12 +1296,16 @@ namespace AdaptiveControlTests
                 var proofBefore = File.ReadAllBytes(proofPath);
                 var authority = created.Authority;
                 var errors = 0;
+                var details = new System.Collections.Concurrent.ConcurrentQueue<string>();
                 var writer = Task.Run(() =>
                 {
                     for (var i = 0; i < 300; i++)
                     {
                         if (!journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4,\"SessionId\":\"" + session + "\",\"WriterSequence\":" + i.ToString(CultureInfo.InvariantCulture) + "}"))
+                        {
                             Interlocked.Increment(ref errors);
+                            details.Enqueue("journal sequence=" + i);
+                        }
                     }
                 });
                 var registrar = Task.Run(() =>
@@ -1314,11 +1318,18 @@ namespace AdaptiveControlTests
                             result.Record.AuthorityRevision != i + 1 ||
                             result.Record.ConsecutiveFailures != i + 1 ||
                             result.Receipt.DecisionSequence != i + 1)
+                        {
                             Interlocked.Increment(ref errors);
+                            details.Enqueue("authority sequence=" + i + ":" + result.CommitStatus + ":" + result.Reason);
+                        }
                         if ((i % 37) == 0)
                         {
                             var reopened = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
-                            if (!reopened.Succeeded) Interlocked.Increment(ref errors);
+                            if (!reopened.Succeeded)
+                            {
+                                Interlocked.Increment(ref errors);
+                                details.Enqueue("reopen sequence=" + i + ":" + reopened.Reason);
+                            }
                         }
                     }
                 });
@@ -1328,7 +1339,7 @@ namespace AdaptiveControlTests
                        reopenedFinal.Authority.Snapshot.AuthorityRevision == 300 &&
                        reopenedFinal.Authority.Snapshot.ConsecutiveFailures == 300 &&
                        proofBefore.SequenceEqual(File.ReadAllBytes(proofPath)),
-                    "parallel journal/authority lost a write or mutated immutable proof: errors=" + errors);
+                    "parallel journal/authority lost a write or mutated immutable proof: errors=" + errors + ";" + string.Join(";", details));
             }
             finally
             {
