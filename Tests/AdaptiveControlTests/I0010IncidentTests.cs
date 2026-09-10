@@ -20,9 +20,10 @@ namespace AdaptiveControlTests
             FormalPublication();
             ExitReceiptReplay();
             SnapshotPublication();
+            ReplacementMonitoring();
             V216StabilityTests.PendingStartupEscalationKeepsExactIdentity();
             Console.WriteLine("PASS I0010 学习恢复单/部分/全通道所有权、等待取消与截止、计时器交接、退出回执重放");
-            return 9;
+            return 10;
         }
 
         private static async Task ScopeWait()
@@ -128,6 +129,22 @@ namespace AdaptiveControlTests
                 Check(!WatchdogHost.CanObserveApprovedExitPermit(permit, 2), "旧代回执混入新许可");
             }
             Check(!WatchdogHost.CanObserveApprovedExitPermit(null, 1), "缺失权威仍接管");
+        }
+
+        private static void ReplacementMonitoring()
+        {
+            var record = new DurableRelaunchPermitRecord
+            { Generation = 1, State = DurableRelaunchPermitState.Attached, ProcessId = 23736, ProcessStartUtcTicks = 10 };
+            for (var repeat = 0; repeat < 1000; repeat++)
+                Check(WatchdogHost.CanMonitorReplacementPastExitFence(record, 1, true, 23736, 10),
+                    "已附着新进程被旧退出终态遮蔽监督");
+            Check(!WatchdogHost.CanMonitorReplacementPastExitFence(record, 1, false, 23736, 10), "未附着即恢复监督");
+            Check(!WatchdogHost.CanMonitorReplacementPastExitFence(record, 1, true, 23736, 11), "PID复用错过代际校验");
+            Check(!WatchdogHost.CanMonitorReplacementPastExitFence(record, 2, true, 23736, 10), "跳过未来代际安全终态");
+            record.State = DurableRelaunchPermitState.Approved;
+            Check(!WatchdogHost.CanMonitorReplacementPastExitFence(record, 1, true, 23736, 10), "跳过当前未消费停止许可");
+            record.Generation = 2;
+            Check(WatchdogHost.CanMonitorReplacementPastExitFence(record, 1, true, 23736, 10), "旧代终态遮蔽新代恢复监督");
         }
 
         private static void SnapshotPublication()

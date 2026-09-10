@@ -7,6 +7,18 @@ foreach($mode in @('ValidatePackage','Validate')){
     if(-not $result.PackageValidated -or $result.FieldAcceptanceRequired -or $result.TasksChanged){throw 'ReportFreeValidationFailed'}
 }
 Write-Output 'PASS validation needs no report and makes no installation changes'
+$expectedMode=(Get-Content (Join-Path $bundle 'automatic-bundle.json') -Raw -Encoding UTF8|ConvertFrom-Json).recoveryMode
+if($result.RecoveryMode -cne $expectedMode){throw 'DefaultModeDoesNotMatchManifest'}
+if($expectedMode -eq 'RecoverStalled'){
+    foreach($sub in @('', 'Base')){
+        foreach($name in @('一键安装正式版.cmd','一键修复.cmd')){
+            if([IO.File]::ReadAllText((Join-Path (Join-Path $bundle $sub) $name)) -notmatch '-RecoveryMode RecoverStalled'){
+                throw 'StalledRecoveryEntryModeMissing'
+            }
+        }
+    }
+}
+Write-Output 'PASS package default and installation entries match declared recovery mode'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($entry,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'ParseFailed'}
@@ -70,4 +82,4 @@ if($global:epbOneClickFixture.seenGuard -ne ''){throw 'GuardRanAfterMainFailure'
 Remove-Variable epbOneClickFixture -Scope Global
 $global:LASTEXITCODE=0
 Write-Output 'PASS install and repair dispatch correctly; Main failure stops Guard installation'
-Write-Output 'PASS one-click package 6/6; no services, tasks or hardware modified'
+Write-Output 'PASS one-click package 7/7; no services, tasks or hardware modified'

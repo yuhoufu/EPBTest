@@ -57,7 +57,7 @@ try {
                 if ([string]::IsNullOrWhiteSpace([string]$state.BenchId)) {throw '已有恢复状态缺少台架标识，禁止重新注册覆盖。'}
                 $bench=[string]$state.BenchId
             }
-            if($recoveryMode -eq 'RecoverExited') {
+            if($recoveryMode -in @('RecoverExited','RecoverStalled')) {
                 $stage='核验自动恢复目标（修改主程序前）'
                 $accepted=Get-Content (Join-Path $guard 'guard-identity.json') -Raw -Encoding UTF8 | ConvertFrom-Json
                 if($bench -cne $accepted.acceptanceBenchId -or $env:COMPUTERNAME -ine $accepted.acceptanceMachineName){throw 'AcceptanceInstallTargetMismatch'}
@@ -66,7 +66,7 @@ try {
             Write-Host "Guard台架标识：$bench；模式：$recoveryMode"
             Invoke-Step '安装独立Guard' (Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1') @{Mode='Install';SourceDirectory=$guard;BenchId=$bench;MainExecutable=(Join-Path $root 'Current\MTTFTest.exe');RecoveryMode=$recoveryMode}
             $executionTask=Get-ScheduledTask 'MTTFTestRecoveryGuardExecution'
-            if(($executionTask.State -ne 'Disabled') -ne ($recoveryMode -eq 'RecoverExited')){throw 'Guard执行任务启用状态与安装模式不一致。'}
+            if(($executionTask.State -ne 'Disabled') -ne ($recoveryMode -in @('RecoverExited','RecoverStalled'))){throw 'Guard执行任务启用状态与安装模式不一致。'}
             Write-Host '安装完成。请使用“启动试验.cmd”；安装不会自动开始试验。'
         }
         'Launch' {

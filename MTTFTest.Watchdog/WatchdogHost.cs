@@ -6804,6 +6804,20 @@ namespace MTTFTest.Watchdog
             return WatchdogCloseFenceAction.SuppressRelaunch;
         }
 
+        internal static bool CanMonitorReplacementPastExitFence(DurableRelaunchPermitRecord record,
+            long fenceGeneration, bool attached, int currentPid, long currentStartUtcTicks)
+        {
+            if (!attached || record == null || fenceGeneration <= 0 ||
+                currentPid <= 0 || currentStartUtcTicks <= 0 || record.Generation < fenceGeneration)
+                return false;
+            // 调用方已核对保留许可/旧退出事务。旧终态只管理旧进程退出，
+            // 不能让已附着的新进程永远跳过业务、心跳和恢复提交监督。
+            if (record.Generation > fenceGeneration) return true;
+            return (record.State == DurableRelaunchPermitState.Attached ||
+                    record.State == DurableRelaunchPermitState.Committed) &&
+                   record.ProcessId == currentPid && record.ProcessStartUtcTicks == currentStartUtcTicks;
+        }
+
         private bool ObserveDurableSafetyState()
         {
             WatchdogClosingTombstone closing;
@@ -6818,6 +6832,10 @@ namespace MTTFTest.Watchdog
                 {
                     if (MatchesPreservedTakeoverPermit(closing))
                     {
+                        if (CanMonitorReplacementPastExitFence(_relaunchCoordinator?.Snapshot,
+                                closing.RelaunchPermitGeneration, _attached,
+                                _journal.CurrentPid, _journal.CurrentProcessStartUtcTicks))
+                            return false;
                         Record(
                             "DurableTakeoverSafetyTerminalObserved",
                             $"StateVersion={closing.StateVersion};" +

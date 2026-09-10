@@ -54,6 +54,7 @@ if($PSBoundParameters.ContainsKey('RecoveryMode')){
 $modeArgument=if($PSBoundParameters.ContainsKey('RecoveryMode')){' -RecoveryMode '+$RecoveryMode}else{''}
 
 Copy-Tool 'FieldPackage-Launcher.ps1' (Join-Path $base 'FieldPackage-Launcher.ps1')
+Copy-Tool 'Verify-FieldPackage.ps1' (Join-Path $base 'Verify-FieldPackage.ps1')
 Copy-Tool 'Install-MTTFTest-RecoveryGuard.ps1' (Join-Path $guard 'Install-MTTFTest-RecoveryGuard.ps1')
 $guardId.schemaVersion=4;$guardId.deliveryStage='AutomaticRecovery';$guardId.automaticExecutionReady=$true
 foreach($entry in @{
