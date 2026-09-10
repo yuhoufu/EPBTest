@@ -21,6 +21,7 @@ namespace RecoveryGuardTests
                 if (args.Length == 1 && args[0] == "--i0009")
                 {
                     Run("旧Run接管与人工重新开始互斥且精确匹配", LegacyTerminationRunFence);
+                    Run("状态原子替换只重试已确认瞬态并有界失败", AtomicReplacementRetryIsBounded);
                     Console.WriteLine("PASS " + _passed + "/" + _passed);
                     return 0;
                 }
@@ -165,6 +166,7 @@ namespace RecoveryGuardTests
                 Run("Recovery action binding rejects replacement identities", ActionBindingRejectsReplacement);
                 Run("Lost launch response resumes reconciliation after cooldown", LostLaunchResponseResumesStage);
                 Run("旧Run接管不得终止同进程的新试验", LegacyTerminationRunFence);
+                Run("状态原子替换只重试已确认瞬态并有界失败", AtomicReplacementRetryIsBounded);
                 Run("Action resume cannot bypass cooldown or operator stop", ResumeActionRespectsAdmission);
                 Run("Session rollover preserves authorization and requires created main proof", SessionRolloverCheckpointProof);
                 Run("Session rollover cannot activate after operator stop", SessionRolloverStopWins);
@@ -182,6 +184,36 @@ namespace RecoveryGuardTests
             test();
             _passed++;
             Console.WriteLine("PASS " + name);
+        }
+
+        private static void AtomicReplacementRetryIsBounded()
+        {
+            var method = typeof(RecoveryControlStore).GetMethod("RetryTransientReplacement",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            foreach (var code in new[] { 32, 33, 1175 })
+            {
+                var calls = 0;
+                method.Invoke(null, new object[] { (Action)(() =>
+                {
+                    if (++calls < 3) throw new IOException("injected transient", unchecked((int)0x80070000) | code);
+                }), (Func<bool>)(() => true) });
+                Check(calls == 3, "transient replacement must eventually commit");
+            }
+            foreach (var scenario in new[] { 0, 1, 2 })
+            {
+                var calls = 0;
+                var rejected = false;
+                try
+                {
+                    method.Invoke(null, new object[] { (Action)(() =>
+                    {
+                        calls++;
+                        throw new IOException("persistent or ambiguous", unchecked((int)0x80070000) | (scenario == 2 ? 5 : 1175));
+                    }), (Func<bool>)(() => scenario != 1) });
+                }
+                catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is IOException) { rejected = true; }
+                Check(rejected && calls == (scenario == 0 ? 5 : 1), "persistent, missing source or unrelated errors must fail closed");
+            }
         }
 
         private static void LegacyTerminationRunFence()

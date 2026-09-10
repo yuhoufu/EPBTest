@@ -1524,10 +1524,27 @@ namespace MTTFTest.RecoveryControl
                     stream.Write(bytes, 0, bytes.Length);
                     stream.Flush(true);
                 }
-                if (File.Exists(path)) File.Replace(temporary, path, null);
+                if (File.Exists(path)) RetryTransientReplacement(
+                    () => File.Replace(temporary, path, null), () => File.Exists(temporary));
                 else File.Move(temporary, path);
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
+        internal static void RetryTransientReplacement(Action replace, Func<bool> sourceExists)
+        {
+            // A sharing/replace-remove conflict can be transient on Windows.
+            // Keep the durable source and atomic replacement; never truncate the
+            // destination or claim success after an ambiguous/missing source.
+            for (var attempt = 0; ; attempt++)
+            {
+                try { replace(); return; }
+                catch (IOException ex) when (attempt < 4 && sourceExists() &&
+                    ((ex.HResult & 0xffff) == 32 || (ex.HResult & 0xffff) == 33 || (ex.HResult & 0xffff) == 1175))
+                {
+                    Thread.Sleep(20 * (attempt + 1));
+                }
+            }
         }
 
         private static string Hash(string value)
