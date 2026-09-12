@@ -54,7 +54,7 @@ function Save-BusinessEvidence([string]$Destination, [string]$Snapshot = '') {
     if ($LASTEXITCODE -ne 0) { throw '业务计数/数据库采证失败，不能报告完整采证成功。' }
 }
 function Assert-ClosedProcessSafety([int]$ProcessId, [long]$StartUtcTicks) {
-    [void][Reflection.Assembly]::LoadFrom((Join-Path $base 'Watchdog.Protocol.dll'))
+    [void][Reflection.Assembly]::LoadFrom((Join-Path $base 'MTTFTest.Watchdog.Protocol.dll'))
     $control = Join-Path $env:LOCALAPPDATA 'MTTFTest\WatchdogControlV2'
     foreach ($path in @(Get-ChildItem -LiteralPath $control -Filter '*.application-exit.json' -File -ErrorAction SilentlyContinue)) {
         $session = $path.Name -replace '^session-','' -replace '\.application-exit\.json$',''

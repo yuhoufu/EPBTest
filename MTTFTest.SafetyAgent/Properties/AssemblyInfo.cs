@@ -10,3 +10,4 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyVersion("2.14.2.12")]
 [assembly: AssemblyFileVersion("2.14.2.12")]
 [assembly: AssemblyInformationalVersion("2.14.2.12")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("AdaptiveControlTests")]
