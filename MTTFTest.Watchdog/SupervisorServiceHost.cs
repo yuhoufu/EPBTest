@@ -668,8 +668,8 @@ namespace MTTFTest.Watchdog
                     StringComparison.Ordinal) ||
                 !string.Equals(receipt.SafetyAgentExecutablePath, executable,
                     StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(receipt.SafetyAgentExecutableSha256,
-                    request.ExecutableSha256, StringComparison.Ordinal))
+                !SupervisorProtocol.Sha256Equals(receipt.SafetyAgentExecutableSha256,
+                    request.ExecutableSha256))
                 throw new InvalidDataException(
                     "SupervisorSafetyHandoffIdentityMismatch");
 

@@ -206,12 +206,25 @@ function Test-CurrentSlotReplacementRequired([string]$Source, [string]$Root) {
         $currentExecutable = Join-Path $current 'MTTFTest.exe'
         $sourceVersion = [Reflection.AssemblyName]::GetAssemblyName($sourceExecutable).Version
         $currentVersion = [Reflection.AssemblyName]::GetAssemblyName($currentExecutable).Version
-        return $sourceVersion.CompareTo($currentVersion) -gt 0
+        if ($sourceVersion.CompareTo($currentVersion) -lt 0) {
+            throw '拒绝由低版本安装源覆盖较新版本；回滚必须使用明确的回滚流程。'
+        }
+        if ($sourceVersion.CompareTo($currentVersion) -gt 0) { return $true }
     }
     catch {
-        # 无法可靠比较版本时采用保守升级，避免留下不完整程序槽。
+        if ($_.Exception.Message -like '拒绝由低版本*') { throw }
         return $true
     }
+    # 同版本也检查不可变文件；运行配置保存在 ProgramData，不能借修复重置。
+    foreach ($file in Get-ChildItem -LiteralPath $Source -File -Recurse) {
+        $relative = $file.FullName.Substring($Source.TrimEnd('\').Length).TrimStart('\')
+        if ($relative.StartsWith('Config\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $installed = Join-Path $current $relative
+        if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) { return $true }
+        if ((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash) { return $true }
+    }
+    return $false
 }
 
 function Initialize-RuntimeConfig([string]$Source, [string]$Root) {
@@ -241,12 +254,22 @@ function Assert-InstalledMainStopped([string]$Root) {
         (Join-Path $Root 'Current\MTTFTest.exe'))
     $processes = Get-CimInstance Win32_Process `
         -Filter "Name='MTTFTest.exe'" `
-        -ErrorAction SilentlyContinue
+        -ErrorAction Stop
     foreach ($process in @($processes)) {
-        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { throw '无法确认主程序路径，拒绝修改安装。请使用管理员权限重试。' }
         $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
         if ([string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
             throw '检测到已安装的旧版主程序仍在运行。请先在程序中安全停止试验并完全退出，再双击新版本 MTTFTest.exe。'
+        }
+    }
+}
+
+function Assert-InstalledSafetyStopped([string]$Root) {
+    $expected = [IO.Path]::GetFullPath((Join-Path $Root 'Current\MTTFTest.SafetyAgent.exe'))
+    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='MTTFTest.SafetyAgent.exe'" -ErrorAction Stop)) {
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { throw '无法确认安全代理路径，拒绝卸载。' }
+        if ([string]::Equals([IO.Path]::GetFullPath($process.ExecutablePath), $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            throw '安全代理仍在执行，拒绝卸载；请等待安全交接完成。'
         }
     }
 }
@@ -422,6 +445,16 @@ if ($env:MTTFTEST_QUICKDEPLOY_ARGUMENT_PROBE -eq '1') {
 }
 
 Assert-Administrator
+if (Test-Path -LiteralPath (Join-Path $root 'stop-command-pending.json')) {
+    throw '上次安全关闭尚未通过回执核验；请先执行停止入口完成核验，拒绝改变安装或删除保护组件。'
+}
+$installedService = Get-CimInstance Win32_Service -Filter "Name='MTTFTestSupervisor'" -ErrorAction Stop
+if ($null -ne $installedService) {
+    $expectedService = '"' + (Join-Path $root 'Current\MTTFTest.Watchdog.exe') + '"'
+    if (-not [string]::Equals(([string]$installedService.PathName).Trim(), $expectedService, [StringComparison]::OrdinalIgnoreCase)) {
+        throw '监督服务属于其他安装路径，拒绝修改。'
+    }
+}
 
 if ($Mode -eq 'Uninstall') {
     $installedExecutable = Join-Path $root 'Current\MTTFTest.exe'
@@ -438,6 +471,8 @@ if ($Mode -eq 'Uninstall') {
         return
     }
     if ($PSCmdlet.ShouldProcess($root, '卸载程序、服务、登录任务和快捷方式（保留 ProgramData）')) {
+        Assert-InstalledMainStopped $root
+        Assert-InstalledSafetyStopped $root
         Write-OperationStep 1 6 '停止监督服务。'
         Stop-Supervisor
         Write-OperationStep 2 6 '停止并删除登录代理和主程序自启动任务。'
@@ -455,8 +490,8 @@ if ($Mode -eq 'Uninstall') {
         }
         Write-OperationStep 3 6 '停止安装目录中的主程序和后台组件。'
         Stop-InstalledSessionAgent $root
-        Stop-InstalledProcess $root 'MTTFTest.exe'
-        Stop-InstalledProcess $root 'MTTFTest.SafetyAgent.exe'
+        Assert-InstalledMainStopped $root
+        Assert-InstalledSafetyStopped $root
         Stop-InstalledProcess $root 'MTTFTest.Watchdog.exe'
         Write-OperationStep 4 6 '删除监督服务。'
         if ($null -ne (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
@@ -521,6 +556,7 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Write-OperationContext "$Mode V$sourceVersion" $root $source
     Write-OperationStep 1 8 '确认已安装的主程序没有运行。'
     Assert-InstalledMainStopped $root
+    Assert-InstalledSafetyStopped $root
     Write-OperationStep 2 8 '停止旧监督服务和运行任务。'
     Stop-Supervisor
     Stop-InstalledRuntimeTasks $root

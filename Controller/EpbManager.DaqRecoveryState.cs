@@ -176,6 +176,36 @@ namespace Controller
             {
                 Interlocked.Increment(ref _manager._runEpoch);
             }
+
+            internal Guid PublishStopOwnedTerminalForRecoverySeam(bool offConfirmed)
+            {
+                var correlation = Guid.NewGuid();
+                lock (_manager._recoveryContractGate)
+                {
+                    var transaction = new StopSafetyTransactionContext(
+                        new StopContext { Source = StopSource.SystemFault, CorrelationId = correlation.ToString("N") },
+                        Guid.NewGuid(), 1, _context.RunId, _context.RunEpoch,
+                        DateTime.UtcNow, DateTime.UtcNow.AddSeconds(45), CancellationToken.None);
+                    _manager._stopSafetyProductionState = new StopSafetyProductionState(
+                        transaction, _context.AffectedChannels, new Dictionary<int, int>())
+                    {
+                        AuthorizationRevoked = true, RuntimeObjectsFrozen = true,
+                        RuntimeProducersFrozen = true, OffSubmissionStarted = true,
+                        MotorOk = offConfirmed, PowerTask = Task.FromResult((ok: offConfirmed, error: string.Empty))
+                    };
+                    foreach (var channel in _context.AffectedChannels)
+                    {
+                        _manager._channelRuntimeStateStore.Publish(new ChannelRuntimeStateChangedEvent
+                        {
+                            Channel = channel, State = ChannelRuntimeState.SystemFault,
+                            RunId = _context.RunId, RunEpoch = _context.RunEpoch + 1,
+                            CorrelationId = correlation, TimestampUtc = DateTime.UtcNow,
+                            AffectedChannels = _context.AffectedChannels, Enabled = true
+                        }, allowTerminalReset: true, allowSystemFaultReset: true);
+                    }
+                }
+                return correlation;
+            }
         }
 
         /// <summary>
@@ -449,6 +479,23 @@ namespace Controller
         /// intentionally retained until every affected channel has a terminal
         /// record (or the authoritative store fallback has accepted it).
         /// </summary>
+        internal static bool IsDaqTerminalOwnedByStop(ChannelRuntimeStateChangedEvent state,
+            Guid runId, long runEpoch, Guid stopRunId, long stopRunEpoch,
+            Guid stopCorrelation, bool executionFrozen, bool physicalOffConfirmed)
+        {
+            return state != null && runId != Guid.Empty && runEpoch > 0 &&
+                stopRunId == runId && stopRunEpoch == runEpoch &&
+                stopCorrelation != Guid.Empty && state.CorrelationId == stopCorrelation &&
+                state.RunId == runId && state.RunEpoch > runEpoch &&
+                executionFrozen && physicalOffConfirmed && !state.Energized &&
+                state.RecoveryOwnerKind == RecoveryOwnerKind.None &&
+                state.RecoveryOwnerId == Guid.Empty && state.RecoveryOwnerGeneration == 0 &&
+                state.RecoveryTargetPhase == RecoveryTargetPhase.None &&
+                (state.State == ChannelRuntimeState.SystemFault ||
+                 state.State == ChannelRuntimeState.ManualStopped ||
+                 state.State == ChannelRuntimeState.StartBlocked);
+        }
+
         private bool PublishDaqSafeTerminalStates(
             DaqAutoRecoveryContext context,
             string reason,
@@ -470,6 +517,25 @@ namespace Controller
                 {
                     var channelPublished = false;
                     var before = _channelRuntimeStateStore.Get(channel);
+
+                    // StopAll已经撤销执行代并持有当前终态时，旧DAQ事务只完成自己的
+                    // Cancelled回执，不把旧RunEpoch写回通道，也不宣称恢复成功。
+                    var stop = _stopSafetyProductionState;
+                    if (stop != null && stop.Channels.Contains(channel) &&
+                        IsDaqTerminalOwnedByStop(before, context.RunId, context.RunEpoch,
+                            stop.RunId, stop.RunEpoch, stop.CorrelationId,
+                            stop.AuthorizationRevoked && stop.RuntimeObjectsFrozen &&
+                            stop.RuntimeProducersFrozen && !_timers.ContainsKey(channel) &&
+                            !_runners.ContainsKey(channel),
+                            stop.OffSubmissionStarted && stop.MotorOk &&
+                            stop.PowerTask?.Status == TaskStatus.RanToCompletion &&
+                            stop.PowerTask.Result.ok))
+                    {
+                        _log?.Info($"DaqTerminalOwnedByStop EPB={channel} " +
+                            $"Run={context.RunId:N}/{context.RunEpoch} " +
+                            $"Stop={stop.TransactionId:N}; 当前通道终态保持不变。", "AI");
+                        continue;
+                    }
 
                     // A terminal closure may only consume the exact frozen
                     // owner identity.  Never overwrite another run/owner, and

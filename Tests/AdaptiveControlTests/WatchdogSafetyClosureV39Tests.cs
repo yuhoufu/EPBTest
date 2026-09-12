@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using MTTFTest.Watchdog;
 using MTTFTest.Watchdog.Protocol;
 
@@ -14,6 +16,7 @@ namespace AdaptiveControlTests
             Run("schema v1终态只代表停止意图且不得终止Sidecar", LegacyClosingTerminalIsNotSafetyProof, ref passed);
             Run("schema v2完整安全证明才允许Sidecar终止", VersionTwoTerminalRequiresAllSafetyProof, ref passed);
             Run("handoff耐久状态拒绝revision和状态倒退并从损坏副本回退", HandoffStoreIsMonotonicAndRecoversCorruption, ref passed);
+            Run("并发交接回执同一revision只能提交一个内容", ConcurrentHandoffWritersCannotOverwriteRevision, ref passed);
             Run("Watchdog v5安全交接结构化消息精确往返", SafetyHandoffWireRoundTrips, ref passed);
             Run("应用退出意图绑定精确进程且状态单调", ApplicationExitReceiptIsExactAndMonotonic, ref passed);
             Run("强类型接管退出精确绑定Permit并拒绝ABA",
@@ -115,6 +118,60 @@ namespace AdaptiveControlTests
                        recovered.Revision == 2 &&
                        recovered.State == WatchdogSafetyHandoffState.Accepted,
                     "本机副本损坏后未从项目副本恢复最新有效revision");
+            }
+            finally
+            {
+                DeleteFile(WatchdogJournalPaths.LocalSafetyHandoffPath(session));
+                DeleteFile(WatchdogJournalPaths.LocalSafetyHandoffPath(session) + ".bak");
+                try { Directory.Delete(directory, true); } catch { }
+            }
+        }
+
+        private static void ConcurrentHandoffWritersCannotOverwriteRevision()
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "MTTFTest.ReceiptRace." + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var session = Guid.NewGuid().ToString("N");
+            var handoff = Guid.NewGuid().ToString("N");
+            var nonce = Guid.NewGuid().ToString("N");
+            var transaction = Guid.NewGuid().ToString("N");
+            var committed = 0;
+            var rejected = 0;
+            try
+            {
+                using (var ready = new CountdownEvent(8))
+                using (var start = new ManualResetEventSlim(false))
+                {
+                    var writers = Enumerable.Range(0, 8).Select(index => Task.Factory.StartNew(() =>
+                    {
+                        var receipt = new WatchdogSafetyHandoffReceipt
+                        {
+                            SchemaVersion = 1, SessionId = session, SessionGeneration = 7,
+                            SessionLease = 11, HandoffId = handoff, Nonce = nonce,
+                            StopSafetyTransactionId = transaction, Revision = 1,
+                            State = WatchdogSafetyHandoffState.Requested, Detail = "writer-" + index
+                        };
+                        ready.Signal();
+                        start.Wait();
+                        try
+                        {
+                            WatchdogSafetyHandoffReceiptStore.WriteThrough(directory, receipt);
+                            Interlocked.Increment(ref committed);
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            if (!ex.Message.Contains("revision was reused")) throw;
+                            Interlocked.Increment(ref rejected);
+                        }
+                    }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+                    Assert(ready.Wait(TimeSpan.FromSeconds(10)), "并发写入线程未就绪");
+                    start.Set();
+                    Assert(Task.WaitAll(writers, TimeSpan.FromSeconds(15)), "并发回执写入未完成");
+                    Assert(committed == 1 && rejected == 7, "同一revision被多个写入者覆盖");
+                    WatchdogSafetyHandoffReceipt read;
+                    Assert(WatchdogSafetyHandoffReceiptStore.TryRead(directory, session, out read) &&
+                        read.Revision == 1 && read.Detail.StartsWith("writer-"), "获胜回执未持久化");
+                }
             }
             finally
             {

@@ -959,7 +959,50 @@ namespace Controller
         /// “重新开始”清场屏障：先合并/完成旧批次的安全停止，再等待旧启动调用彻底退出。
         /// 返回前不会遗留仍可能提交 StopChannel/StopAll 的旧启动尾声，调用方可以在同一次请求中直接启动新批次。
         /// </summary>
+        private RunChainIdentity _recoveryStartupCleanup;
+
+        internal static StopSource ResolveStartupRollbackSource(bool circuitOpen,
+            bool expectedCancellation, Guid startupRunId, long startupRunEpoch,
+            RunChainIdentity cleanup, RunChainIdentity chain)
+        {
+            if (circuitOpen) return StopSource.SystemFault;
+            var cleanupOwnsStartup = cleanup != null && startupRunId != Guid.Empty &&
+                cleanup.RunId == startupRunId && startupRunEpoch > 0 &&
+                cleanup.RunEpoch == startupRunEpoch;
+            // 重建学习的取消仍属于恢复事务；明确人工停止已由独立入口撤权，
+            // 此处仅不让其后到达的内部清理再次改写根试验意图。
+            var recoveryChild = chain != null && chain.ParentRunId != Guid.Empty &&
+                chain.EffectiveRootRunId != Guid.Empty && chain.RestartGeneration > 0;
+            return expectedCancellation && (cleanupOwnsStartup || recoveryChild)
+                ? StopSource.SystemFault : StopSource.StartupRollback;
+        }
+
         public async Task<StopSafetyResult> PrepareForFreshRestartAsync(
+            StopContext context,
+            CancellationToken token = default,
+            bool discardHistoricalStopChecks = false)
+        {
+            RunChainIdentity owner = null;
+            if (context?.Source == StopSource.SystemFault && _activeBatchId != Guid.Empty)
+            {
+                owner = new RunChainIdentity(_activeBatchId,
+                    runEpoch: Interlocked.Read(ref _runEpoch));
+                if (Interlocked.CompareExchange(ref _recoveryStartupCleanup, owner, null) != null)
+                    throw new InvalidOperationException("RecoveryStopPending: 已有恢复清场正在等待启动栈退出。");
+            }
+            try
+            {
+                return await PrepareForFreshRestartCoreAsync(context, token, discardHistoricalStopChecks)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                if (owner != null)
+                    Interlocked.CompareExchange(ref _recoveryStartupCleanup, null, owner);
+            }
+        }
+
+        private async Task<StopSafetyResult> PrepareForFreshRestartCoreAsync(
             StopContext context,
             CancellationToken token = default,
             bool discardHistoricalStopChecks = false)
@@ -1590,10 +1633,14 @@ namespace Controller
             var sessionToken = BeginBatchSession(token);
             var startFaults = new List<ChannelStartFault>();
             var completedDuringStart = new List<int>(alreadyTargetCompleted);
+            var startupRunId = Guid.Empty;
+            long startupRunEpoch = 0;
             try
             {
                 _activeBatchId = Guid.NewGuid();
                 InitializeRunChainIdentity(chainIdentity, _activeBatchId);
+                startupRunId = _activeBatchId;
+                startupRunEpoch = Interlocked.Read(ref _runEpoch);
                 _daqLivenessLogTransitions.BeginSession(
                     _activeBatchId,
                     Interlocked.Read(ref _runEpoch));
@@ -2057,6 +2104,9 @@ namespace Controller
                         completedDuringStart.ToArray());
                 }
 
+                // 先建立实际执行体，再发布Running，避免监督者看见Running但Timer尚未创建。
+                StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
+                MarkBatchRunning(activeChannels, "正式试验运行中");
                 foreach (var channel in activeChannels)
                     PublishChannelRuntimeState(
                         channel,
@@ -2067,8 +2117,6 @@ namespace Controller
                         correlationId: _activeBatchId);
 
                 // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
-                StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
-                MarkBatchRunning(activeChannels, "正式试验运行中");
                 LogFieldSessionMetric("Start", _activeBatchId, activeChannels, false, "BatchFormal");
                 LogDaqLivenessRunBinding(_activeBatchId);
                 return new BatchStartResult(
@@ -2158,9 +2206,10 @@ namespace Controller
                     await StopAllAsync(
                             new StopContext
                             {
-                                Source = circuitOpen
-                                    ? StopSource.SystemFault
-                                    : StopSource.StartupRollback,
+                                Source = ResolveStartupRollbackSource(circuitOpen, expectedCancellation,
+                                    startupRunId, startupRunEpoch,
+                                    Volatile.Read(ref _recoveryStartupCleanup), chainIdentity),
+                                RunId = startupRunId.ToString("N"),
                                 Reason = ex.Message,
                                 Initiator = nameof(StartBatchSynchronizedWithResultAsync),
                                 CorrelationId = _activeBatchId == Guid.Empty

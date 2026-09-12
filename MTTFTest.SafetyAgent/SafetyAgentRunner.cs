@@ -183,7 +183,7 @@ namespace MTTFTest.SafetyAgent
             }
         }
 
-        private static void ValidateBinding(
+        internal static void ValidateBinding(
             WatchdogSafetyHandoffReceipt receipt,
             WatchdogSafetyConfigSnapshotResult snapshot)
         {
@@ -197,10 +197,9 @@ namespace MTTFTest.SafetyAgent
                 manifest.PermitGeneration != receipt.RelaunchPermitGeneration ||
                 !string.Equals(manifest.PermitId, receipt.RelaunchPermitId ?? string.Empty,
                     StringComparison.Ordinal) ||
-                !string.Equals(manifest.MainExecutableSha256, receipt.MainExecutableSha256,
-                    StringComparison.Ordinal) ||
-                !string.Equals(manifest.SafetyAgentExecutableSha256,
-                    receipt.SafetyAgentExecutableSha256, StringComparison.Ordinal))
+                !SupervisorProtocol.Sha256Equals(manifest.MainExecutableSha256, receipt.MainExecutableSha256) ||
+                !SupervisorProtocol.Sha256Equals(manifest.SafetyAgentExecutableSha256,
+                    receipt.SafetyAgentExecutableSha256))
                 throw new InvalidDataException("SafetyAgentConfigInvalid:IdentityBindingMismatch");
         }
 

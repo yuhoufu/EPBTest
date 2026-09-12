@@ -1,7 +1,8 @@
 ﻿param(
     [string]$MsBuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe',
     [string]$PackageRoot = '',
-    [switch]$AllowDirtyCandidate
+    [switch]$AllowDirtyCandidate,
+    [switch]$Candidate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -643,6 +644,7 @@ $deploymentDirectory = Join-Path $output 'Deployment'
 $utf8Bom = New-Object Text.UTF8Encoding($true)
 foreach ($deploymentScriptName in @(
         'Install-EPB-UnattendedAlarm.ps1',
+        'Get-EpbBusinessEvidence.ps1',
         'Install-MTTFTest-Unattended.ps1',
         'Verify-Release.ps1')) {
     $deploymentScriptSource = Join-Path $repo (Join-Path 'Tools' $deploymentScriptName)
@@ -738,10 +740,13 @@ try {
     $identity.releaseStatus = if ($isDirty) {
         'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION'
     }
+    elseif ($Candidate) {
+        'CANDIDATE_NOT_FIELD_VALIDATED'
+    }
     else {
         'FORMAL_RELEASE'
     }
-    $identity.deploymentApproved = -not $isDirty
+    $identity.deploymentApproved = -not $isDirty -and -not $Candidate
     $identity | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath $packageIdentityPath -Encoding UTF8
     $packageChecksumMap = Get-RecursivePackageFiles -Root $stagingOutput `
@@ -774,6 +779,9 @@ catch {
 
 if ($isDirty) {
     Write-Warning "已生成独立 DIRTY CANDIDATE：仅用于当前代码验证，不得作为正式生产放行包。"
+}
+elseif ($Candidate) {
+    Write-Host "Release 候选包已生成并校验，现场验收未完成：$packageOutput"
 }
 else {
     Write-Host "Release 正式包已生成并独立校验：$packageOutput"

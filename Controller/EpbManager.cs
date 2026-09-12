@@ -12669,7 +12669,8 @@ namespace Controller
             string reason,
             string initiator,
             Guid correlationId,
-            FaultScope? scope)
+            FaultScope? scope,
+            string affectedRunId = null)
         {
             var context = new StopContext
             {
@@ -12678,7 +12679,7 @@ namespace Controller
                 Initiator = initiator,
                 CorrelationId = (correlationId == Guid.Empty ? Guid.NewGuid() : correlationId)
                     .ToString("N"),
-                RunId = _activeBatchId == Guid.Empty ? string.Empty : _activeBatchId.ToString("N"),
+                RunId = affectedRunId ?? (_activeBatchId == Guid.Empty ? string.Empty : _activeBatchId.ToString("N")),
                 FaultScope = scope,
                 RequestedUtc = DateTime.UtcNow
             };

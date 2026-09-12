@@ -22,6 +22,26 @@ namespace MTTFTest.Watchdog.Protocol
             "MTTF-SUPERVISOR-P0-ALARM-RESPONSE-V5";
         public const int MaximumTextLength = 1024 * 1024;
 
+        // 摘要的显示大小写不属于身份；非法长度或非十六进制文本仍须拒绝。
+        public static bool Sha256Equals(string left, string right)
+        {
+            if (left == null || right == null || left.Length != 64 || right.Length != 64)
+                return false;
+            var difference = 0;
+            for (var i = 0; i < 64; i++)
+            {
+                var a = HexNibble(left[i]);
+                var b = HexNibble(right[i]);
+                if (a < 0 || b < 0) return false;
+                difference |= a ^ b;
+            }
+            return difference == 0;
+        }
+
+        private static int HexNibble(char c) => c >= '0' && c <= '9' ? c - '0' :
+            c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+            c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+
         public static string ComputeSha256(string path)
         {
             using (var sha = SHA256.Create())

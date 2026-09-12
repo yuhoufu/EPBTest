@@ -5179,8 +5179,77 @@ namespace AdaptiveControlTests
 
         private static void StopPersistenceBoundaryPolicy()
         {
+            var run = Guid.NewGuid();
+            var cleanup = new RunChainIdentity(run, runEpoch: 1);
+            var child = new RunChainIdentity(Guid.NewGuid(), run, run, 1, 4);
+            var stopId = Guid.NewGuid();
+            var stopped = new ChannelRuntimeStateChangedEvent
+            {
+                RunId = run, RunEpoch = 2, CorrelationId = stopId,
+                State = ChannelRuntimeState.SystemFault
+            };
+            Assert(EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, true, true),
+                "I0014同Run停止事务已接管安全终态仍不能完成旧DAQ取消");
+            Assert(!EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, true, false) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, false, true) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, Guid.NewGuid(), 1, stopId, true, true) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 2, stopId, true, true) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, Guid.NewGuid(), true, true),
+                "DAQ旧事务终态误借用未确认断电/活动执行体/其他停止身份");
+            stopped.State = ChannelRuntimeState.Running;
+            Assert(!EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, true, true),
+                "DAQ旧事务终态把新Running当作安全停止");
+            Assert(EpbManager.ResolveStartupRollbackSource(false, true, run, 1, cleanup, null) ==
+                   StopSource.SystemFault,
+                "恢复清场取消旧启动栈时误撤销根试验意图");
+            Assert(EpbManager.ResolveStartupRollbackSource(false, true, child.RunId, 4, null, child) ==
+                   StopSource.SystemFault,
+                "I0013重建学习转外部接管后StartupRollback误撤权");
+            Assert(EpbManager.ResolveStartupRollbackSource(false, true, run, 2, cleanup, null) ==
+                   StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupRollbackSource(false, false, run, 1, cleanup, null) ==
+                   StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupRollbackSource(false, true, Guid.NewGuid(), 1, cleanup, null) ==
+                   StopSource.StartupRollback,
+                "启动清场豁免泄漏到串代、其他Run或非取消故障");
+            var digest = "9bd0a6a872072f1b74ecf003bc9e1beb543e48431e161ad4f6d340d3e37a3b0a";
+            Assert(MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(
+                    digest, digest.ToUpperInvariant()),
+                "I0012同一SafetyAgent摘要仅大小写不同被误拒绝");
+            Assert(!MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(
+                    digest, new string('0', 64)) &&
+                   !MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(
+                    new string('z', 64), new string('z', 64)) &&
+                   !MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(null, null) &&
+                   !MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(digest, digest + " "),
+                "安全摘要比较放行真实不同摘要或非法输入");
             Assert(EpbManager.IsStopPersistenceBoundaryClosed(100, 100, 100, 0),
                 "边界、Raw发布、持久化和队列均闭合时被误拒绝");
+            Assert(EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    94228, 98313, true, 98313, 94228, 0,
+                    state: DaqPersistenceState.Paused,
+                    suppressAfterSequence: 94228,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 98313),
+                "I0014已冻结排空并完成尾段的Paused状态仍阻塞停止");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
+                    94228, 98313, 94228, 0, DaqPersistenceState.Paused),
+                "停止闭合不得放宽正常运行恢复资格");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    94228, 98313, true, 98313, 94227, 0,
+                    state: DaqPersistenceState.Paused,
+                    suppressAfterSequence: 94228,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 98313),
+                "Paused停止边界遗漏尚未落盘的冻结前缀");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    94228, 98313, true, 98313, 94228, 0,
+                    state: DaqPersistenceState.Paused,
+                    suppressAfterSequence: 94228,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 98313,
+                    inFlightSequence: 94228),
+                "Paused停止边界忽略仍在写入的批次");
             Assert(EpbManager.IsFrozenStopPersistenceBoundaryClosed(
                     100, 100, true, 100, 100, 0),
                 "DAQ停止后同一冻结边界的Raw/SQLite前缀被误拒绝");

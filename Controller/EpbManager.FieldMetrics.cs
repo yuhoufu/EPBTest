@@ -257,6 +257,8 @@ namespace Controller
             long pendingHeadSequence = 0,
             long inFlightSequence = 0)
         {
+            // 冻结停止只要求数据义务闭合；Paused不是写入失败。
+            // 运行恢复仍使用IsStopPersistenceBoundaryClosed的Recovered门禁。
             if (!rawPipelineDrained || finalBoundary < boundary ||
                 !IsStopPersistenceBoundaryClosed(
                    boundary,
@@ -264,7 +266,7 @@ namespace Controller
                    persisted,
                    queueDepth,
                    state,
-                   requireRecoveredState,
+                   requireRecoveredState && state != DaqPersistenceState.Paused,
                    durabilityBlocked,
                    discardedGenerationBatchCount,
                    overCapacityDroppedBatchCount))

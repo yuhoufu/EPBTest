@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 像 Visual Studio 一样执行 Release 重建，并直接生成 7z 包。
 

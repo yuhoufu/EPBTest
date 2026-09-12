@@ -93,6 +93,15 @@ namespace AdaptiveControlTests
         {
             using (var fixture = SafetyFixture.Create())
             {
+                var binding = fixture.ReadReceipt();
+                binding.MainExecutableSha256 = binding.MainExecutableSha256.ToUpperInvariant();
+                binding.SafetyAgentExecutableSha256 = binding.SafetyAgentExecutableSha256.ToUpperInvariant();
+                SafetyAgentRunner.ValidateBinding(binding, fixture.Snapshot);
+                binding.SafetyAgentExecutableSha256 = new string('0', 64);
+                var invalidRejected = false;
+                try { SafetyAgentRunner.ValidateBinding(binding, fixture.Snapshot); }
+                catch (InvalidDataException) { invalidRejected = true; }
+                Assert(invalidRejected, "真正不匹配的SafetyAgent摘要未被拒绝。");
                 MtEmbTest.ClsGlobal.DaqFrequency = 0;
                 MtEmbTest.ClsGlobal.SamplesPerChannel = 0;
                 var factory = new RecordingHardwareFactory(failFirstPowerConfirmation: true);

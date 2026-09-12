@@ -6931,6 +6931,13 @@ namespace MTTFTest.Watchdog
                         await Task.Delay(250).ConfigureAwait(false);
                     if (_stop.IsCancellationRequested) return;
 
+                    // The main process can advance the durable receipt while we
+                    // wait for its exact exit. Never launch from that stale copy.
+                    WatchdogSafetyHandoffReceipt afterExit;
+                    if (!TryReadExactSafetyHandoff(handoffId, nonce, out afterExit)) return;
+                    if (afterExit.Revision != receipt.Revision) continue;
+                    receipt = afterExit;
+
                     if (receipt.State == WatchdogSafetyHandoffState.WorkerStarted &&
                         ProbeProcessIdentity(
                             receipt.WorkerProcessId,
@@ -6948,8 +6955,7 @@ namespace MTTFTest.Watchdog
                             throw new FileNotFoundException("SafetyAgentExecutableMissing", executable);
                         var executableSha = DurableJsonFileStore.ComputeSha256(
                             File.ReadAllBytes(executable));
-                        if (!string.Equals(executableSha, receipt.SafetyAgentExecutableSha256,
-                                StringComparison.Ordinal))
+                        if (!SupervisorProtocol.Sha256Equals(executableSha, receipt.SafetyAgentExecutableSha256))
                             throw new InvalidDataException("SafetyAgentExecutableHashMismatch");
                         // Persist the attempt before Process.Start.  The independent agent may
                         // advance the receipt immediately after it starts; writing an older

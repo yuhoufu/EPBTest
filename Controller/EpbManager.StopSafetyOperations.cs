@@ -313,7 +313,8 @@ namespace Controller
                     Guid.TryParse(context.CorrelationId, out var requestedCorrelation)
                         ? requestedCorrelation
                         : Guid.NewGuid(),
-                    context.FaultScope);
+                    context.FaultScope,
+                    state.RunId == Guid.Empty ? context.RunId : state.RunId.ToString("N"));
             // Freeze is a non-blocking producer barrier.  The process-wide
             // energization fence and execution-permit cancellation were
             // installed synchronously at StopAll admission.  Here we only

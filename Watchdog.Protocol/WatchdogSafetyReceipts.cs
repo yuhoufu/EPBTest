@@ -2,6 +2,9 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Web.Script.Serialization;
 
 namespace MTTFTest.Watchdog.Protocol
@@ -780,6 +783,54 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (value == null) throw new ArgumentNullException(nameof(value));
             if (!validator(value)) throw new InvalidOperationException("Watchdog safety receipt is invalid.");
+            // 文件原子替换不等于读-校验-写原子。不同进程/会话必须共享同一门，
+            // 否则两个相同Revision都可通过校验并互相覆盖安全证据。
+            var name = "Global\\MTTFTest.SafetyReceipt." + SupervisorProtocol.ComputeTextSha256(
+                typeof(T).FullName + ":" + sessionSelector(value));
+            var security = new MutexSecurity();
+            security.AddAccessRule(new MutexAccessRule(
+                new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+                MutexRights.Synchronize | MutexRights.Modify, AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                MutexRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                MutexRights.FullControl, AccessControlType.Allow));
+            Mutex gate;
+            try { gate = Mutex.OpenExisting(name, MutexRights.Synchronize | MutexRights.Modify); }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                try { gate = new Mutex(false, name, out _, security); }
+                catch (UnauthorizedAccessException)
+                {
+                    // 另一个账户可能刚刚创建；打开时只申请等待/释放所需权限。
+                    gate = Mutex.OpenExisting(name, MutexRights.Synchronize | MutexRights.Modify);
+                }
+            }
+            using (gate)
+            {
+                var acquired = false;
+                try
+                {
+                    try { acquired = gate.WaitOne(TimeSpan.FromSeconds(5)); }
+                    catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired) throw new TimeoutException("SafetyReceiptWriteGateTimeout");
+                    return WriteThroughCore(projectDirectory, value, sessionSelector,
+                        generationSelector, leaseSelector, revisionSelector, localPath,
+                        projectPath, stamp, validator, transitionValidator);
+                }
+                finally { if (acquired) gate.ReleaseMutex(); }
+            }
+        }
+
+        private static T WriteThroughCore<T>(string projectDirectory, T value,
+            Func<T, string> sessionSelector, Func<T, long> generationSelector,
+            Func<T, long> leaseSelector, Func<T, long> revisionSelector,
+            Func<string, string> localPath, Func<string, string, string> projectPath,
+            Action<T> stamp, Func<T, bool> validator,
+            Func<T, T, bool> transitionValidator) where T : class
+        {
             var sessionId = sessionSelector(value);
             T previous;
             if (TryRead(projectDirectory, sessionId, localPath, projectPath,
