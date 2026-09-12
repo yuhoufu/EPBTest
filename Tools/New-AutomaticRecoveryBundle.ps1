@@ -20,6 +20,21 @@ $utf8 = New-Object Text.UTF8Encoding($true)
 foreach ($script in @('Install-AutomaticRecoveryBundle.ps1','RecoveryGuard-Acceptance.ps1')) {
     [IO.File]::WriteAllText((Join-Path $output $script), [IO.File]::ReadAllText((Join-Path $PSScriptRoot $script)), $utf8)
 }
+$fallbackSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\FallbackGuard\bin\Release'))
+$fallbackOutput = Join-Path $output 'FallbackGuard'
+[IO.Directory]::CreateDirectory($fallbackOutput) | Out-Null
+foreach ($name in @('MTTFTest.FallbackGuard.exe','MTTFTest.Watchdog.Protocol.dll')) {
+    $source = Join-Path $fallbackSource $name
+    if (-not [IO.File]::Exists($source) -or [Diagnostics.FileVersionInfo]::GetVersionInfo($source).FileVersion -ne $version) { throw "Fallback 组件版本不符：$source" }
+    Copy-Item -LiteralPath $source -Destination $fallbackOutput
+}
+if ((Get-FileHash (Join-Path $fallbackOutput 'MTTFTest.Watchdog.Protocol.dll')).Hash -ne (Get-FileHash (Join-Path $base 'MTTFTest.Watchdog.Protocol.dll')).Hash) { throw 'Fallback 与 Base 协议程序集不同源' }
+$toolsOutput = Join-Path $output 'Tools'
+[IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
+foreach ($name in @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1')) {
+    [IO.File]::WriteAllText((Join-Path $toolsOutput $name), [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name), [Text.Encoding]::UTF8), $utf8)
+}
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-12_独立兜底候选交付说明.md') -Destination (Join-Path $output '独立兜底说明.md')
 $commands = [ordered]@{
     '恢复后台服务.cmd'='Restore'; '检查运行状态.cmd'='Status'; '启动试验.cmd'='Launch'
     '一键安装正式版.cmd'='Install'; '一键故障采证.cmd'='Evidence'
@@ -34,7 +49,7 @@ foreach ($entry in $commands.GetEnumerator()) {
 $instructions = @'
 # 自动恢复候选安装说明
 
-本包基于 2.14.2.11 修复，采用 Supervisor、SessionAgent、SafetyAgent；没有独立 V3 RecoveryGuard。
+本包由 2.14.2.12 稳定恢复基线实施，采用原 Supervisor、SessionAgent、SafetyAgent，并新增可独立启停的 FallbackGuard。独立程序默认只观察，详见独立兜底说明。
 这是候选版本，真实台架恢复及耐久验收未完成。“一键安装正式版”仅保留既有入口名称。
 
 1. 完整解压到本地目录；不要从压缩包内部直接执行。
@@ -58,6 +73,7 @@ $files = @(Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object FullN
 $manifest = [ordered]@{
     schemaVersion=1; version=$version; gitCommit=$commit; releaseStatus='CANDIDATE_NOT_FIELD_VALIDATED'
     fieldDeploymentApproved=$false; recoveryArchitecture='V2-Supervisor-SessionAgent-SafetyAgent'
+    fallbackGuard='Independent-v1'; fallbackDefault='ObservationOnly'; candidateTag=('v'+$version+'-rc.1')
     createdUtc=[DateTime]::UtcNow.ToString('O'); files=$files
 }
 [IO.File]::WriteAllText((Join-Path $output 'automatic-bundle.json'), ($manifest | ConvertTo-Json -Depth 6), $utf8)
