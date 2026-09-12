@@ -218,8 +218,14 @@ function Invoke-CandidateTest {
     )
 
     Write-Host "[$Label] $FilePath $($ArgumentList -join ' ')"
-    $captured = @(& $FilePath @ArgumentList 2>&1)
-    $exitCode = $LASTEXITCODE
+    $previousErrorPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 wraps native stderr as ErrorRecord even when
+        # the executable succeeds. Preserve diagnostics and judge exit + summary.
+        $ErrorActionPreference = 'Continue'
+        $captured = @(& $FilePath @ArgumentList 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousErrorPreference }
     foreach ($line in $captured) { Write-Host ([string]$line) }
     if ($exitCode -ne 0) {
         throw "$Label 失败，ExitCode=$exitCode"
