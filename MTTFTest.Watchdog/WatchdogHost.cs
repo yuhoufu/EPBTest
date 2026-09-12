@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Globalization;
@@ -6916,6 +6916,7 @@ namespace MTTFTest.Watchdog
                     if (!TryReadExactSafetyHandoff(handoffId, nonce, out receipt)) return;
                     if (!receipt.IsTerminal && supervision.ElapsedMilliseconds >= 60000)
                     {
+                        BlockLaunchOutcomeUnknown("SafetyHandoffSupervisionDeadline");
                         FailSafetyHandoff(receipt, "SafetyHandoffSupervisionDeadline",
                             "Safety transaction unresolved; no relaunch and no worker termination.");
                         return;
@@ -6969,7 +6970,16 @@ namespace MTTFTest.Watchdog
                     }
 
                     while (IsCurrentProcessAlive() && !_stop.IsCancellationRequested)
+                    {
+                        if (supervision.ElapsedMilliseconds >= 60000)
+                        {
+                            BlockLaunchOutcomeUnknown("SafetyHandoffMainExitUnproven");
+                            FailSafetyHandoff(receipt, "SafetyHandoffMainExitUnproven",
+                                "Main process exit unresolved; hardware ownership retained, relaunch forbidden.");
+                            return;
+                        }
                         await Task.Delay(250).ConfigureAwait(false);
+                    }
                     if (_stop.IsCancellationRequested) return;
 
                     // The main process can advance the durable receipt while we
@@ -7077,6 +7087,7 @@ namespace MTTFTest.Watchdog
                     }
                     catch (TimeoutException ex)
                     {
+                        BlockLaunchOutcomeUnknown("SafetyAgentLaunchOutcomeUnknown");
                         if (TryReadExactSafetyHandoff(handoffId, nonce, out var unresolved) &&
                             !unresolved.IsTerminal)
                             FailSafetyHandoff(unresolved, "SafetyAgentLaunchOutcomeUnknown", ex.Message);
