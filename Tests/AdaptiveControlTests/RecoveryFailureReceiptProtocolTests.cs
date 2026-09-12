@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -107,6 +107,7 @@ namespace AdaptiveControlTests
             Run("Load成功后Commit Busy不进入marker且可重试", CommitBusyAfterSuccessfulLoad, ref passed);
             Run("active状态current与LastFailure逐字段绑定", ActiveStateEvidenceMutation, ref passed);
             Run("生产proof绑定且budget/circuit跨重启粘性", ProductionProofBudgetSticky, ref passed);
+            Run("保留器持有读句柄时同步快照仍可原子提交", RetentionReadAllowsAtomicSnapshot, ref passed);
             Run("生产journal writer与authority并行互不覆盖", ProductionJournalAuthorityParallel, ref passed);
             Run("生产FileStore schema2/3/old-v4迁移矩阵", ProductionMigrationMatrix, ref passed);
             Run("生产FileStore Reconcile状态与探测竞态", ProductionReconcileMatrix, ref passed);
@@ -1279,6 +1280,29 @@ namespace AdaptiveControlTests
             finally { TryDelete(dir); }
         }
 
+        private static void RetentionReadAllowsAtomicSnapshot()
+        {
+            var dir = TempDirectory();
+            try
+            {
+                var session = Guid.NewGuid().ToString("N");
+                using (var journal = new WatchdogJournalStore(dir, session, "parallel", new WatchdogJournalPolicy(), 7, 700))
+                {
+                    Assert(journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4}"), "initial snapshot failed");
+                    var path = Path.Combine(dir, "session-" + session + ".json");
+                    var open = typeof(WatchdogJournalStore).GetMethod("OpenRetentionRead",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    using (var held = (FileStream)open.Invoke(null, new object[] { path }))
+                    {
+                        Assert(journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4,\"Revision\":2}"),
+                            "retention read blocked atomic publication");
+                        Assert(File.ReadAllText(path).Contains("Revision"), "replacement was not visible");
+                    }
+                }
+            }
+            finally { TryDelete(dir); }
+        }
+
         private static void ProductionJournalAuthorityParallel()
         {
             var dir = TempDirectory();
@@ -1293,12 +1317,16 @@ namespace AdaptiveControlTests
                 var proofBefore = File.ReadAllBytes(proofPath);
                 var authority = created.Authority;
                 var errors = 0;
+                string firstFailure = null;
                 var writer = Task.Run(() =>
                 {
                     for (var i = 0; i < 300; i++)
                     {
                         if (!journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4,\"SessionId\":\"" + session + "\",\"WriterSequence\":" + i.ToString(CultureInfo.InvariantCulture) + "}"))
+                        {
+                            Interlocked.CompareExchange(ref firstFailure, "journal snapshot i=" + i, null);
                             Interlocked.Increment(ref errors);
+                        }
                     }
                 });
                 var registrar = Task.Run(() =>
@@ -1311,11 +1339,14 @@ namespace AdaptiveControlTests
                             result.Record.AuthorityRevision != i + 1 ||
                             result.Record.ConsecutiveFailures != i + 1 ||
                             result.Receipt.DecisionSequence != i + 1)
+                        {
+                            Interlocked.CompareExchange(ref firstFailure, "authority i=" + i + "; reason=" + result.Reason + "; revision=" + result.Record?.AuthorityRevision, null);
                             Interlocked.Increment(ref errors);
+                        }
                         if ((i % 37) == 0)
                         {
                             var reopened = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
-                            if (!reopened.Succeeded) Interlocked.Increment(ref errors);
+                            if (!reopened.Succeeded) { Interlocked.CompareExchange(ref firstFailure, "reopen: " + reopened.Reason, null); Interlocked.Increment(ref errors); }
                         }
                     }
                 });
@@ -1325,7 +1356,7 @@ namespace AdaptiveControlTests
                        reopenedFinal.Authority.Snapshot.AuthorityRevision == 300 &&
                        reopenedFinal.Authority.Snapshot.ConsecutiveFailures == 300 &&
                        proofBefore.SequenceEqual(File.ReadAllBytes(proofPath)),
-                    "parallel journal/authority lost a write or mutated immutable proof: errors=" + errors);
+                    "parallel journal/authority lost a write or mutated immutable proof: errors=" + errors + "; first=" + firstFailure);
             }
             finally
             {

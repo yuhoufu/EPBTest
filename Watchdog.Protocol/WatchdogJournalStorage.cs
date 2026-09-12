@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Diagnostics;
@@ -1469,7 +1469,10 @@ namespace MTTFTest.Watchdog.Protocol
             if (leaseFile == null) return false;
             try
             {
-                var lease = Json.Deserialize<WatchdogJournalLease>(File.ReadAllText(leaseFile.FullName, Encoding.UTF8));
+                WatchdogJournalLease lease;
+                using (var stream = OpenRetentionRead(leaseFile.FullName))
+                using (var reader = new StreamReader(stream, Encoding.UTF8, true))
+                    lease = Json.Deserialize<WatchdogJournalLease>(reader.ReadToEnd());
                 if (lease == null ||
                     (lease.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion &&
                      lease.SchemaVersion != 4 && lease.SchemaVersion != 3 &&
@@ -1481,12 +1484,29 @@ namespace MTTFTest.Watchdog.Protocol
             catch { return false; }
         }
 
+        private static FileStream OpenRetentionRead(string path)
+        {
+            // Retention observes an immutable file instance and must allow the
+            // authority writer to atomically replace the path during the read.
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length > 4L * 1024L * 1024L)
+            {
+                stream.Dispose();
+                throw new InvalidDataException("Retention metadata exceeds 4 MiB");
+            }
+            return stream;
+        }
+
         private static bool HasSupportedSchema(FileInfo file)
         {
             if (file == null || !file.Exists || file.Length > 4L * 1024L * 1024L) return false;
             try
             {
-                var text = File.ReadAllText(file.FullName, Encoding.UTF8);
+                string text;
+                using (var stream = OpenRetentionRead(file.FullName))
+                using (var reader = new StreamReader(stream, Encoding.UTF8, true))
+                    text = reader.ReadToEnd();
                 // V2/V3 journals remain recognizable for retention/migration,
                 // but all new leases/snapshots are stamped with CurrentSchemaVersion.
                 return text.IndexOf("\"SchemaVersion\":4", StringComparison.Ordinal) >= 0 ||
