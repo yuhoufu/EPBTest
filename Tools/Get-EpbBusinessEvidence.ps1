@@ -11,7 +11,7 @@ try {
     if (-not (Test-Path -LiteralPath $database -PathType Leaf)) { throw '项目 index.db 不存在。' }
     [void][Reflection.Assembly]::LoadFrom((Join-Path $ProgramDirectory 'System.Data.SQLite.dll'))
     $builder = New-Object System.Data.SQLite.SQLiteConnectionStringBuilder
-    $builder.DataSource=$database; $builder.ReadOnly=$true; $builder.FailIfMissing=$true; $builder.Pooling=$false; $builder.DefaultTimeout=3
+    $builder.DataSource=[string]$database; $builder.ReadOnly=$true; $builder.FailIfMissing=$true; $builder.Pooling=$false; $builder.DefaultTimeout=3
     $source = New-Object System.Data.SQLite.SQLiteConnection($builder.ConnectionString)
     $source.Open()
     try {

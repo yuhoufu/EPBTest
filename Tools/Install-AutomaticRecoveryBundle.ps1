@@ -27,6 +27,10 @@ function Test-Bundle {
     foreach ($required in @('Base/MTTFTest.exe','Base/Deployment/Install-MTTFTest-Unattended.ps1','Install-AutomaticRecoveryBundle.ps1','RecoveryGuard-Acceptance.ps1')) {
         if ($required -notin @($manifest.files.path)) { throw "包清单缺少必要文件：$required" }
     }
+    foreach ($file in Get-ChildItem -LiteralPath $base -File -Recurse) {
+        $relative = $file.FullName.Substring($PSScriptRoot.Length).TrimStart('\').Replace('\','/')
+        if ($relative -notin @($manifest.files.path)) { throw "Base 中存在未登记文件：$relative" }
+    }
     return $manifest
 }
 function Get-ExactProcesses([string]$Name) {
@@ -38,12 +42,40 @@ function Get-ExactProcesses([string]$Name) {
 }
 function Get-State {
     $main = @(Get-ExactProcesses 'MTTFTest.exe')
+    $observed = $null
+    if ($ProjectDirectory) {
+        $sessions = Join-Path $ProjectDirectory 'WatchdogSessions'
+        foreach ($file in @(Get-ChildItem -LiteralPath $sessions -File -Filter 'session-*.json' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^session-[0-9a-f]{32}\.json$' } | Sort-Object LastWriteTimeUtc -Descending)) {
+            try { $journal = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json }
+            catch { continue }
+            $heartbeat = $journal.LastHeartbeat
+            if (-not $heartbeat) { continue }
+            $age = ([DateTime]::UtcNow.Ticks - [long]$journal.LastHeartbeatUtcTicks) / 10000000.0
+            $exact = @($main | Where-Object {
+                $_.ProcessId -eq $heartbeat.ProcessId -and
+                [Math]::Abs($_.CreationDate.ToUniversalTime().Ticks - [long]$heartbeat.ProcessStartUtcTicks) -lt 10
+            }).Count -eq 1
+            $observed = [ordered]@{
+                Source=$file.FullName; SessionId=$journal.SessionId; RunId=$heartbeat.RunId; RunEpoch=$heartbeat.RunEpoch
+                HeartbeatAgeSeconds=$age; ExactLiveProcess=$exact
+                Freshness= $(if ($exact -and $age -ge 0 -and $age -le 120) {'RECENT_OBSERVATION'} else {'STALE_OR_OTHER_PROCESS'})
+                Phase=$heartbeat.Phase; EnabledChannels=@($heartbeat.EnabledChannels)
+                AlarmedChannels=@($heartbeat.AlarmedChannels); CompletedChannels=@($heartbeat.CompletedChannels)
+                RecoveryActive=$heartbeat.RecoveryActive; RecoveryStage=$heartbeat.RecoveryStage
+                RecoveryBlocked=$journal.RecoveryBlocked; RecoveryFailureCode=$journal.RecoveryFailureCode
+                ManualPauseActive=$heartbeat.ManualPauseActive; OutputsConfirmedOff=$heartbeat.OutputsConfirmedOff
+            }
+            break
+        }
+    }
     [pscustomobject]@{
         Computer = $env:COMPUTERNAME; TimeUtc = [DateTime]::UtcNow.ToString('O')
         InstallRoot = $InstallRoot; MainProcessIds = @($main.ProcessId)
         Supervisor = [string](Get-Service MTTFTestSupervisor -ErrorAction SilentlyContinue).Status
         BusinessRecovery = 'UNVERIFIED: 必须核验每路动作、计数和连续正式提交；进程存在不代表恢复'
         ProjectDirectory = $ProjectDirectory
+        LastObservedRecovery = $observed
     }
 }
 function Save-BusinessEvidence([string]$Destination, [string]$Snapshot = '') {
@@ -111,13 +143,17 @@ try {
             $pendingPath = Join-Path $InstallRoot 'stop-command-pending.json'
             if (Test-Path -LiteralPath $pendingPath) {
                 $pending = Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json
-                Assert-ClosedProcessSafety ([int]$pending.processId) ([long]$pending.startUtcTicks)
-                Remove-Item -LiteralPath $pendingPath
+                $sameProcess = Get-Process -Id ([int]$pending.processId) -ErrorAction SilentlyContinue
+                if (-not $sameProcess -or $sameProcess.StartTime.ToUniversalTime().Ticks -ne [long]$pending.startUtcTicks) {
+                    Assert-ClosedProcessSafety ([int]$pending.processId) ([long]$pending.startUtcTicks)
+                    Remove-Item -LiteralPath $pendingPath
+                }
             }
             $active = @(Get-ExactProcesses 'MTTFTest.exe')
             foreach ($item in $active) {
                 $process = Get-Process -Id $item.ProcessId -ErrorAction Stop
-                if ($process.StartTime.ToUniversalTime() -ne $item.CreationDate.ToUniversalTime()) { throw '进程身份已变化，停止操作取消。' }
+                # CIM CreationDate has microsecond precision; GetProcessTimes keeps 100ns ticks.
+                if ([Math]::Abs($process.StartTime.ToUniversalTime().Ticks - $item.CreationDate.ToUniversalTime().Ticks) -ge 10) { throw '进程身份已变化，停止操作取消。' }
                 $started = $process.StartTime.ToUniversalTime().Ticks
                 [ordered]@{processId=$process.Id;startUtcTicks=$started} | ConvertTo-Json | Set-Content -LiteralPath $pendingPath -Encoding UTF8
                 if (-not $process.CloseMainWindow()) { throw '无法投递正常关闭请求，请在程序界面安全停止；不会强杀。' }

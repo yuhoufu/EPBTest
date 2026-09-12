@@ -587,7 +587,7 @@ if ($deploymentContractSummary.Count -ne 1) {
 }
 $quickDeployParseSummary = @($deploymentContractOutput |
     ForEach-Object { [string]$_ } |
-    Where-Object { $_ -match '^PASS\s+QuickDeployCommandParse\s+3/3$' } |
+    Where-Object { $_ -match '^PASS\s+QuickDeployCommandParse\s+5/5$' } |
     Select-Object -Last 1)
 if ($quickDeployParseSummary.Count -ne 1) {
     throw '快捷部署批处理解析测试未通过。'
