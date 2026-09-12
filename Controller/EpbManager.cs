@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -10052,7 +10052,7 @@ namespace Controller
                 .Distinct()
                 .OrderBy(x => x)
                 .ToArray();
-            if (!_hydraulicSoftwareRecoveryGroups.TryAdd(hydraulicId, 0))
+            if (_hydraulicSoftwareRecoveryGroups.ContainsKey(hydraulicId))
             {
                 _log.Warn(
                     $"液压组{hydraulicId}已有软件自愈任务，本次故障并入现有恢复。Code={fault.Code}",
@@ -10065,33 +10065,7 @@ namespace Controller
             var cutoffUtc = DateTime.UtcNow;
             var cutoffCycles = CaptureSoftwareRecoveryCycles(channels);
 
-            // 进入恢复队列本身就是安全边界。即使同组已有owner，受影响通道也不能
-            // 在等待所有权期间继续RUN或进入下一动作相位。
-            FreezeAndCancelSafetyChannels(
-                channels,
-                $"HydraulicSelfHealingQueued:{fault.Code}",
-                cancelStopTokens: false);
-            var rejectedOff = SubmitEpbOffHighPriorityBatch(
-                channels,
-                "HydraulicSelfHealingQueuedOffAdmissionRejected",
-                "HydraulicSelfHealingQueuedOffSubmissionException");
-            ScheduleRejectedOffFallbacks(
-                rejectedOff,
-                "HydraulicSelfHealingQueuedImmediateOffFallback");
-            foreach (var channel in channels)
-            {
-                UnmarkHydraulicParticipant(channel);
-                try
-                {
-                    ObserveSafetyTask(
-                        Task.Run(() => AbortHydraulicLeaseForChannelAsync(
-                            channel,
-                            "HydraulicSelfHealingQueued:" + fault.Code)),
-                        "HydraulicSelfHealingQueuedLeaseAbort",
-                        channel);
-                }
-                catch { }
-            }
+            var groupPublished = false;
 
             // The queued recovery must have a real, not-yet-running worker
             // bound before Recovering is first published.  The old ordering
@@ -10371,6 +10345,11 @@ namespace Controller
                 _ => BuildRecoveryWorker(),
                 contract =>
                 {
+                    lock (_recoveryContractGate)
+                    {
+                        if (!_hydraulicSoftwareRecoveryGroups.TryAdd(hydraulicId, 0))
+                            throw new InvalidOperationException("HydraulicRecoveryAlreadyPublished");
+                        groupPublished = true;
                     foreach (var channel in contract.Channels ?? Array.Empty<int>())
                         PublishRecoveryIncidentState(
                             channel,
@@ -10383,11 +10362,40 @@ namespace Controller
                             recoveryTargetPhase: contract.TargetPhase,
                             recoveryOwnerId: contract.OwnerId,
                             recoveryOwnerGeneration: contract.RunEpoch);
+                    }
+                    // 进入恢复队列本身就是安全边界。即使同组已有owner，受影响通道也不能
+                    // 在等待所有权期间继续RUN或进入下一动作相位。
+                    FreezeAndCancelSafetyChannels(
+                        channels,
+                        $"HydraulicSelfHealingQueued:{fault.Code}",
+                        cancelStopTokens: false);
+                    var rejectedOff = SubmitEpbOffHighPriorityBatch(
+                        channels,
+                        "HydraulicSelfHealingQueuedOffAdmissionRejected",
+                        "HydraulicSelfHealingQueuedOffSubmissionException");
+                    ScheduleRejectedOffFallbacks(
+                        rejectedOff,
+                        "HydraulicSelfHealingQueuedImmediateOffFallback");
+                    foreach (var channel in channels)
+                    {
+                        UnmarkHydraulicParticipant(channel);
+                        try
+                        {
+                            ObserveSafetyTask(
+                                Task.Run(() => AbortHydraulicLeaseForChannelAsync(
+                                    channel,
+                                    "HydraulicSelfHealingQueued:" + fault.Code)),
+                                "HydraulicSelfHealingQueuedLeaseAbort",
+                                channel);
+                        }
+                        catch { }
+                    }
                 },
                 out recoveryIncident);
             if (!started)
             {
-                _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
+                if (groupPublished)
+                    _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
                 return;
             }
             try
