@@ -13,7 +13,7 @@ namespace MTTFTest.Watchdog.Protocol
         public const string RequestMagic = "MTTF-SUPERVISOR-REQUEST-V5";
         public const string ResponseMagic = "MTTF-SUPERVISOR-RESPONSE-V5";
         public const string SafetyAgentRequestMagic =
-            "MTTF-SUPERVISOR-SAFETY-REQUEST-V5";
+            "MTTF-SUPERVISOR-SAFETY-REQUEST-V6";
         public const string SafetyAgentResponseMagic =
             "MTTF-SUPERVISOR-SAFETY-RESPONSE-V5";
         public const string P0AlarmRequestMagic =
@@ -166,6 +166,7 @@ namespace MTTFTest.Watchdog.Protocol
         public int RequesterProcessId { get; set; }
         public long RequesterProcessStartUtcTicks { get; set; }
         public string SessionId { get; set; } = string.Empty;
+        public bool SafetyOnly { get; set; }
         public long PermitGeneration { get; set; }
         public string PermitId { get; set; } = string.Empty;
         public string HandoffId { get; set; } = string.Empty;
@@ -185,8 +186,9 @@ namespace MTTFTest.Watchdog.Protocol
                        ChallengeNonce) &&
                    RequesterProcessId > 0 && RequesterProcessStartUtcTicks > 0 &&
                    Guid.TryParseExact(SessionId ?? string.Empty, "N", out parsed) &&
-                   PermitGeneration > 0 &&
-                   Guid.TryParseExact(PermitId ?? string.Empty, "N", out parsed) &&
+                   (SafetyOnly
+                       ? PermitGeneration == 0 && string.IsNullOrEmpty(PermitId)
+                       : PermitGeneration > 0 && Guid.TryParseExact(PermitId ?? string.Empty, "N", out parsed)) &&
                    Guid.TryParseExact(HandoffId ?? string.Empty, "N", out parsed) &&
                    RecoveryFailureReceipt.IsSha256(HandoffNonceSha256) &&
                    !string.IsNullOrWhiteSpace(ExecutablePath) &&
@@ -207,6 +209,7 @@ namespace MTTFTest.Watchdog.Protocol
             writer.Write(RequesterProcessId);
             writer.Write(RequesterProcessStartUtcTicks);
             writer.Write(SessionId ?? string.Empty);
+            writer.Write(SafetyOnly);
             writer.Write(PermitGeneration);
             writer.Write(PermitId ?? string.Empty);
             writer.Write(HandoffId ?? string.Empty);
@@ -237,6 +240,7 @@ namespace MTTFTest.Watchdog.Protocol
                 RequesterProcessId = reader.ReadInt32(),
                 RequesterProcessStartUtcTicks = reader.ReadInt64(),
                 SessionId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
+                SafetyOnly = reader.ReadBoolean(),
                 PermitGeneration = reader.ReadInt64(),
                 PermitId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),
                 HandoffId = SupervisorSessionLaunchRequest.ReadBoundedString(reader),

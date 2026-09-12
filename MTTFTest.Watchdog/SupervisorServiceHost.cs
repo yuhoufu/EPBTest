@@ -663,6 +663,7 @@ namespace MTTFTest.Watchdog
                     StringComparison.Ordinal) ||
                 !string.Equals(receipt.Nonce, argumentNonce,
                     StringComparison.Ordinal) ||
+                request.SafetyOnly != (receipt.RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden) ||
                 receipt.RelaunchPermitGeneration != request.PermitGeneration ||
                 !string.Equals(receipt.RelaunchPermitId, request.PermitId,
                     StringComparison.Ordinal) ||

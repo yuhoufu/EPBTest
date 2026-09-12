@@ -35,6 +35,7 @@ namespace MTTFTest.Watchdog
                     RequesterProcessStartUtcTicks =
                         current.StartTime.ToUniversalTime().Ticks,
                     SessionId = receipt.SessionId,
+                    SafetyOnly = receipt.RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden,
                     PermitGeneration = receipt.RelaunchPermitGeneration,
                     PermitId = receipt.RelaunchPermitId,
                     HandoffId = receipt.HandoffId,
