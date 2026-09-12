@@ -25,7 +25,7 @@ function Read-FallbackArgument([string]$Line,[string]$Name){
 }
 function Resolve-FallbackBinding([string]$InstallRoot){
  $expected=[IO.Path]::GetFullPath((Join-Path $InstallRoot 'Current\MTTFTest.Watchdog.exe'))
- $sidecars=@(Get-CimInstance Win32_Process -Filter "Name='MTTFTest.Watchdog.exe'" | Where-Object {$_.ExecutablePath -eq $expected -and $_.CommandLine -match '--journal-directory' -and $_.CommandLine -match '--session-id'})
+ $sidecars=@(Get-CimInstance Win32_Process -Filter "Name='MTTFTest.Watchdog.exe'" -OperationTimeoutSec 3 | Where-Object {$_.ExecutablePath -eq $expected -and $_.CommandLine -match '--journal-directory' -and $_.CommandLine -match '--session-id'})
  if($sidecars.Count -ne 1){throw ('找到 '+$sidecars.Count+' 个当前侧车，请先启动已安装主程序或核对多开。')}
  $sidecar=$sidecars[0]
  $directory=Read-FallbackArgument ([string]$sidecar.CommandLine) '--journal-directory'
