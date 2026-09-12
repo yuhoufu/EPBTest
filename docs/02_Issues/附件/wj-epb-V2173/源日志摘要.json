@@ -1,0 +1,22 @@
+[
+  {
+    "File": "error.log",
+    "Bytes": 10282,
+    "SHA256": "70fb30343139cddca4f5afe33b5ba040864be4bd1eac35ed84cd24a24f4e1c5d"
+  },
+  {
+    "File": "run.log",
+    "Bytes": 959886,
+    "SHA256": "94867eb7f3b015b66a99450c11ca89b791cc43b02f036f7b442b9a8ffa37cf66"
+  },
+  {
+    "File": "ui-info.log",
+    "Bytes": 13207,
+    "SHA256": "eabb897d160ef7730c9dc45911fca40f7ab07ab86d02e8d21015900d101ef073"
+  },
+  {
+    "File": "warning.log",
+    "Bytes": 18092,
+    "SHA256": "47a66c999163e34577e231339dd275d89ee1331aee072e16d5400f095c9350da"
+  }
+]

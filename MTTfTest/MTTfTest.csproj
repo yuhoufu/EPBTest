@@ -216,6 +216,7 @@
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="UnattendedRecovery.cs" />
+    <Compile Include="RecoveryGuardRuntime.cs" />
     <Compile Include="WatchdogRuntime.cs" />
     <Compile Include="WatchdogRuntime.CallbackPipeline.cs" />
     <Compile Include="WatchdogRuntime.CallbackPipeline.Testing.cs" />
@@ -382,6 +383,10 @@
     <ProjectReference Include="..\Timing\Timing.csproj">
       <Project>{3d810ee2-a0ef-4d1f-84cd-2ddcf63fb434}</Project>
       <Name>Timing</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\RecoveryControl\RecoveryControl.csproj">
+      <Project>{DBBB1D9E-7969-4ECB-A11F-A39C8E415470}</Project>
+      <Name>RecoveryControl</Name>
     </ProjectReference>
     <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">
       <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>

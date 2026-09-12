@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
+using MTTFTest.RecoveryControl;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -100,6 +101,7 @@ namespace MTTFTest.Watchdog
                     StringComparer.OrdinalIgnoreCase);
         private readonly object _mainLaunchGate = new object();
         private Task _acceptLoop;
+        private Task _inactiveRecoveryCleanup;
         private SupervisorP0AlarmHardwareOwner _p0AlarmOwner;
         private int _started;
 
@@ -117,6 +119,7 @@ namespace MTTFTest.Watchdog
                 StateDirectory);
             RestorePersistedSessions();
             _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
+            _inactiveRecoveryCleanup = Task.Run(() => InactiveRecoveryCleanupLoopAsync(_stop.Token));
             StartHealthSupervision(executableDirectory);
             WriteAudit(
                 "SupervisorStarted",
@@ -355,6 +358,26 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     var magic = SupervisorProtocol.ReadRequestMagic(reader);
+                    if (magic == RecoveryGuardSupervisorProtocol.LaunchPrepareMagic)
+                    {
+                        HandleGuardLaunchPrepareConnection(pipe, reader, writer);
+                        return;
+                    }
+                    if (magic == RecoveryGuardSupervisorProtocol.SafetyExecuteMagic)
+                    {
+                        HandleGuardSafetyExecuteConnection(pipe, reader, writer);
+                        return;
+                    }
+                    if (magic == RecoveryGuardSupervisorProtocol.SafetyPrepareMagic)
+                    {
+                        HandleGuardSafetyPrepareConnection(pipe, reader, writer);
+                        return;
+                    }
+                    if (magic == RecoveryGuardSupervisorProtocol.RequestMagic)
+                    {
+                        HandleGuardLaunchConnection(pipe, reader, writer);
+                        return;
+                    }
                     if (string.Equals(
                             magic,
                             SupervisorProtocol.MainLaunchRequestMagic,
@@ -631,8 +654,26 @@ namespace MTTFTest.Watchdog
                 throw new InvalidDataException(
                     "SupervisorMainLaunchExecutableHashMismatch");
 
+            return LaunchValidatedMainThroughSessionAgent(request, mainExecutable, targetDesktopSessionId);
+        }
+
+        private SupervisorMainLaunchResponse LaunchValidatedMainThroughSessionAgent(
+            SupervisorMainLaunchRequest request, string mainExecutable, int targetDesktopSessionId,
+            RecoveryGuardLaunchRequest guard = null, string guardProjectDirectory = null)
+        {
             lock (_mainLaunchGate)
             {
+                WatchdogMaintenancePolicy.AssertMainLaunchAllowed();
+                if (guard != null && File.Exists(Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "MTTFTestRecoveryGuard", "maintenance-inhibit.json")))
+                    throw new InvalidOperationException("RecoveryGuardMaintenanceInhibited");
+                var recoveryControl = new RecoveryControlStore();
+                var recoveryFence = guard != null
+                    ? recoveryControl.CaptureGuardLaunchFence(guard.TransactionId, guard.Epoch, guard.Owner, DateTime.UtcNow)
+                    : recoveryControl.IsRegisteredOrPending
+                    ? recoveryControl.CaptureLaunchFence(request.IsRecoveryLaunch, request.RecoverySessionId, DateTime.UtcNow)
+                    : null;
                 var capabilityId = request.IsRecoveryLaunch
                     ? request.RecoveryCapabilityId
                     : Guid.NewGuid().ToString("N");
@@ -661,6 +702,8 @@ namespace MTTFTest.Watchdog
                     capability = new SessionLaunchCapability
                     {
                         CapabilityId = capabilityId,
+                        IsRecoveryLaunch = request.IsRecoveryLaunch,
+                        RecoveryFenceJson = recoveryFence?.Serialize() ?? string.Empty,
                         SessionId = sessionId,
                         PermitGeneration = permitGeneration,
                         PermitId = permitId,
@@ -679,33 +722,71 @@ namespace MTTFTest.Watchdog
                             current.StartTime.ToUniversalTime().Ticks
                     };
                 }
-                using (var launched = SessionAgentLaunchClient.Start(capability))
+                if (recoveryFence?.IsRecovery == true)
                 {
-                    var startTicks = launched.StartTime.ToUniversalTime().Ticks;
-                    WriteAudit(
-                        "SupervisorMainLaunchCapabilityConsumed",
-                        $"Kind={(request.IsRecoveryLaunch ? "Recovery" : "Initial")};" +
-                        $"Capability={capabilityId};Session={sessionId};" +
-                        $"PermitGeneration={permitGeneration};Permit={permitId};" +
-                        $"DesktopSession={targetDesktopSessionId};" +
-                        (request.IsRecoveryLaunch
-                            ? $"AuthorityRevision={request.RecoveryAuthorityRevision};" +
-                              $"AuthoritySha256={request.RecoveryAuthoritySha256};"
-                            : string.Empty) +
-                        $"PID={launched.Id};StartUtcTicks={startTicks};" +
-                        $"ExecutableSha256={request.ExecutableSha256}");
-                    return new SupervisorMainLaunchResponse
+                    RecoveryLaunchReconciler.ReconcileOutstanding(recoveryControl);
+                    var reservation = recoveryControl.ReserveLaunch(recoveryFence.Authorization, capabilityId,
+                        DateTime.UtcNow, new DateTime(capability.ExpiresUtcTicks, DateTimeKind.Utc));
+                    if (reservation.State == "Started")
                     {
-                        RequestId = request.RequestId,
-                        ChallengeNonce = request.ChallengeNonce,
-                        Accepted = true,
-                        CapabilityId = capabilityId,
-                        ProcessId = launched.Id,
-                        ProcessStartUtcTicks = startTicks,
-                        Detail = request.IsRecoveryLaunch
-                            ? "SupervisorRecoveryCapabilitySessionAgentLaunch"
-                            : "SupervisorCapabilitySessionAgentLaunch"
-                    };
+                        recoveryControl.AssertStartedLaunch(recoveryFence, capabilityId, reservation.Process, DateTime.UtcNow);
+                        if (RecoveryProcessProbe.Observe(reservation.Process, RecoveryProcessProbe.ReadBootId()) != ProcessObservation.ExactAlive)
+                            throw new InvalidOperationException("RecoveryPreviouslyStartedProcessUnavailable");
+                        return new SupervisorMainLaunchResponse
+                        {
+                            RequestId = request.RequestId, ChallengeNonce = request.ChallengeNonce,
+                            Accepted = true, CapabilityId = capabilityId, ProcessId = reservation.Process.ProcessId,
+                            ProcessStartUtcTicks = reservation.Process.StartUtcTicks, Detail = "RecoveryExistingLaunchReconciled"
+                        };
+                    }
+                    if (reservation.State != "Reserved")
+                        throw new InvalidOperationException("RecoveryLaunchRequiresReconciliation:" + reservation.State);
+                }
+                using (SupervisorHardwareLaunchGate.Enter(StateDirectory))
+                {
+                    // Serialize the last inventory check with every SafetyAgent
+                    // creation, including old sidecar requests and service restart.
+                    SupervisorOwnedSafetyAgent.AssertOtherSafetyRecordsRetired(StateDirectory, null);
+                    if (guard != null)
+                        recoveryControl.CaptureGuardLaunchFence(guard.TransactionId, guard.Epoch, guard.Owner, DateTime.UtcNow);
+                    else if (recoveryControl.IsRegisteredOrPending)
+                        recoveryControl.CaptureLaunchFence(request.IsRecoveryLaunch, request.RecoverySessionId, DateTime.UtcNow);
+                    var strictGuardLaunch = guard == null ? null :
+                        SupervisorGuardStrictLaunchLifecycle.Consume(
+                            guardProjectDirectory, request.RecoverySessionId, capabilityId,
+                            permitGeneration, permitId, request.RecoveryAuthorityRevision,
+                            request.RecoveryAuthoritySha256, mainExecutable, request.ExecutableSha256);
+                    using (var launched = SessionAgentLaunchClient.Start(capability))
+                    {
+                        var startTicks = launched.StartTime.ToUniversalTime().Ticks;
+                        if (strictGuardLaunch != null)
+                            SupervisorGuardStrictLaunchLifecycle.CommitStarted(
+                                strictGuardLaunch, launched.Id, startTicks);
+                        WriteAudit(
+                            "SupervisorMainLaunchCapabilityConsumed",
+                            $"Kind={(request.IsRecoveryLaunch ? "Recovery" : "Initial")};" +
+                            $"Capability={capabilityId};Session={sessionId};" +
+                            $"PermitGeneration={permitGeneration};Permit={permitId};" +
+                            $"DesktopSession={targetDesktopSessionId};" +
+                            (request.IsRecoveryLaunch
+                                ? $"AuthorityRevision={request.RecoveryAuthorityRevision};" +
+                                  $"AuthoritySha256={request.RecoveryAuthoritySha256};"
+                                : string.Empty) +
+                            $"PID={launched.Id};StartUtcTicks={startTicks};" +
+                            $"ExecutableSha256={request.ExecutableSha256}");
+                        return new SupervisorMainLaunchResponse
+                        {
+                            RequestId = request.RequestId,
+                            ChallengeNonce = request.ChallengeNonce,
+                            Accepted = true,
+                            CapabilityId = capabilityId,
+                            ProcessId = launched.Id,
+                            ProcessStartUtcTicks = startTicks,
+                            Detail = request.IsRecoveryLaunch
+                                ? "SupervisorRecoveryCapabilitySessionAgentLaunch"
+                                : "SupervisorCapabilitySessionAgentLaunch"
+                        };
+                    }
                 }
             }
         }
@@ -756,7 +837,16 @@ namespace MTTFTest.Watchdog
                 request,
                 receipt,
                 projectDirectory,
-                StateDirectory);
+                StateDirectory, () =>
+                {
+                    var control = new RecoveryControlStore();
+                    if (control.IsRegisteredOrPending)
+                    {
+                        var state = control.Read();
+                        SupervisorSafetyTakeoverPolicy.AssertLegacyCreationAllowed(state, receipt,
+                            RecoveryRevocationSignal.IsStopped(state.Token()) || RecoveryRevocationSignal.IsPaused(state.Token()));
+                    }
+                });
             WriteAudit(
                 "SafetyAgentRegistered",
                 $"Session={request.SessionId};Permit={request.PermitGeneration}/" +
@@ -1370,6 +1460,7 @@ namespace MTTFTest.Watchdog
             _healthEndpoint?.Dispose();
             try { _stop.Cancel(); } catch { }
             try { _acceptLoop?.Wait(3000); } catch { }
+            try { _inactiveRecoveryCleanup?.Wait(3000); } catch { }
             foreach (var session in _sessions.Values)
                 try { session.Dispose(); } catch { }
             _sessions.Clear();
@@ -1397,6 +1488,7 @@ namespace MTTFTest.Watchdog
             private string _mainExecutableSha256;
             private string _projectDirectory;
             private string _instanceNonce;
+            private string _registeredPipeName;
             private Task _monitorTask;
             private string _stateDirectory;
 
@@ -1606,6 +1698,7 @@ namespace MTTFTest.Watchdog
                 _mainExecutableSha256 = record.MainExecutableSha256;
                 _projectDirectory = record.ProjectDirectory;
                 _instanceNonce = ReadLaunchArgument(record.Arguments, "--sidecar-instance-nonce");
+                _registeredPipeName = ReadLaunchArgument(record.Arguments, "--pipe");
             }
 
             private void StartFromRecord(
@@ -1633,6 +1726,7 @@ namespace MTTFTest.Watchdog
                 _mainExecutableSha256 = record.MainExecutableSha256;
                 _projectDirectory = record.ProjectDirectory;
                 _instanceNonce = ReadLaunchArgument(record.Arguments, "--sidecar-instance-nonce");
+                _registeredPipeName = ReadLaunchArgument(record.Arguments, "--pipe");
                 record.State = "Started";
                 record.ProcessId = process.Id;
                 record.ProcessStartUtcTicks = _processStartUtcTicks;
@@ -1747,6 +1841,23 @@ namespace MTTFTest.Watchdog
                                _mainExecutableSha256,
                                executableSha256);
                 }
+            }
+
+            internal GuardRecoveryHostBinding ReadRecoveryHostBinding()
+            {
+                lock (_gate)
+                {
+                    if (!IsCurrentProcessAlive() || string.IsNullOrWhiteSpace(_registeredPipeName) ||
+                        !WatchdogProcessIdentityPolicy.IsValidChallengeNonce(_instanceNonce))
+                        throw new InvalidOperationException("RecoveryGuardSessionHostUnavailable");
+                    return new GuardRecoveryHostBinding { ProcessId = _process.Id, StartUtcTicks = _processStartUtcTicks,
+                        InstanceNonce = _instanceNonce, PipeName = _registeredPipeName };
+                }
+            }
+
+            internal string RegisteredProjectDirectory
+            {
+                get { lock (_gate) return _projectDirectory; }
             }
 
             private static string ResolveProjectRoot(string directory)
@@ -2246,125 +2357,215 @@ namespace MTTFTest.Watchdog
                 SupervisorSafetyAgentLaunchRequest request,
                 WatchdogSafetyHandoffReceipt receipt,
                 string projectDirectory,
-                string stateDirectory)
+                string stateDirectory,
+                Action beforeCreate = null)
             {
-                lock (_gate)
+                // Reconciliation also observes this actor while holding the
+                // hardware gate. Always acquire that gate before the actor lock.
+                using (SupervisorHardwareLaunchGate.Enter(stateDirectory))
                 {
-                    if (IsAlive()) return CurrentIdentity();
-                    TryAttachPersisted(request, stateDirectory);
-                    if (IsAlive()) return CurrentIdentity();
-
-                    var authorityPath = SupervisorSafetyAuthorityStore.GetPath(
-                        stateDirectory,
-                        request.AuthorityId);
-                    var authoritativeArguments =
-                        (request.Arguments ?? string.Empty) +
-                        " --authority-id " + QuoteArgument(request.AuthorityId) +
-                        " --authority-receipt " + QuoteArgument(authorityPath) +
-                        " --authority-revision " +
-                        request.AuthorityReceiptRevision.ToString(
-                            CultureInfo.InvariantCulture) +
-                        " --authority-sha256 " +
-                        QuoteArgument(request.AuthorityReceiptCanonicalSha256);
-                    var record = new SupervisorSafetyAgentRecord
+                    lock (_gate)
                     {
-                        SchemaVersion = SupervisorProtocol.SchemaVersion,
-                        Key = _key,
-                        SessionId = request.SessionId,
-                        PermitGeneration = request.PermitGeneration,
-                        PermitId = request.PermitId,
-                        HandoffId = request.HandoffId,
-                        HandoffNonceSha256 = request.HandoffNonceSha256,
-                        ExecutablePath = request.ExecutablePath,
-                        ExecutableSha256 = request.ExecutableSha256,
-                        AuthorityId = request.AuthorityId,
-                        AuthorityReceiptRevision =
-                            request.AuthorityReceiptRevision,
-                        AuthorityReceiptCanonicalSha256 =
-                            request.AuthorityReceiptCanonicalSha256,
-                        BaseArgumentsSha256 = request.ArgumentsSha256,
-                        Arguments = authoritativeArguments,
-                        ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(
-                            authoritativeArguments),
-                        WorkingDirectory = request.WorkingDirectory,
-                        ProjectDirectory = projectDirectory,
-                        ReceiptRevisionAtLaunch = receipt.Revision,
-                        State = "LaunchIntent",
-                        Revision = DateTime.UtcNow.Ticks
-                    };
-                    WriteSafetyRecord(stateDirectory, record);
-                    var process = Process.Start(new ProcessStartInfo
-                    {
-                        FileName = record.ExecutablePath,
-                        Arguments = record.Arguments,
-                        WorkingDirectory = record.WorkingDirectory,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = ProcessWindowStyle.Hidden
-                    });
-                    if (process == null)
-                        throw new InvalidOperationException(
-                            "SupervisorSafetyAgentStartReturnedNull");
-                    _process = process;
-                    _processStartUtcTicks =
-                        process.StartTime.ToUniversalTime().Ticks;
-                    record.ProcessId = process.Id;
-                    record.ProcessStartUtcTicks = _processStartUtcTicks;
-                    record.State = "Started";
-                    record.Revision = Math.Max(
-                        record.Revision + 1,
-                        DateTime.UtcNow.Ticks);
-                    WriteSafetyRecord(stateDirectory, record);
-                    return CurrentIdentity();
+                            // Another service request or a previous service process may
+                            // have committed while this instance waited for the mutex.
+                            TryAttachPersisted(request, stateDirectory);
+                            if (IsAlive()) return CurrentIdentity();
+                            AssertOtherSafetyRecordsRetired(stateDirectory, _key);
+                            beforeCreate?.Invoke();
+                            var authorityPath = SupervisorSafetyAuthorityStore.GetPath(
+                                stateDirectory,
+                                request.AuthorityId);
+                            var authoritativeArguments =
+                                (request.Arguments ?? string.Empty) +
+                                " --authority-id " + QuoteArgument(request.AuthorityId) +
+                                " --authority-receipt " + QuoteArgument(authorityPath) +
+                                " --authority-revision " +
+                                request.AuthorityReceiptRevision.ToString(
+                                    CultureInfo.InvariantCulture) +
+                                " --authority-sha256 " +
+                                QuoteArgument(request.AuthorityReceiptCanonicalSha256);
+                            var record = new SupervisorSafetyAgentRecord
+                            {
+                                SchemaVersion = SupervisorProtocol.SchemaVersion,
+                                Key = _key,
+                                SessionId = request.SessionId,
+                                PermitGeneration = request.PermitGeneration,
+                                PermitId = request.PermitId,
+                                HandoffId = request.HandoffId,
+                                HandoffNonceSha256 = request.HandoffNonceSha256,
+                                ExecutablePath = request.ExecutablePath,
+                                ExecutableSha256 = request.ExecutableSha256,
+                                AuthorityId = request.AuthorityId,
+                                AuthorityReceiptRevision =
+                                    request.AuthorityReceiptRevision,
+                                AuthorityReceiptCanonicalSha256 =
+                                    request.AuthorityReceiptCanonicalSha256,
+                                BaseArgumentsSha256 = request.ArgumentsSha256,
+                                Arguments = authoritativeArguments,
+                                ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(
+                                    authoritativeArguments),
+                                WorkingDirectory = request.WorkingDirectory,
+                                ProjectDirectory = projectDirectory,
+                                ReceiptRevisionAtLaunch = receipt.Revision,
+                                ProcessBootId = RecoveryProcessProbe.ReadBootId(),
+                                State = "LaunchIntent",
+                                Revision = DateTime.UtcNow.Ticks
+                            };
+                            WriteSafetyRecord(stateDirectory, record);
+                            var process = Process.Start(new ProcessStartInfo
+                            {
+                                FileName = record.ExecutablePath,
+                                Arguments = record.Arguments,
+                                WorkingDirectory = record.WorkingDirectory,
+                                UseShellExecute = false,
+                                CreateNoWindow = true,
+                                WindowStyle = ProcessWindowStyle.Hidden
+                            });
+                            if (process == null)
+                                throw new InvalidOperationException(
+                                    "SupervisorSafetyAgentStartReturnedNull");
+                            _process = process;
+                            _processStartUtcTicks =
+                                process.StartTime.ToUniversalTime().Ticks;
+                            record.ProcessId = process.Id;
+                            record.ProcessStartUtcTicks = _processStartUtcTicks;
+                            record.State = "Started";
+                            record.Revision = Math.Max(
+                                record.Revision + 1,
+                                DateTime.UtcNow.Ticks);
+                            WriteSafetyRecord(stateDirectory, record);
+                            return CurrentIdentity();
+                    }
                 }
             }
 
-            private void TryAttachPersisted(
+            internal static void AssertOtherSafetyRecordsRetired(string stateDirectory, string currentKey)
+            {
+                if (!Directory.Exists(stateDirectory)) return;
+                var currentPath = currentKey == null ? null : SafetyRecordPath(stateDirectory, currentKey);
+                var boot = RecoveryProcessProbe.ReadBootId();
+                var count = 0;
+                foreach (var path in Directory.EnumerateFiles(stateDirectory, "safety-*.launch.json"))
+                {
+                    if (++count > 4096) throw new IOException("SupervisorSafetyLaunchInventoryLimit");
+                    if (string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (new FileInfo(path).Length > 64 * 1024)
+                        throw new InvalidDataException("SupervisorSafetyOtherLaunchRecordOversized");
+                    var record = Json.Deserialize<SupervisorSafetyAgentRecord>(File.ReadAllText(path, Encoding.UTF8));
+                    if (record?.SchemaVersion != SupervisorProtocol.SchemaVersion || string.IsNullOrWhiteSpace(record.Key) ||
+                        !string.Equals(path, SafetyRecordPath(stateDirectory, record.Key), StringComparison.OrdinalIgnoreCase) ||
+                        record.State != "Started" || record.ProcessId <= 0 || record.ProcessStartUtcTicks <= 0 ||
+                        string.IsNullOrWhiteSpace(record.ExecutablePath))
+                        throw new InvalidDataException("SupervisorSafetyOtherLaunchOutcomeUnproven");
+                    var process = new RecoveryProcessIdentity
+                    {
+                        ProcessId = record.ProcessId, StartUtcTicks = record.ProcessStartUtcTicks,
+                        ExecutablePath = record.ExecutablePath,
+                        BootId = string.IsNullOrWhiteSpace(record.ProcessBootId) ? boot : record.ProcessBootId
+                    };
+                    if (RecoveryProcessProbe.Observe(process, boot) != ProcessObservation.Exited)
+                        throw new InvalidOperationException("SupervisorSafetyOtherAgentNotRetired");
+                }
+            }
+
+            internal ProcessObservation ObserveRecorded(SupervisorSafetyAgentLaunchRequest request,
+                string stateDirectory, out RecoveryProcessIdentity identity, out bool hasRecord)
+            {
+                lock (_gate)
+                {
+                    hasRecord = File.Exists(SafetyRecordPath(stateDirectory, _key));
+                    var recorded = TryAttachPersisted(request, stateDirectory);
+                    identity = null;
+                    if (IsAlive())
+                    {
+                        identity = new RecoveryProcessIdentity { ProcessId = _process.Id, StartUtcTicks = _processStartUtcTicks,
+                            ExecutablePath = request.ExecutablePath, BootId = RecoveryProcessProbe.ReadBootId() };
+                        return ProcessObservation.ExactAlive;
+                    }
+                    if (!hasRecord) return ProcessObservation.Unknown;
+                    identity = recorded;
+                    return RecoveryProcessProbe.Observe(identity, RecoveryProcessProbe.ReadBootId());
+                }
+            }
+
+            private RecoveryProcessIdentity TryAttachPersisted(
                 SupervisorSafetyAgentLaunchRequest request,
                 string stateDirectory)
             {
-                try
+                var path = SafetyRecordPath(stateDirectory, _key);
+                if (!File.Exists(path)) return null;
+                if (new FileInfo(path).Length > 64 * 1024)
+                    throw new InvalidDataException("SupervisorSafetyLaunchRecordOversized");
+                var record = Json.Deserialize<SupervisorSafetyAgentRecord>(
+                    File.ReadAllText(path, Encoding.UTF8));
+                if (record?.SchemaVersion != SupervisorProtocol.SchemaVersion ||
+                    !string.Equals(record.Key, _key, StringComparison.Ordinal) ||
+                    !string.Equals(record.SessionId, request.SessionId,
+                        StringComparison.Ordinal) ||
+                    record.PermitGeneration != request.PermitGeneration ||
+                    !string.Equals(record.PermitId, request.PermitId,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(record.HandoffId, request.HandoffId,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(record.HandoffNonceSha256,
+                        request.HandoffNonceSha256, StringComparison.Ordinal) ||
+                    !string.Equals(record.ExecutableSha256,
+                        request.ExecutableSha256, StringComparison.Ordinal) ||
+                    !string.Equals(record.AuthorityId,
+                        request.AuthorityId, StringComparison.Ordinal) ||
+                    record.AuthorityReceiptRevision !=
+                        request.AuthorityReceiptRevision ||
+                    !string.Equals(record.AuthorityReceiptCanonicalSha256,
+                        request.AuthorityReceiptCanonicalSha256,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(record.BaseArgumentsSha256,
+                        request.ArgumentsSha256, StringComparison.Ordinal) ||
+                    !string.Equals(record.ExecutablePath, request.ExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+                    !SupervisorProtocol.Sha256Equals(record.ArgumentsSha256,
+                        SupervisorProtocol.ComputeTextSha256(record.Arguments ?? string.Empty)))
+                    throw new InvalidDataException("SupervisorSafetyLaunchRecordBindingMismatch");
+                if (record.State == "LaunchIntent" && _process != null && IsAlive())
                 {
-                    var path = SafetyRecordPath(stateDirectory, _key);
-                    if (!File.Exists(path)) return;
-                    var record = Json.Deserialize<SupervisorSafetyAgentRecord>(
-                        File.ReadAllText(path, Encoding.UTF8));
-                    if (record?.SchemaVersion != SupervisorProtocol.SchemaVersion ||
-                        !string.Equals(record.Key, _key, StringComparison.Ordinal) ||
-                        !string.Equals(record.SessionId, request.SessionId,
-                            StringComparison.Ordinal) ||
-                        record.PermitGeneration != request.PermitGeneration ||
-                        !string.Equals(record.PermitId, request.PermitId,
-                            StringComparison.Ordinal) ||
-                        !string.Equals(record.HandoffId, request.HandoffId,
-                            StringComparison.Ordinal) ||
-                        !string.Equals(record.HandoffNonceSha256,
-                            request.HandoffNonceSha256, StringComparison.Ordinal) ||
-                        !string.Equals(record.ExecutableSha256,
-                            request.ExecutableSha256, StringComparison.Ordinal) ||
-                        !string.Equals(record.AuthorityId,
-                            request.AuthorityId, StringComparison.Ordinal) ||
-                        record.AuthorityReceiptRevision !=
-                            request.AuthorityReceiptRevision ||
-                        !string.Equals(record.AuthorityReceiptCanonicalSha256,
-                            request.AuthorityReceiptCanonicalSha256,
-                            StringComparison.Ordinal) ||
-                        !string.Equals(record.BaseArgumentsSha256,
-                            request.ArgumentsSha256, StringComparison.Ordinal) ||
-                        record.ProcessId <= 0 || record.ProcessStartUtcTicks <= 0)
-                        return;
-                    var process = Process.GetProcessById(record.ProcessId);
-                    if (process.HasExited ||
-                        process.StartTime.ToUniversalTime().Ticks !=
-                            record.ProcessStartUtcTicks)
-                    {
-                        process.Dispose();
-                        return;
-                    }
-                    _process = process;
-                    _processStartUtcTicks = record.ProcessStartUtcTicks;
+                    // A failed receipt write in this still-running service
+                    // can be repaired from its exact retained process handle.
+                    // A restarted service has no such creation evidence.
+                    record.ProcessId = _process.Id;
+                    record.ProcessStartUtcTicks = _processStartUtcTicks;
+                    record.ProcessBootId = RecoveryProcessProbe.ReadBootId();
+                    record.State = "Started";
+                    record.Revision = Math.Max(record.Revision + 1, DateTime.UtcNow.Ticks);
+                    WriteSafetyRecord(stateDirectory, record);
                 }
-                catch { }
+                if (record.State != "Started" || record.ProcessId <= 0 || record.ProcessStartUtcTicks <= 0)
+                    throw new InvalidOperationException("SupervisorSafetyLaunchOutcomeUnproven");
+                var boot = RecoveryProcessProbe.ReadBootId();
+                var identity = new RecoveryProcessIdentity
+                {
+                    ProcessId = record.ProcessId, StartUtcTicks = record.ProcessStartUtcTicks,
+                    ExecutablePath = record.ExecutablePath,
+                    // Legacy Started records have exact PID/start/path but
+                    // no boot field. Do not apply this to unproven Intent.
+                    BootId = string.IsNullOrWhiteSpace(record.ProcessBootId) ? boot : record.ProcessBootId
+                };
+                var observation = RecoveryProcessProbe.Observe(identity, boot);
+                if (observation == ProcessObservation.Exited)
+                {
+                    _process?.Dispose();
+                    _process = null;
+                    return identity;
+                }
+                if (observation != ProcessObservation.ExactAlive)
+                    throw new InvalidOperationException("SupervisorSafetyLaunchProcessUnproven");
+                var process = Process.GetProcessById(record.ProcessId);
+                if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != record.ProcessStartUtcTicks)
+                {
+                    process.Dispose();
+                    throw new InvalidOperationException("SupervisorSafetyLaunchProcessChangedDuringAttach");
+                }
+                _process?.Dispose();
+                _process = process;
+                _processStartUtcTicks = record.ProcessStartUtcTicks;
+                return identity;
             }
 
             private bool IsAlive()
@@ -2375,7 +2576,7 @@ namespace MTTFTest.Watchdog
                            _process.StartTime.ToUniversalTime().Ticks ==
                                _processStartUtcTicks;
                 }
-                catch { return false; }
+                catch (Exception ex) { throw new InvalidOperationException("SupervisorSafetyCachedProcessUnproven", ex); }
             }
 
             private SupervisorProcessIdentity CurrentIdentity()
@@ -2488,6 +2689,7 @@ namespace MTTFTest.Watchdog
             public string WorkingDirectory { get; set; }
             public string ProjectDirectory { get; set; }
             public long ReceiptRevisionAtLaunch { get; set; }
+            public string ProcessBootId { get; set; }
             public string State { get; set; }
             public int ProcessId { get; set; }
             public long ProcessStartUtcTicks { get; set; }

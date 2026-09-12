@@ -13686,7 +13686,22 @@ namespace Controller
                 ? string.Empty
                 : string.Join("; ", errors.Concat(new[] { logical.ToString() }));
             result.CompletedUtc = DateTime.UtcNow;
-            lock (_stopSafetyGate) _lastStopSafetyResult = result.Clone();
+            bool logicalCleanupCompleted;
+            lock (_stopSafetyGate)
+            {
+                logicalCleanupCompleted = result.TryCompleteLogicalCleanup(
+                    _lastStopSafetyResult?.SafetyTransactionId ?? Guid.Empty,
+                    Interlocked.Read(ref _stopSafetyGeneration), RequiresProcessRestart);
+                _lastStopSafetyResult = result.Clone();
+            }
+            if (logicalCleanupCompleted &&
+                Volatile.Read(ref _activeStopSafetyRunner)?.TryCompleteDeferredLogicalCleanup(result) != true)
+            {
+                // A newer stop or expired deadline wins over this late completion.
+                Interlocked.Exchange(ref _processRestartRequired, 1);
+                result.RequiresProcessRestart = true;
+                lock (_stopSafetyGate) _lastStopSafetyResult = result.Clone();
+            }
             if (result.LogicalQuiescenceConfirmed)
                 _log.Info("重新开始逻辑清场不变量全部通过：" + logical, "EPB");
             else

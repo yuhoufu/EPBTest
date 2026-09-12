@@ -1,0 +1,32 @@
+[
+  {
+    "Path": "log\\warning.log",
+    "Bytes": 58942,
+    "Sha256": "2CDE391B8DA75DD4C317368C42CB3EC37C647486E424EA950B039060CC113974"
+  },
+  {
+    "Path": "log\\error.log",
+    "Bytes": 2079,
+    "Sha256": "F950E8BF40554D8BBD8151E31A69D3071DE1C99E3243E8BA2459548D5E66B2F3"
+  },
+  {
+    "Path": "log\\run.log",
+    "Bytes": 15594224,
+    "Sha256": "B114766325C7AF5BBCD95F0F68D5F2A47E1CC7D031B3749EDAB0A809BEC83986"
+  },
+  {
+    "Path": "WatchdogSessions\\session-e1e39a252d7a4937bf501091092826b1.sidecar-events.jsonl",
+    "Bytes": 1644560,
+    "Sha256": "9E03054E084B7342A51BB6DD565F31F378401DBD7AB09ACC5C7ACCFBF1145ECE"
+  },
+  {
+    "Path": "Config\\runtime-build-identity.json",
+    "Bytes": 847,
+    "Sha256": "0C2DB601D926597C1E22DF639A01434DBDAE2273B8899D1EC1E2987C7121F2EE"
+  },
+  {
+    "Path": "backup-manifest.json",
+    "Bytes": 164856,
+    "Sha256": "F55D2BC5A1F8A9DBE0425DC0D4A301FF8FE3237A3B2E3163D5D6BD08BC9FE4FF"
+  }
+]

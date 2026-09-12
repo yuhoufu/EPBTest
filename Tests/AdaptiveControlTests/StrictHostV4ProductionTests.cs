@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -23,7 +23,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V2.17.1.1 release assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
+            Run("V3.0.0.0 release assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
             Run("strict bootstrap format2", StrictBootstrapFormat2, ref passed);
             Run("approved intent durable", ApprovedToIntent, ref passed);
             Run("approved permit取消后耐久Superseded且重启不可消费", ApprovedPermitRevocationIsDurable, ref passed);
@@ -51,29 +51,31 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(2, 17, 1, 1);
+            var expected = new Version(3, 0, 0, 0);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
-                "Protocol assembly version is not V2.17.1.1");
+                "Protocol assembly version is not V3.0.0.0");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,
-                "Client assembly version is not V2.17.1.1");
+                "Client assembly version is not V3.0.0.0");
             Require(typeof(StrictHostV4AuthorityAdapter).Assembly.GetName().Version == expected,
-                "Host assembly version is not V2.17.1.1");
+                "Host assembly version is not V3.0.0.0");
             Require(typeof(Main_Frm).Assembly.GetName().Version == expected,
-                "Main application assembly version is not V2.17.1.1");
+                "Main application assembly version is not V3.0.0.0");
             Require(typeof(EpbManager).Assembly.GetName().Version == expected,
-                "Controller assembly version is not V2.17.1.1");
+                "Controller assembly version is not V3.0.0.0");
+            Require(typeof(MTTFTest.RecoveryControl.RecoveryControlStore).Assembly.GetName().Version == expected,
+                "RecoveryControl assembly version is not V3.0.0.0");
             Require(typeof(MTTFTest.SafetyAgent.SafetyAgentRunner).Assembly
                         .GetName().Version == expected,
-                "SafetyAgent assembly version is not V2.17.1.1");
+                "SafetyAgent assembly version is not V3.0.0.0");
             Require(typeof(MTTFTest.SafetyHardware.SafetyHardwareConfiguration).Assembly
                         .GetName().Version == expected,
-                "SafetyHardware assembly version is not V2.17.1.1");
+                "SafetyHardware assembly version is not V3.0.0.0");
             var sessionAgentPath = Path.Combine(
                 AppDomain.CurrentDomain.BaseDirectory,
                 "MTTFTest.SessionAgent.exe");
             Require(File.Exists(sessionAgentPath) &&
                     System.Reflection.AssemblyName.GetAssemblyName(sessionAgentPath).Version == expected,
-                "SessionAgent assembly version is not V2.17.1.1");
+                "SessionAgent assembly version is not V3.0.0.0");
             Require(WatchdogProtocol.Version == 7 &&
                     WatchdogJournalPolicy.CurrentSchemaVersion == 6 &&
                     DurableRelaunchAuthorityV4Validator.RequiredFormatRevision == 2,
@@ -609,7 +611,15 @@ namespace AdaptiveControlTests
                     Require(intent.Succeeded && capability != null, "strict process intent failed");
                     var launcher = new GuardedProcessLauncher(
                         strict.IsCapabilityCurrent,
-                        strict.ConsumeLaunchIntent);
+                        strict.ConsumeLaunchIntent,
+                        prepared => Process.Start(new ProcessStartInfo
+                        {
+                            // Test only the validated one-shot boundary using
+                            // this harness child, never the installed Supervisor.
+                            FileName = prepared.ExecutablePath, Arguments = prepared.Arguments,
+                            WorkingDirectory = prepared.WorkingDirectory,
+                            UseShellExecute = false, CreateNoWindow = true
+                        }));
                     owner = launcher.Start(capability);
                     Require(owner != null && owner.Process != null,
                         "guarded Process.Start returned no owner");

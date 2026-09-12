@@ -30,11 +30,16 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="TestMainProgram.cs" />
+    <Compile Include="GuardTestRun.cs" />
     <Compile Include="..\..\MTTfTest\LaunchCapabilityGate.cs">
       <Link>LaunchCapabilityGate.cs</Link>
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\RecoveryControl\RecoveryControl.csproj">
+      <Project>{DBBB1D9E-7969-4ECB-A11F-A39C8E415470}</Project>
+      <Name>MTTFTest.RecoveryControl</Name>
+    </ProjectReference>
     <ProjectReference Include="..\..\Watchdog.Protocol\Watchdog.Protocol.csproj">
       <Project>{E73C3F6B-74EE-45E1-A819-9A402777E862}</Project>
       <Name>Watchdog.Protocol</Name>

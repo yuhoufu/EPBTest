@@ -25,6 +25,20 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length >= 3 && args[0] == "--safety-supervised-child")
+                {
+                    File.AppendAllText(Path.GetFullPath(args[1]), Process.GetCurrentProcess().Id + Environment.NewLine);
+                    using (var release = EventWaitHandle.OpenExisting(args[2])) release.WaitOne(10000);
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--recoveryguard-runtime")
+                {
+                    _passed += RecoveryGuardSupervisorTests.RunAll();
+                    _passed += RecoveryGuardRuntimeTests.RunAll();
+                    _passed += RecoveryLaunchReconciliationTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 2 && args[0].Equals("--i0049-soak", StringComparison.OrdinalIgnoreCase))
                     return I0049RecoveryTests.RunSoak(args[1]);
                 if (args.Length == 1 && args[0].Equals("--i0049", StringComparison.OrdinalIgnoreCase))
@@ -777,6 +791,9 @@ namespace AdaptiveControlTests
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += PswTcpClientTimeoutTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
+                _passed += RecoveryLaunchReconciliationTests.RunAll();
+                _passed += RecoveryGuardRuntimeTests.RunAll();
+                _passed += RecoveryGuardSupervisorTests.RunAll();
                 _passed += V216StabilityTests.RunAll();
                 _passed += V217StabilityTests.RunAll();
                 _passed += I0049RecoveryTests.RunAll();

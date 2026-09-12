@@ -25,6 +25,10 @@ public sealed class EpbWriteTiming
     public double RingFlushMs { get; internal set; }
     public double CheckpointMs { get; internal set; }
     public double RawPruneMs { get; internal set; }
+    public double RawAppendMs { get; internal set; }
+    public double RawAppendGateWaitMs { get; internal set; }
+    public double ViewRemapMs { get; internal set; }
+    public double RingWriteMs { get; internal set; }
 }
 
 public sealed partial class EpbDiskWriter

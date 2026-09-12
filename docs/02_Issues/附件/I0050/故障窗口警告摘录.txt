@@ -1,0 +1,28 @@
+2026-09-07 01:10:17.946	WARN	FIELD	FieldMetric DAQ_FRESHNESS_SAFETY_CUTOFF Device=Dev1 EPB=4 Generation=2 Action=MotorOffAndAbortCurrentCycle;DaqRestart=false;EscalationOwner=DaqLivenessSupervisor Detail=DaqFreshnessSafetyCutoff>250ms Root=DaqCallbackStale CallbackAge=265.1ms ControlEnqueueAge=265.1ms ControlProcessedAge=265.0ms ProcessedSampleUtc=2026-09-06T17:10:16.4084996Z Original=DaqSampleStale>250ms
+2026-09-07 01:10:17.946	WARN	FIELD	FieldMetric DAQ_LIVENESS Result=Warn Device=Dev1 DAQ回调年龄=265.1ms。 RunId=ae2fbd7201b64f74b704eb4c4bbc2a89 RunEpoch=1
+2026-09-07 01:10:18.636	WARN	FIELD	FieldMetric DAQ_FRESHNESS_SAFETY_CUTOFF Device=Dev1 EPB=5 Generation=2 Action=MotorOffAndAbortCurrentCycle;DaqRestart=false;EscalationOwner=DaqLivenessSupervisor Detail=DaqFreshnessSafetyCutoff>250ms Root=DaqCallbackStale CallbackAge=954.7ms ControlEnqueueAge=954.7ms ControlProcessedAge=954.6ms ProcessedSampleUtc=2026-09-06T17:10:16.4084996Z Original=DaqSampleStale>250ms
+2026-09-07 01:10:18.813	WARN	液压协调	液压代次成员作废：EPB=4 Key=ae2fbd7201b64f74b704eb4c4bbc2a89/1/Formal/658 Epoch=1 Reason=HydraulicSelfHealingQueued:HydraulicSampleStale
+2026-09-07 01:10:18.820	WARN	液压协调	液压代次成员作废：EPB=5 Key=ae2fbd7201b64f74b704eb4c4bbc2a89/1/Formal/658 Epoch=1 Reason=HydraulicSelfHealingQueued:HydraulicSampleStale
+2026-09-07 01:10:18.851	WARN	液压协调	液压组1软件同步故障进入自愈，不发布全局SystemFault。Code=HydraulicSampleStale Channels=[4,5] Reason=HydraulicSampleStale Hydraulic=1 Generation=658 Reason=StaleSample Actual=70.835bar Minimum=60.000bar AgeMs=1109.3
+2026-09-07 01:10:18.854	WARN	EPB	EPB[5] 周期 37762 返回失败：Kind=HardFault Stage=Faulted Reason=DaqSampleStale>250ms Peak=0.000A Target=0.000A Error=0.000A
+2026-09-07 01:10:18.868	WARN	落盘	EPB[5] 周期 37762 已由DAQ时钟恢复流程封存，跳过周期尾重复记账。
+2026-09-07 01:10:18.869	WARN	Timer	StaleTimerEventIgnored Channel=5 Code=RecoveryOwnsChannelLifecycle SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=1 CurrentRunEpoch=1 RuntimeState=Recovering TimerState=Paused
+2026-09-07 01:10:18.869	WARN	Timer	周期 649 返回失败
+2026-09-07 01:10:18.884	WARN	EPB	EPB[4] 周期 37762 返回失败：Kind=HardFault Stage=Faulted Reason=DaqSampleStale>250ms Peak=0.000A Target=0.000A Error=0.000A
+2026-09-07 01:10:18.899	WARN	落盘	EPB[4] 周期 37762 已由DAQ时钟恢复流程封存，跳过周期尾重复记账。
+2026-09-07 01:10:18.899	WARN	Timer	StaleTimerEventIgnored Channel=4 Code=RecoveryOwnsChannelLifecycle SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=1 CurrentRunEpoch=1 RuntimeState=Recovering TimerState=Paused
+2026-09-07 01:10:18.899	WARN	Timer	周期 649 返回失败
+2026-09-07 01:10:19.030	WARN	液压协调	液压运行代次已由StopAll强制撤权：RunId=ae2fbd7201b64f74b704eb4c4bbc2a89 Objects=5 Groups=[2] Reason=StopAll:SystemFault:b8c1e350365948d18e4ac3e2efe6fb22
+2026-09-07 01:10:19.093	WARN	Timer	周期 649 返回失败
+2026-09-07 01:10:19.093	WARN	Timer	周期 649 返回失败
+2026-09-07 01:10:19.101	WARN	EPB	EPB[8] 周期 37636 返回失败：Kind=Canceled Stage=Idle Reason=Canceled Peak=0.000A Target=0.000A Error=0.000A
+2026-09-07 01:10:19.102	WARN	Timer	周期 649 返回失败
+2026-09-07 01:10:19.102	WARN	停止事务	StopCleanupOperationFailed Transaction=b8c1e350365948d18e4ac3e2efe6fb22 Channel=8 Operation=CyclePauseCts.CancelDispose ElapsedMs=0 Result=ObjectDisposedException:CancellationTokenSource 已释放。
+2026-09-07 01:10:19.102	WARN	EPB	EPB[7] 周期 37601 返回失败：Kind=Canceled Stage=Idle Reason=Canceled Peak=0.000A Target=0.000A Error=0.000A
+2026-09-07 01:10:19.102	WARN	Timer	周期 649 返回失败
+2026-09-07 01:10:19.108	WARN	停止事务	StopCleanupOperationFailed Transaction=b8c1e350365948d18e4ac3e2efe6fb22 Channel=7 Operation=CyclePauseCts.CancelDispose ElapsedMs=5 Result=ObjectDisposedException:CancellationTokenSource 已释放。
+2026-09-07 01:10:23.876	WARN	停止事务	设备已安全，后台收口异常；不要求重启。Transaction=b8c1e350365948d18e4ac3e2efe6fb22;Channel=7/Operation=CyclePauseCts.CancelDispose/Failed=ObjectDisposedException:CancellationTokenSource 已释放。,Channel=8/Operation=CyclePauseCts.CancelDispose/Failed=ObjectDisposedException:CancellationTokenSource 已释放。
+2026-09-07 01:10:25.900	WARN	程控电源	程控电源遥测清理线程未在退出窗口内完成；保留其待处理封存段。
+2026-09-07 01:10:29.279	WARN	液压协调	StopAll检测到液压组1压力证据陈旧；所有输出保持断能，已只恢复DAQ采样 Channels=[1,2,3,4,5,6]，现在重新确认新鲜压力。
+2026-09-07 01:10:33.993	WARN	独立看门狗	ApplicationExitTargetExceeded Reason=WatchdogStopAllCompleted:4242528738cc489f9c5ed0d96fcddb7d;TargetSeconds=10;继续等待仅用于完成数据落盘或既有安全交接。
+2026-09-07 01:10:34.451	WARN	液压协调	StopAll检测到液压组2压力证据陈旧；所有输出保持断能，已只恢复DAQ采样 Channels=[7,8,9,10,11,12]，现在重新确认新鲜压力。

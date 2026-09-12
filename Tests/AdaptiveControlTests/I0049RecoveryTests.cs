@@ -40,7 +40,7 @@ namespace AdaptiveControlTests
                 {
                     var json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new
                     {
-                        version = "2.17.3.0", state, startedUtc = started.ToString("O"),
+                        version = typeof(EpbManager).Assembly.GetName().Version.ToString(), state, startedUtc = started.ToString("O"),
                         updatedUtc = DateTime.UtcNow.ToString("O"), elapsedSeconds = clock.Elapsed.TotalSeconds,
                         requiredSeconds = 21600, rounds, processId = process.Id,
                         processStartTicks = process.StartTime.ToUniversalTime().Ticks,

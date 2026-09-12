@@ -14,7 +14,7 @@ $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
 $healthTaskName = 'MTTFTestRecoveryHealth'
-$shortcutName = 'MT EPB 试验系统 V2.17.lnk'
+$shortcutName = 'MT EPB 试验系统.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
 $runtimeConfigNames = @(
     'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
@@ -155,6 +155,15 @@ function Install-CurrentSlot([string]$Source, [string]$Root) {
     }
 }
 
+function Get-DeploymentFileSha256([string]$Path) {
+    # 使用只读流，避免 Windows PowerShell 5.1 Get-FileHash 的内部
+    # ProviderPath 查询受脚本 -WhatIf 影响而不返回摘要。
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
+    finally { $algorithm.Dispose(); $stream.Dispose() }
+}
+
 function Get-VerifiedDeploymentIdentity([string]$Directory) {
     Assert-RequiredProgramFiles $Directory
     $directoryFull = Resolve-SafeDirectory $Directory 'PackageDirectory'
@@ -165,17 +174,27 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
         @($identity.files).Count -eq 0) {
         throw "安装包身份不完整：$directoryFull"
     }
+    $packageVersion = [Version]$identity.fileVersion
+    $isGuardRelease = $packageVersion -eq [Version]'3.0.0.0'
+    $isLegacyRelease = $packageVersion.Major -eq 2 -and $packageVersion.Minor -eq 17
+    $expectedComponents = @('MTTFTest.exe', 'Controller.dll', 'MTTFTest.Watchdog.exe',
+        'MTTFTest.SafetyAgent.exe', 'MTTFTest.SessionAgent.exe', 'MTTFTest.SafetyHardware.dll',
+        'MTTFTest.Watchdog.Protocol.dll', 'MTTFTest.Watchdog.Client.dll')
+    if ($isGuardRelease) { $expectedComponents += 'MTTFTest.RecoveryControl.dll' }
     if ([string]$identity.recoveryArchitectureGeneration -ne 'EPB-V2.17' -or
         [int]$identity.watchdogSchema -ne 7 -or
         [string]$identity.releaseStatus -ne 'FORMAL_RELEASE' -or
         -not [bool]$identity.deploymentApproved -or
-        ([Version]$identity.fileVersion).Major -ne 2 -or
-        ([Version]$identity.fileVersion).Minor -ne 17 -or
-        @($identity.componentIdentities).Count -ne 8) {
-        throw "拒绝旧许可、V3 混装或非正式包：$directoryFull"
+        (-not $isGuardRelease -and -not $isLegacyRelease) -or
+        ($isGuardRelease -and [int]$identity.sessionAgentSchema -ne 8) -or
+        @($identity.componentIdentities).Count -ne $expectedComponents.Count) {
+        throw "拒绝不兼容协议、组件架构混装或非正式包：$directoryFull"
     }
+    $componentNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($component in @($identity.componentIdentities)) {
-        if ([string]$component.fileVersion -ne [string]$identity.fileVersion -or
+        if ([string]$component.name -notin $expectedComponents -or
+            -not $componentNames.Add([string]$component.name) -or
+            [string]$component.fileVersion -ne [string]$identity.fileVersion -or
             [IO.Path]::GetFileName([string]$component.name) -ne [string]$component.name -or
             (Get-Item -LiteralPath (Join-Path $directoryFull ([string]$component.name))).VersionInfo.FileVersion -ne [string]$identity.fileVersion) {
             throw "正式组件版本混装：$($component.name)"
@@ -195,7 +214,7 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
         if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
             -not (Test-Path -LiteralPath $path -PathType Leaf) -or
             [string]$file.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or
-            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne [string]$file.sha256) {
+            (Get-DeploymentFileSha256 $path) -ne [string]$file.sha256) {
             throw "安装包文件缺失或哈希不一致：$path"
         }
         $paths.Add($relative.Replace('\','/'), $path)
@@ -214,7 +233,7 @@ function Get-VerifiedDeploymentIdentity([string]$Directory) {
     return [pscustomobject]@{
         GitCommit = [string]$identity.gitCommit
         PackageContentSha256 = [string]$identity.packageContentSha256
-        IdentitySha256 = (Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash
+        IdentitySha256 = Get-DeploymentFileSha256 $identityPath
         DeploymentApproved = [bool]$identity.deploymentApproved
         RecoveryArchitectureGeneration = [string]$identity.recoveryArchitectureGeneration
         WatchdogSchema = [int]$identity.watchdogSchema
@@ -535,7 +554,10 @@ function Invoke-LegacyCheckpointSafeRollover([string]$Root) {
             if (-not $PhysicalIsolationConfirmed -and (-not [bool]$legacy.MotorOffConfirmed -or
                 -not [bool]$legacy.PressureSafeConfirmed -or
                 -not [bool]$legacy.PersistenceDrained)) {
-                throw "schema $legacySchema 会话缺少 MotorOff/PressureSafe/PersistenceDrained 三项安全证明；保持 SafeIdleAlarmed，拒绝安装新授权。"
+                if (-not $maintenanceHeld) { throw 'LegacyStopMaintenanceNotHeld' }
+                . (Join-Path $PSScriptRoot 'LegacyStopEvidence.ps1')
+                $migration['terminalStopEvidence'] = Get-LiveLegacyStopEvidence -Root $Root `
+                    -CheckpointPath $checkpoint -Checkpoint $legacy -ArchiveRoot $archiveRoot
             }
 
             foreach ($path in @($checkpoint, "$checkpoint.bak")) {
@@ -624,6 +646,15 @@ function Write-ConfiguredMarker([string]$Root) {
 }
 
 function Get-ShortcutPaths([string]$Name = $shortcutName) {
+    if ($Name -eq $shortcutName -and -not [string]::IsNullOrWhiteSpace($root)) {
+        $installedExe = Join-Path $root 'Current\MTTFTest.exe'
+        if (Test-Path -LiteralPath $installedExe -PathType Leaf) {
+            $installedVersion = (Get-Item -LiteralPath $installedExe).VersionInfo.FileVersion
+            if (-not [string]::IsNullOrWhiteSpace($installedVersion)) {
+                $Name = "MT EPB 试验系统 V$installedVersion.lnk"
+            }
+        }
+    }
     $paths = @()
     $desktop = [Environment]::GetFolderPath('DesktopDirectory')
     $programs = [Environment]::GetFolderPath('Programs')
@@ -646,7 +677,7 @@ function Install-Shortcuts([string]$Root) {
     }
     $targetVersion = (Get-Item -LiteralPath $target).VersionInfo.FileVersion
     if ([string]::IsNullOrWhiteSpace($targetVersion)) { $targetVersion = '未知版本' }
-    foreach ($legacy in @(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk')) {
+    foreach ($legacy in @(@(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk') + @(Get-ShortcutPaths 'MT EPB 试验系统 V2.17.lnk'))) {
         if (Test-Path -LiteralPath $legacy -PathType Leaf) {
             Remove-Item -LiteralPath $legacy -Force -Confirm:$false
         }
@@ -677,6 +708,7 @@ function Install-Shortcuts([string]$Root) {
 function Remove-Shortcuts {
     foreach ($path in @(
             @(Get-ShortcutPaths) +
+            @(Get-ShortcutPaths 'MT EPB 试验系统 V2.17.lnk') +
             @(Get-ShortcutPaths 'MT EPB 试验系统 V2.14.lnk'))) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Remove-Item -LiteralPath $path -Force -Confirm:$false

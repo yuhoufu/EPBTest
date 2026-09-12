@@ -7,16 +7,82 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+function Assert-GuardTaskOwnership([string]$ActualXml, [string]$Directory, [string]$StateDirectory, [bool]$Execution) {
+    if ([string]::IsNullOrWhiteSpace($ActualXml) -or $ActualXml.Length -gt 65536) { throw 'Guard 任务归属无法确认。' }
+    $readerSettings = New-Object Xml.XmlReaderSettings
+    $readerSettings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+    $readerSettings.XmlResolver = $null
+    $reader = [Xml.XmlReader]::Create((New-Object IO.StringReader($ActualXml)), $readerSettings)
+    try {
+        $actual = New-Object Xml.XmlDocument
+        $actual.XmlResolver = $null
+        $actual.Load($reader)
+    } finally { $reader.Dispose() }
+    $ns = New-Object Xml.XmlNamespaceManager($actual.NameTable)
+    $ns.AddNamespace('t', 'http://schemas.microsoft.com/windows/2004/02/mit/task')
+    $actions = @($actual.SelectNodes('/t:Task/t:Actions/*', $ns))
+    $principals = @($actual.SelectNodes('/t:Task/t:Principals/t:Principal', $ns))
+    $verb = if ($Execution) { '--execute' } else { '--check' }
+    $journalName = if ($Execution) { 'execution-journal' } else { 'journal' }
+    $expectedArguments = $verb + ' --settings "' + (Join-Path $StateDirectory 'guard-settings.json') +
+        '" --journal "' + (Join-Path $StateDirectory $journalName) + '"'
+    if ($actions.Count -ne 1 -or $actions[0].LocalName -ne 'Exec' -or $principals.Count -ne 1 -or
+        $principals[0].UserId -ne 'S-1-5-18' -or
+        (-not [string]::IsNullOrEmpty([string]$principals[0].LogonType) -and
+            $principals[0].LogonType -ne 'ServiceAccount') -or
+        $principals[0].RunLevel -ne 'HighestAvailable' -or
+        $actual.Task.Actions.Context -ne $principals[0].id -or
+        $actions[0].Command -ine (Join-Path $Directory 'MTTFTest.RecoveryGuard.exe') -or
+        $actions[0].WorkingDirectory -ine $Directory -or $actions[0].Arguments -cne $expectedArguments) {
+        throw 'Guard 同名任务不属于已登记安装，拒绝覆盖或卸载。'
+    }
+}
+
+function Get-MaintenanceGuard {
+    $directory = Join-Path $env:ProgramData 'MTTFTestRecoveryGuard'
+    $registration = Join-Path $directory 'installation.json'
+    $tasks = @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object TaskName -in @('MTTFTestRecoveryGuard','MTTFTestRecoveryGuardExecution'))
+    if (-not (Test-Path -LiteralPath $registration)) {
+        if ($tasks.Count -gt 0) { throw 'IdentityBlocked: Guard任务没有安装登记。' }
+        return $null
+    }
+    $record = [IO.File]::ReadAllText($registration) | ConvertFrom-Json
+    $installed = [IO.Path]::GetFullPath([string]$record.directory)
+    $prefix = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'MTTFTestRecoveryGuard\versions') + '\'
+    if ($record.schemaVersion -ne 2 -or -not $installed.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'IdentityBlocked: Guard安装登记路径不匹配。'
+    }
+    foreach ($task in $tasks) {
+        Assert-GuardTaskOwnership (Export-ScheduledTask -TaskName $task.TaskName -TaskPath '\') $installed $directory ($task.TaskName -eq 'MTTFTestRecoveryGuardExecution')
+    }
+    return (Join-Path $installed 'MTTFTest.RecoveryGuard.exe')
+}
+
+function Assert-MaintenanceGuardIdle([string]$Exe, [switch]$StopIntent) {
+    if ([string]::IsNullOrWhiteSpace($Exe)) { return }
+    $raw = @(& $Exe --status)
+    if ($LASTEXITCODE -ne 0) { throw 'SafetyBlocked: Guard共享状态不可读。' }
+    $guardStatus = ($raw -join '') | ConvertFrom-Json
+    if ($null -ne $guardStatus.Transaction -and -not $guardStatus.Transaction.OwnershipReleased) {
+        throw 'SafetyBlocked: Guard接管所有权尚未收口，禁止终止执行者。'
+    }
+    if ($StopIntent -and $null -ne $guardStatus.Intent) {
+        $null = & $Exe --stop --authorization $guardStatus.Intent.AuthorizationId --intent-version $guardStatus.Intent.IntentVersion
+        if ($LASTEXITCODE -ne 0) { throw 'SafetyBlocked: Guard人工停止撤权未完成。' }
+    }
+}
 function Get-RelatedProcesses([string]$Root) {
     $prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
     foreach ($name in @('MTTFTest.exe','MTTFTest.Watchdog.exe','MTTFTest.SessionAgent.exe',
-            'MTTFTest.SafetyAgent.exe','MTTFTest.EngineHost.exe')) {
+            'MTTFTest.SafetyAgent.exe','MTTFTest.EngineHost.exe','MTTFTest.RecoveryGuard.exe')) {
         foreach ($item in @(Get-CimInstance Win32_Process -Filter "Name='$name'" -ErrorAction Stop)) {
             if ([string]::IsNullOrWhiteSpace([string]$item.ExecutablePath)) {
                 throw "IdentityBlocked: 无法读取 $name PID=$($item.ProcessId) 的路径。"
             }
             $path = [IO.Path]::GetFullPath([string]$item.ExecutablePath)
-            if (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ($name -eq 'MTTFTest.RecoveryGuard.exe') {
+                if ([string]::IsNullOrWhiteSpace($guardExe) -or $path -ine $guardExe) { throw 'IdentityBlocked: 发现未归属当前登记的Guard进程。' }
+            } elseif (-not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
             $proc = Get-Process -Id ([int]$item.ProcessId) -ErrorAction SilentlyContinue
             if ($null -eq $proc) { continue }
             try {
@@ -76,8 +142,9 @@ if ([IO.Path]::GetFileName($root) -ne 'MTTFTest') { throw 'InstallRoot 必须明
 $stateRoot = Join-Path $env:ProgramData 'MTTFTest'
 $inhibit = Join-Path $stateRoot 'maintenance-inhibit.json'
 $serviceName = 'MTTFTestSupervisor'
-$taskNames = @('MTTFTestSessionAgent', 'MTTFTestAutoStart')
+$taskNames = @('MTTFTestSessionAgent', 'MTTFTestAutoStart', 'MTTFTestRecoveryHealth', 'MTTFTestRecoveryGuard', 'MTTFTestRecoveryGuardExecution')
 if ($Mode -eq 'Status') {
+    $guardExe = Get-MaintenanceGuard
     [pscustomobject]@{ Inhibited=(Test-Path -LiteralPath $inhibit); Processes=@(Get-RelatedProcesses $root) } | ConvertTo-Json -Depth 5
     return
 }
@@ -87,6 +154,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 [void](New-Item -ItemType Directory -Path $stateRoot -Force)
 $mutex = New-Object Threading.Mutex($false, 'Global\MTTFTest.Maintenance.V217')
 $owned = $false
+$guardGate = $null
+$guardGateHeld = $false
 try {
     $owned = $mutex.WaitOne(0)
     if (-not $owned) { throw 'RestartSourceBlocked: 另一个维护事务正在运行。' }
@@ -95,6 +164,11 @@ try {
         $state = [IO.File]::ReadAllText($inhibit, [Text.Encoding]::UTF8) | ConvertFrom-Json
         if ([string]$state.InstallRoot -ne $root) { throw 'IdentityBlocked: 维护事务属于另一安装目录。' }
     }
+    $guardExe = Get-MaintenanceGuard
+    $guardGate = New-Object Threading.Mutex($false, 'Global\MTTFTest.RecoveryGuard.Execution')
+    try { $guardGateHeld = $guardGate.WaitOne(3000) } catch [Threading.AbandonedMutexException] { $guardGateHeld = $true }
+    if (-not $guardGateHeld) { throw 'SafetyBlocked: Guard执行者仍在运行，禁止停止或恢复后台。' }
+    Assert-MaintenanceGuardIdle $guardExe
     if ($Mode -eq 'Restore') {
         if ($null -eq $state) { Write-Host '没有清场事务，无需恢复。'; return }
         if (-not [bool]$state.CleanupCompleted) { throw 'SafetyBlocked: 清场未完成，禁止恢复后台拉起。' }
@@ -141,6 +215,7 @@ try {
             CleanupCompleted=$false; HardwareEvidence='NotProven'; RestoredUtc=''; Error='' }
         Write-MaintenanceJson $inhibit $state
     }
+    Assert-MaintenanceGuardIdle $guardExe -StopIntent
     foreach ($task in @($state.Tasks)) {
         Disable-ScheduledTask -TaskName $task.Name | Out-Null
         Stop-ScheduledTask -TaskName $task.Name
@@ -179,7 +254,7 @@ try {
         Stop-Service -Name $serviceName -Force
         (Get-Service $serviceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
-    foreach ($name in @('MTTFTest.exe','MTTFTest.SessionAgent.exe','MTTFTest.Watchdog.exe','MTTFTest.EngineHost.exe','MTTFTest.SafetyAgent.exe')) {
+    foreach ($name in @('MTTFTest.exe','MTTFTest.SessionAgent.exe','MTTFTest.Watchdog.exe','MTTFTest.EngineHost.exe','MTTFTest.SafetyAgent.exe','MTTFTest.RecoveryGuard.exe')) {
         foreach ($proc in @(Get-RelatedProcesses $root | Where-Object { $_.Name -eq $name })) { Stop-ExactProcess $proc }
     }
     Start-Sleep -Seconds 2
@@ -198,4 +273,4 @@ catch {
     if ($_.Exception.Message -like '*ResidualProcess:*') { exit 40 }
     exit 30
 }
-finally { if ($owned) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+finally { if ($guardGateHeld) { $guardGate.ReleaseMutex() }; if ($null -ne $guardGate) { $guardGate.Dispose() }; if ($owned) { $mutex.ReleaseMutex() }; $mutex.Dispose() }

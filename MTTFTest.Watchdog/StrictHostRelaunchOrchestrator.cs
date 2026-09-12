@@ -7,6 +7,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using MTTFTest.Watchdog.Protocol;
+using MTTFTest.RecoveryControl;
 
 namespace MTTFTest.Watchdog
 {
@@ -87,6 +88,7 @@ namespace MTTFTest.Watchdog
         private readonly string _journalDirectory;
         private readonly string _sessionId;
         private readonly string _sessionNonce;
+        private readonly RecoveryControlStore _recoveryControl;
         private readonly int _sidecarPid;
         private readonly long _sidecarStartTicks;
         private readonly object _packageSlotGate = new object();
@@ -98,12 +100,14 @@ namespace MTTFTest.Watchdog
             new ConcurrentDictionary<long, string>();
 
         internal StrictHostV4AuthorityAdapter(
-            WatchdogArguments args, int sidecarPid, long sidecarStartTicks)
+            WatchdogArguments args, int sidecarPid, long sidecarStartTicks,
+            RecoveryControlStore recoveryControl = null)
         {
             if (args == null) throw new ArgumentNullException(nameof(args));
             _sessionId = args.SessionId;
             _journalDirectory = args.JournalDirectory;
             _sessionNonce = args.SidecarInstanceNonce;
+            _recoveryControl = recoveryControl ?? new RecoveryControlStore();
             _sidecarPid = sidecarPid;
             _sidecarStartTicks = sidecarStartTicks;
             _executablePath = Path.GetFullPath(args.ExecutablePath);
@@ -173,7 +177,7 @@ namespace MTTFTest.Watchdog
                 request?.RunEpoch ?? 0,
                 request?.RecoveryStage,
                 budget);
-            var decision = _authority.RegisterFailureAndDecide(operation);
+            var decision = RegisterFailure(operation);
             return ProjectDecision(decision);
         }
 
@@ -183,13 +187,41 @@ namespace MTTFTest.Watchdog
             // In particular, do not close a permit and then register a second
             // operation: that split would create a window in which a crash can
             // lose the failure or consume a new launch generation.
-            return _authority.RegisterFailureAndDecide(operation);
+            return WithLegacyPermitAdmission(operation?.RunId,
+                () => _authority.RegisterFailureAndDecide(operation),
+                reason => _authority.DeferFailureDecision(reason));
+        }
+
+        private T WithLegacyPermitAdmission<T>(string runId, Func<T> action, Func<string, T> deferred)
+        {
+            if (!_recoveryControl.IsRegisteredOrPending) return action();
+            var admitted = false;
+            try
+            {
+                return _recoveryControl.RunLegacyRecoveryAuthorityMutation(_sessionId, runId, DateTime.UtcNow, () =>
+                {
+                    admitted = true;
+                    return action();
+                });
+            }
+            catch (Exception ex) when (!admitted && (ex is InvalidOperationException ||
+                ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException))
+            {
+                return deferred("RecoveryLegacyPermitDeferred:" + ex.Message);
+            }
         }
 
         internal DurableRelaunchResult BeginLaunch(DurableRelaunchPermitIdentity identity) =>
             BeginLaunch(identity, string.Empty);
 
         internal DurableRelaunchResult BeginLaunch(DurableRelaunchPermitIdentity identity, string arguments)
+        {
+            return WithLegacyPermitAdmission(_authority.Snapshot?.RunId,
+                () => BeginLaunchCore(identity, arguments),
+                reason => ProjectDecision(_authority.DeferFailureDecision(reason)));
+        }
+
+        private DurableRelaunchResult BeginLaunchCore(DurableRelaunchPermitIdentity identity, string arguments)
         {
             var record = _authority.Snapshot;
             if (!Matches(record, identity)) return Result(false, false, false, "PermitIdentityMismatch", record);
@@ -264,6 +296,58 @@ namespace MTTFTest.Watchdog
                 transition?.Status ?? DurableAuthorityTransitionStatus.Unproven);
         }
 
+        // Handoff from Supervisor-created processes. Never import an
+        // unconsumed launch capability or clear an unproven authority by reset.
+        internal bool TryRefreshGuardCreatedProcess(long generation, string permitId, string permitNonce,
+            int processId, long processStartUtcTicks, out string failure)
+            => TryRefreshGuardCreatedProcess(generation, permitId, permitNonce, processId, processStartUtcTicks, out failure, out _);
+
+        internal bool TryRefreshGuardCreatedProcess(long generation, string permitId, string permitNonce,
+            int processId, long processStartUtcTicks, out string failure, out bool guardAttachment)
+        {
+            failure = null;
+            guardAttachment = false;
+            if (!_recoveryControl.IsRegisteredOrPending) return true;
+            try
+            {
+                var state = _recoveryControl.Read();
+                if (state.Transaction == null || state.Transaction.OwnershipReleased) return true;
+                var opened = DurableRelaunchAuthorityV4Factory.TryOpenExisting(_journalDirectory, _sessionId);
+                if (opened?.Succeeded != true) throw new InvalidDataException("RecoveryGuardAttachmentAuthorityUnproven");
+                var resumed = opened.Authority.ResumeLaunchIntent();
+                var record = resumed?.Record;
+                if (resumed?.Succeeded != true || resumed.Capability == null || record == null ||
+                    (record.State != DurableRelaunchPermitState.Started && record.State != DurableRelaunchPermitState.Attached) ||
+                    record.Generation != generation || record.PermitId != permitId || record.PermitNonce != permitNonce ||
+                    record.ProcessId != processId || record.ProcessStartUtcTicks != processStartUtcTicks)
+                    throw new InvalidDataException("RecoveryGuardAttachmentStrictIdentityMismatch");
+                var launch = state.Launches.SingleOrDefault(l => l.OperationId == record.LaunchIntentId);
+                if (launch?.Process?.IsValid() != true || launch.Process.ProcessId != processId ||
+                    launch.Process.StartUtcTicks != processStartUtcTicks ||
+                    !string.Equals(launch.Process.ExecutablePath, record.LaunchExecutablePath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("RecoveryGuardAttachmentCreationEvidenceMismatch");
+                _recoveryControl.AssertGuardCreatedAttachment(_sessionId, record.LaunchIntentId, launch.Process, DateTime.UtcNow);
+                var history = RecoveryReplacementTransactionStore.Advance(_journalDirectory, _sessionId,
+                    record.Generation, record.PermitId, RecoveryReplacementState.MainStarted,
+                    "Guard exact creation reconciled;Operation=" + record.LaunchIntentId);
+                if (history?.Succeeded != true)
+                    throw new InvalidDataException("RecoveryGuardAttachmentHistoryDeferred:" + history?.Reason);
+                _recoveryControl.AssertGuardCreatedAttachment(_sessionId, record.LaunchIntentId, launch.Process, DateTime.UtcNow);
+                _authority = opened.Authority;
+                _capabilities.Clear();
+                _arguments.Clear();
+                _capabilities[record.Generation] = resumed.Capability;
+                guardAttachment = true;
+                return true;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is IOException ||
+                ex is InvalidDataException || ex is UnauthorizedAccessException)
+            {
+                failure = "RecoveryGuardAttachmentDeferred:" + ex.Message;
+                return false;
+            }
+        }
+
         internal DurableRelaunchResult CommitAttached(DurableRelaunchPermitIdentity identity, int processId, long processStartUtcTicks)
         {
             DurableLaunchIntentCapability capability;
@@ -322,6 +406,15 @@ namespace MTTFTest.Watchdog
         }
 
         internal DurableRelaunchResult TryAutomaticHalfOpen(
+            string expectedFailureFingerprint,
+            int expectedConsecutiveFailures)
+        {
+            return WithLegacyPermitAdmission(_authority.Snapshot?.RunId,
+                () => TryAutomaticHalfOpenCore(expectedFailureFingerprint, expectedConsecutiveFailures),
+                reason => ProjectDecision(_authority.DeferFailureDecision(reason)));
+        }
+
+        private DurableRelaunchResult TryAutomaticHalfOpenCore(
             string expectedFailureFingerprint,
             int expectedConsecutiveFailures)
         {

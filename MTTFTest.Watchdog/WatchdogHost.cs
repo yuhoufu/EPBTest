@@ -176,6 +176,21 @@ namespace MTTFTest.Watchdog
     /// </summary>
     internal static class WatchdogRecoveryChannelIntentPolicy
     {
+        internal static WatchdogVerifiedActiveRun GetRetainedPermitRun(WatchdogJournal journal)
+        {
+            if (journal == null || journal.ManualStopRequested || journal.RecoveryBlocked ||
+                !string.IsNullOrWhiteSpace(journal.RunId)) return null;
+            var run = journal.LastVerifiedActiveRun;
+            if (run == null || !Guid.TryParseExact(run.RunId, "N", out var id) ||
+                id == Guid.Empty || run.RunEpoch <= 0 || journal.CurrentPid <= 0 ||
+                journal.CurrentProcessStartUtcTicks <= 0 ||
+                run.ProcessId != journal.CurrentPid ||
+                run.ProcessStartUtcTicks != journal.CurrentProcessStartUtcTicks) return null;
+            // This selects an identity only. The RecoveryControl store still rejects
+            // revoked/superseded sessions, runs, intents and Guard-owned transactions.
+            return run;
+        }
+
         internal static bool TryCaptureLastVerifiedActiveRun(
             WatchdogJournal journal,
             WatchdogHeartbeat heartbeat,
@@ -1632,6 +1647,9 @@ namespace MTTFTest.Watchdog
                             RecordEvent(
                                 "RecoveryAttachRejected",
                                 recoveryAttachFailure ?? "RecoveryAttachPermitInvalid");
+                            if ((recoveryAttachFailure ?? string.Empty).StartsWith(
+                                    "RecoveryGuardAttachmentDeferred:", StringComparison.Ordinal))
+                                break; // Rejected attachment cannot poison the Guard's current permit.
                             BlockLaunchOutcomeUnknown(
                                 recoveryAttachFailure ?? "RecoveryAttachPermitInvalid");
                             Send(
@@ -4781,14 +4799,18 @@ namespace MTTFTest.Watchdog
                     try { TryPersistJournalSnapshotLocked(); } catch { }
                     return 0;
                 }
+                var retainedPermitRun = WatchdogRecoveryChannelIntentPolicy.GetRetainedPermitRun(_journal);
                 report = new RecoveryFailureReport
                 {
                     RootCode = string.IsNullOrWhiteSpace(_journal.RecoveryFailureCode)
                         ? "WatchdogTakeover"
                         : _journal.RecoveryFailureCode,
                     DeviceOrChannelGroup = _journal.DeviceOrChannelGroup,
-                    RunId = _journal.RunId,
-                    RunEpoch = _journal.LastHeartbeat?.RunEpoch ?? 0,
+                    RunId = string.IsNullOrWhiteSpace(_journal.RunId)
+                        ? retainedPermitRun?.RunId ?? _journal.LastCheckpointMirror?.RunId : _journal.RunId,
+                    RunEpoch = string.IsNullOrWhiteSpace(_journal.RunId)
+                        ? retainedPermitRun?.RunEpoch ?? _journal.LastCheckpointMirror?.RunEpoch ?? 0
+                        : _journal.LastHeartbeat?.RunEpoch ?? 0,
                     RecoveryStage = _journal.RecoveryStage,
                     RecoveryProgressToken = _journal.RecoveryProgressToken,
                     RecoveryProcessSource = _journal.RecoveryProcessSource
@@ -4803,7 +4825,10 @@ namespace MTTFTest.Watchdog
                 correlation,
                 Interlocked.Read(ref _connectionGeneration));
             if (decision.DurableDecisionRetryPending)
+            {
+                Record("RelaunchPermitAdmissionDeferred", _journal.LastReason ?? reason);
                 return 0;
+            }
             if (decision.SafeIdleRecoveryBlocked ||
                 (!decision.ProcessRelaunchAllowed &&
                  !decision.RelaunchPermitAlreadyPending))
@@ -5185,6 +5210,9 @@ namespace MTTFTest.Watchdog
                 failure = "RecoveryAttachPermitMissing";
                 return false;
             }
+            if (!_relaunchCoordinator.TryRefreshGuardCreatedProcess(session.RelaunchGeneration,
+                session.RelaunchPermitId, session.RelaunchPermitNonce, session.ProcessId, session.ProcessStartUtcTicks, out failure, out var guardAttachment))
+                return false;
             var record = _relaunchCoordinator.Snapshot;
             if (record == null ||
                 record.Generation != session.RelaunchGeneration ||
@@ -5217,6 +5245,13 @@ namespace MTTFTest.Watchdog
                     failure = "RecoveryAttachProcessIdentityMismatch";
                     return false;
                 }
+                if (!AdvanceReplacementState(record.Generation, record.PermitId, RecoveryReplacementState.Attached,
+                    "Existing authenticated attachment reconciled"))
+                {
+                    failure = (guardAttachment ? "RecoveryGuardAttachmentDeferred:" : string.Empty) +
+                        "ReplacementTransactionPersistFailed:Attached";
+                    return false;
+                }
                 return true;
             }
             var result = ExecuteAuthorityTransitionWithBusyRetry(
@@ -5244,7 +5279,8 @@ namespace MTTFTest.Watchdog
                         RecoveryReplacementState.Attached,
                         "Authenticated recovery process attached"))
                 {
-                    failure = "ReplacementTransactionPersistFailed:Attached";
+                    failure = (guardAttachment ? "RecoveryGuardAttachmentDeferred:" : string.Empty) +
+                        "ReplacementTransactionPersistFailed:Attached";
                     return false;
                 }
                 return true;

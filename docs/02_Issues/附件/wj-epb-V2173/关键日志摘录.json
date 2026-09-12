@@ -1,0 +1,552 @@
+[
+  {
+    "Source": "error.log",
+    "Line": 1,
+    "Text": "2026-09-07 18:48:04.281\tERROR\t落盘\tDev2 持久化队列达到硬上限 256 批；已锁存安全暂停，同一拥塞事件不重复发布故障。"
+  },
+  {
+    "Source": "error.log",
+    "Line": 2,
+    "Text": "2026-09-07 18:48:04.798\tERROR\tAI\tDevice=Dev2 DAQ后台处理最老已接收批次滞后513.5ms，已超过500ms独立时效门限；保留队列数据并隔离受影响组，不等待1024批容量耗尽才发现故障。"
+  },
+  {
+    "Source": "error.log",
+    "Line": 3,
+    "Text": "2026-09-07 18:48:05.465\tERROR\tEPB\t局部软件自愈达到有界阈值，停止重复自维护并升级为一次整批安全重建。Stage=LearningExecutionRebuildRequired Attempt=3 FaultCode=ExecutionRecoveryRequired Channels=[4,5] Error=采样已恢复；旧学习执行体已撤销，需要安全重建批次并重新学习和资格验证。"
+  },
+  {
+    "Source": "error.log",
+    "Line": 4,
+    "Text": "2026-09-07 18:48:05.500\tERROR\tAI\tDAQ终态权威释放拒绝非安全/串代状态 EPB=4; State=SystemFault; Run=28aa3870923944bb87405daca7e9aaae/1; Context=28aa3870923944bb87405daca7e9aaae/1; CorrelationId=9cb9e0c7d0d24fb5ad34245ed28f325a"
+  },
+  {
+    "Source": "error.log",
+    "Line": 5,
+    "Text": "2026-09-07 18:48:05.500\tERROR\tAI\tDAQ终态权威释放拒绝非安全/串代状态 EPB=5; State=SystemFault; Run=28aa3870923944bb87405daca7e9aaae/1; Context=28aa3870923944bb87405daca7e9aaae/1; CorrelationId=9cb9e0c7d0d24fb5ad34245ed28f325a"
+  },
+  {
+    "Source": "error.log",
+    "Line": 6,
+    "Text": "2026-09-07 18:48:08.845\tERROR\t无人值守恢复\t同进程无人值守恢复失败，升级到进程自重启：System.InvalidOperationException: 重新开始清场未通过物理安全与软件逻辑不变量。 Motor=; Power=; Pressure=; Logical=; Flags=Physical=True,Motor=True,Power=True,Pressure=True,Persistence=True,Logical=True,RequiresRestart=True,TimedOut=False\\r\\n   在 Controller.EpbManager.<PrepareForFreshRestartAsync>d__114.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 1099\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ValidateEnd(Task task)\\r\\n   在 MTEmbTest.UnattendedRecoveryCoordinator.<RecoverInProcessOrRestartCoreAsync>d__36.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\MTTfTest\\\\UnattendedRecovery.cs:行号 2018"
+  },
+  {
+    "Source": "error.log",
+    "Line": 7,
+    "Text": "2026-09-07 18:48:19.450\tERROR\t独立看门狗\tTakeoverExitBlockedWithoutApprovedPermit Intent=WatchdogTakeoverExit;Transaction=c620a2d1b785402891ed0b7e53a5bdfe;Reason=WatchdogStopAllCompleted:c620a2d1b785402891ed0b7e53a5bdfe"
+  },
+  {
+    "Source": "error.log",
+    "Line": 8,
+    "Text": "2026-09-07 18:51:27.064\tERROR\tTimer\tEPB[12] Timer运行异常，进入无人值守自恢复。Code=TimerNotRunning Detail=通道仍显示运行，但Timer状态为Created。"
+  },
+  {
+    "Source": "error.log",
+    "Line": 9,
+    "Text": "2026-09-07 18:51:31.168\tERROR\tEPB\t局部软件自愈达到有界阈值，停止重复自维护并升级为一次整批安全重建。Stage=TimerRuntimeSelfHealing Attempt=3 FaultCode=Unknown Channels=[12] Error=Code=TimerNotRunning; Error=PowerEnableRejected StaleExecutionPermit Channels=[12]"
+  },
+  {
+    "Source": "error.log",
+    "Line": 10,
+    "Text": "2026-09-07 18:52:08.225\tERROR\t无人值守恢复\t同进程无人值守恢复失败，升级到进程自重启：System.OperationCanceledException: 已取消该操作。\\r\\n   在 Controller.EpbManager.<>c__DisplayClass164_0.<<RunLearningLogicalCycleWithSelfHealingAsync>b__0>d.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4626\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()\\r\\n   在 Controller.EpbManager.<>c__DisplayClass164_0.<<RunLearningLogicalCycleWithSelfHealingAsync>b__0>d.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4762\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()\\r\\n   在 Controller.EpbManager.<>c__DisplayClass164_0.<<RunLearningLogicalCycleWithSelfHealingAsync>b__0>d.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4806\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 Controller.SoftwareSelfHealingLoop.<RunAsync>d__1.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\SoftwareSelfHealingLoop.cs:行号 79\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 Controller.SoftwareSelfHealingLoop.<RunAsync>d__0.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\SoftwareSelfHealingLoop.cs:行号 49\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 Controller.EpbManager.<RunLearningLogicalCycleWithSelfHealingAsync>d__164.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4497\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ValidateEnd(Task task)\\r\\n   在 Controller.EpbManager.<>c__DisplayClass163_5.<<RunLearningPhaseAsync>b__14>d.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4379\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()\\r\\n   在 Controller.EpbManager.<>c__DisplayClass163_5.<<RunLearningPhaseAsync>b__14>d.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4394\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 Controller.FaultIsolatedPhaseWork.<RunAsync>d__0.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\FaultIsolatedPhaseWork.cs:行号 34\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 Controller.EpbManager.<>c__DisplayClass163_4.<<RunLearningPhaseAsync>b__13>d.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4338\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ValidateEnd(Task task)\\r\\n   在 Controller.EpbManager.<RunLearningPhaseAsync>d__163.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 4439\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ValidateEnd(Task task)\\r\\n   在 Controller.EpbManager.<StartBatchCoreUnderLifecycleGateAsync>d__130.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 1925\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()\\r\\n   在 Controller.EpbManager.<StartBatchCoreUnderLifecycleGateAsync>d__130.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 2298\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 Controller.BatchStartLifecycleGate.<RunAsync>d__6`1.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\BatchStartLifecycleGate.cs:行号 0\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 Controller.EpbManager.<StartBatchCoreAsync>d__129.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\EpbManager.BatchStart.cs:行号 1623\\r\\n--- 引发异常的上一位置中堆栈跟踪的末尾 ---\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)\\r\\n   在 System.Runtime.CompilerServices.TaskAwaiter.ValidateEnd(Task task)\\r\\n   在 MTEmbTest.UnattendedRecoveryCoordinator.<RecoverInProcessOrRestartCoreAsync>d__36.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\MTTfTest\\\\UnattendedRecovery.cs:行号 2086"
+  },
+  {
+    "Source": "error.log",
+    "Line": 11,
+    "Text": "2026-09-07 18:52:10.362\tERROR\tEPB\t后台异步操作失败：Task=StopSafetyRunnerSafeIdle RunId=00000000000000000000000000000000 EPB=0 StartedUtc=2026-09-07T10:52:10.3625670Z Error=无法访问已释放的对象。\\r\\n对象名:“PowerSupplyCoordinator”。 | System.ObjectDisposedException: 无法访问已释放的对象。\\r\\n对象名:“PowerSupplyCoordinator”。\\r\\n   在 Controller.PowerSupplyCoordinator.ThrowIfDisposed() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\PowerSupplyCoordinator.cs:行号 1699\\r\\n   在 Controller.PowerSupplyCoordinator.<DisableAllForSafetyAsync>d__42.MoveNext() 位置 D:\\\\Github\\\\wanxiang\\\\EPBTest\\\\Controller\\\\PowerSupplyCoordinator.cs:行号 0"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 1,
+    "Text": "2026-09-07 18:48:01.049\tWARN\t落盘\tDev1 持久化延迟。Depth=10, Oldest=107.7ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 2,
+    "Text": "2026-09-07 18:48:01.049\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=108.0ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 3,
+    "Text": "2026-09-07 18:48:02.046\tWARN\t落盘\tDev1 持久化延迟。Depth=32, Oldest=311.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 4,
+    "Text": "2026-09-07 18:48:02.062\tWARN\t落盘\tDev2 持久化延迟。Depth=34, Oldest=342.2ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 5,
+    "Text": "2026-09-07 18:48:02.721\tWARN\t落盘\tDev2 持久化积压触发安全暂停。Depth=100, Oldest=1000.7ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 7,
+    "Text": "2026-09-07 18:48:03.048\tWARN\t落盘\tDev1 持久化延迟。Depth=92, Oldest=922.5ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 8,
+    "Text": "2026-09-07 18:48:03.158\tWARN\t落盘\tDev1 持久化积压触发安全暂停。Depth=101, Oldest=1001.3ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 15,
+    "Text": "2026-09-07 18:48:05.311\tWARN\t落盘\tDev1 持久化延迟。Depth=93, Oldest=936.2ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 16,
+    "Text": "2026-09-07 18:48:05.326\tWARN\t落盘\tDev1 持久化队列已恢复。Depth=2, Oldest=0.2ms, OverCapacityDropped=0。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 20,
+    "Text": "2026-09-07 18:48:06.342\tWARN\t落盘\tDev2 持久化延迟。Depth=119, Oldest=844.6ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 41,
+    "Text": "2026-09-07 18:49:09.142\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=110.2ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 42,
+    "Text": "2026-09-07 18:49:18.838\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=107.1ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 43,
+    "Text": "2026-09-07 18:49:22.867\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=108.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 44,
+    "Text": "2026-09-07 18:49:24.178\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=109.6ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 46,
+    "Text": "2026-09-07 18:49:33.090\tWARN\t落盘\tDev1 持久化延迟。Depth=11, Oldest=110.3ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 47,
+    "Text": "2026-09-07 18:49:33.091\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=110.8ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 49,
+    "Text": "2026-09-07 18:49:34.837\tWARN\t落盘\tDev1 持久化延迟。Depth=11, Oldest=108.8ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 50,
+    "Text": "2026-09-07 18:49:34.837\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=108.8ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 51,
+    "Text": "2026-09-07 18:49:36.470\tWARN\t落盘\tDev1 持久化延迟。Depth=10, Oldest=107.1ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 52,
+    "Text": "2026-09-07 18:49:36.486\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=107.6ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 53,
+    "Text": "2026-09-07 18:49:38.200\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=109.3ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 54,
+    "Text": "2026-09-07 18:49:38.216\tWARN\t落盘\tDev1 持久化延迟。Depth=11, Oldest=109.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 55,
+    "Text": "2026-09-07 18:49:39.204\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=108.2ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 56,
+    "Text": "2026-09-07 18:49:40.417\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=109.2ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 57,
+    "Text": "2026-09-07 18:49:40.434\tWARN\t落盘\tDev1 持久化延迟。Depth=11, Oldest=109.5ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 60,
+    "Text": "2026-09-07 18:49:53.286\tWARN\t落盘\tDev1 持久化延迟。Depth=10, Oldest=110.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 61,
+    "Text": "2026-09-07 18:49:53.473\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=109.8ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 63,
+    "Text": "2026-09-07 18:50:06.331\tWARN\t落盘\tDev1 持久化延迟。Depth=10, Oldest=108.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 64,
+    "Text": "2026-09-07 18:50:06.331\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=108.2ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 65,
+    "Text": "2026-09-07 18:50:07.692\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=109.1ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 66,
+    "Text": "2026-09-07 18:50:09.210\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=110.5ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 68,
+    "Text": "2026-09-07 18:50:38.454\tWARN\t落盘\tDev2 持久化延迟。Depth=12, Oldest=110.0ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 70,
+    "Text": "2026-09-07 18:50:54.119\tWARN\t落盘\tDev1 持久化延迟。Depth=9, Oldest=108.1ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 71,
+    "Text": "2026-09-07 18:50:54.119\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=108.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 73,
+    "Text": "2026-09-07 18:51:08.307\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=107.3ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 74,
+    "Text": "2026-09-07 18:51:09.057\tWARN\t落盘\tDev1 持久化延迟。Depth=11, Oldest=109.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 75,
+    "Text": "2026-09-07 18:51:23.345\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=109.4ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 77,
+    "Text": "2026-09-07 18:51:27.135\tWARN\tTimer\tEPB[12] Timer自动重建第1次失败；三次失败将整批重建：PowerEnableRejected StaleExecutionPermit Channels=[12]"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 78,
+    "Text": "2026-09-07 18:51:28.180\tWARN\tTimer\tEPB[12] Timer自动重建第2次失败；三次失败将整批重建：PowerEnableRejected StaleExecutionPermit Channels=[12]"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 79,
+    "Text": "2026-09-07 18:51:31.164\tWARN\tTimer\tStaleTimerEventIgnored Channel=12 Code=RecoveryOwnsChannelLifecycle SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=3 CurrentRunEpoch=3 RuntimeState=Recovering TimerState=PausePending"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 80,
+    "Text": "2026-09-07 18:51:31.164\tWARN\tTimer\tStaleTimerEventIgnored Channel=12 Code=RecoveryOwnsChannelLifecycle SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=3 CurrentRunEpoch=3 RuntimeState=Recovering TimerState=Paused"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 84,
+    "Text": "2026-09-07 18:51:31.268\tWARN\t无人值守恢复\t启动同进程无人值守恢复：冻结旧批次→StopAll→逻辑清场→完整学习。Fingerprint=SoftwareRecoveryCircuitOpen|Global||Channels=12|State=Stage=TimerRuntimeSelfHealing Attempt=3 FaultCode=Unknown Channels=[12] Error=Code=TimerNotRunning; Error=PowerEnableRejected StaleExecutionPermit Channels=[12]"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 85,
+    "Text": "2026-09-07 18:51:31.327\tWARN\tTimer\tStaleTimerEventIgnored Channel=4 Code=TimerInstanceNotActive SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=3 CurrentRunEpoch=5 RuntimeState=SystemFault TimerState=Paused"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 86,
+    "Text": "2026-09-07 18:51:31.327\tWARN\tTimer\t周期 1 返回失败"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 87,
+    "Text": "2026-09-07 18:51:31.327\tWARN\tTimer\tStaleTimerEventIgnored Channel=9 Code=TimerInstanceNotActive SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=3 CurrentRunEpoch=5 RuntimeState=SystemFault TimerState=Paused"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 88,
+    "Text": "2026-09-07 18:51:31.327\tWARN\tTimer\t周期 1 返回失败"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 89,
+    "Text": "2026-09-07 18:51:32.087\tWARN\tTimer\tStaleTimerEventIgnored Channel=5 Code=TimerInstanceNotActive SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=3 CurrentRunEpoch=5 RuntimeState=SystemFault TimerState=Paused"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 90,
+    "Text": "2026-09-07 18:51:32.087\tWARN\tTimer\t周期 1 返回失败"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 91,
+    "Text": "2026-09-07 18:51:32.088\tWARN\tTimer\t周期 1 返回失败"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 92,
+    "Text": "2026-09-07 18:51:32.089\tWARN\tTimer\tStaleTimerEventIgnored Channel=8 Code=TimerInstanceNotActive SourceGeneration=1 CurrentGeneration=1 SourceRunEpoch=3 CurrentRunEpoch=5 RuntimeState=SystemFault TimerState=Paused"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 93,
+    "Text": "2026-09-07 18:51:32.089\tWARN\tTimer\t周期 1 返回失败"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 97,
+    "Text": "2026-09-07 18:51:53.339\tWARN\t落盘\tDev2 持久化延迟。Depth=10, Oldest=110.5ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 98,
+    "Text": "2026-09-07 18:51:54.060\tWARN\t落盘\tDev1 持久化延迟。Depth=11, Oldest=109.0ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 99,
+    "Text": "2026-09-07 18:51:54.340\tWARN\t落盘\tDev2 持久化延迟。Depth=18, Oldest=188.2ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 103,
+    "Text": "2026-09-07 18:52:05.245\tWARN\t落盘\tDev2 持久化延迟。Depth=11, Oldest=108.0ms。"
+  },
+  {
+    "Source": "warning.log",
+    "Line": 106,
+    "Text": "2026-09-07 18:52:08.229\tWARN\t独立看门狗\t进程内恢复已到达外部接管边界，交由独立 Watchdog 整批恢复。CorrelationId=68382a86f7ec492f9207c9ebd90cd44a;Reason=Stage=TimerRuntimeSelfHealing Attempt=3 FaultCode=Unknown Channels=[12] Error=Code=TimerNotRunning; Error=PowerEnableRejected StaleExecutionPermit Channels=[12]"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3090,
+    "Text": "2026-09-07 18:51:26.730\tINFO\tHOST\tHostRuntime PID=18512 Bitness=32 ProcessCpu=12.7% SystemCpu=21.2% OtherCpu=8.4% WorkingSet=173.7MiB Private=149.4MiB Virtual=715.4MiB Handles=1338 Threads=76 AvailableMemory=11045.9MiB ProgramDriveFree=9.5GiB DiskQueue=0.00 DiskRead=0.00MiB/s DiskWrite=2.48MiB/s"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3092,
+    "Text": "2026-09-07 18:51:26.792\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev1 Channel=4 State=Running Reason=Running Revision=4 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=False Timer=False Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3093,
+    "Text": "2026-09-07 18:51:26.793\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev1 Channel=5 State=Running Reason=Running Revision=4 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=False Timer=False Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3094,
+    "Text": "2026-09-07 18:51:26.794\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=7 State=Running Reason=Running Revision=4 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=False Timer=False Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3095,
+    "Text": "2026-09-07 18:51:26.796\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=8 State=Running Reason=Running Revision=4 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=False Timer=False Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3096,
+    "Text": "2026-09-07 18:51:26.797\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=9 State=Running Reason=Running Revision=4 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=False Timer=False Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3097,
+    "Text": "2026-09-07 18:51:26.798\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=12 State=Running Reason=Running Revision=4 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=False Timer=False Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3098,
+    "Text": "2026-09-07 18:51:26.804\tINFO\t液压协调\t正式阶段液压槽已统一：Run=a52af03ab4e7465dbeb3c663c598d1b8 Hydraulic=1 FirstSlot=10 CallbackUtc=2026-09-07T10:51:30.0000000Z Members=[4,5]"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3101,
+    "Text": "2026-09-07 18:51:26.810\tINFO\tTimer\tTimerRuntimeObserverAttached Channel=4 Generation=1 RunEpoch=3 Instance=50950035"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3102,
+    "Text": "2026-09-07 18:51:26.810\tINFO\tEPB并发\tEPB[4] Timer 已创建，Instance=50950035。"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3103,
+    "Text": "2026-09-07 18:51:26.859\tINFO\tTimer\tTimerRuntimeState Channel=4 Instance=50950035 Generation=1 RunEpoch=3 State=Running IsRunning=True IsPaused=False Reason=Start LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3106,
+    "Text": "2026-09-07 18:51:26.860\tINFO\tTimer\tTimerRuntimeObserverAttached Channel=5 Generation=1 RunEpoch=3 Instance=28041981"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3107,
+    "Text": "2026-09-07 18:51:26.860\tINFO\tEPB并发\tEPB[5] Timer 已创建，Instance=28041981。"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3108,
+    "Text": "2026-09-07 18:51:26.863\tINFO\tTimer\t定时器首延迟 3196ms"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3109,
+    "Text": "2026-09-07 18:51:26.904\tINFO\tTimer\tTimerRuntimeState Channel=5 Instance=28041981 Generation=1 RunEpoch=3 State=Running IsRunning=True IsPaused=False Reason=Start LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3110,
+    "Text": "2026-09-07 18:51:26.905\tINFO\tTimer\t定时器首延迟 3141ms"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3111,
+    "Text": "2026-09-07 18:51:26.905\tINFO\t液压协调\t正式阶段液压槽已统一：Run=a52af03ab4e7465dbeb3c663c598d1b8 Hydraulic=2 FirstSlot=10 CallbackUtc=2026-09-07T10:51:30.0000000Z Members=[7,8,9,12]"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3114,
+    "Text": "2026-09-07 18:51:26.905\tINFO\tTimer\tTimerRuntimeObserverAttached Channel=7 Generation=1 RunEpoch=3 Instance=42433789"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3115,
+    "Text": "2026-09-07 18:51:26.905\tINFO\tEPB并发\tEPB[7] Timer 已创建，Instance=42433789。"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3116,
+    "Text": "2026-09-07 18:51:26.951\tINFO\tTimer\tTimerRuntimeState Channel=7 Instance=42433789 Generation=1 RunEpoch=3 State=Running IsRunning=True IsPaused=False Reason=Start LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3117,
+    "Text": "2026-09-07 18:51:26.951\tINFO\tTimer\t定时器首延迟 3095ms"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3120,
+    "Text": "2026-09-07 18:51:26.951\tINFO\tTimer\tTimerRuntimeObserverAttached Channel=8 Generation=1 RunEpoch=3 Instance=30105366"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3121,
+    "Text": "2026-09-07 18:51:26.951\tINFO\tEPB并发\tEPB[8] Timer 已创建，Instance=30105366。"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3122,
+    "Text": "2026-09-07 18:51:26.987\tINFO\tTimer\tTimerRuntimeState Channel=8 Instance=30105366 Generation=1 RunEpoch=3 State=Running IsRunning=True IsPaused=False Reason=Start LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3123,
+    "Text": "2026-09-07 18:51:26.987\tINFO\tTimer\t定时器首延迟 3049ms"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3126,
+    "Text": "2026-09-07 18:51:26.987\tINFO\tTimer\tTimerRuntimeObserverAttached Channel=9 Generation=1 RunEpoch=3 Instance=13253397"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3127,
+    "Text": "2026-09-07 18:51:26.987\tINFO\tEPB并发\tEPB[9] Timer 已创建，Instance=13253397。"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3128,
+    "Text": "2026-09-07 18:51:27.022\tINFO\tTimer\tTimerRuntimeState Channel=9 Instance=13253397 Generation=1 RunEpoch=3 State=Running IsRunning=True IsPaused=False Reason=Start LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3129,
+    "Text": "2026-09-07 18:51:27.022\tINFO\tTimer\t定时器首延迟 3013ms"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3132,
+    "Text": "2026-09-07 18:51:27.022\tINFO\tTimer\tTimerRuntimeObserverAttached Channel=12 Generation=1 RunEpoch=3 Instance=50054755"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3133,
+    "Text": "2026-09-07 18:51:27.022\tINFO\tEPB并发\tEPB[12] Timer 已创建，Instance=50054755。"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3134,
+    "Text": "2026-09-07 18:51:27.064\tINFO\tTimer\tTimerRuntimeState Channel=12 Instance=50054755 Generation=1 RunEpoch=3 State=Running IsRunning=True IsPaused=False Reason=Start LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3135,
+    "Text": "2026-09-07 18:51:27.064\tINFO\tTimer\tTimerRuntimeState Channel=12 Instance=50054755 Generation=1 RunEpoch=3 State=PausePending IsRunning=True IsPaused=False Reason=TimerSelfHealing:TimerNotRunning LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3136,
+    "Text": "2026-09-07 18:51:27.065\tINFO\tTimer\t定时器首延迟 2978ms"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3137,
+    "Text": "2026-09-07 18:51:27.065\tINFO\tEPB\t批次暂停状态=Running Generation=0 Channels=[4,5,7,8,9,12] Reason=正式试验运行中"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3138,
+    "Text": "2026-09-07 18:51:27.067\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=12 State=PausePending Reason=TimerPausePending Revision=5 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=True Timer=True Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3139,
+    "Text": "2026-09-07 18:51:27.067\tINFO\tTimer\tTimerRuntimeState Channel=12 Instance=50054755 Generation=1 RunEpoch=3 State=Paused IsRunning=True IsPaused=True Reason=TimerSelfHealing:TimerNotRunning LastStart= LastCompleted="
+  },
+  {
+    "Source": "run.log",
+    "Line": 3140,
+    "Text": "2026-09-07 18:51:27.069\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=12 State=Paused Reason=TimerPaused Revision=6 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=True Timer=True Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3141,
+    "Text": "2026-09-07 18:51:27.069\tINFO\tTimer\t定时器已暂停。Reason=TimerSelfHealing:TimerNotRunning"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3142,
+    "Text": "2026-09-07 18:51:27.093\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=12 State=Recovering Reason=TimerRuntimeSelfHealing Revision=7 CorrelationId=461fc6baf81f4b3f956ca2f806d67f3f RunEpoch=3 Enabled=True Formal=True Timer=True Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3145,
+    "Text": "2026-09-07 18:51:27.108\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=a52af03ab4e7465dbeb3c663c598d1b8 Channels=4,5,7,8,9,12 Closed=False Detail=BatchFormal ProductVersion=V2.17.3.0 AssemblyVersion=2.17.3.0 ProcessId=18512 ExecutablePath=C:\\\\Program_Files_(x86)\\\\MTTFTest\\\\Current\\\\MTTFTest.exe ExeSha256=e67e7a2598290e89e9b93e1fc75b41c899680d917a88f79d587fdd92094ce201 ConfigSha256=24b60e98dce3b85dbe557d2ef1c04c310cc72abeb919a63d57fd253891fe4607 GitCommit=0d80572f5fe7da4c004a9471e641055e91b4b615 GitDirty=false BuildUtc=2026-09-06T16:51:04.7943358Z AsyncLogDropped=0 PackageVerified=True PackageCode=OperatorManaged PackageFiles=0"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3148,
+    "Text": "2026-09-07 18:51:27.135\tINFO\tFIELD\tFieldMetric STATE RunId=a52af03ab4e7465dbeb3c663c598d1b8 Device=Dev2 Channel=12 State=Recovering Reason=TimerRuntimeSelfHealingRetry Revision=8 CorrelationId=a52af03ab4e7465dbeb3c663c598d1b8 RunEpoch=3 Enabled=True Formal=True Timer=True Runner=True Energized=False"
+  },
+  {
+    "Source": "run.log",
+    "Line": 3151,
+    "Text": "2026-09-07 18:51:27.740\tINFO\tHOST\tHostRuntime PID=18512 Bitness=32 ProcessCpu=27.4% SystemCpu=36.2% OtherCpu=8.8% WorkingSet=180.5MiB Private=150.7MiB Virtual=714.8MiB Handles=1339 Threads=76 AvailableMemory=10986.8MiB ProgramDriveFree=9.5GiB DiskQueue=0.00 DiskRead=0.00MiB/s DiskWrite=0.83MiB/s"
+  }
+]

@@ -30,6 +30,7 @@ namespace AdaptiveControlTests
             var tests = new Action[]
             {
                 RuntimeDependencyClosureIsComplete,
+                FailedCloseAttemptCanRetryAuthorization,
                 WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
                 FailedAttachWithoutUiBindingAllowsMonitorClose,
                 ApplicationExitUsesDedicatedShutdownExpectedMessage,
@@ -78,6 +79,33 @@ namespace AdaptiveControlTests
                 }
             }
             return passed;
+        }
+
+        private static void FailedCloseAttemptCanRetryAuthorization()
+        {
+            Task attempt = null;
+            var preparation = new TaskCompletionSource<bool>();
+            var requests = 0;
+            var releases = 0;
+            Func<Task> authorize = async () =>
+            {
+                requests++;
+                if (await preparation.Task) releases++;
+            };
+            Assert(WinFormsWatchdogUiCloseCoordinator.TryStartCloseAttempt(ref attempt, authorize),
+                "首次关闭未执行安全准备");
+            Assert(!WinFormsWatchdogUiCloseCoordinator.TryStartCloseAttempt(ref attempt, authorize) && requests == 1,
+                "正在执行的关闭被重复发起");
+            preparation.SetResult(false);
+            attempt.GetAwaiter().GetResult();
+            Assert(releases == 0, "未获授权的退出释放了资源");
+            preparation = new TaskCompletionSource<bool>();
+            Assert(WinFormsWatchdogUiCloseCoordinator.TryStartCloseAttempt(ref attempt, authorize) && requests == 2,
+                "人工重试永久复用了已失败的退出任务");
+            Assert(releases == 0, "重试绕过了本次安全授权");
+            preparation.SetResult(true);
+            attempt.GetAwaiter().GetResult();
+            Assert(releases == 1, "后续安全授权没有完成关闭");
         }
 
         private static void RuntimeDependencyClosureIsComplete()

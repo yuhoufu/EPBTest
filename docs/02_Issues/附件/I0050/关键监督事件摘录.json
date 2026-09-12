@@ -1,0 +1,380 @@
+[
+  {
+    "EventSequence": 166,
+    "Utc": "2026-09-06T17:08:01.2892620Z",
+    "EventType": "HeartbeatCheckpoint",
+    "Reason": "Periodic",
+    "RunId": "ae2fbd7201b64f74b704eb4c4bbc2a89",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 167,
+    "Utc": "2026-09-06T17:09:01.4878021Z",
+    "EventType": "HeartbeatCheckpoint",
+    "Reason": "Periodic",
+    "RunId": "ae2fbd7201b64f74b704eb4c4bbc2a89",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 168,
+    "Utc": "2026-09-06T17:10:01.5526826Z",
+    "EventType": "HeartbeatCheckpoint",
+    "Reason": "Periodic",
+    "RunId": "ae2fbd7201b64f74b704eb4c4bbc2a89",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 169,
+    "Utc": "2026-09-06T17:10:18.9104207Z",
+    "EventType": "ResponsiveApplicationControlRepairRequested",
+    "Reason": "InconsistentRecovery",
+    "RunId": "ae2fbd7201b64f74b704eb4c4bbc2a89",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 170,
+    "Utc": "2026-09-06T17:10:23.8848425Z",
+    "EventType": "StopCompleted",
+    "Reason": "CanClose=True;Motor=;Power=;Pressure=;Persistence=;Logical=LifecycleBusy=False Session=False Batch=00000000000000000000000000000000 Timers=0(Active=0,Cache=0) Runners=0(Active=0,Cache=0) Energized=0 StopCts=0 CycleCts=0 Participants=0 Leases=3 DaqRecovery=0 ActiveCycles=0 SoftwareRecovery=0 RecoveryOwners=0 Contracts=0 RegistryLeases=0 Hydraulics=[Hydraulic=1 Epoch=1 Admission=Open Generations=0 Operations=0 Leases=0 Gate=Available Pending=[] Rebuilds=0 | Hydraulic=2 Epoch=2 Admission=Open Generations=0 Operations=0 Leases=0 Gate=Available Pending=[] Rebuilds=0]",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 171,
+    "Utc": "2026-09-06T17:10:23.9453474Z",
+    "EventType": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=Approved;Revision=1;Detail=Approved recovery permit observed",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 172,
+    "Utc": "2026-09-06T17:10:23.9478505Z",
+    "EventType": "ApplicationExitRequested",
+    "Reason": "5f93d9ffe33e435e82238a0a5c0e4902",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 173,
+    "Utc": "2026-09-06T17:10:23.9523428Z",
+    "EventType": "TakeoverReplacementExitObserved",
+    "Reason": "Intent=5f93d9ffe33e435e82238a0a5c0e4902;Transaction=4242528738cc489f9c5ed0d96fcddb7d;PermitGeneration=1",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 174,
+    "Utc": "2026-09-06T17:10:24.2395215Z",
+    "EventType": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=8;Transaction=4242528738cc489f9c5ed0d96fcddb7d;PermitGeneration=1;Action=PreserveApprovedPermit",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 175,
+    "Utc": "2026-09-06T17:10:26.9091935Z",
+    "EventType": "HeartbeatSuspect",
+    "Reason": "HeartbeatAgeSeconds=3.031",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 176,
+    "Utc": "2026-09-06T17:10:26.9126899Z",
+    "EventType": "WatchdogLogicalSourceRefreshRequested",
+    "Reason": "WatchdogLogicalSourceStale:Version=27449;CapturedUtcTicks=639243114238418908;WallClockAgeSeconds=3.1;MonotonicAgeSeconds=2.9",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 177,
+    "Utc": "2026-09-06T17:10:29.0498662Z",
+    "EventType": "HeartbeatUiProbe",
+    "Reason": "HeartbeatAgeSeconds=5.164;Probe=WindowMissing;Failures=1;Detail=VisibleTopLevelWindowMissing",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 178,
+    "Utc": "2026-09-06T17:10:29.0533654Z",
+    "EventType": "TakeoverRequested",
+    "Reason": "StopSafetySupervisor:StopStageDeadlineExceeded:VerifyLogicalQuiescence;NoMaterialProgressMs=5179;GraceMs=5000;Generation=1;Authority=e1e39a252d7a4937bf501091092826b1:17896:639243015070505050:1:UnknownRun",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 179,
+    "Utc": "2026-09-06T17:10:29.3225231Z",
+    "EventType": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=9;Transaction=4242528738cc489f9c5ed0d96fcddb7d;PermitGeneration=1;Action=PreserveApprovedPermit",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 180,
+    "Utc": "2026-09-06T17:10:29.8438643Z",
+    "EventType": "HostTransportConnectionRetired",
+    "Reason": "ConnectionGeneration=1",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 181,
+    "Utc": "2026-09-06T17:10:29.8463726Z",
+    "EventType": "PipeDisconnected",
+    "Reason": "无法访问关闭的管道。",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 182,
+    "Utc": "2026-09-06T17:10:30.1322123Z",
+    "EventType": "HeartbeatUiProbe",
+    "Reason": "HeartbeatAgeSeconds=6.249;Probe=WindowMissing;Failures=2;Detail=VisibleTopLevelWindowMissing",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 183,
+    "Utc": "2026-09-06T17:10:31.2002763Z",
+    "EventType": "HeartbeatUnresponsiveConfirmed",
+    "Reason": "HeartbeatAgeSeconds=7.317;Probe=WindowMissing;Failures=3;Detail=VisibleTopLevelWindowMissing",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 184,
+    "Utc": "2026-09-06T17:10:32.0085664Z",
+    "EventType": "ResponsiveControlRepairSuppressedDuringStop",
+    "Reason": "Transaction=b8c1e350365948d18e4ac3e2efe6fb22;Stage=VerifyLogicalQuiescence;LogicalResidue=False;InconsistentRecovery=False;FormalProgressStalled=False;ChannelSupervisionFailed=True",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 185,
+    "Utc": "2026-09-06T17:10:34.6699116Z",
+    "EventType": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=17;Transaction=4242528738cc489f9c5ed0d96fcddb7d;PermitGeneration=1;Action=PreserveApprovedPermit",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 186,
+    "Utc": "2026-09-06T17:10:36.2676805Z",
+    "EventType": "TakeoverReplacementFenceObserved",
+    "Reason": "StateVersion=19;Transaction=4242528738cc489f9c5ed0d96fcddb7d;PermitGeneration=1;Action=PreserveApprovedPermit",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 187,
+    "Utc": "2026-09-06T17:10:36.5658992Z",
+    "EventType": "SafetyHandoffAccepted",
+    "Reason": "HandoffId=170972009e10406f97031f5d3a23b00b;Revision=2",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 188,
+    "Utc": "2026-09-06T17:10:36.9123893Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 189,
+    "Utc": "2026-09-06T17:10:37.0231235Z",
+    "EventType": "OldProcessExitProven",
+    "Reason": "PID=17896;StartUtcTicks=639243015070505050;Observation=Dead;Source=RelaunchAfterExitBegin",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 190,
+    "Utc": "2026-09-06T17:10:37.0571088Z",
+    "EventType": "PostExitSafetyEvidenceAugmented",
+    "Reason": "PID=17896;StartUtcTicks=639243015070505050;Observation=Dead;PermitGeneration=1",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 191,
+    "Utc": "2026-09-06T17:10:37.0641527Z",
+    "EventType": "RecoveryReplacementAdvanced",
+    "Reason": "PermitGeneration=1;State=OldProcessExitProven;Revision=2;Detail=Exact old process exit proven",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 192,
+    "Utc": "2026-09-06T17:10:37.9544955Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 193,
+    "Utc": "2026-09-06T17:10:42.9899394Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 194,
+    "Utc": "2026-09-06T17:10:53.9551991Z",
+    "EventType": "TakeoverReplacementOldProcessExited",
+    "Reason": "Intent=5f93d9ffe33e435e82238a0a5c0e4902;PermitGeneration=1",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 195,
+    "Utc": "2026-09-06T17:10:58.0257137Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 196,
+    "Utc": "2026-09-06T17:11:28.0673480Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 197,
+    "Utc": "2026-09-06T17:11:58.1031706Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 198,
+    "Utc": "2026-09-06T17:12:07.1548637Z",
+    "EventType": "RecoverySafetyPrerequisiteBlocked",
+    "Reason": "PermitGeneration=1;Outcome=TimedOut;FailureCount=1;MainLaunchBudgetConsumed=False;Detail=PermitGeneration=1;TimeoutSeconds=90",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 199,
+    "Utc": "2026-09-06T17:12:07.1618543Z",
+    "EventType": "SafetyPrerequisiteRetryScheduled",
+    "Reason": "PermitGeneration=1;Attempt=1;DelaySeconds=1;Outcome=TimedOut",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 200,
+    "Utc": "2026-09-06T17:12:08.1835575Z",
+    "EventType": "OldProcessExitProven",
+    "Reason": "PID=17896;StartUtcTicks=639243015070505050;Observation=Dead;Source=ApplicationExitReceipt:5f93d9ffe33e435e82238a0a5c0e4902",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 201,
+    "Utc": "2026-09-06T17:12:08.1895585Z",
+    "EventType": "PostExitSafetyEvidenceAugmented",
+    "Reason": "PID=17896;StartUtcTicks=639243015070505050;Observation=Dead;PermitGeneration=1",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 202,
+    "Utc": "2026-09-06T17:12:28.1432529Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 203,
+    "Utc": "2026-09-06T17:12:58.1822236Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 204,
+    "Utc": "2026-09-06T17:13:28.2166925Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 205,
+    "Utc": "2026-09-06T17:13:38.2634763Z",
+    "EventType": "RecoverySafetyPrerequisiteBlocked",
+    "Reason": "PermitGeneration=1;Outcome=TimedOut;FailureCount=1;MainLaunchBudgetConsumed=False;Detail=PermitGeneration=1;TimeoutSeconds=90",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 206,
+    "Utc": "2026-09-06T17:13:38.2689652Z",
+    "EventType": "SafetyPrerequisiteRetryScheduled",
+    "Reason": "PermitGeneration=1;Attempt=2;DelaySeconds=5;Outcome=TimedOut",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  },
+  {
+    "EventSequence": 989,
+    "Utc": "2026-09-06T22:09:18.5573267Z",
+    "EventType": "SafetyHandoffWorkerFailed",
+    "Reason": "SupervisorSafetyAgentLaunchRejected:SupervisorSafetyRequestRejected:SupervisorSafetyHandoffIdentityMismatch",
+    "RunId": "",
+    "RecoveryStage": "",
+    "RecoveryIncident": ""
+  }
+]

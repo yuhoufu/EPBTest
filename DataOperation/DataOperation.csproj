@@ -85,6 +85,7 @@
     <Compile Include="ClsTestConfig.cs" />
     <Compile Include="ClsXmlOperation.cs" />
     <Compile Include="EpbDiskWriter.cs" />
+    <Compile Include="EpbCommittedProgress.cs" />
     <Compile Include="EpbDiskWriter.RawJournal.cs" />
     <Compile Include="EpbDiskWriter.Timing.cs" />
     <Compile Include="StorageFormatPolicy.cs" />

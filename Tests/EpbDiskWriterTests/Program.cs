@@ -24,6 +24,8 @@ namespace EpbDiskWriterTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--learning-timing-probe")
+                    return RunLearningTimingProbe();
                 if (args.Length == 4 &&
                     args[0].Equals("--recover", StringComparison.OrdinalIgnoreCase))
                     return RecoverCycles(args[1], int.Parse(args[2], CultureInfo.InvariantCulture), args[3]);
@@ -46,6 +48,7 @@ namespace EpbDiskWriterTests
                     return 0;
                 }
 
+                RunRecoveryProgressTests();
                 RunV217PersistenceTests();
                 if (args.Length == 1 && args[0] == "--v217-stability")
                 { Console.WriteLine($"PASS {_passed}/{_passed}"); return 0; }
@@ -535,6 +538,11 @@ namespace EpbDiskWriterTests
                 using (var writer = new EpbDiskWriter(policy))
                     WriteCompletedCycle(writer, 1, 1, 3, start);
 
+                // Establish a reclaimed durable checkpoint before injecting ring
+                // corruption. Otherwise the retained FULL journal correctly
+                // repairs the damaged bytes during startup.
+                using (var checkpointed = new EpbDiskWriter(policy)) { }
+
                 var datPath = Path.Combine(policy.DataStorePath, "EPB1_sliding.dat");
                 using (var stream = new FileStream(datPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
                 {
@@ -789,6 +797,9 @@ namespace EpbDiskWriterTests
                 var start = DateTime.UtcNow;
                 using (var writer = new EpbDiskWriter(policy))
                     WriteCompletedCycle(writer, 1, 1, 3, start);
+
+                // Corrupt after recovery has reclaimed the durable replay copy.
+                using (var checkpointed = new EpbDiskWriter(policy)) { }
 
                 var datPath = Path.Combine(policy.DataStorePath, "EPB1_sliding.dat");
                 using (var stream = new FileStream(datPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))

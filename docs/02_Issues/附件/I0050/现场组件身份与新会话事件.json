@@ -1,0 +1,249 @@
+[
+  {
+    "Name": "MTTFTest.exe",
+    "Version": "2.14.2.11",
+    "Sha256": "9158A6CF57CFD6329D3F8DC3DD254F5E35A0D8C8B9FE48CD43B9A3919837A8BA",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Name": "MTTFTest.SafetyAgent.exe",
+    "Version": "2.14.2.3",
+    "Sha256": "9BD0A6A872072F1B74ECF003BC9E1BEB543E48431E161AD4F6D340D3E37A3B0A",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Name": "MTTFTest.SessionAgent.exe",
+    "Version": "2.14.2.3",
+    "Sha256": "04BE1B26711153A31326FC666C74B34DDEE008E039E474334B073B4A599F5EF4",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Name": "MTTFTest.Watchdog.exe",
+    "Version": "2.14.2.3",
+    "Sha256": "410E2BD2940CC1BE3DB99EDFCAA0DC989487ABB25C6684F3A866B8B5609C17B4",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "CSName": "MT-20250724OGLX",
+    "LastBootUpTime": "2026-08-19T12:08:49.5+08:00",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:11:42.5031846Z",
+    "EventType": "JournalConfigured",
+    "Reason": "WatchdogJournalPolicy RetentionDays=90;RetainSessions=32;MaxTotalBytes=134217728;MaxSessionBytes=16777216;HeartbeatCheckpointSeconds=60;EmergencySpoolMaxBytes=8388608",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:11:42.6344982Z",
+    "EventType": "CrashRecoverySeedCommitted",
+    "Reason": "SeedId=af64f141aa4b493eb385b4e509acbecc;Generation=1;Lease=1",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:11:47.7147981Z",
+    "EventType": "SidecarHelperLaunched",
+    "Reason": "PID=10316;Nonce=94dd73e96d35476dad526da05e1e1558",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:11:47.9314051Z",
+    "EventType": "AttachSent",
+    "Reason": "MainProcess",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:11:47.9673939Z",
+    "EventType": "Attached",
+    "Reason": "HandshakeCompleted;AuthorityPid=10316;AuthorityStartUtcTicks=639243295077083797",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:11:47.9988866Z",
+    "EventType": "MainUiReady",
+    "Reason": "MainUiWatchdogPipelineReady",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:11:47.9998815Z",
+    "EventType": "HeartbeatRefreshSent",
+    "Reason": "Trigger=Attached;Sequence=1",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:19.9820807Z",
+    "EventType": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:19.9840631Z",
+    "EventType": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:20.0764781Z",
+    "EventType": "TransportLost",
+    "Reason": "SendWriteFailed:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:20.0764781Z",
+    "EventType": "TransportLost",
+    "Reason": "SendWriteFailed:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:20.8787976Z",
+    "EventType": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:20.8787976Z",
+    "EventType": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:21.2131555Z",
+    "EventType": "TransportEvent",
+    "Reason": "WatchdogReconnectFailed:Watchdog Attach 消息发送失败。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:21.2131555Z",
+    "EventType": "TransportEvent",
+    "Reason": "WatchdogReconnectFailed:Watchdog Attach 消息发送失败。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:21.9905427Z",
+    "EventType": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:21.9905427Z",
+    "EventType": "TransportEvent",
+    "Reason": "Send:命名管道写入超时。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.2410722Z",
+    "EventType": "TransportEvent",
+    "Reason": "WatchdogReconnectFailed:Watchdog Attach 消息发送失败。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.2410722Z",
+    "EventType": "TransportEvent",
+    "Reason": "WatchdogReconnectFailed:Watchdog Attach 消息发送失败。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.7453876Z",
+    "EventType": "AttachSent",
+    "Reason": "MainProcess",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.7604029Z",
+    "EventType": "Attached",
+    "Reason": "HandshakeCompleted;AuthorityPid=10316;AuthorityStartUtcTicks=639243295077083797",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.7614003Z",
+    "EventType": "HeartbeatRefreshSent",
+    "Reason": "Trigger=Attached;Sequence=445",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.7639027Z",
+    "EventType": "TransportEvent",
+    "Reason": "WatchdogReconnected:同一Session重连成功。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.7639027Z",
+    "EventType": "TransportEvent",
+    "Reason": "WatchdogReconnected:同一Session重连成功。",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.7649012Z",
+    "EventType": "HeartbeatRefreshSent",
+    "Reason": "Trigger=ImmediateStateSnapshot;Sequence=446",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  },
+  {
+    "Utc": "2026-09-06T22:19:22.7708975Z",
+    "EventType": "ImmediateStateSnapshot",
+    "Reason": "ReconnectSuccess",
+    "PSComputerName": "wj-epb",
+    "RunspaceId": "809f45be-aaa9-4ee7-b237-674a622ba2df",
+    "PSShowComputerName": true
+  }
+]

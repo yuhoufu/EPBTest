@@ -31,17 +31,20 @@ namespace MTTFTest.Watchdog
         private readonly object _gate = new object();
         private readonly Func<DurableLaunchIntentCapability, bool> _authorityValidator;
         private readonly Func<DurableLaunchIntentCapability, bool> _authorityConsumer;
+        private readonly Func<DurableLaunchIntentCapability, Process> _startProcess;
         private readonly System.Collections.Generic.HashSet<string> _consumed =
             new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
 
         internal GuardedProcessLauncher(
             Func<DurableLaunchIntentCapability, bool> authorityValidator = null,
-            Func<DurableLaunchIntentCapability, bool> authorityConsumer = null)
+            Func<DurableLaunchIntentCapability, bool> authorityConsumer = null,
+            Func<DurableLaunchIntentCapability, Process> startProcess = null)
         {
             if (authorityValidator == null || authorityConsumer == null)
                 throw new ArgumentException("Strict V4 authority callbacks are required.");
             _authorityValidator = authorityValidator;
             _authorityConsumer = authorityConsumer;
+            _startProcess = startProcess ?? StartAuthorizedProcess;
         }
 
         internal GuardedProcessOwnerReceipt Start(DurableLaunchIntentCapability capability)
@@ -64,19 +67,7 @@ namespace MTTFTest.Watchdog
             Process process = null;
             try
             {
-                var formalMarker = Path.Combine(
-                    Path.GetDirectoryName(capability.ExecutablePath) ?? string.Empty,
-                    "MTTFTest.UnattendedMode.required");
-                process = File.Exists(formalMarker)
-                    ? SessionAgentLaunchClient.Start(capability)
-                    : Process.Start(new ProcessStartInfo
-                    {
-                        FileName = capability.ExecutablePath,
-                        Arguments = capability.Arguments ?? string.Empty,
-                        WorkingDirectory = capability.WorkingDirectory,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    });
+                process = _startProcess(capability);
                 if (process == null) throw new InvalidOperationException("GuardedProcessStartReturnedNull");
                 var startTicks = process.StartTime.ToUniversalTime().Ticks;
                 return new GuardedProcessOwnerReceipt(this, process, startTicks);
@@ -93,6 +84,19 @@ namespace MTTFTest.Watchdog
                 try { process?.Dispose(); } catch { }
                 throw;
             }
+        }
+
+        private static Process StartAuthorizedProcess(DurableLaunchIntentCapability capability)
+        {
+            var formalMarker = Path.Combine(Path.GetDirectoryName(capability.ExecutablePath) ?? string.Empty,
+                "MTTFTest.UnattendedMode.required");
+            return File.Exists(formalMarker) || new MTTFTest.RecoveryControl.RecoveryControlStore().IsRegisteredOrPending
+                ? SessionAgentLaunchClient.Start(capability)
+                : Process.Start(new ProcessStartInfo
+                {
+                    FileName = capability.ExecutablePath, Arguments = capability.Arguments ?? string.Empty,
+                    WorkingDirectory = capability.WorkingDirectory, UseShellExecute = false, CreateNoWindow = true
+                });
         }
 
         internal void KillExact(Process process)

@@ -488,6 +488,7 @@ $versionedComponents = @(
     $safetyAgentExePath,
     $safetyHardwarePath,
     $sessionAgentExePath,
+    (Join-Path $output 'MTTFTest.RecoveryControl.dll'),
     (Join-Path $output 'Controller.dll')
 )
 foreach ($component in $versionedComponents) {
@@ -674,7 +675,7 @@ Assert-SourceSnapshot -ExpectedCommit $commit `
     -ExpectedFingerprint $sourceSnapshotFingerprint `
     -Stage '写入构建身份前源码快照校验'
 
-$v217Deployment = @(& (Join-Path $PSScriptRoot 'Test-V217Deployment.ps1') 2>&1)
+$v217Deployment = @(& (Join-Path $PSScriptRoot 'Test-V217Deployment.ps1') -Configuration Release 2>&1)
 foreach ($line in $v217Deployment) { Write-Host ([string]$line) }
 $v217DeploymentSummary = @($v217Deployment | Where-Object { [string]$_ -match '^PASS V217Deployment \d+/\d+ ' } | Select-Object -Last 1)
 if ($v217DeploymentSummary.Count -ne 1) { throw 'V2.17 隔离换包测试未通过。' }
@@ -718,6 +719,7 @@ $utf8Bom = New-Object Text.UTF8Encoding($true)
 foreach ($deploymentScriptName in @(
         'Install-EPB-UnattendedAlarm.ps1',
         'Install-MTTFTest-Unattended.ps1',
+        'LegacyStopEvidence.ps1',
         'Test-MTTFTest-RecoveryHealth.ps1',
         'Verify-Release.ps1',
         'Stop-RelatedProcesses.ps1',
@@ -781,6 +783,7 @@ $identity = [ordered]@{
     recoveryArchitectureGeneration = 'EPB-V2.17'
     fieldValidation = 'PENDING_USER_HARDWARE_AND_168H'
     watchdogSchema = 7
+    sessionAgentSchema = 8
     packageSlotSchema = 5
     componentIdentities = $componentIdentities
     verification = $verification

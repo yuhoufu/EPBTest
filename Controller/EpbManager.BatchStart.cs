@@ -1035,7 +1035,8 @@ namespace Controller
                     qualificationCycles: 0,
                     reuseStableProfiles: false,
                     token,
-                    chainIdentity);
+                    chainIdentity,
+                    manualContinuation: true);
             }
             return StartBatchCoreAsync(
                 selected,
@@ -1043,7 +1044,8 @@ namespace Controller
                 qualificationCycles,
                 reuseStableProfiles: true,
                 token,
-                chainIdentity);
+                chainIdentity,
+                manualContinuation: true);
         }
 
         /// <summary>
@@ -1618,7 +1620,8 @@ namespace Controller
             bool reuseStableProfiles,
             CancellationToken token,
             RunChainIdentity chainIdentity = null,
-            bool operatorFullRelearningAuthorized = false)
+            bool operatorFullRelearningAuthorized = false,
+            bool manualContinuation = false)
         {
             return await _batchLifecycleGate.RunAsync(
                     () => StartBatchCoreUnderLifecycleGateAsync(
@@ -1628,6 +1631,7 @@ namespace Controller
                         reuseStableProfiles,
                         chainIdentity,
                         operatorFullRelearningAuthorized,
+                        manualContinuation,
                         token),
                     token)
                 .ConfigureAwait(false);
@@ -1640,6 +1644,7 @@ namespace Controller
             bool reuseStableProfiles,
             RunChainIdentity chainIdentity,
             bool operatorFullRelearningAuthorized,
+            bool manualContinuation,
             CancellationToken token)
         {
             ThrowIfProcessRestartRequired();
@@ -1700,6 +1705,19 @@ namespace Controller
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 await EstablishColdStartSafeBaselineAsync(selected, sessionToken)
                     .ConfigureAwait(false);
+                var externalAdmission = ExternalRunAdmissionAsync;
+                if (externalAdmission != null)
+                {
+                    await externalAdmission(new RunAdmissionRequest(
+                        new RunChainIdentity(_activeBatchId, _activeRunChainIdentity.EffectiveRootRunId,
+                            _activeRunChainIdentity.ParentRunId, _activeRunChainIdentity.RestartGeneration,
+                            Interlocked.Read(ref _runEpoch)),
+                        selected,
+                        manualContinuation ? RunAdmissionOrigin.ManualContinue :
+                        chainIdentity != null ? RunAdmissionOrigin.AutomaticRecovery : RunAdmissionOrigin.ManualStart),
+                        sessionToken).ConfigureAwait(false);
+                    sessionToken.ThrowIfCancellationRequested();
+                }
                 await EnsureHydraulicCoordinatorHealthyBeforeStartAsync(selected, sessionToken)
                     .ConfigureAwait(false);
                 ResetTransientFaultStateForRestart(

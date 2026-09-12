@@ -54,9 +54,41 @@ namespace AdaptiveControlTests
             return passed;
         }
 
+        private static void LogicalCleanupConvergesOnlyForCurrentSafeTransaction()
+        {
+            var id = Guid.NewGuid();
+            var pending = new StopSafetyResult
+            {
+                SafetyTransactionId = id, SafetyBoundaryGeneration = 7,
+                LastStage = StopSafetyStage.Completed,
+                Outcome = StopSafetyOutcome.SafeButRestartRequired,
+                RequiresProcessRestart = true, LogicalCleanupPending = true,
+                MotorOffCommandSucceeded = true, PowerOffConfirmed = true,
+                PressureSafeConfirmed = true, PersistenceBoundaryConfirmed = true
+            };
+            Assert(!pending.TryCompleteLogicalCleanup(id, 7, false), "在途逻辑尾声不能续测");
+            pending.LogicalQuiescenceConfirmed = true;
+            Assert(!pending.TryCompleteLogicalCleanup(Guid.NewGuid(), 7, false), "旧事务不能清除");
+            Assert(!pending.TryCompleteLogicalCleanup(id, 8, false), "旧代次不能清除");
+            Assert(!pending.TryCompleteLogicalCleanup(id, 7, true), "硬重启锁存不能清除");
+            var timeout = pending.Clone(); timeout.TimedOut = true;
+            Assert(!timeout.TryCompleteLogicalCleanup(id, 7, false), "超时不能清除");
+            var gap = pending.Clone(); gap.DataContinuityCompromised = true;
+            Assert(!gap.TryCompleteLogicalCleanup(id, 7, false), "数据缺口不能清除");
+            var pressure = pending.Clone(); pressure.PressureSafeConfirmed = false;
+            Assert(!pressure.TryCompleteLogicalCleanup(id, 7, false), "压力未确认不能清除");
+            Assert(pending.TryCompleteLogicalCleanup(id, 7, false) && pending.CanRestartInProcess,
+                "同事务逻辑尾声已完成却仍拒绝恢复");
+            Assert(!pending.TryCompleteLogicalCleanup(id, 7, false), "收敛只能执行一次");
+        }
+
         internal static int RunUnitTests()
         {
             var passed = 0;
+            Run("逻辑尾声与停止监督投影统一收敛且过期拒绝",
+                DeferredLogicalCleanupDoesNotPublishHardTakeover, ref passed);
+            Run("同事务逻辑尾声收敛且硬重启与过期身份禁止清除",
+                LogicalCleanupConvergesOnlyForCurrentSafeTransaction, ref passed);
             Run("EpbManager生产port发布物理边沿",
                 EpbManagerProductionPortPublishesEdges, ref passed);
             Run("Stop runner stages are strictly ordered and stage deadlines are independent",
@@ -1797,6 +1829,39 @@ namespace AdaptiveControlTests
             if (!condition) throw new InvalidOperationException(message);
         }
 
+        private static void DeferredLogicalCleanupDoesNotPublishHardTakeover()
+        {
+            foreach (var elapsedSeconds in new[] { 0, 6, 120 })
+            {
+                var expire = elapsedSeconds > 0;
+                var clock = new ManualClock();
+                var runner = new StopSafetyTransactionRunner(
+                    new FakePort { LogicalCleanupPending = true }, clock);
+                var result = runner.StopAsync(new StopContext()).GetAwaiter().GetResult();
+                var pending = runner.CaptureProgress();
+                Assert(pending.Active && !pending.TakeoverRequired && !pending.TimedOut,
+                    "逻辑尾声尚未结束却已发布粘性硬接管");
+                result.LogicalQuiescenceConfirmed = true;
+                Assert(result.TryCompleteLogicalCleanup(result.SafetyTransactionId,
+                    result.SafetyBoundaryGeneration, false), "调用方清场不能收敛");
+                var stale = result.Clone();
+                stale.SafetyTransactionId = Guid.NewGuid();
+                Assert(!runner.TryCompleteDeferredLogicalCleanup(stale), "旧事务清除监督状态");
+                clock.Advance(TimeSpan.FromSeconds(elapsedSeconds));
+                Assert(runner.TryCompleteDeferredLogicalCleanup(result) == !expire,
+                    "监督清场未遵守原事务截止时间");
+                var final = runner.CaptureProgress();
+                if (!expire)
+                {
+                    Assert(!final.Active && !final.TakeoverRequired &&
+                           final.ProgressVersion > pending.ProgressVersion,
+                        "调用方已清场而监督投影仍要求接管");
+                    Assert(!runner.TryCompleteDeferredLogicalCleanup(result), "重复完成被接受");
+                }
+                else Assert(final.Active, "超期尾声被伪装成成功");
+            }
+        }
+
         private sealed class FakePort : IStopSafetyExecutionPort
         {
             private readonly object _gate = new object();
@@ -1810,6 +1875,7 @@ namespace AdaptiveControlTests
             internal StopSafetyStage? HangStage { get; set; }
             internal bool Hang { get; set; }
             internal bool DuplicateDetail { get; set; }
+            internal bool LogicalCleanupPending { get; set; }
             internal int SafeIdleCount => Volatile.Read(ref _safeIdleCount);
             internal int ExecuteCount { get; private set; }
             internal int MaterialEvidenceCalls { get; private set; }
@@ -1858,7 +1924,8 @@ namespace AdaptiveControlTests
                             PowerOffConfirmed = true,
                             PressureSafeConfirmed = true,
                             PersistenceBoundaryConfirmed = true,
-                            LogicalQuiescenceConfirmed = true
+                            LogicalQuiescenceConfirmed = !LogicalCleanupPending,
+                            LogicalCleanupPending = LogicalCleanupPending
                         }
                     });
                 }

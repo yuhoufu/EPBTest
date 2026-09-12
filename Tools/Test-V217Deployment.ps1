@@ -1,5 +1,8 @@
 ﻿[CmdletBinding()]
-param()
+param(
+    [ValidateSet('Debug', 'Release')]
+    [string]$Configuration = 'Debug'
+)
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('EPB V217 中文 & () ! 测试-' + [Guid]::NewGuid().ToString('N'))
@@ -25,11 +28,12 @@ function Refresh-FixtureIdentity([string]$Path) {
     $files = @(Get-ChildItem -LiteralPath $Path -File | Where-Object { $_.Name -ne 'build-identity.json' } | ForEach-Object {
         @{ name=$_.Name; bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash }
     })
-    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion='2.17.3.0'} })
+    $version = (Get-Item -LiteralPath (Join-Path $Path 'MTTFTest.exe')).VersionInfo.FileVersion
+    $components = @($files | Where-Object { $_.name -match '\.(exe|dll)$' } | ForEach-Object { @{name=$_.name;fileVersion=$version} })
     $map = New-Object 'System.Collections.Generic.SortedDictionary[string,string]' ([StringComparer]::Ordinal)
     foreach ($file in $files) { $map.Add($file.name, (Join-Path $Path $file.name)) }
     @{ gitCommit=('a'*40); packageContentSha256=(Get-DeploymentAggregateHash $map); files=$files; componentIdentities=$components;
-        fileVersion='2.17.3.0'; recoveryArchitectureGeneration='EPB-V2.17'; watchdogSchema=7;
+        fileVersion=$version; recoveryArchitectureGeneration='EPB-V2.17'; watchdogSchema=7; sessionAgentSchema=8;
         releaseStatus='FORMAL_RELEASE'; deploymentApproved=$true } | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $Path 'build-identity.json') -Encoding UTF8
 }
@@ -59,8 +63,9 @@ try {
     $root = Join-Path $temp 'MTTFTest'
     [void](New-Item -ItemType Directory -Path $source)
     $names = @('MTTFTest.exe','Controller.dll','MTTFTest.Watchdog.exe','MTTFTest.SafetyAgent.exe',
-        'MTTFTest.SessionAgent.exe','MTTFTest.SafetyHardware.dll','MTTFTest.Watchdog.Protocol.dll','MTTFTest.Watchdog.Client.dll')
-    foreach ($name in $names) { Copy-Item -LiteralPath (Join-Path $repo ('MTTfTest\bin\Debug\' + $name)) -Destination (Join-Path $source $name) }
+        'MTTFTest.SessionAgent.exe','MTTFTest.SafetyHardware.dll','MTTFTest.Watchdog.Protocol.dll','MTTFTest.Watchdog.Client.dll',
+        'MTTFTest.RecoveryControl.dll')
+    foreach ($name in $names) { Copy-Item -LiteralPath (Join-Path $repo ('MTTfTest\bin\' + $Configuration + '\' + $name)) -Destination (Join-Path $source $name) }
     'fixture-A' | Set-Content -LiteralPath (Join-Path $source 'fixture.txt')
     Refresh-FixtureIdentity $source
     Install-CurrentSlot $source $root
@@ -88,6 +93,27 @@ try {
     Check (-not (Test-CurrentSlotReplacementRequired $source $root)) '中断于Current移走后可恢复并重新安装'
     $identityPath = Join-Path $source 'build-identity.json'
     $valid = [IO.File]::ReadAllText($identityPath)
+    & {
+        $WhatIfPreference = $true
+        $verified = Get-VerifiedDeploymentIdentity $source
+        Check ($null -ne $verified) 'WhatIf预演仍真实校验包身份'
+        Check ($WhatIfPreference -eq $true) '只读校验不修改调用者WhatIf偏好'
+    }
+    $identity = $valid | ConvertFrom-Json
+    $identity.sessionAgentSchema = 7
+    $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $identityPath -Encoding UTF8
+    Expect-Failure { Get-VerifiedDeploymentIdentity $source } '3.0拒绝旧SessionAgent协议'
+    [IO.File]::WriteAllText($identityPath, $valid, (New-Object Text.UTF8Encoding($true)))
+    $identity = $valid | ConvertFrom-Json
+    $identity.componentIdentities = @($identity.componentIdentities | Where-Object { $_.name -ne 'MTTFTest.RecoveryControl.dll' })
+    $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $identityPath -Encoding UTF8
+    Expect-Failure { Get-VerifiedDeploymentIdentity $source } '3.0缺少RecoveryControl组件拒绝'
+    [IO.File]::WriteAllText($identityPath, $valid, (New-Object Text.UTF8Encoding($true)))
+    $identity = $valid | ConvertFrom-Json
+    $identity.componentIdentities[1] = $identity.componentIdentities[0]
+    $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $identityPath -Encoding UTF8
+    Expect-Failure { Get-VerifiedDeploymentIdentity $source } '重复组件不能代替完整组件集合'
+    [IO.File]::WriteAllText($identityPath, $valid, (New-Object Text.UTF8Encoding($true)))
     $identity = $valid | ConvertFrom-Json
     $identity.recoveryArchitectureGeneration = 'EPB-V3'
     $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $identityPath -Encoding UTF8

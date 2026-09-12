@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$OutputDirectory = ''
+    [string]$OutputDirectory = '',
+    [switch]$IncludeGuard
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +25,7 @@ $projects = @(
     'Tests\UnattendedRecoveryE2E\UnattendedRecoveryTestMain.csproj',
     'Tests\UnattendedRecoveryE2E\NoHardwareSafetyAgent.csproj'
 )
+if ($IncludeGuard) { $projects += 'MTTFTest.RecoveryGuard\MTTFTest.RecoveryGuard.csproj' }
 foreach ($project in $projects) {
     & $msbuild (Join-Path $repo $project) /t:Build `
         /p:Configuration=Release /p:Platform=AnyCPU /m /v:minimal
@@ -52,6 +54,7 @@ foreach ($source in @(
         (Join-Path $mainOutput 'MTTFTest.pdb'),
         (Join-Path $mainOutput 'MTTFTest.Watchdog.Client.dll'),
         (Join-Path $mainOutput 'MTTFTest.Watchdog.Protocol.dll'),
+        (Join-Path $watchdogOutput 'MTTFTest.RecoveryControl.dll'),
         (Join-Path $watchdogOutput 'MTTFTest.Watchdog.exe'),
         (Join-Path $watchdogOutput 'MTTFTest.Watchdog.pdb'),
         (Join-Path $sessionOutput 'MTTFTest.SessionAgent.exe'),
@@ -76,11 +79,27 @@ New-Item -ItemType File `
     -Path (Join-Path $output 'MTTFTest.UnattendedMode.required') `
     -Force | Out-Null
 
+if ($IncludeGuard) {
+    $guardOutput = Join-Path $repo 'MTTFTest.RecoveryGuard\bin\Release'
+    foreach ($name in @('MTTFTest.RecoveryGuard.exe', 'MTTFTest.RecoveryGuard.pdb')) {
+        Copy-Item -LiteralPath (Join-Path $guardOutput $name) -Destination $output
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $guardOutput 'MTTFTest.RecoveryControl.dll')).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $output 'MTTFTest.RecoveryControl.dll')).Hash) {
+        throw 'E2E Guard and main Core binaries differ'
+    }
+    $guardSettings = Get-Content -LiteralPath (Join-Path $repo 'MTTFTest.RecoveryGuard\guard-settings.example.json') -Raw | ConvertFrom-Json
+    $guardSettings.Mode = 1
+    $guardSettings.ScanSeconds = 2
+    $guardSettings | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'guard-settings.json') -Encoding UTF8
+    New-Item -ItemType File -Path (Join-Path $output 'E2E.Guard.enabled') | Out-Null
+}
 $identity = [ordered]@{
     schemaVersion = 1
     testOnly = $true
     productionRelease = $false
-    version = '2.17.3.0'
+    guardScenario = [bool]$IncludeGuard
+    version = '3.0.0.0'
     builtUtc = [DateTime]::UtcNow.ToString('O')
     files = @(
         Get-ChildItem -LiteralPath $output -File -Recurse |

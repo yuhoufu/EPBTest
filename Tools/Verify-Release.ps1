@@ -199,11 +199,14 @@ if ($actualAssemblyName -ne $expectedAssemblyName -or
 if ($identity.platform -ne 'x86') {
     throw "identity 平台不是 x86：$($identity.platform)"
 }
-if ($expectedProductVersion -ne '2.17.3.0') {
-    throw "无人值守正式版必须统一为 2.17.3.0：$expectedProductVersion"
+if ($expectedProductVersion -ne '3.0.0.0') {
+    throw "无人值守正式版必须统一为 3.0.0.0：$expectedProductVersion"
 }
 if ((Get-RequiredJsonProperty $identity 'watchdogSchema' 'identity') -ne 7) {
     throw "identity.watchdogSchema 不是 7：$($identity.watchdogSchema)"
+}
+if ((Get-RequiredJsonProperty $identity 'sessionAgentSchema' 'identity') -ne 8) {
+    throw 'identity.sessionAgentSchema 必须为 8，以携带外部恢复接管身份。'
 }
 $mainExecutableSha256 = [string](Get-RequiredJsonProperty `
     $identity 'mainExecutableSha256' 'identity')
@@ -222,6 +225,7 @@ $requiredComponentNames = @(
     'MTTFTest.SafetyAgent.exe',
     'MTTFTest.SafetyHardware.dll',
     'MTTFTest.SessionAgent.exe'
+    'MTTFTest.RecoveryControl.dll'
 )
 $componentIdentities = @(Get-RequiredJsonProperty `
     $identity 'componentIdentities' 'identity')
@@ -391,6 +395,7 @@ $result = [ordered]@{
     exeSha256 = $actualMainExecutableSha256
     packageContentSha256 = $actualPackageContentSha256
     watchdogSchema = [int]$identity.watchdogSchema
+    sessionAgentSchema = [int]$identity.sessionAgentSchema
     componentIdentityCount = $componentIdentities.Count
 }
 $result | ConvertTo-Json -Depth 3

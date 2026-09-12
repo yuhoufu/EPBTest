@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.CodeDom;
 using System.Collections.Concurrent;
@@ -1726,13 +1726,13 @@ namespace IO.NI
             if (timing == null) return;
             // Normal batches retain numeric totals. Only long tails allocate stage text.
             var detail = timing.Operation == "DeviceBatch" && timing.Succeeded && timing.TotalMs < 50 ? null :
-                FormattableString.Invariant($"Operation={timing.Operation};Channel={timing.Channel};Cycle={timing.Cycle};Succeeded={timing.Succeeded};ThreadId={timing.ThreadId};ChannelGateWaitMs={timing.ChannelGateWaitMs:F3};RawGateWaitMs={timing.RawGateWaitMs:F3};RawStageMs={timing.RawStageMs:F3};RawCommitMs={timing.RawCommitMs:F3};IndexGateWaitMs={timing.IndexGateWaitMs:F3};IndexCommitMs={timing.IndexCommitMs:F3};RingFlushMs={timing.RingFlushMs:F3};CheckpointMs={timing.CheckpointMs:F3};RawPruneMs={timing.RawPruneMs:F3}");
+                FormattableString.Invariant($"Operation={timing.Operation};Channel={timing.Channel};Cycle={timing.Cycle};Succeeded={timing.Succeeded};ThreadId={timing.ThreadId};ChannelGateWaitMs={timing.ChannelGateWaitMs:F3};RawGateWaitMs={timing.RawGateWaitMs:F3};RawStageMs={timing.RawStageMs:F3};RawCommitMs={timing.RawCommitMs:F3};IndexGateWaitMs={timing.IndexGateWaitMs:F3};IndexCommitMs={timing.IndexCommitMs:F3};RingFlushMs={timing.RingFlushMs:F3};CheckpointMs={timing.CheckpointMs:F3};RawPruneMs={timing.RawPruneMs:F3};RawAppendMs={timing.RawAppendMs:F3};RawAppendGateWaitMs={timing.RawAppendGateWaitMs:F3};ViewRemapMs={timing.ViewRemapMs:F3};RingWriteMs={timing.RingWriteMs:F3}");
             AppendDiagnostic(new DaqTimingValue
             {
                 TimestampUtc = DateTime.UtcNow, Device = timing.Device, Kind = "StorageWrite",
                 Generation = timing.Generation, BatchSequence = timing.Sequence,
                 BatchSize = timing.SampleCount, ProcessingMs = timing.TotalMs,
-                RingWriteMs = timing.RingFlushMs, SqliteMs = timing.RawCommitMs + timing.IndexCommitMs + timing.RawPruneMs,
+                RingWriteMs = timing.RingWriteMs, SqliteMs = timing.RawCommitMs + timing.IndexCommitMs + timing.RawPruneMs,
                 Detail = detail
             });
         }

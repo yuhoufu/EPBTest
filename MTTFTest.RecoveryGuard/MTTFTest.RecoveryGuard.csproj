@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <Import Project="..\Build\UnattendedVersion.props" />
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">AnyCPU</Platform>
+    <ProjectGuid>{F244D640-C59A-4EBF-91F5-F77BAEC03F4B}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>MTTFTest.RecoveryGuard</RootNamespace>
+    <AssemblyName>MTTFTest.RecoveryGuard</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>9</LangVersion>
+    <Deterministic>true</Deterministic>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols Condition="'$(Configuration)' == 'Debug'">true</DebugSymbols>
+    <DebugType Condition="'$(Configuration)' == 'Release'">pdbonly</DebugType>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Xml" />
+    <Compile Include="Program.cs" />
+    <Compile Include="RecoveryExecutionEngine.cs" />
+    <Compile Include="RecoveryCommissioningScope.cs" />
+    <Compile Include="RecoveryWorkerDispatch.cs" />
+    <Compile Include="RecoveryWorkerRetirement.cs" />
+    <Compile Include="SupervisorRecoveryActions.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <ProjectReference Include="..\RecoveryControl\RecoveryControl.csproj">
+      <Project>{DBBB1D9E-7969-4ECB-A11F-A39C8E415470}</Project>
+      <Name>RecoveryControl</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

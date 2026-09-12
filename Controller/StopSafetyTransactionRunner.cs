@@ -334,6 +334,33 @@ namespace Controller
             lock (_gate) return _progress.Clone();
         }
 
+        internal bool TryCompleteDeferredLogicalCleanup(StopSafetyResult result)
+        {
+            if (result == null || !result.CanRestartInProcess || result.LogicalCleanupPending)
+                return false;
+            lock (_gate)
+            {
+                if (_lastTerminalResult?.LogicalCleanupPending != true ||
+                    _progress.TransactionId != result.SafetyTransactionId ||
+                    _progress.Generation != result.SafetyBoundaryGeneration ||
+                    _progress.TimedOut || _progress.TakeoverRequired ||
+                    _clock.UtcNow >= _progress.HardDeadlineUtc ||
+                    (_clock.UtcNow >= _progress.StageHardDeadlineUtc &&
+                     (_clock.UtcNow - _progress.LastMaterialProgressUtc).TotalMilliseconds >=
+                         Math.Max(1, _progress.StageNoProgressGraceMs)))
+                    return false;
+                _lastTerminalResult = result.Clone();
+                _progress.Active = false;
+                _progress.Stage = StopSafetyStage.Completed;
+                _progress.TerminalReason = "Stop safety logical cleanup completed";
+                _progress.Detail = _progress.TerminalReason;
+                _progress.ProgressVersion = Math.Max(1, _progress.ProgressVersion + 1);
+                _progress.LastMaterialProgressUtc = _clock.UtcNow;
+                PublishProgressLocked();
+                return true;
+            }
+        }
+
         /// <summary>
         /// Production hardware code reports a stage through this ledger rather
         /// than maintaining a parallel progress clock.  A stale/late report is
@@ -672,6 +699,9 @@ namespace Controller
             latest.LastStage = timedOut ? StopSafetyStage.TimedOut : StopSafetyStage.Completed;
             latest.TimedOut = timedOut;
             latest.RequiresProcessRestart = timedOut || !fullyConfirmed;
+            latest.LogicalCleanupPending = latest.LogicalCleanupPending && !timedOut &&
+                latest.FullyConfirmed && !latest.DataContinuityCompromised &&
+                !latest.LogicalQuiescenceConfirmed;
             latest.Outcome = timedOut
                 ? StopSafetyOutcome.SafeButRestartRequired
                 : fullyConfirmed
@@ -972,9 +1002,15 @@ namespace Controller
                     _progress.TransactionId != lease.TransactionId)
                     return;
                 _progress.Stage = stage;
-                _progress.Active = false;
+                // A caller may still be joining the cancelled startup tail. Keep
+                // its original deadline observable without publishing a sticky
+                // hard takeover that could cancel the next healthy startup.
+                var logicalPending = result?.LogicalCleanupPending == true &&
+                    result.FullyConfirmed && !result.DataContinuityCompromised &&
+                    !result.TimedOut && stage == StopSafetyStage.Completed;
+                _progress.Active = logicalPending;
                 _progress.TimedOut = result?.TimedOut == true || stage == StopSafetyStage.TimedOut;
-                _progress.TakeoverRequired = result?.RequiresProcessRestart == true ||
+                _progress.TakeoverRequired = (result?.RequiresProcessRestart == true && !logicalPending) ||
                                              _progress.TimedOut;
                 _progress.TerminalReason = reason ?? string.Empty;
                 _progress.Detail = _progress.TerminalReason;

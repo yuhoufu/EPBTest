@@ -226,7 +226,7 @@ namespace Controller
                         try
                         {
                             var result = completed.GetAwaiter().GetResult();
-                            if (result.RequiresProcessRestart || result.TimedOut)
+                            if ((result.RequiresProcessRestart && !result.LogicalCleanupPending) || result.TimedOut)
                                 Interlocked.Exchange(ref _processRestartRequired, 1);
                             lock (_stopSafetyGate)
                             {
@@ -1031,9 +1031,11 @@ namespace Controller
                     ? StopSafetyOutcome.SafeButRestartRequired
                     : StopSafetyOutcome.PhysicalSafetyUnconfirmed;
             result.RequiresProcessRestart = !result.CanRestartInProcess;
+            result.LogicalCleanupPending = result.FullyConfirmed &&
+                !result.DataContinuityCompromised && !result.LogicalQuiescenceConfirmed;
             state.Result = result;
             ReportStopCleanupStatusAtSafetyBoundary(state, result);
-            if (result.RequiresProcessRestart)
+            if (result.RequiresProcessRestart && !result.LogicalCleanupPending)
                 Interlocked.Exchange(ref _processRestartRequired, 1);
             lock (_stopSafetyGate)
             {

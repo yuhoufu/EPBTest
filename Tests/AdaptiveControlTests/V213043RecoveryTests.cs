@@ -532,7 +532,7 @@ namespace AdaptiveControlTests
             string failure;
             Assert(!MtEmbTest.LaunchCapabilityGate.TryValidate(
                        Array.Empty<string>(), out failure) &&
-                   failure == "LaunchCapabilitySchemaMismatch",
+                   failure == "LaunchCapabilityMissing",
                 "主程序直接运行未被明确拒绝：" + failure);
 
             var capabilityId = Guid.NewGuid().ToString("N");
