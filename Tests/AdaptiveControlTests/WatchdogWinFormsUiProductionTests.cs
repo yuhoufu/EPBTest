@@ -30,6 +30,7 @@ namespace AdaptiveControlTests
             {
                 RuntimeDependencyClosureIsComplete,
                 ProductionNeverStartedMonitorAllowsOperatorClose,
+                ProductionMdiCloseChecksBeforeMutatingMonitor,
                 WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
                 FailedAttachWithoutUiBindingAllowsMonitorClose,
                 ApplicationExitUsesDedicatedShutdownExpectedMessage,
@@ -1588,6 +1589,42 @@ namespace AdaptiveControlTests
                     catch (Exception ex) { completed.TrySetException(ex); }
                 }));
                 Assert(completed.Task.Wait(TimeoutMilliseconds), "真实监控窗关闭判定阻塞了 STA 消息泵");
+                completed.Task.GetAwaiter().GetResult();
+            }
+        }
+
+        private sealed class ClosingProbeMonitor : FrmEpbMainMonitor
+        {
+            internal ClosingProbeMonitor() : base(new Config.DaqRuntimeSettings(2000, 20)) { }
+
+            internal FormClosingEventArgs ProbeMdiClose()
+            {
+                var args = new FormClosingEventArgs(CloseReason.MdiFormClosing, false);
+                base.OnFormClosing(args);
+                return args;
+            }
+        }
+
+        private static void ProductionMdiCloseChecksBeforeMutatingMonitor()
+        {
+            using (var sta = new StaFormHost())
+            {
+                var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                sta.Control.BeginInvoke((Action)(() =>
+                {
+                    try
+                    {
+                        using (var monitor = new ClosingProbeMonitor())
+                        {
+                            var result = monitor.ProbeMdiClose();
+                            Assert(!result.Cancel && !monitor.OperatorClosePending,
+                                "空闲 MDI 预检查不得在主窗口之前启动子窗口收尾");
+                        }
+                        completed.TrySetResult(true);
+                    }
+                    catch (Exception ex) { completed.TrySetException(ex); }
+                }));
+                Assert(completed.Task.Wait(TimeoutMilliseconds), "MDI 关闭预检查阻塞消息泵");
                 completed.Task.GetAwaiter().GetResult();
             }
         }

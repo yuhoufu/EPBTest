@@ -983,6 +983,15 @@ namespace MTEmbTest
 
         protected override void OnFormClosing(System.Windows.Forms.FormClosingEventArgs e)
         {
+            if (e.CloseReason == System.Windows.Forms.CloseReason.MdiFormClosing &&
+                Volatile.Read(ref _watchdogTakeoverExit) == 0 &&
+                Volatile.Read(ref _closingReentry) != 3)
+            {
+                // WinForms visits children before Main_Frm.FormClosing. The parent
+                // owns the one prompt and the drain; do not start child cleanup here.
+                e.Cancel = !CanAcceptOperatorClose(out _);
+                return;
+            }
             if (Volatile.Read(ref _watchdogTakeoverExit) == 0 &&
                 !CanAcceptOperatorClose(out var closeReason))
             {
