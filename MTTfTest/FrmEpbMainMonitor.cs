@@ -2747,6 +2747,7 @@ namespace MTEmbTest
             Interlocked.Exchange(ref _operatorStopRequested, 1);
             var stopCommandId = Guid.NewGuid().ToString("N");
             _manualCloseCommandId = stopCommandId;
+            Interlocked.Exchange(ref _manualStopStartRevision, Interlocked.Read(ref _manualCloseStartRevision));
             _stopSessionReceipt.Begin(stopCommandId);
             var stopWatchdogContext = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
             StopSafetyResult completedSafety = null;

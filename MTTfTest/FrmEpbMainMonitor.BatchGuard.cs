@@ -80,6 +80,7 @@ namespace MTEmbTest
             try
             {
                 BtnStartTest.Enabled = false;
+                Interlocked.Increment(ref _manualCloseStartRevision);
                 BtnStartTest.Cursor = System.Windows.Forms.Cursors.WaitCursor;
 
                 var pendingStop = _stopSessionReceipt.CaptureTask();

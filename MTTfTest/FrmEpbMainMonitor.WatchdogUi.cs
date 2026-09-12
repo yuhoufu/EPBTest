@@ -14,6 +14,8 @@ namespace MTEmbTest
         private string _manualCloseCommandId;
         private bool _manualCloseAccepted;
         private bool _manualCloseTrialObserved;
+        private long _manualCloseStartRevision;
+        private long _manualStopStartRevision;
         private readonly ManualCloseDrainOwner _manualCloseDrain = new ManualCloseDrainOwner();
         internal bool OperatorClosePending => _manualCloseAccepted && !IsDisposed;
 
@@ -23,10 +25,12 @@ namespace MTEmbTest
             if (_manualCloseAccepted || Volatile.Read(ref _closingReentry) == 3)
                 return true;
             var stopped = Volatile.Read(ref _operatorStopRequested) != 0;
-            if (!_manualCloseTrialObserved && CanUseIdleFastClose())
+            if (!_manualCloseTrialObserved && Volatile.Read(ref _batchStartUiGuard) == 0 && CanUseIdleFastClose())
                 return true;
             var proof = stopped ? _epb?.CaptureManualCloseSafety(_manualCloseCommandId) : null;
-            reason = OperatorClosePolicy.Rejection(Volatile.Read(ref _batchStartUiGuard) != 0,
+            var conflictingStart = Volatile.Read(ref _batchStartUiGuard) != 0 &&
+                (!stopped || Interlocked.Read(ref _manualCloseStartRevision) != Interlocked.Read(ref _manualStopStartRevision));
+            reason = OperatorClosePolicy.Rejection(conflictingStart,
                 stopped, CanUseIdleFastClose(), proof != null);
             return string.IsNullOrEmpty(reason);
         }
