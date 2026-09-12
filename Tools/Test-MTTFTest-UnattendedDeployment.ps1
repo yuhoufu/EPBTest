@@ -60,6 +60,21 @@ foreach ($required in @(
     }
 }
 Write-Output 'PASS SimpleUnattendedDeploymentContract 1/1'
+foreach ($command in $ast.FindAll({ param($node)
+        $node -is [Management.Automation.Language.CommandAst] -and
+        $node.GetCommandName() -eq 'Stop-ScheduledTask'
+    }, $true)) {
+    if (@($command.CommandElements | Where-Object {
+            $_ -is [Management.Automation.Language.CommandParameterAst] -and
+            $_.ParameterName -eq 'Confirm' }).Count -gt 0) {
+        throw 'Stop-ScheduledTask 在 Windows PowerShell 5.1 中不支持 Confirm。'
+    }
+}
+if (-not $installerText.Contains('Invoke-CimMethod') -or
+    -not $installerText.Contains('PathName =')) {
+    throw '服务路径必须通过结构化接口保留引号。'
+}
+Write-Output 'PASS WindowsPowerShellServiceTaskBinding 2/2'
 
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $manifestPath = Join-Path $repo 'MTTfTest\app.manifest'

@@ -82,7 +82,11 @@ function Save-BusinessEvidence([string]$Destination, [string]$Snapshot = '') {
     if (-not $ProjectDirectory) { throw '请通过 -ProjectDirectory 指定实际项目目录，不能猜测或读取其他项目计数。' }
     $hostPath = Join-Path $env:SystemRoot 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $hostPath)) { $hostPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe' }
-    & $hostPath -NoProfile -ExecutionPolicy Bypass -File (Join-Path $base 'Deployment\Get-EpbBusinessEvidence.ps1') -ProgramDirectory $base -ProjectDirectory $ProjectDirectory -OutputPath $Destination -SnapshotPath $Snapshot
+    $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',
+        (Join-Path $base 'Deployment\Get-EpbBusinessEvidence.ps1'),
+        '-ProgramDirectory',$base,'-ProjectDirectory',$ProjectDirectory,'-OutputPath',$Destination)
+    if ($Snapshot) { $arguments += @('-SnapshotPath',$Snapshot) }
+    & $hostPath @arguments
     if ($LASTEXITCODE -ne 0) { throw '业务计数/数据库采证失败，不能报告完整采证成功。' }
 }
 function Assert-ClosedProcessSafety([int]$ProcessId, [long]$StartUtcTicks) {

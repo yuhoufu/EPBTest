@@ -134,6 +134,14 @@ function Install-ServiceAndAgent([string]$Root) {
             'DisplayName=' 'MTTFTest Unattended Supervisor' | Out-Host
     }
     if ($LASTEXITCODE -ne 0) { throw "监督服务安装失败：$LASTEXITCODE" }
+    # Windows PowerShell 5.1 native argument binding strips nested quotes
+    # passed to sc.exe. Persist the executable path through a typed WMI call.
+    $serviceRecord = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    $pathChange = Invoke-CimMethod -InputObject $serviceRecord -MethodName Change `
+        -Arguments @{ PathName = ('"' + $watchdog + '"') } -ErrorAction Stop
+    if ($pathChange.ReturnValue -ne 0) { throw "监督服务路径更新失败：$($pathChange.ReturnValue)" }
+    $storedPath = [string](Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop).PathName
+    if ($storedPath -ne ('"' + $watchdog + '"')) { throw '监督服务路径没有完整保留引号，拒绝启动。' }
     & sc.exe failure $serviceName `
         'reset=' '0' `
         'actions=' 'restart/5000/restart/15000/restart/60000' | Out-Host
@@ -278,7 +286,7 @@ function Stop-InstalledRuntimeTasks([string]$Root) {
     foreach ($name in @($autoStartTaskName, $taskName)) {
         $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         if ($null -ne $task) {
-            Stop-ScheduledTask -TaskName $name -Confirm:$false `
+            Stop-ScheduledTask -TaskName $name `
                 -ErrorAction SilentlyContinue
         }
     }
@@ -450,8 +458,10 @@ if (Test-Path -LiteralPath (Join-Path $root 'stop-command-pending.json')) {
 }
 $installedService = Get-CimInstance Win32_Service -Filter "Name='MTTFTestSupervisor'" -ErrorAction Stop
 if ($null -ne $installedService) {
-    $expectedService = '"' + (Join-Path $root 'Current\MTTFTest.Watchdog.exe') + '"'
-    if (-not [string]::Equals(([string]$installedService.PathName).Trim(), $expectedService, [StringComparison]::OrdinalIgnoreCase)) {
+    $expectedService = Join-Path $root 'Current\MTTFTest.Watchdog.exe'
+    $actualService = ([string]$installedService.PathName).Trim()
+    if (-not [string]::Equals($actualService, ('"' + $expectedService + '"'), [StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($actualService, $expectedService, [StringComparison]::OrdinalIgnoreCase)) {
         throw '监督服务属于其他安装路径，拒绝修改。'
     }
 }
@@ -478,13 +488,13 @@ if ($Mode -eq 'Uninstall') {
         Write-OperationStep 2 6 '停止并删除登录代理和主程序自启动任务。'
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if ($null -ne $task) {
-            Stop-ScheduledTask -TaskName $taskName -Confirm:$false `
+            Stop-ScheduledTask -TaskName $taskName `
                 -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
         }
         $autoStartTask = Get-ScheduledTask -TaskName $autoStartTaskName -ErrorAction SilentlyContinue
         if ($null -ne $autoStartTask) {
-            Stop-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false `
+            Stop-ScheduledTask -TaskName $autoStartTaskName `
                 -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $autoStartTaskName -Confirm:$false
         }
@@ -578,6 +588,6 @@ if ($PSCmdlet.ShouldProcess($root, "$Mode V$sourceVersion 无人值守运行环�
     Write-OperationStep 8 8 '创建快捷方式并写入配置标记。'
     Install-Shortcuts $root
     Write-ConfiguredMarker $root
-    Write-Host "V$sourceVersion 正式包已完成 $Mode；发布与现场运行状态由操作人员负责。"
+    Write-Host "V$sourceVersion 程序包已完成 $Mode；发布与现场运行状态由操作人员负责。"
     Write-DeploymentResult $Mode $sourceVersion $root $source
 }
