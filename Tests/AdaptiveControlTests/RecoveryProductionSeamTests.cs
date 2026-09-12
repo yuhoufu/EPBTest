@@ -136,6 +136,11 @@ namespace AdaptiveControlTests
                 var state = handle.GetState(4);
                 Assert(state.CorrelationId == stopCorrelation && state.RunEpoch == fixture.RunEpoch + 1 &&
                     state.State == ChannelRuntimeState.SystemFault, "旧DAQ终态覆盖了StopAll新代权威状态");
+                handle.AdvanceGlobalRunEpoch();
+                handle.CompleteCancelledClosureForRecoverySeam("StopAll:SystemFault:OwnedTerminal");
+                Assert(handle.IsCompletionCompleted && !handle.IsRegistered && !handle.RegistryLeaseActive &&
+                    handle.CompletionResult?.Recovered == false,
+                    "StopAll接管后旧DAQ事务未释放owner/registry，或把取消误报为恢复成功");
             }
             using (var fixture = new EpbManagerTerminalFixture())
             {
