@@ -6756,44 +6756,56 @@ namespace MTTFTest.Watchdog
             if (receipt == null || receipt.IsTerminal || !receipt.IsValidFor(_args.SessionId) ||
                 Interlocked.CompareExchange(ref _safetyHandoffStarted, 1, 0) != 0)
                 return false;
-            var snapshot = WatchdogSafetyConfigSnapshotStore.Validate(
-                _args.JournalDirectory,
-                receipt.HandoffId,
-                receipt.ConfigSnapshotPath,
-                receipt.ConfigSnapshotManifestPath,
-                receipt.ConfigSnapshotManifestSha256);
-            if (snapshot?.Succeeded != true)
+            var workerOwnsAdmission = false;
+            try
             {
-                FailSafetyHandoff(
-                    receipt,
-                    "SafetyConfigSnapshotInvalid",
-                    snapshot?.Error ?? "SnapshotValidationUnavailable");
-                return true;
-            }
-            if (receipt.RelaunchDisposition ==
-                    WatchdogRelaunchDisposition.PreserveApprovedPermit)
-            {
-                if (!WatchdogTakeoverPermitBindingPolicy.Matches(
-                        _relaunchCoordinator.Snapshot,
-                        _args.SessionId,
-                        receipt.RelaunchPermitGeneration,
-                        receipt.RelaunchPermitId,
-                        receipt.RelaunchPermitNonceSha256))
+                var snapshot = WatchdogSafetyConfigSnapshotStore.Validate(
+                    _args.JournalDirectory,
+                    receipt.HandoffId,
+                    receipt.ConfigSnapshotPath,
+                    receipt.ConfigSnapshotManifestPath,
+                    receipt.ConfigSnapshotManifestSha256);
+                if (snapshot?.Succeeded != true)
                 {
                     FailSafetyHandoff(
                         receipt,
-                        "SafetyHandoffPermitMismatch",
-                        "Typed handoff does not match durable authority.");
+                        "SafetyConfigSnapshotInvalid",
+                        snapshot?.Error ?? "SnapshotValidationUnavailable");
                     return true;
                 }
+                if (receipt.RelaunchDisposition ==
+                        WatchdogRelaunchDisposition.PreserveApprovedPermit)
+                {
+                    if (!WatchdogTakeoverPermitBindingPolicy.Matches(
+                            _relaunchCoordinator.Snapshot,
+                            _args.SessionId,
+                            receipt.RelaunchPermitGeneration,
+                            receipt.RelaunchPermitId,
+                            receipt.RelaunchPermitNonceSha256))
+                    {
+                        FailSafetyHandoff(
+                            receipt,
+                            "SafetyHandoffPermitMismatch",
+                            "Typed handoff does not match durable authority.");
+                        return true;
+                    }
+                }
+                else
+                {
+                    CancelAutomaticTakeover("SafetyHandoffObserved");
+                    _journal.ManualStopRequested = true;
+                }
+                _ = Task.Run(() => RunSafetyHandoffAsync(receipt.HandoffId, receipt.Nonce));
+                workerOwnsAdmission = true;
+                return true;
             }
-            else
+            finally
             {
-                CancelAutomaticTakeover("SafetyHandoffObserved");
-                _journal.ManualStopRequested = true;
+                // Only the admitted worker may retain the flag. Exceptions in
+                // validation, persistence, notification or scheduling release it.
+                if (!workerOwnsAdmission)
+                    Interlocked.Exchange(ref _safetyHandoffStarted, 0);
             }
-            _ = Task.Run(() => RunSafetyHandoffAsync(receipt.HandoffId, receipt.Nonce));
-            return true;
         }
 
         private void RecordRepeatedObservation(string eventType, string identity, string reason)
