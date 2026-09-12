@@ -38,7 +38,7 @@ switch ($Mode) {
         Invoke-Guard '--enable'
         $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $script = [IO.Path]::GetFullPath($PSCommandPath)
-        $arguments = '-NoProfile -WindowStyle Hidden -File "{0}" -Mode Run -ProjectDirectory "{1}" -SessionId {2} -ExecutablePath "{3}"' -f $script,$project,$SessionId,$executable
+        $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Mode Run -ProjectDirectory "{1}" -SessionId {2} -ExecutablePath "{3}"' -f $script,$project,$SessionId,$executable
         $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $arguments
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
         $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
