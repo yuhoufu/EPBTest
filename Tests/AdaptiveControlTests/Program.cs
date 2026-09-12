@@ -25,6 +25,12 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--fallback-safety")
+                {
+                    _passed += FallbackSafetyRegressionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 2 &&
                     args[0].Equals("--watchdog-guarded-launch-child", StringComparison.OrdinalIgnoreCase))
                 {
