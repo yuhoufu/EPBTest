@@ -61,4 +61,16 @@ $manifest = [ordered]@{
     createdUtc=[DateTime]::UtcNow.ToString('O'); files=$files
 }
 [IO.File]::WriteAllText((Join-Path $output 'automatic-bundle.json'), ($manifest | ConvertTo-Json -Depth 6), $utf8)
+$sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+if (-not (Test-Path -LiteralPath $sevenZip)) { throw '缺少 7-Zip，不能生成最大压缩率候选包。' }
+$archive = $output + '.7z'
+Push-Location (Split-Path -Parent $output)
+try {
+    & $sevenZip a -t7z -m0=LZMA2 -mx=9 $archive (Split-Path -Leaf $output) | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw '7-Zip 最大压缩率打包失败。' }
+    & $sevenZip t $archive | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw '7-Zip 压缩包完整性验证失败。' }
+} finally { Pop-Location }
+$digest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+[IO.File]::WriteAllText($archive + '.sha256.txt', $digest + '  ' + (Split-Path -Leaf $archive) + "`r`n", [Text.Encoding]::ASCII)
 Write-Output $output

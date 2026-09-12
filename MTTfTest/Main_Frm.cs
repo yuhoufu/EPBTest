@@ -519,6 +519,11 @@ namespace MtEmbTest
 
         private void TsmRealMinitor_Click(object sender, EventArgs e)
         {
+            if (MdiChildren.OfType<FrmEpbMainMonitor>().Any(monitor => monitor.OperatorClosePending))
+            {
+                ShowMainOperatorMessage("上一试验正在后台保存数据，请等待收尾完成后再打开监控。");
+                return;
+            }
             foreach (var childForm in MdiChildren)
             {
                 if (childForm.Text == "扭矩调节")

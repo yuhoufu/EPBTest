@@ -111,6 +111,7 @@ namespace MtEmbTest
         private ApplicationCloseReceipt _applicationCloseReceipt;
         private WatchdogApplicationExitReceipt _applicationExitDeadlineReceipt;
         private int _applicationExitDeadlineArmed;
+        private bool _operatorMainCloseAccepted;
         private const int ApplicationExitHardDeadlineSeconds = 30;
         private const int ApplicationExitDiagnosticDeadlineSeconds = 25;
         private const int IdleApplicationExitHardDeadlineSeconds = 3;
@@ -185,10 +186,35 @@ namespace MtEmbTest
 
         internal bool HandleWatchdogMainFormClosing(FormClosingEventArgs e)
         {
-            ArmApplicationExitDeadlineOnce(
-                "MainFormClosing",
-                RuntimeShutdownIntent.ApplicationExit,
-                null);
+            var intent = (RuntimeShutdownIntent)Volatile.Read(ref _watchdogExitIntent);
+            var recoveryExit = intent == RuntimeShutdownIntent.WatchdogTakeoverExit ||
+                               intent == RuntimeShutdownIntent.WatchdogRecoveryExit;
+            if (!recoveryExit && !_operatorMainCloseAccepted)
+            {
+                var monitors = MdiChildren.OfType<FrmEpbMainMonitor>().ToArray();
+                if (MdiChildren.Length == 0 && !_watchdogUiAdapter.HasResources &&
+                    WatchdogRuntime.CaptureTransportSnapshot()?.Context == null)
+                {
+                    WatchdogRuntime.CompleteOperatorApplicationExit(_applicationCloseReceipt?.FinalStopSafety);
+                    WatchdogRuntime.MarkApplicationExitGraceful("OperatorIdleMainCloseCompleted");
+                    return false;
+                }
+                foreach (var monitor in monitors)
+                {
+                    if (!monitor.CanAcceptOperatorClose(out var operatorCloseReason))
+                    {
+                        e.Cancel = true;
+                        ShowMainOperatorMessage(operatorCloseReason, "无法关闭", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return true;
+                    }
+                }
+                foreach (var monitor in monitors) monitor.AcceptOperatorClose();
+                _operatorMainCloseAccepted = true;
+                Hide();
+                e.Cancel = true;
+                RequestWatchdogOwnedExit("OperatorMainClose", RuntimeShutdownIntent.ApplicationExit);
+                return true;
+            }
             if (HasApplicationCloseReceipt)
             {
                 Interlocked.Exchange(ref _watchdogAllowClose, 1);
@@ -271,6 +297,10 @@ namespace MtEmbTest
             RuntimeShutdownIntent shutdownIntent,
             string takeoverTransactionId)
         {
+            // Operator exit retains the message loop until persistence completes.
+            // Only an already-authorized watchdog replacement owns a forced deadline.
+            if (shutdownIntent == RuntimeShutdownIntent.ApplicationExit)
+                return true;
             if (Interlocked.CompareExchange(
                     ref _applicationExitDeadlineArmed,
                     1,
@@ -506,7 +536,24 @@ namespace MtEmbTest
                 }
                 UseWaitCursor = true;
                 Text = BuildWindowTitle() + " - 正在安全退出…";
-                _watchdogCloseTask = CompleteWatchdogCloseOnUiThreadAsync(reason);
+                _watchdogCloseTask = _operatorMainCloseAccepted
+                    ? CompleteOperatorCloseWithRetriesAsync(reason)
+                    : CompleteWatchdogCloseOnUiThreadAsync(reason);
+            }
+        }
+
+        private async Task CompleteOperatorCloseWithRetriesAsync(string reason)
+        {
+            while (!IsDisposed)
+            {
+                try { await CompleteWatchdogCloseOnUiThreadAsync(reason); }
+                catch (Exception ex)
+                {
+                    ProjectLogHub.Write(ProjectLogLevel.Error,
+                        "人工退出后台收尾仍未完成：" + ex.GetBaseException().Message, "独立看门狗");
+                }
+                if (IsDisposed) return;
+                await Task.Delay(1000);
             }
         }
 
@@ -527,7 +574,9 @@ namespace MtEmbTest
             if (prepareTasks.Length > 0)
             {
                 var prepared = Task.WhenAll(prepareTasks);
-                var completed = await Task.WhenAny(prepared, Task.Delay(15000));
+                var manualExit = (RuntimeShutdownIntent)Volatile.Read(ref _watchdogExitIntent) ==
+                                 RuntimeShutdownIntent.ApplicationExit;
+                var completed = manualExit ? prepared : await Task.WhenAny(prepared, Task.Delay(15000));
                 if (!ReferenceEquals(completed, prepared))
                 {
                     Interlocked.Exchange(ref _watchdogOwnedExitRequested, 0);
@@ -674,6 +723,8 @@ namespace MtEmbTest
             }
 
             Interlocked.Exchange(ref _watchdogAllowClose, 1);
+            if (_operatorMainCloseAccepted)
+                WatchdogRuntime.CompleteOperatorApplicationExit(_applicationCloseReceipt?.FinalStopSafety);
             WatchdogRuntime.MarkApplicationExitGraceful(
                 "MainAndChildWindowsReleased");
             Close();

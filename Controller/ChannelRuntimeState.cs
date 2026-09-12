@@ -1319,6 +1319,37 @@ namespace Controller
         Failed = 4
     }
 
+    public sealed class ManualCloseSafetyReceipt
+    {
+        internal static bool IsSafeSample(bool usable, double value, double limit,
+            double ageMs, double maximumAgeMs, DateTime sampleUtc, DateTime notBeforeUtc)
+        {
+            return usable && !double.IsNaN(value) && !double.IsInfinity(value) &&
+                   !double.IsNaN(limit) && !double.IsInfinity(limit) && limit > 0 &&
+                   ageMs >= 0 && ageMs <= maximumAgeMs && maximumAgeMs > 0 &&
+                   sampleUtc != default(DateTime) && sampleUtc >= notBeforeUtc &&
+                   Math.Abs(value) <= limit;
+        }
+
+        internal ManualCloseSafetyReceipt(Guid transactionId, Guid runId, long runEpoch,
+            string commandId, string evidence)
+        {
+            TransactionId = transactionId;
+            RunId = runId;
+            RunEpoch = runEpoch;
+            CommandId = commandId;
+            Evidence = evidence;
+            CapturedUtc = DateTime.UtcNow;
+        }
+
+        public Guid TransactionId { get; }
+        public Guid RunId { get; }
+        public long RunEpoch { get; }
+        public string CommandId { get; }
+        public string Evidence { get; }
+        public DateTime CapturedUtc { get; }
+    }
+
     public sealed class StopSafetyResult
     {
         public StopSafetyOutcome Outcome { get; set; } = StopSafetyOutcome.Unknown;

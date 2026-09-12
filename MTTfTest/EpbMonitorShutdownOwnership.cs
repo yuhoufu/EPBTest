@@ -5,6 +5,32 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
+    internal sealed class ManualCloseDrainOwner
+    {
+        private readonly object _gate = new object();
+        private Task _task;
+        internal Task Current { get { lock (_gate) return _task; } }
+
+        internal Task Join(Func<Task> drain)
+        {
+            lock (_gate)
+                return _task ?? (_task = drain());
+        }
+    }
+
+    internal static class OperatorClosePolicy
+    {
+        internal static string Rejection(bool starting, bool stoppedByOperator,
+            bool idleWithoutTrial, bool safetyConfirmed)
+        {
+            if (starting || (!stoppedByOperator && !idleWithoutTrial))
+                return "试验正在运行，请先停止试验，不允许退出";
+            return stoppedByOperator && !safetyConfirmed
+                ? "人工停止尚未取得当前批次的有效安全凭证：电流、压力采样或控制输出关闭未确认，请等待安全停止完成后重试。"
+                : string.Empty;
+        }
+    }
+
     internal enum EpbMonitorLifecycle
     {
         Initializing = 0,
@@ -269,6 +295,7 @@ namespace MTEmbTest
 
     internal sealed class ApplicationCloseReceipt
     {
+        internal StopSafetyResult FinalStopSafety { get; set; }
         internal string SessionId { get; set; } = string.Empty;
         internal long SessionGeneration { get; set; }
         internal long SessionLease { get; set; }

@@ -2826,7 +2826,11 @@ namespace MTEmbTest
 
         internal static void NotifyApplicationClosing()
         {
-            var context = CaptureContext();
+            NotifyApplicationClosing(CaptureContext());
+        }
+
+        internal static void NotifyApplicationClosing(RuntimeTransportSessionContext context)
+        {
             if (context == null) return;
             var fence = BeginSessionCloseExact(
                 context,
@@ -3010,6 +3014,16 @@ namespace MTEmbTest
                 WatchdogApplicationExitState.GracefulCompleted,
                 false,
                 detail);
+        }
+
+        internal static void CompleteOperatorApplicationExit(StopSafetyResult safety)
+        {
+            if (safety == null || !safety.CanCloseApplication) return;
+            // Publish the compatibility receipt only after draining, not a deadline while draining.
+            var receipt = ArmApplicationExitDeadline("OperatorCloseDrainCompleted",
+                TimeSpan.FromSeconds(30), RuntimeShutdownIntent.ApplicationExit, null);
+            if (receipt == null) return;
+            UpdateApplicationExitSafety(CaptureContextOrLastDetached(), safety);
         }
 
         internal static void MarkApplicationExitDeadlineForced(string detail)

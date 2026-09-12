@@ -2086,6 +2086,7 @@ namespace MTEmbTest
 
         private void RevokeManualStopExitAuthorizationBeforeEnergization()
         {
+            _manualCloseTrialObserved = true;
             _stopSessionReceipt.RevokeForNewStart();
             _manualStopExitReceipt.RevokeForNewStart();
             Interlocked.Exchange(ref _operatorStopRequested, 0);
@@ -2745,6 +2746,7 @@ namespace MTEmbTest
             _manualStopExitReceipt.Revoke();
             Interlocked.Exchange(ref _operatorStopRequested, 1);
             var stopCommandId = Guid.NewGuid().ToString("N");
+            _manualCloseCommandId = stopCommandId;
             _stopSessionReceipt.Begin(stopCommandId);
             var stopWatchdogContext = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
             StopSafetyResult completedSafety = null;
@@ -2771,6 +2773,7 @@ namespace MTEmbTest
                 // StopAll 已取得事务身份后立即建立不可逆 Close Fence；即使后续
                 // 管道回执、detach 或 UI 收口失败，同一 Watchdog 会话也不能再拉起主程序。
                 var stopProgress = _epb.CaptureStopSafetyProgress();
+                _epb.BindManualCloseIntent(stopCommandId, stopProgress);
                 var closeFence = WatchdogRuntime.BeginSessionCloseExact(
                     stopWatchdogContext,
                     "ManualStopIntent",
@@ -3046,15 +3049,22 @@ namespace MTEmbTest
             SetMonitorLifecycle(EpbMonitorLifecycle.Stopping);
             _isClosing = true;
             ScheduleCloseOverlay();
-            BeginMonitorCloseSequence();
+            if (Volatile.Read(ref _watchdogTakeoverExit) == 0)
+                AcceptOperatorClose();
+            _ = _manualCloseDrain.Join(BeginMonitorCloseSequence);
         }
 
-        private async void BeginMonitorCloseSequence()
+        private async System.Threading.Tasks.Task BeginMonitorCloseSequence()
         {
             try
             {
                 var completed = await PrepareAndFinalizeMonitorCloseAsync(
                     closeAfterPreparation: true);
+                while (!completed && _manualCloseAccepted && !IsDisposed)
+                {
+                    await System.Threading.Tasks.Task.Delay(1000);
+                    completed = await PrepareAndFinalizeMonitorCloseAsync(closeAfterPreparation: true);
+                }
                 if (!completed)
                 {
                     HideCloseOverlay();
@@ -3084,12 +3094,23 @@ namespace MTEmbTest
         internal async System.Threading.Tasks.Task<bool> PrepareForMainApplicationExitAsync()
         {
             if (Volatile.Read(ref _closingReentry) == 3) return true;
+            var retainedMonitorClose = _manualCloseDrain.Current;
+            if (retainedMonitorClose != null)
+            {
+                await retainedMonitorClose.ConfigureAwait(true);
+                return _preparedCloseSafety?.CanCloseApplication == true;
+            }
             Interlocked.CompareExchange(ref _closingReentry, 1, 0);
             _isClosing = true;
             ScheduleCloseOverlay();
-            return await PrepareAndFinalizeMonitorCloseAsync(
-                    closeAfterPreparation: false)
-                .ConfigureAwait(true);
+            do
+            {
+                if (await PrepareAndFinalizeMonitorCloseAsync(closeAfterPreparation: false)
+                    .ConfigureAwait(true)) return true;
+                if (!_manualCloseAccepted) return false;
+                await System.Threading.Tasks.Task.Delay(1000);
+            } while (!IsDisposed);
+            return false;
         }
 
         internal void CloseAfterMainExitAuthorized()
@@ -3106,6 +3127,26 @@ namespace MTEmbTest
         }
 
         private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseAsync(
+            bool closeAfterPreparation)
+        {
+            while (true)
+            {
+                try
+                {
+                    var completed = await PrepareAndFinalizeMonitorCloseCoreAsync(closeAfterPreparation);
+                    if (completed || !_manualCloseAccepted) return completed;
+                }
+                catch (Exception ex)
+                {
+                    if (!_manualCloseAccepted) throw;
+                    logger?.Error("人工关闭后台收尾失败，保留资源并重试：" + ex.Message, "EPB");
+                }
+                if (IsDisposed) return false;
+                await System.Threading.Tasks.Task.Delay(1000);
+            }
+        }
+
+        private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseCoreAsync(
             bool closeAfterPreparation)
         {
                 var idleFastClose = CanUseIdleFastClose();
@@ -3154,6 +3195,12 @@ namespace MTEmbTest
                         CompletedUtc = DateTime.UtcNow
                     };
                     LogInfo("监控窗未开始试验，执行空闲快速关闭；不连接、不查询程控电源。");
+                }
+                else if (_manualCloseAccepted && !string.IsNullOrEmpty(_manualCloseCommandId))
+                {
+                    // Join persistence only; manual close never starts a second physical StopAll.
+                    safety = await _epb.CompleteManualClosePersistenceAsync(_manualCloseCommandId)
+                        .ConfigureAwait(true);
                 }
                 else if (reusableManualStop != null)
                 {
@@ -3249,6 +3296,12 @@ namespace MTEmbTest
             {
                 if (closeAfterPreparation)
                 {
+                    if (_manualCloseAccepted)
+                    {
+                        var finalReceipt = await AuthorizeApplicationExitAfterPreparationAsync();
+                        if (finalReceipt?.CanExit != true) return false;
+                        (MdiParent as Main_Frm)?.CacheApplicationCloseReceipt(finalReceipt);
+                    }
                     Interlocked.Exchange(ref _closingReentry, 3);
                     if (!IsDisposed && !Disposing && IsHandleCreated)
                         BeginInvoke((Action)Close);
@@ -3391,23 +3444,28 @@ namespace MTEmbTest
 
                 // 直接等待异步Flush完成后再释放写盘器。事件处理器本身是async，
                 // 不会阻塞消息泵，也不会留下“窗口已关闭但Flush仍访问已释放资源”的裸任务。
-                try
+                while (true)
                 {
-                    if (_daqDev1 != null)
+                    try
                     {
-                        await _daqDev1.FlushRawToDiskAsync();
-                        await _daqDev1.FlushStatToDiskAsync();
+                        if (_daqDev1 != null)
+                        {
+                            await _daqDev1.FlushRawToDiskAsync();
+                            await _daqDev1.FlushStatToDiskAsync();
+                        }
+                        if (_daqDev2 != null)
+                        {
+                            await _daqDev2.FlushRawToDiskAsync();
+                            await _daqDev2.FlushStatToDiskAsync();
+                        }
+                        break;
                     }
-
-                    if (_daqDev2 != null)
+                    catch (Exception ex)
                     {
-                        await _daqDev2.FlushRawToDiskAsync();
-                        await _daqDev2.FlushStatToDiskAsync();
+                        logger?.Error("关闭窗口时DAQ最终Flush失败：" + ex.Message, "DAQ", ex);
+                        if (!_manualCloseAccepted) break;
+                        await System.Threading.Tasks.Task.Delay(1000);
                     }
-                }
-                catch (Exception ex)
-                {
-                    logger?.Error("关闭窗口时DAQ最终Flush失败：" + ex.Message, "DAQ", ex);
                 }
             }
             catch
@@ -3559,6 +3617,7 @@ namespace MTEmbTest
                 // callback target。设备、持久化和本窗资源均已闭合后允许直接关闭。
                 return _applicationCloseReceipt = new ApplicationCloseReceipt
                 {
+                    FinalStopSafety = safety,
                     SessionId = context?.SessionId ?? string.Empty,
                     SessionGeneration = context?.SessionGeneration ?? 0,
                     SessionLease = context?.SessionLease ?? 0,
@@ -3571,7 +3630,8 @@ namespace MTEmbTest
             }
 
             RuntimeShutdownReceipt shutdown = null;
-            if (EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(safety))
+            if (EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(safety) ||
+                (_manualCloseAccepted && safety.FullyConfirmed))
             {
                 if (main != null)
                     shutdown = await (safety.PowerDisposition ==
@@ -3586,6 +3646,7 @@ namespace MTEmbTest
             {
                 return _applicationCloseReceipt = new ApplicationCloseReceipt
                 {
+                    FinalStopSafety = safety,
                     SessionId = context?.SessionId ?? shutdown.SessionId ?? string.Empty,
                     SessionGeneration = context?.SessionGeneration ?? shutdown.SessionGeneration,
                     SessionLease = context?.SessionLease ?? shutdown.SessionLease,

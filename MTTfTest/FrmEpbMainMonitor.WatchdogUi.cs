@@ -11,6 +11,44 @@ namespace MTEmbTest
 {
     public partial class FrmEpbMainMonitor : IWinFormsWatchdogStopSafetyPort
     {
+        private string _manualCloseCommandId;
+        private bool _manualCloseAccepted;
+        private bool _manualCloseTrialObserved;
+        private readonly ManualCloseDrainOwner _manualCloseDrain = new ManualCloseDrainOwner();
+        internal bool OperatorClosePending => _manualCloseAccepted && !IsDisposed;
+
+        internal bool CanAcceptOperatorClose(out string reason)
+        {
+            reason = string.Empty;
+            if (_manualCloseAccepted || Volatile.Read(ref _closingReentry) == 3)
+                return true;
+            var stopped = Volatile.Read(ref _operatorStopRequested) != 0;
+            if (!_manualCloseTrialObserved && CanUseIdleFastClose())
+                return true;
+            var proof = stopped ? _epb?.CaptureManualCloseSafety(_manualCloseCommandId) : null;
+            reason = OperatorClosePolicy.Rejection(Volatile.Read(ref _batchStartUiGuard) != 0,
+                stopped, CanUseIdleFastClose(), proof != null);
+            return string.IsNullOrEmpty(reason);
+        }
+
+        internal void AcceptOperatorClose()
+        {
+            if (_manualCloseAccepted) return;
+            _manualCloseAccepted = true;
+            _isClosing = true;
+            WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
+            WatchdogRuntime.TransportError -= OnWatchdogTransportError;
+            // Safety was checked above. This is an expected session exit, never a restart request.
+            var context = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
+            _ = Task.Run(() =>
+            {
+                try { WatchdogRuntime.NotifyApplicationClosing(context); }
+                catch (Exception ex) { logger?.Warn("人工关闭会话通知失败，后台收尾继续保留：" + ex.Message, "Watchdog"); }
+            });
+            HideCloseOverlay();
+            Hide();
+        }
+
         private readonly TaskCompletionSource<bool> _watchdogControllerReady =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly object _watchdogUiHandlerGate = new object();

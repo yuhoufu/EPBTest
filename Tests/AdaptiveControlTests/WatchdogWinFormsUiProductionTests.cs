@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -29,6 +29,7 @@ namespace AdaptiveControlTests
             var tests = new Action[]
             {
                 RuntimeDependencyClosureIsComplete,
+                ProductionNeverStartedMonitorAllowsOperatorClose,
                 WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
                 FailedAttachWithoutUiBindingAllowsMonitorClose,
                 ApplicationExitUsesDedicatedShutdownExpectedMessage,
@@ -1285,7 +1286,7 @@ namespace AdaptiveControlTests
             using (var sta = new StaFormHost())
             using (var sessionA = new WinFormsWatchdogUiProductionSession(sta.Control))
             using (var sessionB = new WinFormsWatchdogUiProductionSession(sta.Control))
-            using (var monitor = new FrmEpbMainMonitor())
+            using (var monitor = new FrmEpbMainMonitor(new Config.DaqRuntimeSettings(2000, 20)))
             {
                 var callback = new ProductionHandler();
                 var bindingA = sessionA.BindReadyAsync(
@@ -1565,6 +1566,30 @@ namespace AdaptiveControlTests
                 PersistenceBoundaryConfirmed = true,
                 LogicalQuiescenceConfirmed = true
             }), "测试无法推进v2完整安全终态");
+        }
+
+        private static void ProductionNeverStartedMonitorAllowsOperatorClose()
+        {
+            using (var sta = new StaFormHost())
+            {
+                var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                sta.Control.BeginInvoke((Action)(() =>
+                {
+                    try
+                    {
+                        using (var monitor = new FrmEpbMainMonitor(new Config.DaqRuntimeSettings(2000, 20)))
+                        {
+                            Assert(monitor.CanAcceptOperatorClose(out var reason),
+                                "未开始试验的真实监控窗拒绝关闭：" + reason);
+                            Assert(!monitor.OperatorClosePending, "只读关闭判定不应提前改变窗体状态");
+                        }
+                        completed.TrySetResult(true);
+                    }
+                    catch (Exception ex) { completed.TrySetException(ex); }
+                }));
+                Assert(completed.Task.Wait(TimeoutMilliseconds), "真实监控窗关闭判定阻塞了 STA 消息泵");
+                completed.Task.GetAwaiter().GetResult();
+            }
         }
 
         private sealed class StaFormHost : IDisposable

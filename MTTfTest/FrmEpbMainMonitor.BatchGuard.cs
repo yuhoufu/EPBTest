@@ -67,6 +67,8 @@ namespace MTEmbTest
             bool unattendedRecovery,
             int[] expectedChannels)
         {
+            if (_manualCloseAccepted)
+                throw new InvalidOperationException("后台停止收尾尚未完成，不能开始新试验。");
             if (Interlocked.CompareExchange(ref _batchStartUiGuard, 1, 0) != 0)
             {
                 if (unattendedRecovery)

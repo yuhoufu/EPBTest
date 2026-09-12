@@ -1343,6 +1343,9 @@ namespace Controller
             return succeeded;
         }
 
+        internal double OffCurrentClearThresholdForManualClose => ResolveOffCurrentClearThreshold(
+            _adaptiveSafetyLimits.OffCurrentClearThresholdA, _adaptivePreEnergizationCurrentA);
+
         private Task<bool> BeginTerminalOffCurrentVerification(string reason, string direction)
         {
             var configuredThresholdA = _adaptiveSafetyLimits.OffCurrentClearThresholdA;

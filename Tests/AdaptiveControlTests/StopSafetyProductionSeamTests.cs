@@ -57,6 +57,10 @@ namespace AdaptiveControlTests
         internal static int RunUnitTests()
         {
             var passed = 0;
+            Run("人工关闭运行态拒绝且安全停止才放行", OperatorCloseAdmissionIsExplicit, ref passed);
+            Run("人工关闭采样必须新鲜有效且在断能之后", ManualCloseSamplesAreExact, ref passed);
+            Run("人工关闭收尾任务重复请求保持同一所有者", ManualCloseDrainIsSingleFlight, ref passed);
+            Run("人工关闭收尾超过30秒仍保留任务并完成落盘", ManualCloseDrainSurvivesThirtySeconds, ref passed);
             Run("EpbManager生产port发布物理边沿",
                 EpbManagerProductionPortPublishesEdges, ref passed);
             Run("Stop runner stages are strictly ordered and stage deadlines are independent",
@@ -194,6 +198,73 @@ namespace AdaptiveControlTests
             idleSafety.PowerDisposition = PowerShutdownDisposition.CommunicationUnavailableSkipped;
             Assert(!EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(idleSafety),
                 "活动试验断电未确认时仍应保留安全接管路径");
+        }
+
+        private static void OperatorCloseAdmissionIsExplicit()
+        {
+            Assert(OperatorClosePolicy.Rejection(false, false, false, true).Contains("不允许退出"),
+                "故障停机或运行态不能借安全值关闭");
+            Assert(OperatorClosePolicy.Rejection(true, true, true, true).Contains("不允许退出"),
+                "启动与关闭并发不得复用旧停止证明");
+            Assert(OperatorClosePolicy.Rejection(false, true, false, false).Contains("安全凭证"),
+                "人工点击停止不能代替电流压力安全证明");
+            Assert(OperatorClosePolicy.Rejection(false, true, false, true) == string.Empty,
+                "已安全停止应允许关闭，不依赖落盘完成");
+            Assert(OperatorClosePolicy.Rejection(false, false, true, false) == string.Empty,
+                "从未开始的空闲窗应快速关闭");
+        }
+
+        private static void ManualCloseSamplesAreExact()
+        {
+            var off = DateTime.UtcNow;
+            Assert(ManualCloseSafetyReceipt.IsSafeSample(true, 0.05, 0.1, 20, 100, off.AddMilliseconds(1), off), "有效断电电流应通过");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(false, 0, 0.1, 0, 100, off, off), "初始零值不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, 0, 0.1, 101, 100, off, off), "陈旧电流不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, 0, 0.1, 1, 100, off.AddTicks(-1), off), "断能前样本不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, -0.2, 0.1, 1, 100, off, off), "反向电流同样必须安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, double.NaN, 5, 1, 100, off, off), "无效压力不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, 6, 5, 1, 100, off, off), "压力超限必须阻止关闭");
+            Assert(ManualCloseSafetyReceipt.IsSafeSample(true, 4, 5, 1, 100, off, off), "安全压力应通过");
+        }
+
+        private static void ManualCloseDrainIsSingleFlight()
+        {
+            var owner = new ManualCloseDrainOwner();
+            var pending = new TaskCompletionSource<bool>();
+            var calls = 0;
+            Func<Task> drain = () => { calls++; return pending.Task; };
+            var first = owner.Join(drain);
+            Assert(ReferenceEquals(first, owner.Join(drain)) && calls == 1 && !first.IsCompleted,
+                "后台写盘尚未结束时重复关闭创建了第二个收尾任务");
+            pending.SetResult(true);
+            Assert(ReferenceEquals(first, owner.Join(drain)) && calls == 1 && first.IsCompleted,
+                "已完成收尾不应再次释放资源");
+        }
+
+        private static void ManualCloseDrainSurvivesThirtySeconds()
+        {
+            var owner = new ManualCloseDrainOwner();
+            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "epb-close-" + Guid.NewGuid().ToString("N") + ".txt");
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            try
+            {
+                var task = owner.Join(async () =>
+                {
+                    await release.Task.ConfigureAwait(false);
+                    System.IO.File.WriteAllText(path, "final-accepted-batch");
+                });
+                Task.Delay(31000).GetAwaiter().GetResult();
+                Assert(!task.IsCompleted && !System.IO.File.Exists(path), "30秒前不得提前丢弃或伪报落盘完成");
+                release.SetResult(true);
+                Assert(task.Wait(5000) && System.IO.File.ReadAllText(path) == "final-accepted-batch",
+                    "解除写盘阻塞后尾部数据没有完成落盘");
+            }
+            finally
+            {
+                release.TrySetResult(true);
+                owner.Current?.GetAwaiter().GetResult();
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            }
         }
 
         private static void ManualStopExitReceiptIsRunBound()

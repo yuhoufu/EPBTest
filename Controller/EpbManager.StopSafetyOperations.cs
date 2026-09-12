@@ -62,6 +62,129 @@ namespace Controller
         private readonly object _stopSafetyProductionGate = new object();
         private StopSafetyProductionState _stopSafetyProductionState;
 
+        private ManualCloseSafetyReceipt _manualCloseSafety;
+        private string _manualCloseIntentCommand;
+        private Guid _manualCloseIntentTransaction;
+
+        public void BindManualCloseIntent(string commandId, StopSafetyProgressSnapshot progress)
+        {
+            if (string.IsNullOrWhiteSpace(commandId) || progress == null) return;
+            lock (_stopSafetyProductionGate)
+            {
+                var state = _stopSafetyProductionState;
+                if (state == null || state.TransactionId != progress.TransactionId ||
+                    state.RunId != progress.RunId || state.RunEpoch != progress.RunEpoch ||
+                    state.Generation != progress.Generation) return;
+                _manualCloseIntentCommand = commandId;
+                _manualCloseIntentTransaction = state.TransactionId;
+            }
+        }
+
+        public async Task<StopSafetyResult> CompleteManualClosePersistenceAsync(string commandId)
+        {
+            var proof = CaptureManualCloseSafety(commandId);
+            if (proof == null) throw new InvalidOperationException("人工关闭安全凭证不可用。");
+            var state = _stopSafetyProductionState;
+            while (true)
+            {
+                if (!ReferenceEquals(state, _stopSafetyProductionState) ||
+                    state.Generation != Interlocked.Read(ref _stopSafetyGeneration))
+                    throw new InvalidOperationException("人工关闭事务已被新批次替代。");
+                if (!state.AcquisitionBoundaryFrozen)
+                {
+                    await Task.Delay(1000).ConfigureAwait(false);
+                    continue;
+                }
+                var work = ExecuteStopPersistenceStageAsync(state);
+                await work.ConfigureAwait(false);
+                if (state.PersistenceBoundaryConfirmed && state.CyclesSealed)
+                {
+                    // This is a close-only receipt. Never clear restart-required or timeout state.
+                    var result = state.Result?.Clone() ?? new StopSafetyResult();
+                    result.Source = StopSource.ManualUi;
+                    result.SafetyTransactionId = state.TransactionId;
+                    result.RunId = state.RunId;
+                    result.RunEpoch = state.RunEpoch;
+                    result.SafetyBoundaryGeneration = state.Generation;
+                    result.CorrelationId = state.Correlation;
+                    result.MotorOffCommandSucceeded = true;
+                    result.PowerOffConfirmed = true;
+                    result.PressureSafeConfirmed = true;
+                    result.RawStorageFlushed = true;
+                    result.PersistenceBoundaryConfirmed = true;
+                    result.CompletedUtc = DateTime.UtcNow;
+                    return result;
+                }
+                await Task.Delay(1000).ConfigureAwait(false);
+            }
+        }
+
+        public ManualCloseSafetyReceipt CaptureManualCloseSafety(string commandId)
+        {
+            if (string.IsNullOrWhiteSpace(commandId) || IsBatchSessionActive) return null;
+            var state = _stopSafetyProductionState;
+            lock (_stopSafetyProductionGate)
+            {
+                if (state == null || _manualCloseIntentCommand != commandId ||
+                    _manualCloseIntentTransaction != state.TransactionId ||
+                    state.Generation != Interlocked.Read(ref _stopSafetyGeneration)) return null;
+            }
+            var receipt = Volatile.Read(ref _manualCloseSafety);
+            if (receipt != null && receipt.TransactionId == state.TransactionId &&
+                receipt.RunId == state.RunId && receipt.RunEpoch == state.RunEpoch)
+                return receipt;
+            try { return TryCaptureManualCloseSafety(state); }
+            catch (Exception ex)
+            {
+                _log?.Warn("人工关闭安全凭证不可用：" + ex.Message, "EPB");
+                return null;
+            }
+        }
+
+        private ManualCloseSafetyReceipt TryCaptureManualCloseSafety(StopSafetyProductionState state)
+        {
+            if (!state.AuthorizationRevoked ||
+                state.RunId == Guid.Empty || state.RunEpoch <= 0 || state.Channels.Length == 0 ||
+                !state.RuntimeProducersFrozen || !state.RuntimeObjectsFrozen ||
+                !state.MotorOk || state.PowerTask?.Status != TaskStatus.RanToCompletion ||
+                !state.PowerTask.Result.ok || state.PressureTask?.Status != TaskStatus.RanToCompletion ||
+                !state.PressureTask.Result.ok || state.OffCompletions.Count == 0)
+                return null;
+            if (state.OffCompletions.Any(pair =>
+                    !(pair.Value.Task.Status == TaskStatus.RanToCompletion && pair.Value.Task.Result.Result) &&
+                    !(state.OffFallbackTasks.TryGetValue(pair.Key, out var fallback) &&
+                      fallback.Status == TaskStatus.RanToCompletion && fallback.Result)))
+                return null;
+            var evidence = new List<string>();
+            foreach (var channel in state.Channels)
+            {
+                var sample = _acq.ReadCurrentFastSample(channel);
+                var limit = state.CloseCurrentThresholds.TryGetValue(channel, out var threshold)
+                    ? threshold : _programSafetySettings?.OffCurrentClearThresholdA ?? 0.1;
+                var offUtc = state.OffCompletions.TryGetValue(channel, out var off) &&
+                             off.Task.Status == TaskStatus.RanToCompletion && off.Task.Result.Result
+                    ? off.Task.Result.HardwareCompletedUtc : DateTime.MaxValue;
+                if (!ManualCloseSafetyReceipt.IsSafeSample(sample.IsFreshAndUsable(100),
+                    sample.Sample.CurrentA, limit, sample.AgeMs, 100, sample.Sample.SampleUtc,
+                    offUtc > state.StartedUtc ? offUtc : state.StartedUtc))
+                    return null;
+                evidence.Add($"EPB{channel}:I={sample.Sample.CurrentA:R};Limit={limit:R};Utc={sample.Sample.SampleUtc:O};AgeMs={sample.AgeMs:R}");
+            }
+            foreach (var hydraulic in _cfg.Test.Hydraulics.Where(item => item.Enabled))
+            {
+                var sample = _acq.ReadPressureSample(hydraulic.Id);
+                if (!ManualCloseSafetyReceipt.IsSafeSample(sample.IsFinite, sample.ValueBar,
+                    hydraulic.ReleaseSafePressureBar, sample.AgeMs, hydraulic.PressureSampleMaxAgeMs,
+                    sample.TimestampUtc, state.StartedUtc))
+                    return null;
+                evidence.Add($"Hydraulic{hydraulic.Id}:P={sample.ValueBar:R};Limit={hydraulic.ReleaseSafePressureBar:R};Utc={sample.TimestampUtc:O};AgeMs={sample.AgeMs:R}");
+            }
+            var receipt = new ManualCloseSafetyReceipt(state.TransactionId, state.RunId,
+                state.RunEpoch, state.Correlation, string.Join(" | ", evidence));
+            Volatile.Write(ref _manualCloseSafety, receipt);
+            return receipt;
+        }
+
         /// <summary>
         /// Builds the production runner boundary while keeping the legacy
         /// hardware implementation behind an explicit port.  Callers that
@@ -288,6 +411,10 @@ namespace Controller
                     _stopSafetyProductionState =
                         new StopSafetyProductionState(transaction, channels,
                             CaptureSoftwareRecoveryCycles(Enumerable.Range(1, 12)));
+                    foreach (var channel in channels)
+                        if (_runners.TryGetValue(channel, out var runner))
+                            _stopSafetyProductionState.CloseCurrentThresholds[channel] =
+                                runner.OffCurrentClearThresholdForManualClose;
                 }
                 return _stopSafetyProductionState;
             }
@@ -780,6 +907,9 @@ namespace Controller
                     : await state.PowerTask.ConfigureAwait(false);
                 state.Pressure = pressure;
                 state.MotorOk = state.OffErrors.Count == 0;
+                // Observe only: manual close evidence must not change StopAll's policy or deadlines.
+                try { TryCaptureManualCloseSafety(state); }
+                catch (Exception ex) { _log?.Warn("人工关闭安全凭证采集失败：" + ex.Message, "EPB"); }
                 if (!state.MotorOk || !state.Power.ok || !state.Pressure.ok)
                     return StopSafetyPortResult.Failure(
                         string.Join(";", state.OffErrors.Concat(new[]
@@ -833,6 +963,7 @@ namespace Controller
                             state.RunEpoch);
                     }
                 }
+                state.AcquisitionBoundaryFrozen = true;
                 return StopSafetyPortResult.Success(
                     "DAQ已停止并冻结最终接纳边界。",
                     true,
@@ -845,7 +976,17 @@ namespace Controller
             }
         }
 
-        private async Task<StopSafetyPortResult> ExecuteStopPersistenceStageAsync(
+        private Task<StopSafetyPortResult> ExecuteStopPersistenceStageAsync(StopSafetyProductionState state)
+        {
+            lock (state)
+            {
+                if (state.PersistenceWork != null && !state.PersistenceWork.IsCompleted)
+                    return state.PersistenceWork;
+                return state.PersistenceWork = ExecuteStopPersistenceStageCoreAsync(state);
+            }
+        }
+
+        private async Task<StopSafetyPortResult> ExecuteStopPersistenceStageCoreAsync(
             StopSafetyProductionState state)
         {
             try
@@ -1218,6 +1359,7 @@ namespace Controller
             internal Guid CorrelationId { get; }
             internal int[] Channels { get; }
             internal Dictionary<int, int> StopCycles { get; }
+            internal Dictionary<int, double> CloseCurrentThresholds { get; } = new Dictionary<int, double>();
             internal Dictionary<int, TaskCompletionSource<HighPriorityDoTelemetry>> OffCompletions { get; } =
                 new Dictionary<int, TaskCompletionSource<HighPriorityDoTelemetry>>();
             internal Dictionary<int, string> OffFallbackStages { get; } =
@@ -1237,6 +1379,8 @@ namespace Controller
             internal int CleanupScheduled;
             internal Task<(bool ok, string error)> PowerTask { get; set; }
             internal Task<(bool ok, string error)> PressureTask { get; set; }
+            internal Task<StopSafetyPortResult> PersistenceWork { get; set; }
+            internal volatile bool AcquisitionBoundaryFrozen;
             internal (bool ok, string error) Power { get; set; } = (true, string.Empty);
             internal (bool ok, string error) Pressure { get; set; } = (true, string.Empty);
             internal bool MotorOk { get; set; } = true;

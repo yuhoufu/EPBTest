@@ -983,6 +983,20 @@ namespace MTEmbTest
 
         protected override void OnFormClosing(System.Windows.Forms.FormClosingEventArgs e)
         {
+            if (Volatile.Read(ref _watchdogTakeoverExit) == 0 &&
+                !CanAcceptOperatorClose(out var closeReason))
+            {
+                e.Cancel = true;
+                System.Windows.Forms.MessageBox.Show(closeReason, "无法关闭",
+                    System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Information);
+                return;
+            }
+            if (Volatile.Read(ref _watchdogTakeoverExit) == 0)
+            {
+                // The retained close task owns draining; never block the UI for two seconds here.
+                base.OnFormClosing(e);
+                return;
+            }
             WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
             WatchdogRuntime.TransportError -= OnWatchdogTransportError;
             // Watchdog recovery children may close after a failed takeover and must leave
