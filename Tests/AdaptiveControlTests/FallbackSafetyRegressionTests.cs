@@ -22,6 +22,7 @@ namespace AdaptiveControlTests
                 catch (Exception error) { failed++; Console.WriteLine("FAIL " + name + ": " + error.Message); }
             };
             run("F1 actual host failed admission releases busy", FailedHostAdmissionReleasesBusy);
+            run("F3 pre-admission fault does not publish ownerless recovery count", HydraulicAdmissionFailureHasNoPublishedCount);
             run("F4 safety-only has no recovery permit", SafetyOnlyDoesNotNeedPermit);
             run("F2 connected peer does not read", () => StalledPipe(0));
             run("F2 connected peer does not respond", () => StalledPipe(1));
@@ -54,6 +55,20 @@ namespace AdaptiveControlTests
                 catch (TargetInvocationException) { /* injected missing notification/persistence */ }
                 Assert((int)busy.GetValue(host) == 0, "failed admission retained busy ownership");
             }
+        }
+
+        private static void HydraulicAdmissionFailureHasNoPublishedCount()
+        {
+            var type = typeof(Controller.EpbManager);
+            var manager = (Controller.EpbManager)FormatterServices.GetUninitializedObject(type);
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var groups = new System.Collections.Concurrent.ConcurrentDictionary<int, byte>();
+            type.GetField("_hydraulicSoftwareRecoveryGroups", flags).SetValue(manager, groups);
+            var fault = new Controller.ControlFault("test", "injected pre-admission failure", default,
+                new[] { 1 }, 1, DateTime.UtcNow, Guid.NewGuid());
+            try { type.GetMethod("BeginHydraulicSoftwareRecovery", flags).Invoke(manager, new object[] { fault }); }
+            catch (TargetInvocationException) { }
+            Assert(groups.Count == 0, "pre-admission exception left software count without structured owner");
         }
 
         private static void SafetyOnlyDoesNotNeedPermit()

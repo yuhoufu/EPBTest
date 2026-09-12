@@ -10,6 +10,19 @@ namespace MTTFTest.Watchdog.Protocol
     // overlapped and joined before return. No abandoned Task.Run reader.
     public static class DeadlinePipeExchange
     {
+        public static T OnConnected<T>(PipeStream pipe, int timeoutMs,
+            Func<BinaryReader, BinaryWriter, T> exchange, CancellationToken cancellation)
+        {
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation))
+            {
+                deadline.CancelAfter(timeoutMs);
+                using (deadline.Token.Register(() => pipe.Dispose()))
+                using (var stream = new DeadlineStream(pipe, deadline.Token))
+                using (var writer = new BinaryWriter(stream, new UTF8Encoding(false), true))
+                using (var reader = new BinaryReader(stream, new UTF8Encoding(false), true))
+                    return exchange(reader, writer);
+            }
+        }
         public static T Execute<T>(string name, int timeoutMs,
             Action<BinaryWriter> write, Func<BinaryReader, T> read,
             CancellationToken cancellation = default)

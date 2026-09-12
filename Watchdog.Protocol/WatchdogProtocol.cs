@@ -937,6 +937,9 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class WatchdogChannelProgress
     {
+        public long FormalCommitSequence { get; set; }
+        public string FormalCommitIdentity { get; set; }
+        public long FormalCommitRunEpoch { get; set; }
         public int Channel { get; set; }
         public string State { get; set; }
         /// <summary>通道生命周期阶段；与 State 分开发送，便于协议审计。</summary>

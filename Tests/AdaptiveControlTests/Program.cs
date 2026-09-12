@@ -28,6 +28,7 @@ namespace AdaptiveControlTests
                 if (args.Length == 1 && args[0] == "--fallback-safety")
                 {
                     _passed += FallbackSafetyRegressionTests.RunAll();
+                    _passed += FallbackCoordinationTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -512,6 +513,8 @@ namespace AdaptiveControlTests
                 // The realtime suite measures cooperative scheduling and must run before
                 // persistence stress suites intentionally leave background drain work queued.
                 _passed += DaqRealtimeControlTests.RunAll();
+                _passed += FallbackSafetyRegressionTests.RunAll();
+                _passed += FallbackCoordinationTests.RunAll();
                 // Recovery coordination owns process-wide owner/preemption registries. Run it
                 // before broader controller suites that intentionally leave terminal evidence.
                 _passed += RecoveryCoordinationTests.RunAll();

@@ -355,8 +355,12 @@ namespace MTEmbTest
                             item.RecoveryOwnerGeneration == watchdogRunEpoch &&
                             !string.IsNullOrWhiteSpace(item.RecoveryTargetPhase) &&
                             !string.Equals(item.RecoveryTargetPhase, RecoveryTargetPhase.None.ToString(), StringComparison.OrdinalIgnoreCase);
+                        var formalCommit = _epb?.CaptureFormalCommitEvidence(item.Channel);
                         return new WatchdogChannelProgress
                         {
+                            FormalCommitSequence = formalCommit?.Item2 ?? 0,
+                            FormalCommitRunEpoch = formalCommit?.Item1 ?? 0,
+                            FormalCommitIdentity = formalCommit?.Item3 ?? string.Empty,
                             Channel = item.Channel,
                             State = item.State,
                             LifecyclePhase = contract.LifecyclePhase,

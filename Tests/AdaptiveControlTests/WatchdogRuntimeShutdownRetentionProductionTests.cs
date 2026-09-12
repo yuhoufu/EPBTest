@@ -63,22 +63,27 @@ namespace AdaptiveControlTests
         private static void RealRuntimeClosingFenceWaitsForStopCompletedAcrossTwoRounds()
         {
             var journal = Path.Combine(
-                Path.GetTempPath(),
-                "MTTFTest.RuntimeClosingFence." + Guid.NewGuid().ToString("N"));
+                Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                "closing-" + Guid.NewGuid().ToString("N"));
+            var succeeded = false;
             var sessions = new List<string>();
+            var ownedSidecars = new List<Tuple<int, long>>();
             Directory.CreateDirectory(journal);
             try
             {
                 try { WatchdogRuntime.ShutdownRuntimeWithReceipt(); } catch { }
+                WatchdogRuntime.ConfigureDaqRuntimeSettings(new Config.DaqRuntimeSettings(
+                    Config.DaqRuntimeSettings.DefaultSampleRateHz, Config.DaqRuntimeSettings.DefaultSamplesPerChannel));
                 WatchdogRuntime.ConfigureJournalExportPath(journal);
                 var currentRunId = Guid.Empty;
+                var currentRunEpoch = 1;
                 WatchdogRuntime.SetHeartbeatProvider(() => new WatchdogHeartbeat
                 {
                     Phase = "RuntimeClosingFenceAcceptance",
                     RunId = currentRunId == Guid.Empty
                         ? string.Empty
                         : currentRunId.ToString("N"),
-                    RunEpoch = 1,
+                    RunEpoch = currentRunEpoch,
                     RunActive = true,
                     EnabledChannels = new[] { 4 }
                 });
@@ -86,6 +91,7 @@ namespace AdaptiveControlTests
                 for (var round = 1; round <= 2; round++)
                 {
                     currentRunId = Guid.NewGuid();
+                    currentRunEpoch = round;
                     var transactionId = Guid.NewGuid();
                     var start = WatchdogRuntime.StartSessionAsync(new[] { 4 })
                         .GetAwaiter().GetResult();
@@ -102,6 +108,8 @@ namespace AdaptiveControlTests
                     var authorityPid = before.Engine.AuthorityProcessId;
                     Assert(authorityPid > 0 && IsProcessAlive(authorityPid),
                         $"第{round}轮Sidecar权威进程身份无效");
+                    using (var owned = Process.GetProcessById(authorityPid))
+                        ownedSidecars.Add(Tuple.Create(authorityPid, owned.StartTime.ToUniversalTime().Ticks));
 
                     WatchdogRuntime.NotifyManualStop(
                         $"RuntimeClosingFenceRound{round}");
@@ -174,12 +182,12 @@ namespace AdaptiveControlTests
                                 PhysicalSafe = true,
                                 Detail = "ControllerCompletedWithoutFinalEvidence"
                             }),
-                        $"第{round}轮未能记录schema v3 Controller进度");
+                        $"第{round}轮未能记录schema v5 Controller进度");
                     Assert(WatchdogClosingTombstoneStore.TryRead(
                                journal,
                                context.SessionId,
                                out var progressOnly) &&
-                           progressOnly.SchemaVersion == 3 &&
+                           progressOnly.SchemaVersion == 5 &&
                            progressOnly.ControllerStopStage ==
                            (int)StopSafetyStage.Completed &&
                             progressOnly.ControllerProgressVersion == 7 &&
@@ -259,7 +267,7 @@ namespace AdaptiveControlTests
                                context.SessionId,
                                out var tombstone) &&
                            tombstone.State == WatchdogClosingTombstoneState.Terminal &&
-                            tombstone.SchemaVersion == 3 &&
+                            tombstone.SchemaVersion == 5 &&
                             tombstone.FinalSafetyResultCommitted &&
                            tombstone.StateVersion >= 4 &&
                            string.Equals(
@@ -278,17 +286,39 @@ namespace AdaptiveControlTests
                 Assert(sessions.Count == 2 &&
                        !string.Equals(sessions[0], sessions[1], StringComparison.Ordinal),
                     "连续两轮启动复用了旧Session授权");
+                succeeded = true;
             }
             finally
             {
                 try { WatchdogRuntime.ShutdownRuntimeWithReceipt(); } catch { }
                 WatchdogRuntime.SetHeartbeatProvider(null);
                 WatchdogRuntime.ConfigureJournalExportPath(null);
-                foreach (var sessionId in sessions)
-                    DeleteLocalSessionCloseArtifacts(sessionId);
+                // These are processes created by this synthetic heartbeat test;
+                // an assertion before FinalSafetyResult intentionally leaves the
+                // production retention owner alive. Clean only captured identities.
+                foreach (var owned in ownedSidecars)
+                {
+                    try
+                    {
+                        using (var process = Process.GetProcessById(owned.Item1))
+                        {
+                            if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != owned.Item2) continue;
+                            var expected = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MTTFTest.Watchdog.exe");
+                            Assert(string.Equals(process.MainModule.FileName, expected, StringComparison.OrdinalIgnoreCase),
+                                "isolated sidecar cleanup path mismatch");
+                            process.Kill();
+                            Assert(process.WaitForExit(5000), "isolated sidecar did not exit");
+                        }
+                    }
+                    catch (ArgumentException) { }
+                }
+                if (succeeded)
+                    foreach (var sessionId in sessions)
+                        DeleteLocalSessionCloseArtifacts(sessionId);
                 try
                 {
-                    if (Directory.Exists(journal)) Directory.Delete(journal, true);
+                    if (succeeded && Directory.Exists(journal)) Directory.Delete(journal, true);
+                    else Console.WriteLine("EVIDENCE " + journal);
                 }
                 catch { }
             }

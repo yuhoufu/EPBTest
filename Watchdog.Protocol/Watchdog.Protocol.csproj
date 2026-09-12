@@ -33,6 +33,9 @@
     <Compile Include="TakeoverTransactionCoordinator.cs" />
     <Compile Include="SidecarIdentityStateMachine.cs" />
     <Compile Include="SidecarProcessHandleOwner.cs" />
+    <Compile Include="FallbackCoordination.cs" />
+    <Compile Include="FallbackControlPipe.cs" />
+    <Compile Include="FallbackProgressVerifier.cs" />
     <Compile Include="DeadlinePipeExchange.cs" />
     <Compile Include="SupervisorProtocol.cs" />
     <Compile Include="SessionAgentProtocol.cs" />

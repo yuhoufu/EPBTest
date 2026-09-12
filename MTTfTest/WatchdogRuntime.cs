@@ -2521,6 +2521,19 @@ namespace MTEmbTest
 
         internal static void NotifyManualStop(string reason)
         {
+            var fallbackContext = CaptureContext();
+            if (fallbackContext != null)
+            {
+                try
+                {
+                    var fallbackStore = new FallbackLedgerStore(fallbackContext.JournalDirectory, fallbackContext.SessionId);
+                    if (fallbackStore.Exists) fallbackStore.Stop();
+                }
+                catch (Exception error)
+                {
+                    RecordClientEvent("FallbackStopPersistenceUnknown", error.Message);
+                }
+            }
             RecordClientEvent("ManualStopIntent", reason);
             SendSimple(WatchdogMessageType.ManualStopIntent, reason);
             FlushClientJournal();

@@ -50,6 +50,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FallbackSafetyRegressionTests.cs" />
+    <Compile Include="FallbackCoordinationTests.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="CalibrationMathTests.cs" />
     <Compile Include="CycleAttemptLifecycleTests.cs" />
