@@ -108,6 +108,7 @@ namespace AdaptiveControlTests
             Run("active状态current与LastFailure逐字段绑定", ActiveStateEvidenceMutation, ref passed);
             Run("生产proof绑定且budget/circuit跨重启粘性", ProductionProofBudgetSticky, ref passed);
             Run("保留器持有读句柄时同步快照仍可原子提交", RetentionReadAllowsAtomicSnapshot, ref passed);
+            Run("同步快照短暂占用重试且持续占用有界失败", SnapshotSharingFailureIsBounded, ref passed);
             Run("生产journal writer与authority并行互不覆盖", ProductionJournalAuthorityParallel, ref passed);
             Run("生产FileStore schema2/3/old-v4迁移矩阵", ProductionMigrationMatrix, ref passed);
             Run("生产FileStore Reconcile状态与探测竞态", ProductionReconcileMatrix, ref passed);
@@ -1280,6 +1281,33 @@ namespace AdaptiveControlTests
             finally { TryDelete(dir); }
         }
 
+        private static void SnapshotSharingFailureIsBounded()
+        {
+            var dir = TempDirectory();
+            try
+            {
+                var session = Guid.NewGuid().ToString("N");
+                using (var journal = new WatchdogJournalStore(dir, session, "parallel", new WatchdogJournalPolicy(), 7, 700))
+                {
+                    Assert(journal.TryPublishSnapshotSynchronously("initial"), "initial snapshot failed");
+                    var path = Path.Combine(dir, "session-" + session + ".json");
+                    var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    var release = Task.Run(() => { Thread.Sleep(50); held.Dispose(); });
+                    try { Assert(journal.TryPublishSnapshotSynchronously("transient"), "transient sharing was not retried"); }
+                    finally { release.Wait(); held.Dispose(); }
+                    using (var blocked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        var clock = Stopwatch.StartNew();
+                        Assert(!journal.TryPublishSnapshotSynchronously("blocked"), "persistent lock reported durable success");
+                        Assert(clock.ElapsedMilliseconds < 3000, "persistent lock exceeded bounded retry");
+                        Assert(File.ReadAllText(path) == "transient", "failed replace destroyed old snapshot");
+                    }
+                    Assert(journal.TryPublishSnapshotSynchronously("recovered"), "legal retry after release failed");
+                }
+            }
+            finally { TryDelete(dir); }
+        }
+
         private static void RetentionReadAllowsAtomicSnapshot()
         {
             var dir = TempDirectory();
@@ -1324,7 +1352,7 @@ namespace AdaptiveControlTests
                     {
                         if (!journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4,\"SessionId\":\"" + session + "\",\"WriterSequence\":" + i.ToString(CultureInfo.InvariantCulture) + "}"))
                         {
-                            Interlocked.CompareExchange(ref firstFailure, "journal snapshot i=" + i, null);
+                            Interlocked.CompareExchange(ref firstFailure, "journal snapshot i=" + i + "; " + journal.LastSnapshotPublishFailure, null);
                             Interlocked.Increment(ref errors);
                         }
                     }

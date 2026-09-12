@@ -847,6 +847,8 @@ namespace MTTFTest.Watchdog.Protocol
         /// process relaunch is scheduled.  A failure is returned to the
         /// caller, which must fail closed in memory and refuse relaunch.
         /// </summary>
+        public string LastSnapshotPublishFailure { get; private set; }
+
         public bool TryPublishSnapshotSynchronously(string json)
         {
             if (IsClientAuditOnly) return RejectAuthorityOperation("TryPublishSnapshotSynchronously");
@@ -865,8 +867,9 @@ namespace MTTFTest.Watchdog.Protocol
                     TryDelete(Path.Combine(_spoolDirectory, "session.snapshot.pending.json"));
                     return true;
                 }
-                catch
+                catch (Exception error)
                 {
+                    LastSnapshotPublishFailure = Truncate(error.ToString(), 4096);
                     // Keep the emergency spool attempt for later replay, but
                     // report false so the caller cannot treat this as durable.
                     TrySpoolAtomic("session.snapshot.pending.json", json);
@@ -1632,15 +1635,44 @@ namespace MTTFTest.Watchdog.Protocol
 
         private static void AtomicWrite(string path, string content)
         {
-            var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+            var expected = content ?? string.Empty;
+            for (var attempt = 0; ; attempt++)
+            {
+                var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    File.WriteAllText(temporary, expected, new UTF8Encoding(false));
+                    using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+                        stream.Flush(true);
+                    if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                    return;
+                }
+                catch (IOException)
+                {
+                    // Windows Replace can fail transiently (including error
+                    // 1175) or report an ambiguous result. Confirm exact bytes
+                    // before retrying; never delete the destination to retry.
+                    if (SnapshotContentMatches(path, expected)) return;
+                    if (attempt >= 4) throw;
+                    Thread.Sleep(25);
+                }
+                finally { TryDelete(temporary); }
+            }
+        }
+
+        private static bool SnapshotContentMatches(string path, string expected)
+        {
             try
             {
-                File.WriteAllText(temporary, content ?? string.Empty, new UTF8Encoding(false));
-                using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
-                    stream.Flush(true);
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (stream.Length != Encoding.UTF8.GetByteCount(expected)) return false;
+                    using (var reader = new StreamReader(stream, Encoding.UTF8, false))
+                        return string.Equals(reader.ReadToEnd(), expected, StringComparison.Ordinal);
+                }
             }
-            finally { TryDelete(temporary); }
+            catch { return false; }
         }
 
         private static long SafeLength(FileInfo file)

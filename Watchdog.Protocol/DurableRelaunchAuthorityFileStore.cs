@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -58,8 +58,30 @@ namespace MTTFTest.Watchdog.Protocol
             }
         }
 
-        public void Replace(string temporaryPath, string targetPath) =>
-            File.Replace(temporaryPath, targetPath, null, true);
+        public void Replace(string temporaryPath, string targetPath)
+        {
+            var expected = ReadAllBytes(temporaryPath);
+            for (var attempt = 0; ; attempt++)
+            {
+                try { File.Replace(temporaryPath, targetPath, null, true); return; }
+                catch (IOException)
+                {
+                    // An ambiguous Replace must be reconciled before retry.
+                    // The authority still holds its machine mutex here.
+                    try
+                    {
+                        var actual = ReadAllBytes(targetPath);
+                        var equal = actual.Length == expected.Length;
+                        for (var i = 0; equal && i < actual.Length; i++)
+                            equal = actual[i] == expected[i];
+                        if (equal) return;
+                    }
+                    catch (IOException) { }
+                    if (attempt >= 4 || !File.Exists(temporaryPath)) throw;
+                    Thread.Sleep(25);
+                }
+            }
+        }
 
         public void Delete(string path)
         {
