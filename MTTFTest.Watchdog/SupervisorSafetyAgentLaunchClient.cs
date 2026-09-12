@@ -17,7 +17,8 @@ namespace MTTFTest.Watchdog
         internal static Process Start(
             WatchdogSafetyHandoffReceipt receipt,
             string executable,
-            string arguments)
+            string arguments,
+            System.Threading.CancellationToken cancellation = default)
         {
             if (receipt == null) throw new ArgumentNullException(nameof(receipt));
             var executablePath = Path.GetFullPath(executable);
@@ -49,27 +50,9 @@ namespace MTTFTest.Watchdog
                 };
             }
 
-            SupervisorSafetyAgentLaunchResponse response;
-            using (var pipe = new NamedPipeClientStream(
-                       ".",
-                       SupervisorProtocol.PipeName,
-                       PipeDirection.InOut,
-                       PipeOptions.None))
-            {
-                pipe.Connect(5000);
-                using (var writer = new BinaryWriter(
-                           pipe,
-                           new UTF8Encoding(false),
-                           true))
-                using (var reader = new BinaryReader(
-                           pipe,
-                           new UTF8Encoding(false),
-                           true))
-                {
-                    request.WriteTo(writer);
-                    response = SupervisorSafetyAgentLaunchResponse.ReadFrom(reader);
-                }
-            }
+            var response = DeadlinePipeExchange.Execute(
+                SupervisorProtocol.PipeName, 5000, request.WriteTo,
+                SupervisorSafetyAgentLaunchResponse.ReadFrom, cancellation);
 
             if (response?.SchemaVersion != SupervisorProtocol.SchemaVersion ||
                 !response.Accepted ||

@@ -6870,6 +6870,7 @@ namespace MTTFTest.Watchdog
 
         private async Task RunSafetyHandoffAsync(string handoffId, string nonce)
         {
+            var supervision = Stopwatch.StartNew();
             try
             {
                 WatchdogSafetyHandoffReceipt receipt;
@@ -6891,6 +6892,12 @@ namespace MTTFTest.Watchdog
                 while (!_stop.IsCancellationRequested)
                 {
                     if (!TryReadExactSafetyHandoff(handoffId, nonce, out receipt)) return;
+                    if (!receipt.IsTerminal && supervision.ElapsedMilliseconds >= 60000)
+                    {
+                        FailSafetyHandoff(receipt, "SafetyHandoffSupervisionDeadline",
+                            "Safety transaction unresolved; no relaunch and no worker termination.");
+                        return;
+                    }
                     if (receipt.State == WatchdogSafetyHandoffState.Completed &&
                         receipt.IsSafetyCompleted)
                     {
@@ -6995,7 +7002,7 @@ namespace MTTFTest.Watchdog
                             ? SupervisorSafetyAgentLaunchClient.Start(
                                 receipt,
                                 executable,
-                                arguments)
+                                arguments, _stop.Token)
                             : Process.Start(new ProcessStartInfo
                             {
                                 FileName = executable,
@@ -7025,14 +7032,36 @@ namespace MTTFTest.Watchdog
                                     RecoveryReplacementState.SafetyAgentRunning,
                                     "Independent SafetyAgent process started"))
                             {
-                                try { if (!worker.HasExited) worker.Kill(); } catch { }
                                 throw new InvalidDataException(
                                     "ReplacementTransactionPersistFailed:SafetyAgentRunning");
                             }
                         }
                         Record("SafetyHandoffWorkerStarted",
                             $"PID={worker.Id};Attempt={receipt.AttemptCount};HandoffId={handoffId}");
-                        await Task.Run(() => worker.WaitForExit()).ConfigureAwait(false);
+                        while (!worker.HasExited && !_stop.IsCancellationRequested)
+                        {
+                            if (supervision.ElapsedMilliseconds >= 60000)
+                            {
+                                if (TryReadExactSafetyHandoff(handoffId, nonce, out var unresolved) &&
+                                    !unresolved.IsTerminal)
+                                    FailSafetyHandoff(unresolved, "SafetyAgentExitUnproven",
+                                        "Worker remains unresolved; hardware ownership retained, relaunch forbidden.");
+                                return;
+                            }
+                            await Task.Delay(100).ConfigureAwait(false);
+                        }
+                        if (_stop.IsCancellationRequested) return;
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        if (TryReadExactSafetyHandoff(handoffId, nonce, out var unresolved) &&
+                            !unresolved.IsTerminal)
+                            FailSafetyHandoff(unresolved, "SafetyAgentLaunchOutcomeUnknown", ex.Message);
+                        return;
+                    }
+                    catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+                    {
+                        return;
                     }
                     catch (Exception ex)
                     {
