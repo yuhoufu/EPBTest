@@ -2105,18 +2105,29 @@ namespace Controller
                 }
 
                 // 先建立实际执行体，再发布Running，避免监督者看见Running但Timer尚未创建。
-                StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
-                MarkBatchRunning(activeChannels, "正式试验运行中");
-                foreach (var channel in activeChannels)
-                    PublishChannelRuntimeState(
-                        channel,
-                        ChannelRuntimeState.Running,
-                        "Running",
-                        "正式试验运行中",
-                        affectedChannels: activeChannels,
-                        correlationId: _activeBatchId);
+                var startupPublished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                try
+                {
+                    StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken,
+                        startupPublished: startupPublished.Task);
+                    MarkBatchRunning(activeChannels, "正式试验运行中");
+                    foreach (var channel in activeChannels)
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Running,
+                            "Running",
+                            "正式试验运行中",
+                            affectedChannels: activeChannels,
+                            correlationId: _activeBatchId);
+                    startupPublished.TrySetResult(true);
+                }
+                finally
+                {
+                    // Creation/publication failure cannot leave callbacks waiting
+                    // forever or allow the first callback to race state publication.
+                    startupPublished.TrySetCanceled();
+                }
 
-                // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
                 LogFieldSessionMetric("Start", _activeBatchId, activeChannels, false, "BatchFormal");
                 LogDaqLivenessRunBinding(_activeBatchId);
                 return new BatchStartResult(
@@ -3256,7 +3267,8 @@ namespace Controller
             CycleAttemptKind attemptKind = CycleAttemptKind.FormalBatch,
             IReadOnlyDictionary<int, long> firstSlotOverrides = null,
             bool registerParticipants = true,
-            string timerTaskName = "BatchChannelTimer")
+            string timerTaskName = "BatchChannelTimer",
+            Task startupPublished = null)
         {
             // 全局液压槽不得绑定任一通道的暂停令牌；只有整批会话取消才可取消
             // 同槽的双液压建压/资格任务，避免单通道暂停拖垮另一健康压力组。
@@ -3356,6 +3368,9 @@ namespace Controller
                         initialDelay,
                         async (cycleIndex, ct) =>
                         {
+                            if (startupPublished != null)
+                                await startupPublished.ConfigureAwait(false);
+                            ct.ThrowIfCancellationRequested();
                             var cyclePauseCts = RenewCyclePauseCts(
                                 ch,
                                 out var cyclePauseToken);

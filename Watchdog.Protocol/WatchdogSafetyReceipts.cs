@@ -841,10 +841,15 @@ namespace MTTFTest.Watchdog.Protocol
                     revisionSelector(value) < revisionSelector(previous) ||
                     transitionValidator?.Invoke(previous, value) == false)
                     throw new InvalidOperationException("Watchdog safety receipt revision or identity regressed.");
-                if (revisionSelector(value) == revisionSelector(previous) &&
-                    !string.Equals(Serializer.Serialize(previous), Serializer.Serialize(value),
-                        StringComparison.Ordinal))
-                    throw new InvalidOperationException("Watchdog safety receipt revision was reused with different content.");
+                if (revisionSelector(value) == revisionSelector(previous))
+                {
+                    if (!string.Equals(Serializer.Serialize(previous), Serializer.Serialize(value),
+                            StringComparison.Ordinal))
+                        throw new InvalidOperationException("Watchdog safety receipt revision was reused with different content.");
+                    // A replay is a read of the committed revision, not a new
+                    // timestamp/content at that same revision.
+                    return previous;
+                }
             }
             stamp(value);
             var bytes = Utf8.GetBytes(Serializer.Serialize(value));

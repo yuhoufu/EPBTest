@@ -129,6 +129,8 @@ namespace AdaptiveControlTests
                     fixture.RunId, fixture.RunEpoch, fixture.CorrelationId, fixture.CreateTransaction());
                 handle.PublishStopOwnedTerminalForRecoverySeam(false);
                 Assert(!handle.PublishSafeTerminal(), "未证实断能时错误释放旧DAQ终态");
+                handle.PublishStopOwnedTerminalForRecoverySeam(true, doConfirmed: false);
+                Assert(!handle.PublishSafeTerminal(), "仅电源已关闭、DO尚无完成回执时错误释放旧DAQ终态");
                 var stopCorrelation = handle.PublishStopOwnedTerminalForRecoverySeam(true);
                 Assert(handle.PublishSafeTerminal(), "StopAll已接管且断能后旧DAQ终态仍被Epoch阻塞");
                 var state = handle.GetState(4);

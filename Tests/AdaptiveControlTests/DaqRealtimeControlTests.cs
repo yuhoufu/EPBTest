@@ -972,6 +972,25 @@ namespace AdaptiveControlTests
 
         private static void IndependentDaqLivenessSupervisorPolicy()
         {
+            foreach (var gapMs in new[] { 100d, 249d, 250d, 251d, 500d, 1200d })
+            foreach (var energized in new[] { false, true })
+            {
+                var supervisor = new DaqLivenessDeviceState();
+                var snapshot = new DaqFreshnessSnapshot
+                {
+                    Device = "Dev1", Generation = 1, CallbackAgeMs = gapMs,
+                    LastProducedSequence = 10, LastProcessedSequence = 10,
+                    LastCallbackMonotonicTicks = Stopwatch.GetTimestamp()
+                };
+                var observation = supervisor.Observe(true, energized, false, snapshot, 250, 1500, 5000);
+                Assert(!observation.Trip && !observation.Suspect && observation.Warn == (energized && gapMs >= 250),
+                    "短时中断策略错误：gap=" + gapMs + ";energized=" + energized);
+                snapshot.CallbackAgeMs = 0;
+                snapshot.LastProducedSequence++;
+                snapshot.LastProcessedSequence++;
+                var resumed = supervisor.Observe(true, energized, false, snapshot, 250, 1500, 5000);
+                Assert(!resumed.Warn && !resumed.Suspect && !resumed.Trip, "新采样恢复后仍重放旧空窗故障");
+            }
             Assert(EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 1500, 5000) &&
                    !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 250, 5000) &&
                    !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(0, 1500, 5000),

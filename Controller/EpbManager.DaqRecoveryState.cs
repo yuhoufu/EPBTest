@@ -177,7 +177,7 @@ namespace Controller
                 Interlocked.Increment(ref _manager._runEpoch);
             }
 
-            internal Guid PublishStopOwnedTerminalForRecoverySeam(bool offConfirmed)
+            internal Guid PublishStopOwnedTerminalForRecoverySeam(bool offConfirmed, bool doConfirmed = true)
             {
                 var correlation = Guid.NewGuid();
                 lock (_manager._recoveryContractGate)
@@ -193,6 +193,9 @@ namespace Controller
                         RuntimeProducersFrozen = true, OffSubmissionStarted = true,
                         MotorOk = offConfirmed, PowerTask = Task.FromResult((ok: offConfirmed, error: string.Empty))
                     };
+                    if (doConfirmed)
+                        foreach (var channel in _context.AffectedChannels)
+                            _manager._stopSafetyProductionState.OffFallbackTasks[channel] = Task.FromResult(offConfirmed);
                     foreach (var channel in _context.AffectedChannels)
                     {
                         _manager._channelRuntimeStateStore.Publish(new ChannelRuntimeStateChangedEvent
@@ -528,6 +531,12 @@ namespace Controller
                             stop.RuntimeProducersFrozen && !_timers.ContainsKey(channel) &&
                             !_runners.ContainsKey(channel),
                             stop.OffSubmissionStarted && stop.MotorOk &&
+                            stop.Channels.All(offChannel =>
+                                (stop.OffCompletions.TryGetValue(offChannel, out var off) &&
+                                 off.Task.Status == TaskStatus.RanToCompletion &&
+                                 off.Task.Result?.Result == true && off.Task.Result.Channel == offChannel) ||
+                                (stop.OffFallbackTasks.TryGetValue(offChannel, out var fallback) &&
+                                 fallback.Status == TaskStatus.RanToCompletion && fallback.Result)) &&
                             stop.PowerTask?.Status == TaskStatus.RanToCompletion &&
                             stop.PowerTask.Result.ok))
                     {

@@ -92,6 +92,10 @@ namespace AdaptiveControlTests
                 receipt.State = WatchdogSafetyHandoffState.Accepted;
                 WatchdogSafetyHandoffReceiptStore.WriteThrough(directory, receipt);
                 Assert(receipt.CanExitApplication, "Accepted交接未形成UI退出证明");
+                var committedStamp = receipt.UpdatedUtcTicks;
+                Thread.Sleep(10);
+                WatchdogSafetyHandoffReceiptStore.WriteThrough(directory, receipt);
+                Assert(receipt.UpdatedUtcTicks == committedStamp, "幂等回执重放改写了同一revision的时间戳");
 
                 var regressed = new WatchdogSafetyHandoffReceipt
                 {
