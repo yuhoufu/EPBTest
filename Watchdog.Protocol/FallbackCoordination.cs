@@ -27,6 +27,7 @@ namespace MTTFTest.Watchdog.Protocol
         public int LaunchProcessId { get; set; }
         public long LaunchProcessStartUtcTicks { get; set; }
         public string Detail { get; set; }
+        public string IndependentRecoveryRequestId { get; set; }
     }
 
     public sealed class FallbackObservation
@@ -62,6 +63,21 @@ namespace MTTFTest.Watchdog.Protocol
         public FallbackLedger Read() => BoundedJson.Read<FallbackLedger>(_path);
         public bool Exists => File.Exists(_path);
 
+        public FallbackLedger RetireForIndependentRecovery(string requestId, int pid, long start, string previousRequestId = null) =>
+            Transaction(null, value =>
+            {
+                Require(value != null && !value.ManualStopped && value.Owner == "Original" &&
+                    (string.IsNullOrEmpty(value.IndependentRecoveryRequestId) || value.IndependentRecoveryRequestId == requestId ||
+                     value.IndependentRecoveryRequestId == previousRequestId) &&
+                    (value.Phase == "Idle" || value.Phase == "Requested" ||
+                     value.Phase == "OriginalVerifying" && value.LaunchProcessId == pid &&
+                     value.LaunchProcessStartUtcTicks == start), "IndependentRetirementUnresolved");
+                Require(Guid.TryParseExact(requestId, "N", out _), "IndependentRequestInvalid");
+                value.IndependentRecoveryRequestId = requestId;
+                value.Detail = "Original launch authority fenced for independent fresh safety request";
+                return value;
+            });
+
         public FallbackLedger RebindOriginal(long revision, string previous, string replacement) =>
             Transaction(revision, value =>
             {
@@ -76,6 +92,7 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 Require(value != null && value.Owner == "Original" && value.OwnerInstanceId == original &&
                     value.Phase != "Yielded" && !value.ManualStopped &&
+                    string.IsNullOrEmpty(value.IndependentRecoveryRequestId) &&
                     string.IsNullOrEmpty(value.OutstandingLaunch), "OriginalLaunchRejected");
                 value.OutstandingLaunch = intent; value.Phase = "OriginalLaunchPrepared";
                 return value;
@@ -137,6 +154,7 @@ namespace MTTFTest.Watchdog.Protocol
             Transaction(revision, value =>
             {
                 Require(value != null && !value.ManualStopped && value.Owner == "Original" &&
+                    string.IsNullOrEmpty(value.IndependentRecoveryRequestId) &&
                     value.Phase == "Idle" && string.IsNullOrEmpty(value.OutstandingLaunch), "RequestRejected");
                 Require(Guid.TryParseExact(command, "N", out _) && !string.IsNullOrEmpty(requester), "CommandIdentityInvalid");
                 value.Phase = "Requested"; value.CommandId = command; value.Requester = requester;

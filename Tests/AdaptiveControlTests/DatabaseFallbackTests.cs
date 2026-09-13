@@ -87,7 +87,156 @@ namespace AdaptiveControlTests
             Run("数据库失败不等于停滞、停止与旧数据隔离", UnknownAndStop);
             Run("数据库恢复需全部通道三圈和稳定观察", RecoveryEvidence);
             Run("SQLite并发写入、未提交及原行完成可见性", ConcurrentReader);
-            return 4;
+            Run("独立兜底仅接受当前请求的新安全回执", IndependentSafetyReceipt);
+            Run("独立接管隔离原Watchdog的延迟启动", IndependentRetirement);
+            Run("无Watchdog端点的独立恢复编排与六通道推进验收", IndependentOrchestration);
+            Run("独立请求等待中人工停止或心跳消失能够有界收口", IndependentRequestCancellation);
+            return 8;
+        }
+
+        private static void IndependentRequestCancellation()
+        {
+            foreach (var manualStop in new[] { true, false })
+            {
+                var directory = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                    "independent-cancel-" + Guid.NewGuid().ToString("N"));
+                var utc = DateTime.UtcNow.Ticks;
+                var status = new IndependentFallbackStatus { ProcessId = 17036, ProcessStartUtcTicks = 123,
+                    RunId = Guid.NewGuid().ToString("N"), RunEpoch = 3, Armed = true, UpdatedUtcTicks = utc,
+                    SessionId = Guid.NewGuid().ToString("N"), Heartbeat = new WatchdogHeartbeat { Phase = "Formal" } };
+                BoundedJson.Write(IndependentFallbackProtocol.StatusPath(directory), status);
+                using (var recovery = new IndependentRecovery((d, q, r, s) =>
+                    throw new InvalidOperationException("unexpected restart"), utcTicks: () => utc))
+                {
+                    recovery.Observe(directory, true, true);
+                    Assert(recovery.IsPending, "request was not created");
+                    if (manualStop)
+                    {
+                        status.Armed = false;
+                        BoundedJson.Write(IndependentFallbackProtocol.StatusPath(directory), status);
+                    }
+                    else
+                    {
+                        File.Delete(IndependentFallbackProtocol.StatusPath(directory));
+                        utc += TimeSpan.FromSeconds(91).Ticks;
+                    }
+                    recovery.Observe(directory, true, true);
+                    Assert(!recovery.IsPending, "request retained ownership after stop/timeout");
+                }
+            }
+        }
+
+        private static void IndependentOrchestration()
+        {
+            var directory = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                "independent-orchestration-" + Guid.NewGuid().ToString("N"), "WatchdogSessions");
+            Directory.CreateDirectory(directory);
+            var utc = DateTime.UtcNow.Ticks;
+            long clock = Stopwatch.Frequency * 10;
+            var channels = new[] { 4, 5, 7, 8, 9, 12 };
+            var status = new IndependentFallbackStatus { ProcessId = 17036, ProcessStartUtcTicks = 123,
+                SessionId = Guid.NewGuid().ToString("N"), RunId = Guid.NewGuid().ToString("N"), RunEpoch = 3,
+                Armed = true, UpdatedUtcTicks = utc, Channels = channels, Heartbeat = new WatchdogHeartbeat { Phase = "Formal" } };
+            var store = new FallbackLedgerStore(directory, status.SessionId);
+            store.Initialize(Guid.NewGuid().ToString("N"), 1, "blocked-original");
+            store.PrepareOriginalLaunch("blocked-original", "old");
+            store.BindOriginalLaunch("blocked-original", "old", 17036, 123);
+            var restarts = 0;
+            var cycle = 100L;
+            var freezeLast = true;
+            using (var recovery = new IndependentRecovery((d, q, r, s) =>
+            {
+                restarts++;
+                Assert(r.Ready && store.Read().IndependentRecoveryRequestId == q.Id, "restart before safety/fence");
+                return Tuple.Create(20000, 456L);
+            }, (path, selected) => new DatabaseProgressSnapshot { DatabasePath = path, CreationUtcTicks = 1,
+                Channels = selected.Select(c => new DatabaseLaneProgress { Channel = c,
+                    Cycle = freezeLast && c == 12 ? 100 : cycle,
+                    RecentCompletedCycles = freezeLast && c == 12 ? new long[] { 100, 99, 98 } :
+                        new long[] { cycle, cycle - 1, cycle - 2 } }).ToArray() }, () => clock, () => utc))
+            {
+                BoundedJson.Write(IndependentFallbackProtocol.StatusPath(directory), status);
+                recovery.Observe(directory, true, true);
+                var request = BoundedJson.Read<IndependentFallbackRequest>(IndependentFallbackProtocol.RequestPath(directory));
+                recovery.Observe(directory, true, true);
+                Assert(restarts == 0, "missing safety response launched process");
+                BoundedJson.Write(IndependentFallbackProtocol.ReceiptPath(directory), new IndependentFallbackReceipt
+                { RequestId = request.Id, RunId = request.RunId, ProcessId = 17036, ProcessStartUtcTicks = 123,
+                    Ready = true, Nonce = Guid.NewGuid().ToString("N"), UpdatedUtcTicks = utc });
+                recovery.Observe(directory, true, true);
+                Assert(restarts == 1, "blocked original prevented independent restart");
+                status.ProcessId = 20000; status.ProcessStartUtcTicks = 456;
+                status.RunId = Guid.NewGuid().ToString("N"); status.RunEpoch = 4;
+                for (int step = 1; step <= 12; step++)
+                {
+                    utc += TimeSpan.FromSeconds(5).Ticks; clock += Stopwatch.Frequency * 5; cycle++;
+                    status.UpdatedUtcTicks = utc;
+                    status.Heartbeat = new WatchdogHeartbeat { ProcessId = 20000, ProcessStartUtcTicks = 456,
+                        RunId = status.RunId, RunEpoch = 4, Sequence = step, ExpectedCyclePeriodMs = 1000,
+                        RecoveryEligibleChannels = channels,
+                        ChannelProgress = channels.Select(c => new WatchdogChannelProgress { Channel = c, State = "Running",
+                            FormalCommitRunEpoch = 4, FormalCommitIdentity = "commit" + step,
+                            FormalCommitSequence = cycle, DoCommandSequence = cycle, MechanicalCompletedCount = cycle }).ToArray() };
+                    BoundedJson.Write(IndependentFallbackProtocol.StatusPath(directory), status);
+                    recovery.Observe(directory, true, true);
+                    var result = BoundedJson.Read<System.Collections.Generic.Dictionary<string, object>>(
+                        Path.Combine(directory, "fallback-independent-status.json"));
+                    if (step <= 6) Assert(!(bool)result["RecoveryVerified"], "five moving lanes hid stalled EPB12");
+                    if (step == 6) freezeLast = false;
+                    if (step == 12) Assert((bool)result["RecoveryVerified"], "six moving lanes did not verify recovery");
+                }
+                Assert(restarts == 1, "repeated observations launched duplicate replacements");
+            }
+        }
+
+        private static void IndependentSafetyReceipt()
+        {
+            var now = DateTime.UtcNow.Ticks;
+            var status = new IndependentFallbackStatus { ProcessId = 17036, ProcessStartUtcTicks = now - 100000000,
+                RunId = Guid.NewGuid().ToString("N"), RunEpoch = 3, Armed = true, UpdatedUtcTicks = now };
+            var request = new IndependentFallbackRequest { Id = Guid.NewGuid().ToString("N"), RunId = status.RunId,
+                RunEpoch = 3, ProcessId = status.ProcessId, ProcessStartUtcTicks = status.ProcessStartUtcTicks,
+                RequestedUtcTicks = now - TimeSpan.FromSeconds(2).Ticks };
+            var receipt = new IndependentFallbackReceipt { RequestId = request.Id, RunId = status.RunId,
+                ProcessId = status.ProcessId, ProcessStartUtcTicks = status.ProcessStartUtcTicks,
+                Nonce = Guid.NewGuid().ToString("N"), Ready = true, UpdatedUtcTicks = now };
+            Assert(IndependentFallbackProtocol.CanTerminate(request, receipt, status, now), "fresh safety was rejected");
+            status.Armed = false;
+            Assert(!IndependentFallbackProtocol.CanTerminate(request, receipt, status, now), "manual stop permitted restart");
+            status.Armed = true; receipt.Ready = false;
+            Assert(!IndependentFallbackProtocol.CanTerminate(request, receipt, status, now), "failed drain permitted kill");
+            receipt.Ready = true; receipt.ProcessStartUtcTicks++;
+            Assert(!IndependentFallbackProtocol.CanTerminate(request, receipt, status, now), "PID reuse accepted");
+            receipt.ProcessStartUtcTicks--; receipt.RequestId = Guid.NewGuid().ToString("N");
+            Assert(!IndependentFallbackProtocol.CanTerminate(request, receipt, status, now), "old transaction accepted");
+            receipt.RequestId = request.Id; receipt.UpdatedUtcTicks = request.RequestedUtcTicks - 1;
+            Assert(!IndependentFallbackProtocol.CanTerminate(request, receipt, status, now), "startup safety receipt reused");
+            receipt.UpdatedUtcTicks = now; status.RunEpoch++;
+            Assert(!IndependentFallbackProtocol.CanTerminate(request, receipt, status, now), "new run closed by old receipt");
+            status.RunEpoch--;
+            Assert(!IndependentFallbackProtocol.CanTerminate(request, receipt, status, now + TimeSpan.FromMinutes(2).Ticks),
+                "expired handoff authorized termination");
+        }
+
+        private static void IndependentRetirement()
+        {
+            var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                "independent-fence-" + Guid.NewGuid().ToString("N"));
+            var store = new FallbackLedgerStore(root, Guid.NewGuid().ToString("N"));
+            var ledger = store.Initialize(Guid.NewGuid().ToString("N"), 1, "original");
+            store.PrepareOriginalLaunch("original", "old-launch");
+            store.BindOriginalLaunch("original", "old-launch", 17036, 123);
+            store.RetireForIndependentRecovery(Guid.NewGuid().ToString("N"), 17036, 123);
+            ledger = store.Read();
+            store.CompleteOriginalLaunch(ledger.Revision, 17036, 123);
+            var rejected = false;
+            try { store.PrepareOriginalLaunch("original", "late-launch"); } catch (InvalidOperationException) { rejected = true; }
+            Assert(rejected, "late original launch escaped independent fence");
+            ledger = store.Read(); rejected = false;
+            try { store.Request(ledger.Revision, Guid.NewGuid().ToString("N"), "old-guard"); }
+            catch (InvalidOperationException) { rejected = true; }
+            Assert(rejected, "old watchdog request escaped independent fence");
+            Assert(!ledger.ManualStopped, "independent takeover impersonated manual stop");
         }
 
         private static void Run(string name, Action action)

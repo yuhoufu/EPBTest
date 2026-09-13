@@ -11749,7 +11749,7 @@ namespace Controller
                     // a second core behind an already-running safety action.
                     return _stopSafetyTask;
                 }
-                if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
+                if (!context.RequireFreshSafetyEvidence && _lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
                     _lastStopSafetyResult.CanRestartInProcess &&
                     CanReuseStopResultForSource(

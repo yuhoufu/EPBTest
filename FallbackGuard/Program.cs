@@ -71,6 +71,7 @@ namespace MTTFTest.FallbackGuard
 
         private static int Observe(string directory, string session, string settingsPath, string statePath, string instance)
         {
+            using var independentRecovery = new IndependentRecovery();
             var store = new FallbackLedgerStore(directory, session);
             var databaseMonitor = new DatabaseStallMonitor();
             var intentPath = Path.Combine(directory, "fallback-database-intent-" + session + ".json");
@@ -98,7 +99,7 @@ namespace MTTFTest.FallbackGuard
                     stopping |= !settings.Enabled;
                     var ledger = store.Exists ? store.Read() : null;
                     var owned = ledger?.Owner == "Fallback" && ledger.OwnerInstanceId == instance;
-                    if (stopping && !owned)
+                    if (stopping && !owned && !independentRecovery.IsPending)
                     {
                         if (ledger?.Requester == instance && (ledger.Phase == "Requested" || ledger.Phase == "Yielded"))
                             Send("Cancel", ledger, session, instance);
@@ -200,6 +201,12 @@ namespace MTTFTest.FallbackGuard
                             new { CapturedUtc = DateTime.UtcNow.ToString("O"), Status = databaseStatus,
                                 RunId = intent.RunId, ManualStopped = intent.ManualStopped,
                                 Channels = intent.Channels, OriginalResponsive = sourceFresh });
+                    }
+                    independentRecovery.Observe(directory, settings.Active && !stopping, databaseStalled);
+                    if (independentRecovery.IsPending)
+                    {
+                        Thread.Sleep(1000);
+                        continue;
                     }
                     if (ledger != null && !string.IsNullOrEmpty(heartbeat?.RunId) && ledger.RunId != heartbeat.RunId)
                         throw new InvalidDataException("RunMismatch; reconciliation required");

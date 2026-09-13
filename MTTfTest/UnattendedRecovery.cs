@@ -407,6 +407,29 @@ namespace MTEmbTest
             }
         }
 
+        internal static bool TryRegisterIndependentRestart(GlobalConfig config, string requestId,
+            string runId, out RecoveryStartupIntent intent, out string error)
+        {
+            lock (Sync)
+            {
+                intent = null;
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null || !checkpoint.Armed || IsRunRevokedInMemory(runId) ||
+                    checkpoint.RunId != runId || config?.Test == null ||
+                    checkpoint.TestName != config.Test.TestName ||
+                    !string.Equals(checkpoint.StoreDir, config.Test.StoreDir, StringComparison.OrdinalIgnoreCase) ||
+                    checkpoint.ConfigurationSha256 != ComputeConfigurationHash(config) ||
+                    checkpoint.ExecutableSha256 != ComputeFileHash(GetExecutablePath()))
+                { error = "IndependentRestartAuthorizationChanged"; return false; }
+                // Only called after this request's fresh StopAll and disk drain.
+                // Refresh the authorization audit timestamp, never any count.
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                checkpoint.LastReason = "IndependentFallbackFreshSafetyAndDrain:" + requestId;
+                SaveUnsafe(checkpoint);
+                return TryRegisterRestart(requestId, runId, out intent, out error);
+            }
+        }
+
         internal static bool TryRegisterRestart(
             string correlationId,
             string expectedRunId,

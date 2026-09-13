@@ -34,6 +34,7 @@
     <Compile Include="SidecarIdentityStateMachine.cs" />
     <Compile Include="SidecarProcessHandleOwner.cs" />
     <Compile Include="FallbackCoordination.cs" />
+    <Compile Include="IndependentFallback.cs" />
     <Compile Include="FallbackControlPipe.cs" />
     <Compile Include="FallbackProgressVerifier.cs" />
     <Compile Include="DeadlinePipeExchange.cs" />

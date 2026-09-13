@@ -41,7 +41,7 @@ switch ($Mode) {
         $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Mode Run -ProjectDirectory "{1}" -SessionId {2} -ExecutablePath "{3}"' -f $script,$project,$SessionId,$executable
         $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $arguments
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
-        $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+        $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "EPB 独立兜底；项目=$project；会话=$SessionId" | Out-Null
         Start-ScheduledTask -TaskName $taskName

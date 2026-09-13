@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 
@@ -9,6 +9,6 @@ using System.Runtime.CompilerServices;
 [assembly: ComVisible(false)]
 [assembly: Guid("4E6B3F5E-7C42-4A1C-9E02-7D9A3D4C8E61")]
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]
-[assembly: AssemblyVersion("4.0.0.1")]
-[assembly: AssemblyFileVersion("4.0.0.1")]
-[assembly: AssemblyInformationalVersion("4.0.0.1")]
+[assembly: AssemblyVersion("4.0.0.3")]
+[assembly: AssemblyFileVersion("4.0.0.3")]
+[assembly: AssemblyInformationalVersion("4.0.0.3")]

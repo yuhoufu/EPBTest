@@ -21,6 +21,7 @@ namespace Controller
         public string Initiator { get; set; }
         public string CorrelationId { get; set; }
         public string RunId { get; set; }
+        public bool RequireFreshSafetyEvidence { get; set; }
         public FaultScope? FaultScope { get; set; }
         public DateTime RequestedUtc { get; set; } = DateTime.UtcNow;
 

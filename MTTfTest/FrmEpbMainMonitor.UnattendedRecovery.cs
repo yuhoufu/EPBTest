@@ -98,6 +98,7 @@ namespace MTEmbTest
         private void AttachUnattendedRecovery()
         {
             if (_epb == null || _cfg == null) return;
+            StartIndependentFallbackBridge();
             // Keep any checkpoint-authorized root out of retention even if a
             // worker scan raced monitor construction.  This is an explicit UI /
             // recovery-coordinator decision; Controller does not inspect files.

@@ -33,6 +33,8 @@ namespace AdaptiveControlTests
                 EpbManagerStopAllRunsProductionStages, ref passed);
             Run("StopAll入口同步安装禁止再上电栅栏",
                 StopAllAdmissionInstallsEnergizationFenceSynchronously, ref passed);
+            Run("独立兜底StopAll不得复用此前成功停止凭证",
+                IndependentStopObtainsFreshTransaction, ref passed);
             Run("EpbManager生产DO物理失败与准入拒绝进入统一终态",
                 EpbManagerPhysicalOffFailureIsSticky, ref passed);
             Run("EpbManager生产DO准入拒绝先启动PSU再安全收口",
@@ -503,6 +505,28 @@ namespace AdaptiveControlTests
                 Assert(progress.Stage == StopSafetyStage.Completed &&
                        !progress.Active && progress.PhysicalSafe,
                     "真实StopAll未发布Completed物理安全终态。");
+            }
+        }
+
+        private static void IndependentStopObtainsFreshTransaction()
+        {
+            using (var fixture = new ProductionManagerFixture(new FailingPowerSupply(fail: false)))
+            {
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                fixture.Manager.ConfigureStopSafetyProductionSeams(
+                    new SystemStopSafetyClock(), new ProductionHydraulicAdapter(immediateSuccess: true));
+                var first = fixture.Manager.StopAllAsync(NewContext()).GetAwaiter().GetResult();
+                Assert(first.CanRestartInProcess, "前置成功停止未完成：" + first.StageError);
+                var reused = fixture.Manager.StopAllAsync(NewContext()).GetAwaiter().GetResult();
+                Assert(reused.ReusedPreviousResult, "未形成旧停止缓存前提");
+                var context = NewContext();
+                context.RequireFreshSafetyEvidence = true;
+                context.CorrelationId = Guid.NewGuid().ToString("N");
+                var fresh = fixture.Manager.StopAllAsync(context).GetAwaiter().GetResult();
+                Assert(!fresh.ReusedPreviousResult && fresh.CanRestartInProcess &&
+                       fresh.SafetyTransactionId != first.SafetyTransactionId &&
+                       fresh.CorrelationId == context.CorrelationId,
+                    "独立请求没有取得自己的新物理停止事务");
             }
         }
 

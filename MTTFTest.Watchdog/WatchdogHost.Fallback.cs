@@ -38,6 +38,7 @@ namespace MTTFTest.Watchdog
             try
             {
                 var value = _fallbackStore.Read();
+                if (!string.IsNullOrEmpty(value.IndependentRecoveryRequestId)) return false;
                 var scope = FallbackExecutionScope.Current.Value;
                 if (value.ManualStopped) return false;
                 if (scope == null) return value.Owner == "Original" && value.OwnerInstanceId == FallbackInstance && value.Phase != "Yielded";
@@ -52,6 +53,8 @@ namespace MTTFTest.Watchdog
             lock (_fallbackGate)
             {
                 var value = _fallbackStore.Read();
+                if (!string.IsNullOrEmpty(value.IndependentRecoveryRequestId))
+                    throw new InvalidOperationException("IndependentFallbackOwnsReplacement");
                 if (command == null || command.SchemaVersion != 1 || command.SessionId != _args.SessionId ||
                     command.RunId != value.RunId || command.RunEpoch != value.RunEpoch ||
                     !MatchesFallbackRun(value))

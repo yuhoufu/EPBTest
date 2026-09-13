@@ -3152,6 +3152,14 @@ namespace MTTFTest.Watchdog
             {
                 if (!FallbackMayBeginRecovery()) return;
                 if (IsRecoveryBlocked() || _journal.ManualStopRequested || IsSessionRevoked()) return;
+                // A delayed completion of the OLD process exit is not a new
+                // recovery failure. Once this permit has begun launching, its
+                // original exit observer must never register another failure.
+                if (!CanObserveRelaunchExit(_relaunchCoordinator.Snapshot, approvedPermitGeneration))
+                {
+                    Record("RelaunchExitAlreadyHandled", $"Generation={approvedPermitGeneration}");
+                    return;
+                }
                 if (Interlocked.CompareExchange(
                         ref _relaunchAfterExitStarted,
                         1,
@@ -5230,10 +5238,16 @@ namespace MTTFTest.Watchdog
             WatchdogHeartbeat heartbeat,
             string progressToken = null)
         {
+            var accepted = _relaunchCoordinator?.Snapshot;
+            if (accepted?.State == DurableRelaunchPermitState.Committed &&
+                accepted.RecoveryCommitGeneration >= commitGeneration && commitGeneration > 0 &&
+                heartbeat != null && accepted.RunId == heartbeat.RunId && accepted.RunEpoch == heartbeat.RunEpoch)
+                return true;
+            var commitStage = ResolveRecoveryCommitStage(heartbeat);
             if (heartbeat == null ||
                 string.IsNullOrWhiteSpace(heartbeat.RunId) ||
                 heartbeat.RunEpoch <= 0 ||
-                string.IsNullOrWhiteSpace(heartbeat.RecoveryStage))
+                string.IsNullOrWhiteSpace(commitStage))
             {
                 RecordRecoveryCommitDeferred(
                     commitGeneration,
@@ -5247,7 +5261,7 @@ namespace MTTFTest.Watchdog
             if (!TryCommitRecoveryBatch(
                     heartbeat.RunId,
                     heartbeat.RunEpoch,
-                    heartbeat.RecoveryStage,
+                    commitStage,
                     token,
                     commitGeneration))
             {
@@ -6666,6 +6680,20 @@ namespace MTTFTest.Watchdog
                 Record("ApplicationExitDeadlineSupervisorFailed", ex.GetBaseException().Message);
                 Interlocked.Exchange(ref _applicationExitDeadlineStarted, 0);
             }
+        }
+
+        internal static string ResolveRecoveryCommitStage(WatchdogHeartbeat heartbeat)
+        {
+            if (!string.IsNullOrWhiteSpace(heartbeat?.RecoveryStage)) return heartbeat.RecoveryStage;
+            return heartbeat?.RunActive == true && heartbeat.Phase == "Formal" ? "FormalBatchStarted" : null;
+        }
+
+        internal static bool CanObserveRelaunchExit(
+            DurableRelaunchPermitRecord permit, long generation)
+        {
+            if (generation <= 0) return true;
+            return permit != null && permit.Generation == generation &&
+                   permit.State == DurableRelaunchPermitState.Approved;
         }
 
         internal static bool ShouldTerminateSidecarAfterApplicationExit(

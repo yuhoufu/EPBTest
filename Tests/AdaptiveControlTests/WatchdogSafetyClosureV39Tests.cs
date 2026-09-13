@@ -13,6 +13,8 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
+            Run("旧进程延迟退出回调不得撤销已启动恢复许可", LateExitCannotRestartAttachedReplacement, ref passed);
+            Run("正式批次提交不依赖临时恢复阶段字段", FormalCommitStage, ref passed);
             Run("schema v1终态只代表停止意图且不得终止Sidecar", LegacyClosingTerminalIsNotSafetyProof, ref passed);
             Run("schema v2完整安全证明才允许Sidecar终止", VersionTwoTerminalRequiresAllSafetyProof, ref passed);
             Run("handoff耐久状态拒绝revision和状态倒退并从损坏副本回退", HandoffStoreIsMonotonicAndRecoversCorruption, ref passed);
@@ -24,6 +26,30 @@ namespace AdaptiveControlTests
             Run("安全接管配置快照完整且篡改后拒绝使用",
                 SafetyConfigSnapshotIsImmutableAndVerified, ref passed);
             return passed;
+        }
+
+        private static void FormalCommitStage()
+        {
+            var heartbeat = new WatchdogHeartbeat { RunActive = true, Phase = "Formal" };
+            Assert(WatchdogHost.ResolveRecoveryCommitStage(heartbeat) == "FormalBatchStarted", "正式运行空恢复阶段导致ContextMissing");
+            heartbeat.RunActive = false;
+            Assert(WatchdogHost.ResolveRecoveryCommitStage(heartbeat) == null, "空闲不得合成运行阶段");
+            heartbeat.RunActive = true; heartbeat.Phase = "Starting";
+            Assert(WatchdogHost.ResolveRecoveryCommitStage(heartbeat) == null, "启动中不得冒充正式批次提交");
+        }
+
+        private static void LateExitCannotRestartAttachedReplacement()
+        {
+            var permit = new DurableRelaunchPermitRecord { Generation = 1 };
+            foreach (DurableRelaunchPermitState state in Enum.GetValues(typeof(DurableRelaunchPermitState)))
+            {
+                permit.State = state;
+                Assert(WatchdogHost.CanObserveRelaunchExit(permit, 1) ==
+                    (state == DurableRelaunchPermitState.Approved),
+                    "延迟退出回调必须仅处理尚未消费的Approved许可: " + state);
+                Assert(!WatchdogHost.CanObserveRelaunchExit(permit, 2), "旧代次不可发起新恢复");
+            }
+            Assert(!WatchdogHost.CanObserveRelaunchExit(null, 1), "缺失许可不可推断授权");
         }
 
         private static void LegacyClosingTerminalIsNotSafetyProof()
