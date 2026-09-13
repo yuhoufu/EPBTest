@@ -16,6 +16,7 @@ function Wait-TaskStopped {
 }
 try {
  & $manager -Mode Install -InstallRoot $install
+ if((Get-ScheduledTask -TaskName $paths.Task).Principal.RunLevel -ne 'Highest'){throw 'Observer cannot inspect elevated sidecar identity'}
  $deadline=[DateTime]::UtcNow.AddSeconds(8)
  while(-not (Test-Path -LiteralPath $paths.Status) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 250}
  $status=Read-FallbackBindingJson $paths.Status

@@ -1,5 +1,9 @@
 ﻿param([ValidateSet('Start','Enable','Disable','Status','Install','Uninstall','Run')][string]$Mode='Status',[string]$InstallRoot='C:\Program Files (x86)\MTTFTest')
 $ErrorActionPreference='Stop'
+if($Mode -in @('Install','Enable','Start')){
+ $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+ if(-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '请以管理员身份启用独立监督；需要读取受保护侧车的进程身份。'}
+}
 . (Join-Path $PSScriptRoot 'Resolve-FallbackBinding.ps1')
 . (Join-Path $PSScriptRoot 'Persistent-Fallback.ps1')
 $paths=Get-PersistentFallbackPaths $InstallRoot
@@ -48,9 +52,14 @@ try {
   $account=[Security.Principal.WindowsIdentity]::GetCurrent().Name
   $action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -InstallRoot "{1}"' -f $watcher,$InstallRoot)
   $trigger=New-ScheduledTaskTrigger -AtLogOn -User $account
-  $principal=New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+  $principal=New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
   $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
   Register-ScheduledTask -TaskName $paths.Task -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $description | Out-Null
+ }
+ elseif($task.Principal.RunLevel -ne 'Highest'){
+  if($task.State -eq 'Running'){throw '旧监督任务权限不足；请先禁用并等待退出，再重新启用。'}
+  $principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Highest
+  Set-ScheduledTask -TaskName $paths.Task -Principal $principal | Out-Null
  }
  Save-FallbackBinding $paths.Settings @{SchemaVersion=1;InstallRoot=[IO.Path]::GetFullPath($InstallRoot);Enabled=$true}
  Start-ScheduledTask -TaskName $paths.Task
