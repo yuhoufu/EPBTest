@@ -3197,9 +3197,14 @@ namespace MTEmbTest
                 }
                 else if (_manualCloseAccepted && !string.IsNullOrEmpty(_manualCloseCommandId))
                 {
-                    // Join persistence only; manual close never starts a second physical StopAll.
-                    safety = await _epb.CompleteManualClosePersistenceAsync(_manualCloseCommandId)
-                        .ConfigureAwait(true);
+                    safety = _manualStopExitReceipt.TryCaptureCompletedManualClose(
+                        _manualCloseCommandId, _epb?.IsBatchSessionActive ?? false);
+                    if (safety == null)
+                    {
+                        // An early safe close still owns unfinished persistence.
+                        safety = await _epb.CompleteManualClosePersistenceAsync(_manualCloseCommandId)
+                            .ConfigureAwait(true);
+                    }
                 }
                 else if (reusableManualStop != null)
                 {

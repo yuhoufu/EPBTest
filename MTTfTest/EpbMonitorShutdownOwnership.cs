@@ -26,7 +26,7 @@ namespace MTEmbTest
             if (starting || (!stoppedByOperator && !idleWithoutTrial))
                 return "试验正在运行，请先停止试验，不允许退出";
             return stoppedByOperator && !safetyConfirmed
-                ? "人工停止尚未取得当前批次的有效安全凭证：电流、压力采样或控制输出关闭未确认，请等待安全停止完成后重试。"
+                ? "停止试验仍在安全收口中，尚未确认断电和泄压完成，请等待停止结果。"
                 : string.Empty;
         }
     }
@@ -222,6 +222,20 @@ namespace MTEmbTest
         internal ManualExitIntentReceipt CaptureIntent()
         {
             lock (_gate) return _intent?.Clone();
+        }
+
+        internal StopSafetyResult TryCaptureCompletedManualClose(string commandId, bool batchSessionActive)
+        {
+            lock (_gate)
+            {
+                if (batchSessionActive || string.IsNullOrWhiteSpace(commandId) ||
+                    !IsReusable(_receipt) || _intent == null ||
+                    !string.Equals(_intent.CommandId, commandId, StringComparison.Ordinal) ||
+                    !_intent.Matches(_receipt) || !_receipt.MotorOffCommandSucceeded ||
+                    !_receipt.PowerOffConfirmed || !_receipt.PressureSafeConfirmed)
+                    return null;
+                return _receipt.Clone(reused: true);
+            }
         }
 
         private static bool IsReusable(StopSafetyResult result)

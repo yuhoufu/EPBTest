@@ -206,7 +206,7 @@ namespace AdaptiveControlTests
                 "故障停机或运行态不能借安全值关闭");
             Assert(OperatorClosePolicy.Rejection(true, true, true, true).Contains("不允许退出"),
                 "启动与关闭并发不得复用旧停止证明");
-            Assert(OperatorClosePolicy.Rejection(false, true, false, false).Contains("安全凭证"),
+            Assert(OperatorClosePolicy.Rejection(false, true, false, false).Contains("安全收口"),
                 "人工点击停止不能代替电流压力安全证明");
             Assert(OperatorClosePolicy.Rejection(false, true, false, true) == string.Empty,
                 "已安全停止应允许关闭，不依赖落盘完成");
@@ -301,6 +301,19 @@ namespace AdaptiveControlTests
             owner.RevokeForNewStart();
             Assert(owner.TryCapture(batchSessionActive: false) == null,
                 "新启动后仍能复用上一轮人工停止授权");
+            Assert(owner.Publish(result, "manual-stop"), "停止结果发布失败");
+            Assert(owner.TryCaptureCompletedManualClose("manual-stop", false) == null,
+                "未确认压力安全的旧终态不能授权快速关闭");
+            result.PressureSafeConfirmed = true;
+            Assert(owner.Publish(result, "manual-stop"), "安全停止结果发布失败");
+            Assert(owner.TryCaptureCompletedManualClose("manual-stop", false) != null,
+                "已完成停止错误要求重新采样");
+            Assert(owner.TryCaptureCompletedManualClose("other-stop", false) == null &&
+                   owner.TryCaptureCompletedManualClose("manual-stop", true) == null,
+                "旧停止命令或活动批次错误获得关闭许可");
+            owner.RevokeForNewStart();
+            Assert(owner.TryCaptureCompletedManualClose("manual-stop", false) == null,
+                "再次开始后旧关闭许可未撤销");
             result.Source = StopSource.SystemFault;
             Assert(owner.Publish(result, "operator-adopt"),
                 "人工退出未能采用同Run/epoch/代次的SystemFault停止终态");

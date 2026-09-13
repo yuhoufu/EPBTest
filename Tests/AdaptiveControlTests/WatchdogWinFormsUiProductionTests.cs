@@ -1588,6 +1588,34 @@ namespace AdaptiveControlTests
                             Assert(monitor.CanAcceptOperatorClose(out var reason),
                                 "未开始试验的真实监控窗拒绝关闭：" + reason);
                             Assert(!monitor.OperatorClosePending, "只读关闭判定不应提前改变窗体状态");
+                            var flags = System.Reflection.BindingFlags.Instance |
+                                System.Reflection.BindingFlags.NonPublic;
+                            var monitorType = typeof(FrmEpbMainMonitor);
+                            monitorType.GetField("_manualCloseTrialObserved", flags).SetValue(monitor, true);
+                            monitorType.GetField("_operatorStopRequested", flags).SetValue(monitor, 1);
+                            monitorType.GetField("_manualCloseCommandId", flags).SetValue(monitor, "completed-stop");
+                            Assert(!monitor.CanAcceptOperatorClose(out _),
+                                "尚未取得停止安全结果时错误放行");
+                            var owner = (ManualStopExitReceiptOwner)monitorType
+                                .GetField("_manualStopExitReceipt", flags).GetValue(monitor);
+                            Assert(owner.Publish(new StopSafetyResult
+                            {
+                                Outcome = StopSafetyOutcome.CompletedSafe,
+                                LastStage = StopSafetyStage.Completed,
+                                Source = StopSource.ManualUi,
+                                CorrelationId = "completed-stop",
+                                SafetyTransactionId = Guid.NewGuid(),
+                                RunId = Guid.NewGuid(), RunEpoch = 1, SafetyBoundaryGeneration = 1,
+                                MotorOffCommandSucceeded = true, PowerOffConfirmed = true,
+                                PressureSafeConfirmed = true, PersistenceBoundaryConfirmed = true,
+                                LogicalQuiescenceConfirmed = true, CompletedUtc = DateTime.UtcNow
+                            }, "completed-stop"), "无法发布完成的人工停止结果");
+                            Assert(monitor.CanAcceptOperatorClose(out reason) &&
+                                   monitor.CanAcceptOperatorClose(out _) && !monitor.OperatorClosePending,
+                                "已安全停止且无采集器的真实窗体仍要求重新采样：" + reason);
+                            owner.RevokeForNewStart();
+                            Assert(!monitor.CanAcceptOperatorClose(out _),
+                                "新启动撤销后仍复用旧关闭许可");
                         }
                         completed.TrySetResult(true);
                     }

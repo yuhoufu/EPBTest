@@ -27,11 +27,16 @@ namespace MTEmbTest
             var stopped = Volatile.Read(ref _operatorStopRequested) != 0;
             if (!_manualCloseTrialObserved && Volatile.Read(ref _batchStartUiGuard) == 0 && CanUseIdleFastClose())
                 return true;
-            var proof = stopped ? _epb?.CaptureManualCloseSafety(_manualCloseCommandId) : null;
+            var completedStop = stopped ? _manualStopExitReceipt.TryCaptureCompletedManualClose(
+                _manualCloseCommandId, _epb?.IsBatchSessionActive ?? false) : null;
+            // A completed stop retains its verified safety boundary. Acquisition may
+            // already be released; do not demand another live sample after that boundary.
+            var proof = stopped && completedStop == null
+                ? _epb?.CaptureManualCloseSafety(_manualCloseCommandId) : null;
             var conflictingStart = Volatile.Read(ref _batchStartUiGuard) != 0 &&
                 (!stopped || Interlocked.Read(ref _manualCloseStartRevision) != Interlocked.Read(ref _manualStopStartRevision));
             reason = OperatorClosePolicy.Rejection(conflictingStart,
-                stopped, CanUseIdleFastClose(), proof != null);
+                stopped, CanUseIdleFastClose(), completedStop != null || proof != null);
             return string.IsNullOrEmpty(reason);
         }
 
