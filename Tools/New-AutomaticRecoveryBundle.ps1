@@ -44,6 +44,7 @@ foreach ($name in @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
     [IO.File]::WriteAllText((Join-Path $toolsOutput $name), [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name), [Text.Encoding]::UTF8), $utf8)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-13_V4数据库监督实施与候选验收.md') -Destination (Join-Path $output '独立兜底说明.md')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-13_V4项目数据库独立监督与恢复修复实施方案_待确认.md') -Destination $output
 foreach ($entry in @(
     @{Name='启用独立数据库监督.cmd';Mode='Install'},
     @{Name='禁用独立数据库监督.cmd';Mode='Disable'},
@@ -92,6 +93,7 @@ $files = @(Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object FullN
 })
 $manifest = [ordered]@{
     schemaVersion=1; version=$version; gitCommit=$commit; releaseStatus='CANDIDATE_NOT_FIELD_VALIDATED'
+    packagingGitCommit=([string](& git -C (Join-Path $PSScriptRoot '..') rev-parse HEAD)).Trim()
     fieldDeploymentApproved=$false; recoveryArchitecture='V2-Supervisor-SessionAgent-SafetyAgent'
     fallbackGuard='Independent-Database-v2'; fallbackDefault='ObservationOnly'; candidateTag=('v'+[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $fallbackOutput 'MTTFTest.FallbackGuard.exe')).ProductVersion)
     createdUtc=[DateTime]::UtcNow.ToString('O'); files=$files
@@ -102,7 +104,7 @@ if (-not (Test-Path -LiteralPath $sevenZip)) { throw '缺少 7-Zip，不能生�
 $archive = $output + '.7z'
 Push-Location (Split-Path -Parent $output)
 try {
-    & $sevenZip a -t7z -m0=LZMA2 -mx=9 $archive (Split-Path -Leaf $output) | Out-Host
+    & $sevenZip a -t7z -m0=LZMA2 -mx=9 -mmt=2 $archive (Split-Path -Leaf $output) | Out-Host
     if ($LASTEXITCODE -ne 0) { throw '7-Zip 最大压缩率打包失败。' }
     & $sevenZip t $archive | Out-Host
     if ($LASTEXITCODE -ne 0) { throw '7-Zip 压缩包完整性验证失败。' }

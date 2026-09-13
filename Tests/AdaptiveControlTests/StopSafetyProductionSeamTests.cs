@@ -1038,6 +1038,8 @@ namespace AdaptiveControlTests
                 releaseFlush.TrySetResult(true);
                 var persistenceReentry = persistenceReentryTask.GetAwaiter().GetResult();
                 var persistenceFinalExit = persistenceFinalExitTask.GetAwaiter().GetResult();
+                Assert(persistenceReentry.RequiresProcessRestart && persistenceFinalExit.RequiresProcessRestart,
+                    "重新完成物理收尾不能消除前次持久化超时锁存的进程替换义务。");
                 Assert(!persistenceReentry.ReusedPreviousResult &&
                        !persistenceFinalExit.ReusedPreviousResult &&
                        persistenceReentry.SafetyTransactionId != persistenceTerminal.TransactionId &&
@@ -1048,13 +1050,13 @@ namespace AdaptiveControlTests
                     var late = hangingFixture.Manager.CaptureStopSafetyProgress();
                     return !hangingFixture.Manager.HasOrphanCore &&
                            late.Stage == StopSafetyStage.Completed &&
-                           !late.Active && !late.TakeoverRequired &&
+                           !late.Active && late.TakeoverRequired &&
                            late.TransactionId == persistenceReentry.SafetyTransactionId;
                 }, 2000);
                 var lateTerminal = hangingFixture.Manager.CaptureStopSafetyProgress();
                 Assert(orphanSettled && !hangingFixture.Manager.HasOrphanCore &&
                        lateTerminal.Stage == StopSafetyStage.Completed &&
-                       !lateTerminal.Active && !lateTerminal.TakeoverRequired &&
+                       !lateTerminal.Active && lateTerminal.TakeoverRequired &&
                        lateTerminal.TransactionId == persistenceReentry.SafetyTransactionId,
                     "旧Persistence orphan迟到回写覆盖了新代安全终态：" +
                     $"OrphanSettled={orphanSettled};Stage={lateTerminal.Stage};" +

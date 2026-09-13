@@ -1,8 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Pipes;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MTTFTest.Watchdog.Protocol;
@@ -73,29 +71,8 @@ namespace MTTFTest.Watchdog.Client
                 };
             }
 
-            SupervisorSessionLaunchResponse response;
-            using (var pipe = new NamedPipeClientStream(
-                       ".",
-                       SupervisorProtocol.PipeName,
-                       PipeDirection.InOut,
-                       PipeOptions.Asynchronous))
-            {
-                var connect = Task.Run(() => pipe.Connect(1500), cancellationToken);
-                await connect.ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-                using (var writer = new BinaryWriter(
-                           pipe,
-                           new UTF8Encoding(false),
-                           true))
-                using (var reader = new BinaryReader(
-                           pipe,
-                           new UTF8Encoding(false),
-                           true))
-                {
-                    message.WriteTo(writer);
-                    response = SupervisorSessionLaunchResponse.ReadFrom(reader);
-                }
-            }
+            var response = await ExchangeSupervisorLaunchAsync(
+                message, cancellationToken, SupervisorProtocol.PipeName).ConfigureAwait(false);
 
             if (response == null ||
                 response.SchemaVersion != SupervisorProtocol.SchemaVersion ||
@@ -130,6 +107,17 @@ namespace MTTFTest.Watchdog.Client
                 try { process.Dispose(); } catch { }
                 throw;
             }
+        }
+
+        internal static Task<SupervisorSessionLaunchResponse> ExchangeSupervisorLaunchAsync(
+            SupervisorSessionLaunchRequest message, CancellationToken cancellation, string pipeName)
+        {
+            // Bound connect, write and the complete reply together. Merely
+            // timing out Connect leaves a connected-but-stalled Supervisor
+            // holding a startup worker and its shutdown receipt indefinitely.
+            return Task.Run(() => DeadlinePipeExchange.Execute(pipeName, 3000,
+                writer => message.WriteTo(writer), SupervisorSessionLaunchResponse.ReadFrom,
+                cancellation), cancellation);
         }
     }
 }

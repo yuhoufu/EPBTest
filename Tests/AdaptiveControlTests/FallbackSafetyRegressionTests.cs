@@ -28,6 +28,9 @@ namespace AdaptiveControlTests
             run("F2 connected peer does not read", () => StalledPipe(0));
             run("F2 connected peer does not respond", () => StalledPipe(1));
             run("F2 peer sends incomplete frame", () => StalledPipe(2));
+            run("F2 Sidecar启动对端不读总截止", () => StalledPipe(0, true));
+            run("F2 Sidecar启动对端不响应总截止", () => StalledPipe(1, true));
+            run("F2 Sidecar启动半帧总截止", () => StalledPipe(2, true));
             if (failed > 0) throw new InvalidOperationException($"FallbackSafety: {passed} passed, {failed} failed");
             return passed;
         }
@@ -120,7 +123,7 @@ namespace AdaptiveControlTests
             Assert(!request.IsStructurallyValid(), "safety-only must not carry a resume grant");
         }
 
-        private static void StalledPipe(int mode)
+        private static void StalledPipe(int mode, bool sidecarLaunch = false)
         {
             var name = "EPB-Fallback-Test-" + Guid.NewGuid().ToString("N");
             using (var release = new ManualResetEventSlim())
@@ -135,20 +138,27 @@ namespace AdaptiveControlTests
                         var input = new byte[1]; await server.ReadAsync(input, 0, 1);
                         if (mode == 2) { await server.WriteAsync(new byte[] { 1, 2 }, 0, 2); }
                     }
-                    release.Wait(4000);
+                    release.Wait(6000);
                 });
                 var watch = Stopwatch.StartNew();
                 try
                 {
                     try
                     {
-                        DeadlinePipeExchange.Execute(name, 250,
+                        if (sidecarLaunch)
+                            MTTFTest.Watchdog.Client.SupervisorSidecarProcessLauncher.ExchangeSupervisorLaunchAsync(
+                                new SupervisorSessionLaunchRequest { RequestId = Guid.NewGuid().ToString("N"),
+                                    ChallengeNonce = Guid.NewGuid().ToString("N"), ExecutablePath = @"C:\fixture.exe",
+                                    ExecutableSha256 = new string('a', 64), Arguments = "", ArgumentsSha256 = new string('b', 64),
+                                    WorkingDirectory = @"C:\", RequesterProcessId = 1, RequesterProcessStartUtcTicks = 1 },
+                                CancellationToken.None, name).GetAwaiter().GetResult();
+                        else DeadlinePipeExchange.Execute(name, 250,
                             writer => { if (mode == 0) writer.Write(new byte[1024 * 1024]); else writer.Write((byte)1); },
                             reader => reader.ReadInt64());
                         throw new Exception("stalled pipe unexpectedly succeeded");
                     }
                     catch (TimeoutException) { }
-                    Assert(watch.ElapsedMilliseconds < 3000, "total deadline did not bound caller");
+                    Assert(watch.ElapsedMilliseconds < (sidecarLaunch ? 4500 : 3000), "total deadline did not bound caller");
                 }
                 finally { release.Set(); server.Dispose(); Assert(peer.Wait(3000), "peer leaked"); }
             }

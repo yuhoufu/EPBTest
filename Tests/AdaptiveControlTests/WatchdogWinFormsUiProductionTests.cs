@@ -26,6 +26,11 @@ namespace AdaptiveControlTests
 
         internal static int RunAll()
         {
+            // Main_Frm validates these settings before starting Runtime. This
+            // standalone console suite has no application config/bootstrap.
+            WatchdogRuntime.ConfigureDaqRuntimeSettings(new Config.DaqRuntimeSettings(
+                Config.DaqRuntimeSettings.DefaultSampleRateHz,
+                Config.DaqRuntimeSettings.DefaultSamplesPerChannel));
             var tests = new Action[]
             {
                 RuntimeDependencyClosureIsComplete,
@@ -743,7 +748,7 @@ namespace AdaptiveControlTests
                 var start = WatchdogRuntime.StartSessionAsync(new[] { 4, 10 })
                     .GetAwaiter().GetResult();
                 Assert(start != null && start.Attached,
-                    "Process-global Runtime/sidecar did not reach exact Attached.");
+                    "Process-global Runtime/sidecar did not reach exact Attached: " + start?.Warning);
                 var before = WatchdogRuntime.CaptureTransportSnapshot();
                 Assert(before != null && before.IsStable && before.Context != null &&
                        before.Engine != null && WatchdogRuntime.IsExactAttachedSnapshot(before),
