@@ -54,6 +54,7 @@
     <Compile Include="..\..\FallbackGuard\DatabaseProgress.cs"><Link>DatabaseProgress.cs</Link></Compile>
     <Compile Include="FallbackCoordinationTests.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="InstantDisplayRefreshTests.cs" />
     <Compile Include="CalibrationMathTests.cs" />
     <Compile Include="CycleAttemptLifecycleTests.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />

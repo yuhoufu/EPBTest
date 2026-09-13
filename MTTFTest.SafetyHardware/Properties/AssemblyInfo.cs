@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Runtime.InteropServices;
 
 [assembly: AssemblyTitle("MTTFTest.SafetyHardware")]
@@ -7,6 +7,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyProduct("MTTFTest.SafetyHardware")]
 [assembly: ComVisible(false)]
 [assembly: Guid("D472B925-3F84-4B20-A3E3-6B7A22B3F21C")]
-[assembly: AssemblyVersion("4.0.0.0")]
-[assembly: AssemblyFileVersion("4.0.0.0")]
-[assembly: AssemblyInformationalVersion("4.0.0.0")]
+[assembly: AssemblyVersion("4.0.0.1")]
+[assembly: AssemblyFileVersion("4.0.0.1")]
+[assembly: AssemblyInformationalVersion("4.0.0.1")]

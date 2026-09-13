@@ -236,9 +236,8 @@ namespace MTEmbTest
         /// <summary>
         ///     瞬时值（文本框）刷新节流：避免每批都刷新导致 UI 抖动。
         /// </summary>
-        private int _lastInstantUiUpdateTick;
+        private readonly InstantDisplayRefreshGate _instantDisplayRefreshGate = new();
 
-        private const int InstantUiUpdateMinIntervalMs = 200;
 
         /// <summary>
         ///     绘图零点时间（绝对时间），用于将 DAQ 的绝对时间戳转换为曲线的相对时间 X。
@@ -2177,9 +2176,8 @@ namespace MTEmbTest
                 // 瞬时值刷新节流：最多每 200ms 更新一次
                 var nowTick = Environment.TickCount;
                 if ((p1 != null || p2 != null) &&
-                    unchecked(nowTick - _lastInstantUiUpdateTick) >= InstantUiUpdateMinIntervalMs)
+                    _instantDisplayRefreshGate.TryRefresh(nowTick))
                 {
-                    _lastInstantUiUpdateTick = nowTick;
                     UpdateInstantDisplayValues();
                 }
             }

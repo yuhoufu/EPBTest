@@ -6,7 +6,7 @@ $root=[IO.Path]::GetFullPath($OutputDirectory)
 $install=Join-Path $root 'install';$project=Join-Path $root 'project with spaces'
 [IO.Directory]::CreateDirectory($project) | Out-Null
 $session=[Guid]::NewGuid().ToString('N');$run=[Guid]::NewGuid().ToString('N');$created=[DateTime]::UtcNow.AddMinutes(-1)
-$process=[pscustomobject]@{ExecutablePath=(Join-Path $install 'Current\MTTFTest.Watchdog.exe');CommandLine=('--session-id "{0}" --journal-directory "{1}"' -f $session,$project);ProcessId=1234;CreationDate=$created}
+$process=[pscustomobject]@{ExecutablePath=(Join-Path $install 'Current\MTTFTest.Watchdog.exe');CommandLine=('--session-host --parent-pid 10476 --parent-start-ticks 639248765599584167 --session "{0}" --pipe "MTTFTest.Watchdog.{0}" --journal-directory "{1}"' -f $session,$project);ProcessId=1234;CreationDate=$created}
 $script:fixture=@($process)
 function Get-CimInstance {param($ClassName,$Filter) return $script:fixture}
 $snapshotPath=Join-Path $project ('fallback-observation-'+$session+'.json')
@@ -20,11 +20,18 @@ function Check-Rejected([scriptblock]$Action){$rejected=$false;try{& $Action | O
 Reset-Snapshot
 $value=Resolve-FallbackBinding $install
 if($value.ProjectDirectory -ne $project -or $value.SessionId -ne $session){throw 'Quoted command binding failed'};$passed++
+$realCommand=$process.CommandLine
+$process.CommandLine=$realCommand.Replace('--session "','--session-id "');Check-Rejected {Resolve-FallbackBinding $install}
+$process.CommandLine=$realCommand.Replace('--session-host','');Check-Rejected {Resolve-FallbackBinding $install}
+$process.CommandLine=$realCommand
 $script:fixture=@();Check-Rejected {Resolve-FallbackBinding $install}
 $script:fixture=@($process,$process);Check-Rejected {Resolve-FallbackBinding $install}
 $script:fixture=@($process)
 $bad=Read-FallbackBindingJson $snapshotPath;$bad.CapturedUtc=[DateTime]::UtcNow.AddMinutes(-1).ToString('O');Save-FallbackBinding $snapshotPath $bad;Check-Rejected {Resolve-FallbackBinding $install}
-Reset-Snapshot;$bad=Read-FallbackBindingJson $snapshotPath;$bad.ProcessStartUtcTicks++;Save-FallbackBinding $snapshotPath $bad;Check-Rejected {Resolve-FallbackBinding $install}
+Reset-Snapshot;$bad=Read-FallbackBindingJson $snapshotPath;$bad.ProcessStartUtcTicks+=9;Save-FallbackBinding $snapshotPath $bad
+$null=Resolve-FallbackBinding $install;$passed++
+Reset-Snapshot;$bad=Read-FallbackBindingJson $snapshotPath;$bad.ProcessStartUtcTicks+=10;Save-FallbackBinding $snapshotPath $bad;Check-Rejected {Resolve-FallbackBinding $install}
+Reset-Snapshot;$bad=Read-FallbackBindingJson $snapshotPath;$bad.ProcessStartUtcTicks--;Save-FallbackBinding $snapshotPath $bad;Check-Rejected {Resolve-FallbackBinding $install}
 Reset-Snapshot;$bad=Read-FallbackBindingJson $snapshotPath;$bad.ProcessId=5678;Save-FallbackBinding $snapshotPath $bad;Check-Rejected {Resolve-FallbackBinding $install}
 Reset-Snapshot;$bad=Read-FallbackBindingJson $ledgerPath;$bad.RunId='other';Save-FallbackBinding $ledgerPath $bad;Check-Rejected {Resolve-FallbackBinding $install}
 Reset-Snapshot;$bad=Read-FallbackBindingJson $ledgerPath;$bad.SchemaVersion=99;Save-FallbackBinding $ledgerPath $bad;Check-Rejected {Resolve-FallbackBinding $install}

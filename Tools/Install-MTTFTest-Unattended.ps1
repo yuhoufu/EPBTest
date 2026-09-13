@@ -12,7 +12,6 @@ $ErrorActionPreference = 'Stop'
 $serviceName = 'MTTFTestSupervisor'
 $taskName = 'MTTFTestSessionAgent'
 $autoStartTaskName = 'MTTFTestAutoStart'
-$shortcutName = 'MT EPB 试验系统 V2.14.lnk'
 $configuredMarkerName = 'MTTFTest.FirstRun.configured'
 $runtimeConfigNames = @(
     'AIConfig.xml', 'AlarmConfig.xml', 'AOConfig.xml', 'DOConfig.xml',
@@ -319,17 +318,23 @@ function Write-ConfiguredMarker([string]$Root) {
         (New-Object Text.UTF8Encoding($false)))
 }
 
-function Get-ShortcutPaths {
-    $paths = @()
+function Get-ShortcutFolders {
     $desktop = [Environment]::GetFolderPath('DesktopDirectory')
     $programs = [Environment]::GetFolderPath('Programs')
     if (-not [string]::IsNullOrWhiteSpace($desktop)) {
-        $paths += (Join-Path $desktop $shortcutName)
+        $desktop
     }
     if (-not [string]::IsNullOrWhiteSpace($programs)) {
-        $paths += (Join-Path $programs $shortcutName)
+        $programs
     }
-    return @($paths)
+}
+
+function Get-ShortcutPaths([string]$Version) {
+    $parsed = $null
+    if (-not [Version]::TryParse($Version, [ref]$parsed)) { throw '快捷方式目标版本无效' }
+    foreach ($folder in @(Get-ShortcutFolders)) {
+        Join-Path $folder ('MT EPB 试验系统 V' + $parsed.ToString(4) + '.lnk')
+    }
 }
 
 function Install-Shortcuts([string]$Root) {
@@ -339,9 +344,8 @@ function Install-Shortcuts([string]$Root) {
         throw "快捷方式目标不存在：$target"
     }
     $targetVersion = (Get-Item -LiteralPath $target).VersionInfo.FileVersion
-    if ([string]::IsNullOrWhiteSpace($targetVersion)) { $targetVersion = '未知版本' }
     $shell = New-Object -ComObject WScript.Shell
-    foreach ($path in @(Get-ShortcutPaths)) {
+    foreach ($path in @(Get-ShortcutPaths $targetVersion)) {
         $parent = Split-Path -Parent $path
         if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
             [void](New-Item -ItemType Directory -Path $parent -Force)
@@ -360,12 +364,20 @@ function Install-Shortcuts([string]$Root) {
         $shortcutBytes[21] = $shortcutBytes[21] -bor 0x20
         [IO.File]::WriteAllBytes($path, $shortcutBytes)
     }
+    Remove-Shortcuts $Root ('MT EPB 试验系统 V' + ([Version]$targetVersion).ToString(4) + '.lnk')
 }
 
-function Remove-Shortcuts {
-    foreach ($path in @(Get-ShortcutPaths)) {
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            Remove-Item -LiteralPath $path -Force -Confirm:$false
+function Remove-Shortcuts([string]$Root, [string]$KeepName = '') {
+    $target = [IO.Path]::GetFullPath((Join-Path $Root 'Current\MTTFTest.exe'))
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($folder in @(Get-ShortcutFolders)) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $folder -Filter 'MT EPB 试验系统 V*.lnk' -File -ErrorAction SilentlyContinue)) {
+            if ($file.Name -eq $KeepName) { continue }
+            $link = $shell.CreateShortcut($file.FullName)
+            # Only remove links belonging to this installation, including the legacy V2.14 name.
+            if ($link.TargetPath -and [IO.Path]::GetFullPath($link.TargetPath) -eq $target) {
+                Remove-Item -LiteralPath $file.FullName -Force -Confirm:$false
+            }
         }
     }
 }
@@ -512,7 +524,7 @@ if ($Mode -eq 'Uninstall') {
             Write-Host '监督服务未安装，跳过。'
         }
         Write-OperationStep 5 6 '删除桌面和开始菜单快捷方式。'
-        Remove-Shortcuts
+        Remove-Shortcuts $root
         Write-OperationStep 6 6 '删除程序安装目录。'
         Remove-InstalledProgramFiles $root
         Write-Host '卸载完成：程序、服务、计划任务和快捷方式已删除；ProgramData 配置、日志和事故证据已保留。'
