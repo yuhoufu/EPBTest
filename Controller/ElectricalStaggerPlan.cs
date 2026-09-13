@@ -319,7 +319,9 @@ namespace Controller
                 else
                 {
                     token.ThrowIfCancellationRequested();
-                    await Task.Yield();
+                    // Task.Yield captures a WinForms SynchronizationContext. A caller
+                    // joining startup can then strand the phase on that same UI thread.
+                    await Task.Delay(1, token).ConfigureAwait(false);
                 }
 
                 await work(channel, token).ConfigureAwait(false);

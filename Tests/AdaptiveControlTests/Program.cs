@@ -25,6 +25,13 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--startup-stagger-regression")
+                {
+                    OverduePhaseDoesNotCaptureUiContext();
+                    OverdueTwelveChannelReleaseCreatesSafely();
+                    Console.WriteLine("PASS startup stagger 2/2");
+                    return 0;
+                }
                 if (args.Length == 2 && args[0] == "--database-fallback-integration")
                 { DatabaseFallbackTests.RunProcessIntegration(args[1]); return 0; }
                 if (args.Length == 1 && args[0] == "--fallback-safety")
@@ -698,6 +705,7 @@ namespace AdaptiveControlTests
                 Run("迟到旧运行不得登记新运行自动恢复", AutomaticRecoveryRequiresExactRunIdentity);
                 Run("Dev1与Dev2有界队列容量互不影响", DaqBoundedQueuesAreIndependent);
                 Run("12通道并发首次创建运行对象", TwelveChannelsCreateRuntimesConcurrently);
+                Run("过期启动相位不依赖界面消息泵", OverduePhaseDoesNotCaptureUiContext);
                 Run("12通道错过锚点仍保留800ms相位", OverdueTwelveChannelReleaseCreatesSafely);
                 Run("人工停止取消不记为批量启动异常", ManualCancellationIsExpected);
                 Run("同通道并发只创建一个运行对象", SameChannelCreatesExactlyOneRuntime);
@@ -5418,6 +5426,44 @@ namespace AdaptiveControlTests
             Assert(factoryCount == 1, "同一通道并发进入时工厂执行次数不为1");
             Assert(results.All(x => ReferenceEquals(first, x.Result)),
                 "同一通道并发进入返回了不同实例");
+        }
+
+        private sealed class NonPumpingStaggerContext : SynchronizationContext
+        {
+            public int Posts;
+            public override void Post(SendOrPostCallback callback, object state)
+            {
+                Interlocked.Increment(ref Posts);
+            }
+        }
+
+        private static IEnumerable<int> EnumerateAfterAnchorExpires()
+        {
+            Thread.Sleep(20);
+            yield return 1;
+        }
+
+        private static void OverduePhaseDoesNotCaptureUiContext()
+        {
+            var context = new NonPumpingStaggerContext();
+            var previous = SynchronizationContext.Current;
+            var plan = ElectricalStaggerPlanner.Build(new[] { 1 },
+                new[] { NewElectricalGroup(1, 800, 1) }, 15000);
+            var started = 0;
+            Task task;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(context);
+                task = ElectricalStaggerExecutor.RunAsync(EnumerateAfterAnchorExpires(), plan,
+                    DateTime.UtcNow.AddSeconds(-10), (channel, token) =>
+                    {
+                        Interlocked.Increment(ref started);
+                        return Task.CompletedTask;
+                    }, CancellationToken.None);
+            }
+            finally { SynchronizationContext.SetSynchronizationContext(previous); }
+            Assert(task.Wait(5000), "过期相位等待了不泵消息的界面线程");
+            Assert(started == 1 && context.Posts == 0, "启动重复或捕获了界面上下文");
         }
 
         private static void OverdueTwelveChannelReleaseCreatesSafely()
