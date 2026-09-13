@@ -69,6 +69,8 @@ namespace AdaptiveControlTests
                     Assert(Volatile.Read(ref requests) == afterStop, "manual stop did not suppress requests");
                     BoundedJson.Write(settingsPath, new { SchemaVersion = 1, Enabled = false, Active = true });
                     Assert(guard.WaitForExit(5000) && guard.ExitCode == 0, "disabled guard failed to exit");
+                    Assert(!output.GetAwaiter().GetResult().Contains("DatabaseUnreadable"),
+                        "healthy database worker was reported unreadable; inspect guard.log");
                     Console.WriteLine("PASS real DB worker: missing original observation, timed stall request, manual stop, independent exit; " + root);
                 }
                 finally

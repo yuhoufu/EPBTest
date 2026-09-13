@@ -38,10 +38,23 @@ foreach ($relative in @('System.Data.SQLite.dll', 'x86\SQLite.Interop.dll')) {
 }
 $toolsOutput = Join-Path $output 'Tools'
 [IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
-foreach ($name in @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1')) {
+foreach ($name in @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
+    'Resolve-FallbackBinding.ps1','Persistent-Fallback.ps1','Manage-PersistentFallback.ps1',
+    'Watch-ActiveFallback.ps1','Test-FallbackBinding.ps1','Test-PersistentFallback.ps1','Test-PersistentTask.ps1')) {
     [IO.File]::WriteAllText((Join-Path $toolsOutput $name), [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name), [Text.Encoding]::UTF8), $utf8)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-13_V4数据库监督实施与候选验收.md') -Destination (Join-Path $output '独立兜底说明.md')
+foreach ($entry in @(
+    @{Name='启用独立数据库监督.cmd';Mode='Install'},
+    @{Name='禁用独立数据库监督.cmd';Mode='Disable'},
+    @{Name='查询独立数据库监督.cmd';Mode='Status'},
+    @{Name='卸载独立数据库监督.cmd';Mode='Uninstall'})) {
+    $line = '@echo off' + "`r`n" + 'setlocal' + "`r`n" +
+        '"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Tools\Manage-PersistentFallback.ps1" -Mode ' + $entry.Mode + ' %*' + "`r`n" +
+        'set EPB_EXIT=%ERRORLEVEL%' + "`r`n" + 'echo ExitCode=%EPB_EXIT%' + "`r`n" +
+        'if not defined EPB_BUNDLE_NONINTERACTIVE pause' + "`r`n" + 'exit /b %EPB_EXIT%' + "`r`n"
+    [IO.File]::WriteAllText((Join-Path $output $entry.Name), $line, [Text.Encoding]::ASCII)
+}
 $commands = [ordered]@{
     '恢复后台服务.cmd'='Restore'; '检查运行状态.cmd'='Status'; '启动试验.cmd'='Launch'
     '一键安装正式版.cmd'='Install'; '一键故障采证.cmd'='Evidence'

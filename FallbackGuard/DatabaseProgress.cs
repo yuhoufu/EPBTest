@@ -113,9 +113,18 @@ namespace MTTFTest.FallbackGuard
                 {
                     while (!worker.WaitForExit(25))
                     {
-                        worker.Refresh();
-                        if (deadline.ElapsedMilliseconds >= 2000 || worker.PrivateMemorySize64 > 256L * 1024 * 1024)
-                            throw new TimeoutException("DatabaseReaderBudgetExceeded");
+                        try
+                        {
+                            worker.Refresh();
+                            if (worker.HasExited) break;
+                            if (deadline.ElapsedMilliseconds >= 2000 || worker.PrivateMemorySize64 > 256L * 1024 * 1024)
+                                throw new TimeoutException("DatabaseReaderBudgetExceeded");
+                        }
+                        // The child can finish between WaitForExit and the
+                        // OS process-info query. Its output/exit code remains
+                        // authoritative; an exited child is not a failed read.
+                        catch (InvalidOperationException) when (worker.HasExited) { break; }
+                        catch (System.ComponentModel.Win32Exception) when (worker.HasExited) { break; }
                     }
                     if (!output.Wait(250) || !error.Wait(250)) throw new TimeoutException("DatabaseReaderOutputTimeout");
                     if (worker.ExitCode != 0) throw new IOException("DatabaseUnreadable:" + error.Result.Substring(0, Math.Min(512, error.Result.Length)));
