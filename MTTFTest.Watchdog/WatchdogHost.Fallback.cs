@@ -54,7 +54,7 @@ namespace MTTFTest.Watchdog
                 var value = _fallbackStore.Read();
                 if (command == null || command.SchemaVersion != 1 || command.SessionId != _args.SessionId ||
                     command.RunId != value.RunId || command.RunEpoch != value.RunEpoch ||
-                    _journal.LastHeartbeat?.RunId != value.RunId)
+                    !MatchesFallbackRun(value))
                     throw new InvalidDataException("FallbackCommandIdentityMismatch");
                 if (command.Action == "Query")
                     return new FallbackCommandResult { Status = "Completed", Ledger = value };
@@ -65,6 +65,12 @@ namespace MTTFTest.Watchdog
                 {
                     if (value.CommandId != command.CommandId || value.Requester != command.Requester)
                         value = _fallbackStore.Request(command.Revision, command.CommandId, command.Requester);
+                    // Database evidence can request the existing safe takeover
+                    // while the main process is alive but logically quiescent.
+                    // Ownership remains Original until the safety/exit boundary;
+                    // no external Process.Start or second launch path is added.
+                    if (!FallbackOriginalBusy)
+                        BeginTakeover("DatabaseProgressStalled:" + command.CommandId);
                 }
                 else if (command.Action == "Cancel")
                     value = _fallbackStore.CancelRequest(command.Revision, command.Requester);
@@ -91,13 +97,28 @@ namespace MTTFTest.Watchdog
             }
         }
 
+        private bool MatchesFallbackRun(FallbackLedger ledger)
+        {
+            var heartbeat = _journal.LastHeartbeat;
+            if (heartbeat?.RunId == ledger.RunId && heartbeat.RunEpoch == ledger.RunEpoch) return true;
+            var verified = _journal.LastVerifiedActiveRun;
+            return string.IsNullOrEmpty(heartbeat?.RunId) && verified != null &&
+                verified.RunId == ledger.RunId && verified.RunEpoch == ledger.RunEpoch &&
+                verified.ProcessId == _journal.CurrentPid &&
+                verified.ProcessStartUtcTicks == _journal.CurrentProcessStartUtcTicks;
+        }
+
         private void ObserveFallbackCoordination()
         {
             var now = Stopwatch.GetTimestamp();
             if (now - _fallbackSnapshotTimestamp < Stopwatch.Frequency) return;
             _fallbackSnapshotTimestamp = now;
             var heartbeat = _journal.LastHeartbeat;
-            if (heartbeat == null || !Guid.TryParse(heartbeat.RunId, out _) || heartbeat.RunEpoch <= 0) return;
+            if (heartbeat == null) return;
+            // Keep the observation/control endpoint alive after StopAll clears
+            // RunId. The durable ledger still identifies the unfinished trial.
+            if (_fallbackStore == null &&
+                (!Guid.TryParse(heartbeat.RunId, out _) || heartbeat.RunEpoch <= 0)) return;
             var status = "OriginalPriority";
             try
             {
@@ -112,6 +133,17 @@ namespace MTTFTest.Watchdog
                             _args.SessionId, ExecuteFallbackCommand, _stop.Token));
                     }
                     var ledger = _fallbackStore.Read();
+                    if (ledger.Owner == "Original" && ledger.OwnerInstanceId == FallbackInstance &&
+                        (ledger.Phase == "Idle" || ledger.Phase == "Requested" || ledger.Phase == "Yielded") &&
+                        string.IsNullOrEmpty(ledger.OutstandingLaunch) &&
+                        heartbeat.RunActive && heartbeat.Phase == "Formal" && !heartbeat.ManualStopRequested &&
+                        !_journal.ManualStopRequested && !IsSessionRevoked() && !IsRecoveryBlocked() &&
+                        heartbeat.ProcessId == _journal.CurrentPid && heartbeat.ProcessStartUtcTicks == _journal.CurrentProcessStartUtcTicks &&
+                        (ledger.RunId != heartbeat.RunId || heartbeat.RunEpoch > ledger.RunEpoch))
+                    {
+                        if (ledger.Phase != "Idle") ledger = _fallbackStore.CancelRequest(ledger.Revision, ledger.Requester);
+                        ledger = _fallbackStore.BindActiveRun(ledger.Revision, FallbackInstance, heartbeat.RunId, heartbeat.RunEpoch);
+                    }
                     if (ledger.Owner == "Original" && ledger.OwnerInstanceId != FallbackInstance && ledger.Phase == "Idle")
                     {
                         var previous = (ledger.OwnerInstanceId ?? "").Split(':');

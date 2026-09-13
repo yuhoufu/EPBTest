@@ -2142,6 +2142,11 @@ namespace Controller
                 await Task.Delay(25).ConfigureAwait(false);
             }
 
+            // The last await can cross a restart/rejoin boundary. An expired
+            // old participant must not escalate against its replacement.
+            if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch ||
+                !_formalParticipantLeases.TryGetValue(channel, out var currentFinalLease) ||
+                !participantLease.SameIdentity(currentFinalLease)) return;
             var finalMotorOff = !IsChannelEnergized(channel);
             var finalHydraulicReleased =
                 !_hydraulicLeaseByChannel.TryGetValue(channel, out var finalLease) ||
@@ -2173,7 +2178,9 @@ namespace Controller
                 -1,
                 finalMotorOff,
                 finalHydraulicReleased,
-                finalPersistenceClosed);
+                finalPersistenceClosed,
+                finalAttempt?.CaptureClosureReceipt(),
+                finalExecutionRevoked);
         }
 
         /// <summary>
@@ -3470,10 +3477,21 @@ namespace Controller
             foreach (var channel in contract.Channels ?? Array.Empty<int>())
             {
                 var current = _channelRuntimeStateStore.Get(channel);
+                // A late finally cannot normalize a replacement run or steal
+                // a channel now owned by a different recovery transaction.
+                if (current != null && (current.RunId != contract.RunId ||
+                    current.RunEpoch != contract.RunEpoch ||
+                    current.State == ChannelRuntimeState.Recovering &&
+                    current.RecoveryOwnerId != Guid.Empty && current.RecoveryOwnerId != contract.OwnerId))
+                    continue;
                 if (current == null || current.State == ChannelRuntimeState.Recovering)
                 {
                     PublishRecoverySafeTerminal(
-                        contract,
+                        new RecoveryContractSnapshot(
+                            contract.IncidentId, contract.RunId, contract.RunEpoch,
+                            contract.OwnerId, contract.OwnerKind, contract.TargetPhase,
+                            contract.Operation, contract.StartedUtc, contract.HardDeadlineUtc,
+                            new[] { channel }),
                         reasonCode ?? "RecoveryTerminalWithoutRejoin",
                         reasonText ?? "恢复worker未完成重入，已保持安全终态。 ");
                     continue;

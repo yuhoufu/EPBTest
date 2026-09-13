@@ -10,8 +10,11 @@
     <OutputPath>bin\$(Configuration)\</OutputPath><PlatformTarget>x86</PlatformTarget>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
-  <ItemGroup><Reference Include="System" /><Reference Include="System.Core" /></ItemGroup>
-  <ItemGroup><Compile Include="Program.cs" /><Compile Include="AssemblyInfo.cs" /></ItemGroup>
+  <ItemGroup><Reference Include="System" /><Reference Include="System.Core" /><Reference Include="System.Data" /><Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Data.SQLite"><HintPath>..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\lib\net46\System.Data.SQLite.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup><Compile Include="Program.cs" /><Compile Include="AssemblyInfo.cs" /><Compile Include="DatabaseProgress.cs" /></ItemGroup>
   <ItemGroup><ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj"><Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project><Name>Watchdog.Protocol</Name></ProjectReference></ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets" />
 </Project>

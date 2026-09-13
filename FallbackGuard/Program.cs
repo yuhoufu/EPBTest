@@ -24,6 +24,13 @@ namespace MTTFTest.FallbackGuard
         private static int Run(string[] args)
         {
             string Read(string key) { var index = Array.IndexOf(args, key); return index >= 0 && index + 1 < args.Length ? args[index + 1] : null; }
+            if (args.Contains("--read-database"))
+            {
+                var result = DatabaseProgressReader.Read(Read("--read-database"),
+                    (Read("--channels") ?? "").Split(',').Select(int.Parse).ToArray());
+                Console.WriteLine(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(result));
+                return 0;
+            }
             var directory = Path.GetFullPath(Read("--project-directory") ?? throw new ArgumentException("--project-directory required"));
             var session = Read("--session-id");
             if (!Guid.TryParseExact(session, "N", out _)) throw new ArgumentException("--session-id requires exact GUID N");
@@ -65,12 +72,21 @@ namespace MTTFTest.FallbackGuard
         private static int Observe(string directory, string session, string settingsPath, string statePath, string instance)
         {
             var store = new FallbackLedgerStore(directory, session);
+            var databaseMonitor = new DatabaseStallMonitor();
+            var intentPath = Path.Combine(directory, "fallback-database-intent-" + session + ".json");
+            var intent = File.Exists(intentPath) ? BoundedJson.Read<DatabaseWatchIntent>(intentPath) : null;
+            long lastDatabaseRead = -5000;
+            var databaseStalled = false;
+            var databaseStatus = "DatabaseAwaitingAuthorizedRun";
+            DatabaseProgressSnapshot databaseSnapshot = null;
+            var installationConflict = false;
             var verifier = new FallbackProgressVerifier();
-            var laneProgress = new System.Collections.Generic.Dictionary<int, Tuple<string, long>>();
+            FallbackObservation observation = null;
+            long lastRequest = -5000;
             var stopping = false;
             Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; stopping = true; };
-            string lastStatus = null, source = null, installation = null, progress = null;
-            long changed = Stopwatch.GetTimestamp(), lastSequence = 0, lastHeartbeat = 0;
+            string lastStatus = null, source = null, installation = null;
+            long lastSequence = 0;
             long received = Stopwatch.GetTimestamp();
             while (true)
             {
@@ -90,63 +106,125 @@ namespace MTTFTest.FallbackGuard
                     }
                     if (stopping && owned && ledger.Phase == "Acquired")
                     { Send("Return", ledger, session, instance); continue; }
-                    var observation = BoundedJson.Read<FallbackObservation>(statePath);
-                    if (observation.SchemaVersion != 1 || observation.SessionId != session || observation.Heartbeat == null ||
-                        observation.Heartbeat.ChannelProgress.Length > 12 || string.IsNullOrEmpty(observation.InstallationId))
-                        throw new InvalidDataException("ObservationIdentityUnknown");
-                    if (installation != null && installation != observation.InstallationId)
-                        throw new InvalidDataException("InstallationChanged");
-                    installation = observation.InstallationId;
                     var now = Stopwatch.GetTimestamp();
-                    if (source != observation.SourceInstanceId)
-                    { source = observation.SourceInstanceId; changed = received = now; lastSequence = lastHeartbeat = 0; progress = null; laneProgress.Clear(); }
-                    if (observation.Sequence > lastSequence)
-                    { received = now; lastSequence = observation.Sequence; }
-                    if ((now - received) / (double)Stopwatch.Frequency > 5)
-                        throw new InvalidOperationException("OriginalUnresponsive; isolation unproven, alert only");
-                    var heartbeat = observation.Heartbeat;
-                    var signature = heartbeat.RunId + ":" + heartbeat.RunEpoch + ":" + heartbeat.RecoveryProgressVersion + ":" +
-                        string.Join(";", heartbeat.ChannelProgress.Select(p => p.Channel + ":" + p.DoCommandSequence + ":" + p.FormalCommitSequence));
-                    if (heartbeat.Sequence > lastHeartbeat && signature != progress)
-                    { changed = now; progress = signature; }
-                    lastHeartbeat = Math.Max(lastHeartbeat, heartbeat.Sequence);
-                    var budgetMs = Math.Max(60000d, Math.Max(1d, heartbeat.ExpectedCyclePeriodMs) * 3);
-                    var eligible = (heartbeat.RecoveryEligibleChannels ?? Array.Empty<int>())
-                        .Except(heartbeat.CompletedChannels ?? Array.Empty<int>())
-                        .Except(heartbeat.ManuallyDisabledChannels ?? Array.Empty<int>())
-                        .Except(heartbeat.PermanentAlarmedChannels ?? Array.Empty<int>()).ToArray();
-                    var laneStalled = false;
-                    foreach (var channel in eligible)
+                    var tickMs = (long)(now * 1000d / Stopwatch.Frequency);
+                    var sourceFresh = false;
+                    try
                     {
-                        var lane = heartbeat.ChannelProgress.SingleOrDefault(p => p.Channel == channel);
-                        if (lane == null) throw new InvalidDataException("MissingChannelProgress");
-                        var laneSignature = heartbeat.RunId + ":" + heartbeat.RunEpoch + ":" + lane.State + ":" +
-                            lane.MechanicalCompletedCount + ":" + lane.FormalCommitSequence;
-                        if (!laneProgress.TryGetValue(channel, out var previous) || previous.Item1 != laneSignature)
-                            laneProgress[channel] = Tuple.Create(laneSignature, now);
-                        else if ((now - previous.Item2) * 1000d / Stopwatch.Frequency > budgetMs)
-                            laneStalled = true;
+                        var candidate = BoundedJson.Read<FallbackObservation>(statePath);
+                        if (candidate.SchemaVersion != 1 || candidate.SessionId != session || candidate.Heartbeat == null ||
+                            candidate.Heartbeat.ChannelProgress == null || candidate.Heartbeat.ChannelProgress.Length > 12 ||
+                            string.IsNullOrEmpty(candidate.InstallationId)) throw new InvalidDataException("ObservationIdentityUnknown");
+                        if (installation != null && installation != candidate.InstallationId)
+                        { installationConflict = true; throw new InvalidDataException("InstallationChanged"); }
+                        installation = candidate.InstallationId;
+                        observation = candidate;
+                        if (source != observation.SourceInstanceId)
+                        { source = observation.SourceInstanceId; received = now; lastSequence = 0; }
+                        if (observation.Sequence > lastSequence)
+                        { received = now; lastSequence = observation.Sequence; }
+                        sourceFresh = DateTime.TryParse(observation.CapturedUtc, null,
+                            System.Globalization.DateTimeStyles.RoundtripKind, out var captured) &&
+                            Math.Abs((DateTime.UtcNow - captured.ToUniversalTime()).TotalSeconds) <= 5 &&
+                            (now - received) / (double)Stopwatch.Frequency <= 5;
                     }
-                    if (ledger != null && ledger.RunId != heartbeat.RunId)
+                    catch (Exception) { /* DB observation survives an unavailable original endpoint. */ }
+                    var heartbeat = observation?.Heartbeat;
+                    var recoveryVerified = false;
+                    if (intent != null && ledger != null && sourceFresh && heartbeat.RunActive &&
+                        !ledger.ManualStopped && !heartbeat.ManualStopRequested &&
+                        ledger.RunId == heartbeat.RunId && ledger.RunEpoch == heartbeat.RunEpoch &&
+                        (intent.RunId != ledger.RunId || intent.RunEpoch != ledger.RunEpoch))
+                    {
+                        intent = null;
+                        databaseMonitor = new DatabaseStallMonitor();
+                        databaseStalled = false;
+                    }
+                    // Bind only to a verified formal run. Once bound, the
+                    // database clock continues even when RunActive disappears.
+                    if (intent == null && sourceFresh && heartbeat.RunActive &&
+                        heartbeat.Phase == "Formal" && ledger != null && ledger.RunId == heartbeat.RunId &&
+                        !ledger.ManualStopped && !heartbeat.ManualStopRequested)
+                    {
+                        var channels = (heartbeat.RecoveryEligibleChannels ?? Array.Empty<int>())
+                            .Except(heartbeat.CompletedChannels ?? Array.Empty<int>())
+                            .Except(heartbeat.ManuallyDisabledChannels ?? Array.Empty<int>()).ToArray();
+                        if (channels.Length == 0) throw new InvalidDataException("NoAuthorizedDatabaseChannels");
+                        var path = Path.Combine(Path.GetDirectoryName(directory.TrimEnd(Path.DirectorySeparatorChar)), "index.db");
+                        var baseline = DatabaseProgressReader.ReadIsolated(path, channels);
+                        intent = new DatabaseWatchIntent { SessionId = session, RunId = ledger.RunId,
+                            RunEpoch = ledger.RunEpoch, ProcessId = heartbeat.ProcessId,
+                            ProcessStartUtcTicks = heartbeat.ProcessStartUtcTicks, Channels = channels,
+                            DatabasePath = baseline.DatabasePath, DatabaseCreationUtcTicks = baseline.CreationUtcTicks,
+                            PeriodMs = Math.Max(1, heartbeat.ExpectedCyclePeriodMs) };
+                        BoundedJson.Write(intentPath, intent);
+                    }
+                    if (intent != null)
+                    {
+                        if (intent.SchemaVersion != 1 || intent.SessionId != session || ledger == null ||
+                            ledger.RunId != intent.RunId || ledger.RunEpoch != intent.RunEpoch)
+                            throw new InvalidDataException("DatabaseIntentIdentityMismatch");
+                        if (ledger.ManualStopped || observation?.ManualStopped == true || heartbeat?.ManualStopRequested == true)
+                        { intent.ManualStopped = true; BoundedJson.Write(intentPath, intent); }
+                        if (sourceFresh && heartbeat.RunId == intent.RunId && heartbeat.RunEpoch == intent.RunEpoch)
+                        {
+                            var remaining = intent.Channels.Except(heartbeat.CompletedChannels ?? Array.Empty<int>())
+                                .Except(heartbeat.ManuallyDisabledChannels ?? Array.Empty<int>()).ToArray();
+                            if (!remaining.SequenceEqual(intent.Channels))
+                            { intent.Channels = remaining; BoundedJson.Write(intentPath, intent); }
+                        }
+                        if (!intent.ManualStopped && intent.Channels.Length > 0 && tickMs - lastDatabaseRead >= 5000)
+                        {
+                            lastDatabaseRead = tickMs;
+                            try
+                            {
+                                databaseMonitor.BeginVerification(ledger.LaunchProcessId, ledger.LaunchProcessStartUtcTicks);
+                                databaseSnapshot = DatabaseProgressReader.ReadIsolated(intent.DatabasePath, intent.Channels);
+                                databaseStalled = databaseMonitor.Observe(intent, databaseSnapshot, tickMs);
+                                databaseStatus = databaseStalled ? "DatabaseStalled:" + string.Join(",", databaseMonitor.StalledChannels) : "DatabaseObserving";
+                            }
+                            catch (Exception readError)
+                            { databaseMonitor.Unreadable(); databaseStalled = false; databaseStatus = "DatabaseUnreadable:" + readError.GetBaseException().Message; }
+                        }
+                        if (intent.ManualStopped || intent.Channels.Length == 0)
+                        { databaseStalled = false; databaseStatus = intent.ManualStopped ? "DatabaseManualStopped" : "DatabaseAllRequiredChannelsCompleted"; }
+                        recoveryVerified = sourceFresh && !databaseStalled && databaseMonitor.RecoveryVerified &&
+                            verifier.Observe(heartbeat, ledger, now);
+                        if (recoveryVerified)
+                            databaseStatus = "DatabaseAndActionRecoveryVerified";
+                        BoundedJson.Write(Path.Combine(directory, "fallback-database-status-" + session + ".json"),
+                            new { CapturedUtc = DateTime.UtcNow.ToString("O"), Status = databaseStatus,
+                                RunId = intent.RunId, ManualStopped = intent.ManualStopped,
+                                Channels = intent.Channels, OriginalResponsive = sourceFresh });
+                    }
+                    if (ledger != null && !string.IsNullOrEmpty(heartbeat?.RunId) && ledger.RunId != heartbeat.RunId)
                         throw new InvalidDataException("RunMismatch; reconciliation required");
-                    status = "Observing; original recovery has priority";
+                    status = databaseStatus + "; original recovery has priority";
                     if (owned)
                     {
                         status = "Owned:" + ledger.Phase + "; awaiting per-channel commits or reconciliation";
-                        if (ledger.Phase == "Verifying" && verifier.Observe(heartbeat, ledger, now))
+                        if (ledger.Phase == "Verifying" && recoveryVerified)
                         { Send("Return", ledger, session, instance); status = "Verified and returned"; }
                     }
                     else if (ledger?.Owner == "Fallback") status = "ReconciliationRequired; prior external owner remains authoritative";
                     else if (settings.Active && !stopping && ledger != null &&
-                        !observation.RecoveryBlocked && !observation.ManualStopped && !ledger.ManualStopped)
+                        intent != null && !installationConflict && !intent.ManualStopped && !ledger.ManualStopped)
                     {
-                        if (!laneStalled && ledger.Requester == instance &&
+                        if (!databaseStalled && ledger.Requester == instance &&
                             (ledger.Phase == "Requested" || ledger.Phase == "Yielded"))
                             Send("Cancel", ledger, session, instance);
-                        else if (laneStalled && ledger.Phase == "Yielded" && ledger.Requester == instance)
+                        else if (databaseStalled && ledger.Phase == "Yielded" && ledger.Requester == instance)
                             Send("Acquire", ledger, session, instance);
-                        else if (laneStalled && ledger.Phase == "Idle")
+                        else if (databaseStalled && tickMs - lastRequest >= 5000 &&
+                            (ledger.Phase == "Idle" || ledger.Phase == "Requested" && ledger.Requester == instance))
+                        {
+                            lastRequest = tickMs;
+                            BoundedJson.Write(Path.Combine(directory, "fallback-last-database-request-" + session + ".json"),
+                                new { CapturedUtc = DateTime.UtcNow.ToString("O"), RunId = intent.RunId,
+                                    RunEpoch = intent.RunEpoch, StalledChannels = databaseMonitor.StalledChannels,
+                                    Database = databaseSnapshot, Requester = instance, OriginalResponsive = sourceFresh });
                             Send("Request", ledger, session, instance);
+                        }
                     }
                     using (var process = Process.GetCurrentProcess())
                         if (process.PrivateMemorySize64 > 128L * 1024 * 1024)
@@ -161,7 +239,7 @@ namespace MTTFTest.FallbackGuard
         {
             var command = new FallbackCommand { Action = action, SessionId = session, RunId = ledger.RunId,
                 RunEpoch = ledger.RunEpoch, Revision = ledger.Revision, Requester = requester,
-                FenceGeneration = ledger.FenceGeneration, CommandId = action == "Request" ? Guid.NewGuid().ToString("N") : ledger.CommandId };
+                FenceGeneration = ledger.FenceGeneration, CommandId = action == "Request" && ledger.Phase == "Idle" ? Guid.NewGuid().ToString("N") : ledger.CommandId };
             var result = FallbackControlPipe.Send(command);
             if (result?.Status == "Rejected") throw new InvalidOperationException(result.Detail);
             // A lost response is never interpreted as cancellation. The next

@@ -1352,6 +1352,16 @@ namespace AdaptiveControlTests
 
         private static void StrictStageOrderAndDeadlines()
         {
+            var restartSnapshots = new List<StopSafetyProgressSnapshot>();
+            var restartRunner = new StopSafetyTransactionRunner(
+                new FakePort { RestartRequired = true }, new ManualClock(),
+                new StopSafetyTransactionOptions(), snapshot => restartSnapshots.Add(snapshot),
+                () => Guid.NewGuid(), () => 1, () => 1);
+            var restart = restartRunner.StopAsync(NewContext()).GetAwaiter().GetResult();
+            Assert(restart.PhysicalSafetyConfirmed && restart.RequiresProcessRestart &&
+                   restart.Outcome == StopSafetyOutcome.SafeButRestartRequired &&
+                   restartSnapshots.Last().TakeoverRequired,
+                "安全收尾完成不得清除先前外部重启义务；终态必须通知Watchdog接管。");
             var clock = new ManualClock();
             var port = new FakePort();
             var snapshots = new List<StopSafetyProgressSnapshot>();
@@ -1890,6 +1900,7 @@ namespace AdaptiveControlTests
             internal StopSafetyStage? HangStage { get; set; }
             internal bool Hang { get; set; }
             internal bool DuplicateDetail { get; set; }
+            internal bool RestartRequired { get; set; }
             internal int SafeIdleCount => Volatile.Read(ref _safeIdleCount);
             internal int ExecuteCount { get; private set; }
             internal int MaterialEvidenceCalls { get; private set; }
@@ -1934,6 +1945,7 @@ namespace AdaptiveControlTests
                         PhysicalSafe = true,
                         Result = new StopSafetyResult
                         {
+                            RequiresProcessRestart = RestartRequired,
                             MotorOffCommandSucceeded = true,
                             PowerOffConfirmed = true,
                             PressureSafeConfirmed = true,

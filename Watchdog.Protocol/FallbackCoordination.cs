@@ -81,6 +81,24 @@ namespace MTTFTest.Watchdog.Protocol
                 return value;
             });
 
+        // Called only by the original executor after observing the admitted
+        // active run. A new run never inherits an old stop or request token.
+        public FallbackLedger BindActiveRun(long revision, string original, string runId, long epoch) =>
+            Transaction(revision, value =>
+            {
+                Require(value != null && value.Owner == "Original" && value.OwnerInstanceId == original &&
+                    value.Phase == "Idle" && string.IsNullOrEmpty(value.OutstandingLaunch) &&
+                    Guid.TryParse(runId, out _) && epoch > 0 &&
+                    (value.RunId != runId || epoch > value.RunEpoch), "ActiveRunBindRejected");
+                if (value.RunId != runId)
+                { value.LaunchProcessId = 0; value.LaunchProcessStartUtcTicks = 0; }
+                value.RunId = runId; value.RunEpoch = epoch;
+                value.FenceGeneration = checked(value.FenceGeneration + 1);
+                value.ManualStopped = false; value.CommandId = null; value.Requester = null;
+                value.Detail = "Original admitted replacement active run";
+                return value;
+            });
+
         public FallbackLedger BindOriginalLaunch(string original, string intent, int pid, long start) =>
             Transaction(null, value =>
             {

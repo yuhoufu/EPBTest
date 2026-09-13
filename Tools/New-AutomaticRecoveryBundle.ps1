@@ -29,12 +29,19 @@ foreach ($name in @('MTTFTest.FallbackGuard.exe','MTTFTest.Watchdog.Protocol.dll
     Copy-Item -LiteralPath $source -Destination $fallbackOutput
 }
 if ((Get-FileHash (Join-Path $fallbackOutput 'MTTFTest.Watchdog.Protocol.dll')).Hash -ne (Get-FileHash (Join-Path $base 'MTTFTest.Watchdog.Protocol.dll')).Hash) { throw 'Fallback 与 Base 协议程序集不同源' }
+foreach ($relative in @('System.Data.SQLite.dll', 'x86\SQLite.Interop.dll')) {
+    $source = Join-Path $fallbackSource $relative
+    if (-not [IO.File]::Exists($source)) { throw "Fallback 数据库依赖缺失：$source" }
+    $destination = Join-Path $fallbackOutput $relative
+    [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination)) | Out-Null
+    Copy-Item -LiteralPath $source -Destination $destination
+}
 $toolsOutput = Join-Path $output 'Tools'
 [IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
 foreach ($name in @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1')) {
     [IO.File]::WriteAllText((Join-Path $toolsOutput $name), [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name), [Text.Encoding]::UTF8), $utf8)
 }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-12_独立兜底候选交付说明.md') -Destination (Join-Path $output '独立兜底说明.md')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-13_V4数据库监督实施与候选验收.md') -Destination (Join-Path $output '独立兜底说明.md')
 $commands = [ordered]@{
     '恢复后台服务.cmd'='Restore'; '检查运行状态.cmd'='Status'; '启动试验.cmd'='Launch'
     '一键安装正式版.cmd'='Install'; '一键故障采证.cmd'='Evidence'
@@ -73,7 +80,7 @@ $files = @(Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object FullN
 $manifest = [ordered]@{
     schemaVersion=1; version=$version; gitCommit=$commit; releaseStatus='CANDIDATE_NOT_FIELD_VALIDATED'
     fieldDeploymentApproved=$false; recoveryArchitecture='V2-Supervisor-SessionAgent-SafetyAgent'
-    fallbackGuard='Independent-v1'; fallbackDefault='ObservationOnly'; candidateTag=('v'+$version+'-rc.1')
+    fallbackGuard='Independent-Database-v2'; fallbackDefault='ObservationOnly'; candidateTag=('v'+[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $fallbackOutput 'MTTFTest.FallbackGuard.exe')).ProductVersion)
     createdUtc=[DateTime]::UtcNow.ToString('O'); files=$files
 }
 [IO.File]::WriteAllText((Join-Path $output 'automatic-bundle.json'), ($manifest | ConvertTo-Json -Depth 6), $utf8)

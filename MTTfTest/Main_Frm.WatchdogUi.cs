@@ -671,6 +671,7 @@ namespace MtEmbTest
             var closed = new List<Task>(children.Length);
             foreach (var child in children)
             {
+                if (child.IsDisposed || child.Disposing) continue;
                 var completion = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
                 FormClosedEventHandler handler = null;
@@ -687,6 +688,13 @@ namespace MtEmbTest
                         monitor.CloseAfterMainExitAuthorized();
                     else
                         child.Close();
+                    // A child may already have been disposed by the retained
+                    // background drain before this subscription was attached.
+                    if (child.IsDisposed)
+                    {
+                        child.FormClosed -= handler;
+                        completion.TrySetResult(true);
+                    }
                 }
                 catch (Exception ex)
                 {

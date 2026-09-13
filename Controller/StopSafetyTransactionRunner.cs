@@ -671,10 +671,10 @@ namespace Controller
             var timedOut = latest.TimedOut || latest.LastStage == StopSafetyStage.TimedOut;
             latest.LastStage = timedOut ? StopSafetyStage.TimedOut : StopSafetyStage.Completed;
             latest.TimedOut = timedOut;
-            latest.RequiresProcessRestart = timedOut || !fullyConfirmed;
+            latest.RequiresProcessRestart = latest.RequiresProcessRestart || timedOut || !fullyConfirmed;
             latest.Outcome = timedOut
                 ? StopSafetyOutcome.SafeButRestartRequired
-                : fullyConfirmed
+                : fullyConfirmed && !latest.RequiresProcessRestart
                     ? StopSafetyOutcome.CompletedSafe
                     : latest.PhysicalSafetyConfirmed
                         ? StopSafetyOutcome.SafeButRestartRequired

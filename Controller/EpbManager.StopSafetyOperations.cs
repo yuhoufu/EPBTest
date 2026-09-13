@@ -1082,6 +1082,9 @@ namespace Controller
                 RunId = state.RunId,
                 RunEpoch = state.RunEpoch,
                 SafetyBoundaryGeneration = state.Generation,
+                // Physical quiescence does not discharge a previously latched
+                // obligation to replace this process after a control fault.
+                RequiresProcessRestart = RequiresProcessRestart,
                 MotorOffCommandSucceeded = state.MotorOk,
                 PowerOffConfirmed = powerDisposition == PowerShutdownDisposition.ConfirmedOff,
                 PowerDisposition = powerDisposition,

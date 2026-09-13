@@ -3459,7 +3459,8 @@ namespace Controller
                                                     phaseSlot,
                                                     fallbackMotorOff,
                                                     fallbackHydraulicReleased,
-                                                    fallbackPersistenceCommitted);
+                                                    fallbackPersistenceCommitted,
+                                                    fallbackReceipt);
                                              return new FormalBatchParticipantTerminal
                                              {
                                                  Channel = ch,
@@ -3897,7 +3898,8 @@ namespace Controller
                                     phaseSlot,
                                     motorOffConfirmed,
                                     hydraulicReleased,
-                                    persistenceBoundaryClosed);
+                                    persistenceBoundaryClosed,
+                                    closureReceipt);
                             formalSlotScope.Complete(new FormalBatchParticipantTerminal
                             {
                                 Channel = ch,
@@ -3939,7 +3941,9 @@ namespace Controller
             long slot,
             bool motorOffConfirmed,
             bool hydraulicReleased,
-            bool persistenceBoundaryClosed)
+            bool persistenceBoundaryClosed,
+            CycleAttemptClosureReceipt closure = null,
+            bool? retirementExecutionRevoked = null)
         {
             if (ShouldDelegateFormalPersistenceToHydraulicRecovery(
                     IsHydraulicGroupRecoveryActiveForChannel(channel),
@@ -3959,7 +3963,11 @@ namespace Controller
             var reason =
                 $"FormalSlotSafetyBoundaryFailed Slot={slot} EPB={channel} " +
                 $"MotorOff={motorOffConfirmed} HydraulicReleased={hydraulicReleased} " +
-                $"Persistence={persistenceBoundaryClosed}";
+                $"Persistence={persistenceBoundaryClosed}; " +
+                $"Run={runId:N}; Epoch={Interlocked.Read(ref _runEpoch)}; " +
+                $"Closure={closure?.Disposition.ToString() ?? "Missing"}; Durable={closure?.Durable}; " +
+                $"Attempt={closure?.AttemptId}; ClosureRun={closure?.RunId}; ClosureEpoch={closure?.RunEpoch}; " +
+                $"PersistenceVersion={closure?.PersistenceVersion}; RetirementExecutionRevoked={retirementExecutionRevoked}";
             _log?.Error(reason, "周期屏障");
             RevokeExecutionForExternalRecovery(reason);
             PublishChannelRuntimeState(

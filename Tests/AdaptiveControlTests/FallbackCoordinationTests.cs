@@ -51,6 +51,21 @@ namespace AdaptiveControlTests
                 run("Fallback saving or unverified operation cannot return", (s, v) =>
                 { v = Acquire(s, v); s.PrepareLaunch(v.FenceGeneration, "external", v.CommandId); v = s.BindLaunch(v.FenceGeneration, "external", v.CommandId, 5, 10); Reject(() => s.Return(v.Revision, "external", "original", false)); });
                 run("Fallback old Run cannot reinitialize authority", (s, v) => Reject(() => s.Initialize(Guid.NewGuid().ToString("N"), 2, "other")));
+                run("Fallback admitted new run clears old stop and fences delayed command", (s, v) =>
+                {
+                    var old = v;
+                    v = s.Stop();
+                    var next = s.BindActiveRun(v.Revision, "original", Guid.NewGuid().ToString("N"), 2);
+                    Assert(!next.ManualStopped && next.FenceGeneration > old.FenceGeneration && next.RunId != old.RunId,
+                        "new run inherited old stop");
+                    Reject(() => s.Request(old.Revision, Guid.NewGuid().ToString("N"), "late"));
+                    Reject(() => s.BindActiveRun(next.Revision, "original", next.RunId, 1));
+                });
+                run("Fallback new run cannot erase an outstanding launch", (s, v) =>
+                {
+                    s.PrepareOriginalLaunch("original", "intent");
+                    Reject(() => s.BindActiveRun(s.Read().Revision, "original", Guid.NewGuid().ToString("N"), 2));
+                });
                 run("Fallback corrupt ledger is not overwritten", (s, v) =>
                 { var path = Path.Combine(directory, "fallback-" + v.SessionId + ".json"); File.WriteAllText(path, "{"); Reject(() => s.Initialize(v.RunId, v.RunEpoch, "original")); Assert(File.ReadAllText(path) == "{", "corrupt evidence overwritten"); });
                 run("Fallback unknown schema fails closed", (s, v) =>
