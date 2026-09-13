@@ -61,4 +61,27 @@ Check ($script:launches -eq $before) 'Persisted disable prevents revival'
 Save-FallbackBinding $script:testPaths.Binding $script:first
 Invoke-FallbackMonitor $root
 Check (-not (Test-Path -LiteralPath $script:testPaths.Binding)) 'Crash intent reconciled when disabled'
+# Original heartbeat/sidecar can disappear precisely when DB fallback is
+# needed. A launcher restart must retain that observer, then revive only the
+# observer if it exits; it must never disable it because resolution failed.
+function Resolve-ConfiguredFallbackBinding {param($InstallRoot) throw 'Original snapshot unavailable'}
+$script:tick=0;$script:present=$true;$script:canDrain=$true
+$script:beforeDisabled=$script:disabled;$script:beforeLaunches=$script:launches
+Save-FallbackBinding $script:testPaths.Binding $script:first
+Save-FallbackBinding $script:testPaths.Settings @{SchemaVersion=1;InstallRoot=$root;Enabled=$true}
+function Start-Sleep {
+ param($Seconds)
+ $script:tick++
+ if($script:tick -eq 1){
+  Check ($script:disabled -eq $script:beforeDisabled) 'Missing original snapshot did not disable observer'
+  Check ($script:launches -eq $script:beforeLaunches) 'Launcher restart retained existing observer'
+  $script:present=$false
+ }elseif($script:tick -eq 2){
+  Check ($script:launches -eq $script:beforeLaunches+1) 'Observer restarted without original heartbeat'
+  Save-FallbackBinding $script:testPaths.Settings @{SchemaVersion=1;InstallRoot=$root;Enabled=$false}
+ }
+ if($script:tick -gt 4){throw 'Missing snapshot fixture did not stop'}
+}
+Invoke-FallbackMonitor $root
+Check (-not (Test-Path -LiteralPath $script:testPaths.Binding)) 'Explicit disable still drained retained observer'
 Write-Output "PASS $passed/$passed"

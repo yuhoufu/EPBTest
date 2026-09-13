@@ -8,6 +8,11 @@ if($Mode -eq 'Run'){& $watcher -InstallRoot $InstallRoot;exit $LASTEXITCODE}
 if($Mode -eq 'Status'){
  if(Test-Path -LiteralPath $paths.Settings){Read-FallbackBindingJson $paths.Settings | ConvertTo-Json -Depth 3}else{Write-Output '尚未启用自动监控'}
  if(Test-Path -LiteralPath $paths.Status){Read-FallbackBindingJson $paths.Status | ConvertTo-Json -Depth 3}
+ if(Test-Path -LiteralPath $paths.Binding){
+  $binding=Read-FallbackBindingJson $paths.Binding
+  $databaseStatus=Join-Path $binding.ProjectDirectory ('fallback-database-status-'+$binding.SessionId+'.json')
+  if(Test-Path -LiteralPath $databaseStatus){Read-FallbackBindingJson $databaseStatus | ConvertTo-Json -Depth 4}
+ }
  $task=Get-ScheduledTask -TaskName $paths.Task -ErrorAction SilentlyContinue
  if($task){Write-Output ('TaskState='+[string]$task.State)}
  exit 0
