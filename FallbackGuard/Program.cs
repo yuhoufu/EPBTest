@@ -131,6 +131,10 @@ namespace MTTFTest.FallbackGuard
                     catch (Exception) { /* DB observation survives an unavailable original endpoint. */ }
                     var heartbeat = observation?.Heartbeat;
                     var recoveryVerified = false;
+                    // A recovered main process owns a new run identity.  The
+                    // database observer must follow that admitted identity;
+                    // retaining the crashed process intent makes a live guard
+                    // report a stall forever without being able to act.
                     if (intent != null && ledger != null && sourceFresh && heartbeat.RunActive &&
                         !ledger.ManualStopped && !heartbeat.ManualStopRequested &&
                         ledger.RunId == heartbeat.RunId && ledger.RunEpoch == heartbeat.RunEpoch &&

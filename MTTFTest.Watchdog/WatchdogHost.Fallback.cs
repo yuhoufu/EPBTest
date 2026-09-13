@@ -137,7 +137,7 @@ namespace MTTFTest.Watchdog
                         (ledger.Phase == "Idle" || ledger.Phase == "Requested" || ledger.Phase == "Yielded") &&
                         string.IsNullOrEmpty(ledger.OutstandingLaunch) &&
                         heartbeat.RunActive && heartbeat.Phase == "Formal" && !heartbeat.ManualStopRequested &&
-                        !_journal.ManualStopRequested && !IsSessionRevoked() && !IsRecoveryBlocked() &&
+                        !_journal.ManualStopRequested && !IsSessionRevoked() &&
                         heartbeat.ProcessId == _journal.CurrentPid && heartbeat.ProcessStartUtcTicks == _journal.CurrentProcessStartUtcTicks &&
                         (ledger.RunId != heartbeat.RunId || heartbeat.RunEpoch > ledger.RunEpoch))
                     {

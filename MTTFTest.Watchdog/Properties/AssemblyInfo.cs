@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 
@@ -8,7 +8,7 @@ using System.Runtime.CompilerServices;
 [assembly: AssemblyProduct("MT EPB Test System")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b236eb0c-01ae-4aab-b350-bdd30dbe3e3d")]
-[assembly: AssemblyVersion("4.0.0.1")]
-[assembly: AssemblyFileVersion("4.0.0.1")]
-[assembly: AssemblyInformationalVersion("4.0.0.1")]
+[assembly: AssemblyVersion("4.0.0.2")]
+[assembly: AssemblyFileVersion("4.0.0.2")]
+[assembly: AssemblyInformationalVersion("4.0.0.2")]
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]

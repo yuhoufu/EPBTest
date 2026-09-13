@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -31,6 +31,6 @@ using System.Runtime.InteropServices;
 //      生成号
 //      修订号
 //
-[assembly: AssemblyVersion("4.0.0.1")]
-[assembly: AssemblyFileVersion("4.0.0.1")]
-[assembly: AssemblyInformationalVersion("4.0.0.1")]
+[assembly: AssemblyVersion("4.0.0.2")]
+[assembly: AssemblyFileVersion("4.0.0.2")]
+[assembly: AssemblyInformationalVersion("4.0.0.2")]
