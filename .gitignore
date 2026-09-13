@@ -410,4 +410,5 @@ RunLog_*.txt
 WarnLog_*.txt
 # Local assistant memory and copyright-registration source materials.
 .workbuddy/
+/Codex/
 docs/软著/
