@@ -97,12 +97,23 @@ namespace MTTFTest.FallbackGuard
         }
 
         public static DatabaseProgressSnapshot ReadIsolated(string path, int[] channels)
+            => ReadIsolated<DatabaseProgressSnapshot>("--read-database", path, channels);
+
+        public static RecoveryDatabaseSnapshot ReadRecoveryIsolated(string path, int[] channels)
+        {
+            var snapshot = ReadIsolated<RecoveryDatabaseSnapshot>("--read-recovery-database", path, channels);
+            if (snapshot == null) throw new InvalidDataException("RecoveryDatabaseEvidenceMissing");
+            snapshot.Validate();
+            return snapshot;
+        }
+
+        private static T ReadIsolated<T>(string mode, string path, int[] channels)
         {
             using (var current = Process.GetCurrentProcess())
             using (var worker = new Process())
             {
                 worker.StartInfo = new ProcessStartInfo(current.MainModule.FileName,
-                    "--read-database \"" + path.Replace("\"", "") + "\" --channels " + string.Join(",", channels))
+                    mode + " \"" + path.Replace("\"", "") + "\" --channels " + string.Join(",", channels))
                 { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
                     RedirectStandardError = true };
                 worker.Start();
@@ -129,7 +140,7 @@ namespace MTTFTest.FallbackGuard
                     if (!output.Wait(250) || !error.Wait(250)) throw new TimeoutException("DatabaseReaderOutputTimeout");
                     if (worker.ExitCode != 0) throw new IOException("DatabaseUnreadable:" + error.Result.Substring(0, Math.Min(512, error.Result.Length)));
                     if (output.Result.Length > 65536) throw new InvalidDataException("DatabaseResultTooLarge");
-                    return new JavaScriptSerializer().Deserialize<DatabaseProgressSnapshot>(output.Result);
+                    return new JavaScriptSerializer().Deserialize<T>(output.Result);
                 }
                 finally
                 {

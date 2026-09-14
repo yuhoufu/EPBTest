@@ -24,6 +24,13 @@ namespace MTTFTest.FallbackGuard
         private static int Run(string[] args)
         {
             string Read(string key) { var index = Array.IndexOf(args, key); return index >= 0 && index + 1 < args.Length ? args[index + 1] : null; }
+            if (args.Contains("--read-recovery-database"))
+            {
+                var result = RecoveryDatabaseEvidence.Read(Read("--read-recovery-database"),
+                    (Read("--channels") ?? "").Split(',').Select(int.Parse).ToArray());
+                Console.WriteLine(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(result));
+                return 0;
+            }
             if (args.Contains("--read-database"))
             {
                 var result = DatabaseProgressReader.Read(Read("--read-database"),

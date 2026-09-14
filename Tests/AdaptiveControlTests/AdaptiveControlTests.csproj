@@ -55,6 +55,7 @@
     <Compile Include="IndependentRecoveryTransactionTests.cs" />
     <Compile Include="IndependentBoundedWorkerTests.cs" />
     <Compile Include="..\..\FallbackGuard\DatabaseProgress.cs"><Link>DatabaseProgress.cs</Link></Compile>
+    <Compile Include="..\..\FallbackGuard\RecoveryDatabaseEvidence.cs"><Link>RecoveryDatabaseEvidence.cs</Link></Compile>
     <Compile Include="..\..\FallbackGuard\IndependentRecovery.cs"><Link>IndependentRecovery.cs</Link></Compile>
     <Compile Include="FallbackCoordinationTests.cs" />
     <Compile Include="Program.cs" />

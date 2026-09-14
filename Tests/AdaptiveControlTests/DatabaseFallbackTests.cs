@@ -88,11 +88,12 @@ namespace AdaptiveControlTests
             Run("人工暂停与通道选择变更不继承旧停滞及旧恢复证明", SelectionAndPauseInvalidateEvidence);
             Run("数据库恢复需全部通道三圈和稳定观察", RecoveryEvidence);
             Run("SQLite并发写入、未提交及原行完成可见性", ConcurrentReader);
+            Run("独立恢复逐通道核验新机械事实与三条正式采样记录", RecoveryMechanicalEvidence);
             Run("独立兜底仅接受当前请求的新安全回执", IndependentSafetyReceipt);
             Run("独立接管隔离原Watchdog的延迟启动", IndependentRetirement);
             Run("无Watchdog端点的独立恢复编排与六通道推进验收", IndependentOrchestration);
             Run("独立请求等待中人工停止或心跳消失能够有界收口", IndependentRequestCancellation);
-            return 9;
+            return 10;
         }
 
         private static void IndependentRequestCancellation()
@@ -330,6 +331,64 @@ namespace AdaptiveControlTests
             Assert(!monitor.RecoveryVerified, "changed target set inherited success");
             intent.Channels = new[] { 4, 5, 7 };
             Assert(!monitor.Observe(intent, Snapshot(105, 105, 105), 2000000), "re-enabled target inherited old stall");
+        }
+
+        private static void RecoveryMechanicalEvidence()
+        {
+            var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ??
+                throw new InvalidOperationException("EPB_TEST_ARTIFACT_ROOT required"),
+                "recovery-database-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var path = Path.Combine(root, "index.db");
+            using (var writer = new SQLiteConnection("Data Source=" + path + ";Pooling=False;Journal Mode=Wal"))
+            {
+                writer.Open();
+                Action<string> sql = text => { using (var cmd = writer.CreateCommand())
+                    { cmd.CommandText = text; cmd.ExecuteNonQuery(); } };
+                sql("CREATE TABLE epb_cycles(id INTEGER PRIMARY KEY AUTOINCREMENT, epb_id INTEGER," +
+                    "cycle_number INTEGER,status TEXT,end_time TEXT,mechanical_completed INTEGER," +
+                    "mechanical_completed_at TEXT,sample_count INTEGER,UNIQUE(epb_id,cycle_number));");
+                Action<int, int, string, int, int> insert = (channel, cycle, status, mechanical, samples) =>
+                    sql("INSERT INTO epb_cycles(epb_id,cycle_number,status,end_time,mechanical_completed," +
+                        "mechanical_completed_at,sample_count) VALUES(" + channel + "," + cycle + ",'" + status +
+                        "','2026-09-14T12:00:00+08:00'," + mechanical + ",'2026-09-14T12:00:00+08:00'," + samples + ");");
+                foreach (var channel in new[] { 7, 8 })
+                {
+                    insert(channel, 100, "completed", 1, 100);
+                    insert(channel, 101, "running", 0, 0);
+                }
+                var baseline = RecoveryDatabaseEvidence.Read(path, new[] { 7, 8 });
+                Func<int[]> pending = () => RecoveryDatabaseEvidence.UnverifiedChannels(baseline,
+                    RecoveryDatabaseEvidence.Read(path, new[] { 7, 8 }));
+                Assert(pending().Length == 2, "old rows proved recovery");
+                sql("UPDATE epb_cycles SET status='completed',mechanical_completed=1,sample_count=100 WHERE cycle_number=101;");
+                foreach (var channel in new[] { 7, 8 })
+                    for (var cycle = 102; cycle <= 103; cycle++) insert(channel, cycle, "completed", 1, 100);
+                Assert(pending().Length == 2, "old allocated row counted as new action");
+                insert(7, 104, "completed", 1, 100);
+                Assert(pending().SequenceEqual(new[] { 8 }), "healthy channel masked stalled peer");
+                insert(8, 104, "completed", 0, 100);
+                insert(8, 105, "completed", 1, 0);
+                insert(8, -1, "learning_completed", 1, 100);
+                Assert(pending().SequenceEqual(new[] { 8 }), "missing mechanical/samples or learning counted");
+                sql("BEGIN IMMEDIATE;");
+                insert(8, 106, "completed", 1, 100);
+                Assert(pending().SequenceEqual(new[] { 8 }), "uncommitted completion visible");
+                sql("COMMIT;");
+                Assert(pending().Length == 0, "three committed new formal mechanical records not accepted");
+                var current = RecoveryDatabaseEvidence.Read(path, new[] { 7, 8 });
+                current.CreationUtcTicks++;
+                var rejected = false;
+                try { RecoveryDatabaseEvidence.UnverifiedChannels(baseline, current); }
+                catch (InvalidDataException) { rejected = true; }
+                Assert(rejected, "replaced database inherited evidence");
+                current = RecoveryDatabaseEvidence.Read(path, new[] { 7 });
+                rejected = false;
+                try { RecoveryDatabaseEvidence.UnverifiedChannels(baseline, current); }
+                catch (InvalidDataException) { rejected = true; }
+                Assert(rejected, "subset silently dropped a recovery target");
+                Console.WriteLine("Recovery database evidence: " + path);
+            }
         }
 
         private static void ConcurrentReader()
