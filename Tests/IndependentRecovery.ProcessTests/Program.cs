@@ -8,6 +8,11 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 2 && args[0] == "--safety-worker-matrix")
+                {
+                    Console.WriteLine("PASS safety worker matrix " + SimulatedSafetyWorker.RunMatrix(args[1]));
+                    return 0;
+                }
                 if (args.Length == 2 && args[0] == "--independent-stage")
                     return SimulatedSafetyWorker.Run(args[1]);
                 if (args.Length == 3 && args[0] == "--simulation-resume")
