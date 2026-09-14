@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','ValidateRepair','Repair','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','Repair','Uninstall','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
@@ -247,7 +247,7 @@ try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
 Assert-IndependentComponentVersions $plan
-if($Mode -eq 'Repair'){
+if($Mode -in @('Repair','Uninstall')){
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
     $receiptFile=Get-Item -LiteralPath $receiptPath
@@ -291,6 +291,23 @@ if($Mode -eq 'Repair'){
                     throw '旧会话辅助进程尚未退出，未替换文件。'
                 }
             }finally{if($process){$process.Dispose()}}
+        }
+        if($Mode -eq 'Uninstall'){
+            $cache=Join-Path $registration.StateDirectory ('maintenance-'+$protocol.Sha256.ToLowerInvariant())
+            [IO.Directory]::CreateDirectory($cache)|Out-Null
+            [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedDirectory($cache)
+            $cachedProtocol=Join-Path $cache 'MTTFTest.Watchdog.Protocol.dll'
+            if(-not [IO.File]::Exists($cachedProtocol)){[IO.File]::Copy($protocol.Source,$cachedProtocol,$false)}
+            if((Get-FileHash -LiteralPath $cachedProtocol).Hash -ne $protocol.Sha256){throw '卸载维护协议摘要不符。'}
+            $fileLease=[IO.File]::Open((Join-Path $plan.Destination 'file-repair.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+            try{
+                $manager=@($plan.Files|Where-Object Relative -eq 'Tools/Manage-IndependentRecovery.ps1')[0].Source
+                & $manager -Mode Uninstall -RegistrationPath $registrationPath -ExecutorPath $executor -ProtocolAssemblyPath $cachedProtocol -InstalledVersion $plan.Version
+                Remove-IndependentOwnedComponents $repairFiles $plan.Destination
+                [IO.File]::WriteAllText((Join-Path $plan.Destination 'uninstall-result.json'),([ordered]@{schemaVersion=1;installationId=$registration.InstallationId;version=$plan.Version;stage='ComponentsRemoved';maintenance=$true;projectDataPreserved=$true;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 3))
+                Write-Output '本安装服务、任务、快捷方式及原程序组件已移除。项目配置、数据、诊断和重复卸载所需的受保护维护协议保留。'
+            }finally{$fileLease.Dispose()}
+            return
         }
         $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
         [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)|Out-Null

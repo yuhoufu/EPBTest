@@ -8,7 +8,9 @@ param(
     [string]$MainExecutablePath,
     [string]$ProjectDirectory,
     [string]$InteractiveUserSid,
-    [string]$InstallationId
+    [string]$InstallationId,
+    [string]$ProtocolAssemblyPath,
+    [string]$InstalledVersion
 )
 $ErrorActionPreference='Stop'
 function Set-IndependentShortcut([string]$Main,[string]$Version,[string]$Id,[string]$Directory,[bool]$Remove) {
@@ -70,6 +72,11 @@ $ExecutorPath=[IO.Path]::GetFullPath($ExecutorPath)
 if($RegistrationPath.StartsWith('\\') -or $ExecutorPath.StartsWith('\\')){throw '安装注册和执行器必须位于本机磁盘。'}
 if($RegistrationPath.Contains('"') -or $ExecutorPath.Contains('"')){throw '路径含非法引号。'}
 $assemblyPath=Join-Path ([IO.Path]::GetDirectoryName($ExecutorPath)) 'MTTFTest.Watchdog.Protocol.dll'
+if($ProtocolAssemblyPath){
+    if($Mode -ne 'Uninstall'){throw '维护协议路径仅允许用于卸载。'}
+    $assemblyPath=[IO.Path]::GetFullPath($ProtocolAssemblyPath)
+    if($assemblyPath.StartsWith('\\')){throw '维护协议必须位于本机。'}
+}
 # The full bundle installer must protect this directory before this entry runs.
 $assemblyAcl=Get-Acl -LiteralPath $assemblyPath
 $trustedOwners=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
@@ -93,7 +100,7 @@ while($cursor){
     $depth++
 }
 [Reflection.Assembly]::LoadFrom($assemblyPath) | Out-Null
-[MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($ExecutorPath)
+if($Mode -ne 'Uninstall'){[MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($ExecutorPath)}
 if($Mode -eq 'Provision'){
     $managerPath=$PSCommandPath
     $common=@{RegistrationPath=$RegistrationPath;ExecutorPath=$ExecutorPath}
@@ -164,7 +171,9 @@ if($Mode -eq 'Seal'){
     Write-Output '配置已封存并校验；尚未安装服务、启动任务或授予恢复许可。'
     return
 }
-$registration=[MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($RegistrationPath)
+$registration=if($Mode -eq 'Uninstall'){
+    [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrustedForMaintenance($RegistrationPath)
+}else{[MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($RegistrationPath)}
 $store=New-Object MTTFTest.Watchdog.Protocol.IndependentProjectStateStore($registration.StateDirectory)
 $serviceName='MTTFTestIndependent-'+$registration.InstallationId
 $serviceCommand='"{0}" --independent-service --registration "{1}"' -f $ExecutorPath,$RegistrationPath
@@ -325,7 +334,7 @@ try {
             }
             if($task){$folder.DeleteTask($taskName,0)}
             if($service){& "$env:SystemRoot\System32\sc.exe" delete $serviceName; if($LASTEXITCODE -ne 0){throw '删除服务失败。'}}
-            $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($registration.ExecutablePath).FileVersion
+            $version=if($InstalledVersion){$InstalledVersion}else{[Diagnostics.FileVersionInfo]::GetVersionInfo($registration.ExecutablePath).FileVersion}
             Set-IndependentShortcut $registration.ExecutablePath $version $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $true
             Write-Output '已卸载本安装的服务及启动任务；保留项目数据、持久状态与诊断。'
         }

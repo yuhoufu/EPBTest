@@ -135,9 +135,9 @@ try {
         if ($Mode -eq 'Install') {
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Install `
                 -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot -ProjectDirectory $ProjectDirectory -InteractiveUserSid $InteractiveUserSid
-        } elseif ($Mode -eq 'Repair') {
-            & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Repair -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot
-        } elseif ($Mode -in @('Status','Restore','Stop','Uninstall')) {
+        } elseif ($Mode -in @('Repair','Uninstall')) {
+            & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode $Mode -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot
+        } elseif ($Mode -in @('Status','Restore','Stop')) {
             $manager = Join-Path $PSScriptRoot 'Tools\Manage-IndependentRecovery.ps1'
             $managerMode = if ($Mode -eq 'Restore') { 'Enable' } else { $Mode }
             & $manager -Mode $managerMode -RegistrationPath (Join-Path $InstallRoot 'IndependentState\registration.json') `
