@@ -66,12 +66,13 @@ namespace AdaptiveControlTests
             catch (InvalidOperationException) { return 23; }
         }
 
-        internal static int RunAll()
+        internal static int RunAll(bool cooperationOnly = false)
         {
             _count = 0;
             var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ??
                 Path.GetTempPath(), "independent-state-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
+            if (!cooperationOnly)
             using (var currentIdentity = System.Security.Principal.WindowsIdentity.GetCurrent())
             {
                 if (!currentIdentity.IsSystem)
@@ -117,6 +118,11 @@ namespace AdaptiveControlTests
                 cooperation.RequestId, IndependentRecoveryPhase.CooperativeStop, true, now, 30000, "CooperationOnly");
             Reject(() => cooperationStore.AcknowledgeCooperativeStop(cooperationState.Controller, cooperation.RunId,
                 cooperation.RunEpoch, cooperation.RequestId, cooperation.Generation, now), "receipt accepted after stage advanced");
+            if (cooperationOnly)
+            {
+                Console.WriteLine($"PASS independent cooperation {_count}/{_count}");
+                return _count;
+            }
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
             var selectionState = selectionStore.Read();
             var selectionCommand = Guid.NewGuid().ToString("N");

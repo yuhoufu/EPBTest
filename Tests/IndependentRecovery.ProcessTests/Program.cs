@@ -12,6 +12,11 @@ namespace AdaptiveControlTests
                     return IndependentBoundedWorkerTests.Child(args[1], args[2]);
                 if (args.Length == 4 && args[0] == "--state-consume")
                     return IndependentProjectStateTests.ConsumeChild(args[1], args[2], long.Parse(args[3]));
+                if (args.Length == 1 && args[0] == "--cooperative-stop")
+                {
+                    IndependentProjectStateTests.RunAll(cooperationOnly: true);
+                    return 0;
+                }
                 var passed = IndependentBoundedWorkerTests.RunAll();
                 Console.WriteLine($"PASS independent workers {passed}/{passed}");
                 IndependentProjectStateTests.RunAll();
