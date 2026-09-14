@@ -4,6 +4,88 @@ using System.Linq;
 
 namespace MTTFTest.Watchdog.Protocol
 {
+    public sealed class IndependentInstallationBinding
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public string InstallationId { get; set; }
+        public string RegistrationPath { get; set; }
+
+        public static string PathFor(string executablePath) => Path.GetFullPath(executablePath) + ".independent.json";
+
+        public void Validate(IndependentExecutorRegistration registration, string executablePath)
+        {
+            if (SchemaVersion != 1 || registration == null || InstallationId != registration.InstallationId ||
+                !Path.IsPathRooted(RegistrationPath ?? string.Empty) ||
+                !string.Equals(Path.GetFullPath(RegistrationPath), RegistrationPath, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetDirectoryName(RegistrationPath), registration.StateDirectory, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFullPath(executablePath), registration.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("IndependentInstallationBindingMismatch");
+            registration.Validate();
+        }
+
+        public static IndependentInstallationBinding Resolve(string executablePath)
+        {
+            var path = PathFor(executablePath);
+            if (!File.Exists(path)) return null;
+            IndependentProtectedFiles.RequireTrustedFile(path);
+            var originalHash = SupervisorProtocol.ComputeSha256(path);
+            var binding = BoundedJson.Read<IndependentInstallationBinding>(path);
+            if (binding == null || string.IsNullOrWhiteSpace(binding.RegistrationPath))
+                throw new InvalidDataException("IndependentInstallationBindingMissing");
+            var registration = IndependentExecutorRegistration.LoadTrusted(binding.RegistrationPath);
+            binding.Validate(registration, executablePath);
+            if (originalHash != SupervisorProtocol.ComputeSha256(path))
+                throw new InvalidDataException("IndependentInstallationBindingChanged");
+            return binding;
+        }
+
+        public static void RequireLegacyLaunchAllowed(string executablePath)
+        {
+            if (Resolve(executablePath) != null)
+                throw new InvalidOperationException("IndependentExecutorOwnsProcessRelaunch");
+        }
+
+        public static void Install(string registrationPath)
+        {
+            var registration = IndependentExecutorRegistration.LoadTrusted(registrationPath);
+            using (var mutex = new System.Threading.Mutex(false, "Global\\MTTF-IndependentBinding-" +
+                SupervisorProtocol.ComputeTextSha256(registration.ExecutablePath.ToUpperInvariant())))
+            {
+                var held = false;
+                try
+                {
+                    try { held = mutex.WaitOne(5000); }
+                    catch (System.Threading.AbandonedMutexException) { held = true; }
+                    if (!held) throw new TimeoutException("IndependentInstallationBindingBusy");
+                    InstallCore(registrationPath, registration);
+                }
+                finally { if (held) mutex.ReleaseMutex(); }
+            }
+        }
+
+        private static void InstallCore(string registrationPath, IndependentExecutorRegistration registration)
+        {
+            var state = new IndependentProjectStateStore(registration.StateDirectory).Read();
+            if (state == null || !state.Maintenance || state.SafetyCleanupPending ||
+                state.Transaction != null && !state.Transaction.IsTerminal ||
+                state.Intent != null && state.Intent.Armed && !state.Intent.ManualStopped)
+                throw new InvalidOperationException("IndependentBindingRequiresInstallationMaintenance");
+            var existing = Resolve(registration.ExecutablePath);
+            if (existing != null)
+            {
+                if (existing.InstallationId != registration.InstallationId ||
+                    !string.Equals(existing.RegistrationPath, registrationPath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("IndependentInstallationAlreadyBound");
+                return;
+            }
+            var binding = new IndependentInstallationBinding
+            { InstallationId = registration.InstallationId, RegistrationPath = Path.GetFullPath(registrationPath) };
+            binding.Validate(registration, registration.ExecutablePath);
+            BoundedJson.Write(PathFor(registration.ExecutablePath), binding);
+            Resolve(registration.ExecutablePath);
+        }
+    }
+
     // Installed by an elevated installer. Mutable project state is never a
     // source of executable paths, hardware configuration or task names.
     public sealed class IndependentExecutorRegistration

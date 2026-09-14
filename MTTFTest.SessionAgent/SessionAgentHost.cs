@@ -132,6 +132,7 @@ namespace MTTFTest.SessionAgent
                     throw new InvalidDataException("LaunchCapabilityIssuerMismatch");
             }
             var executable = Path.GetFullPath(capability.ExecutablePath);
+            IndependentInstallationBinding.RequireLegacyLaunchAllowed(executable);
             if (!string.Equals(executable, capability.ExecutablePath,
                     StringComparison.OrdinalIgnoreCase) ||
                 !File.Exists(executable) ||

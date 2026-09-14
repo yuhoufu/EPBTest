@@ -54,6 +54,7 @@ namespace MTTFTest.Watchdog
         internal GuardedProcessOwnerReceipt Start(DurableLaunchIntentCapability capability)
         {
             ValidateCapability(capability);
+            IndependentInstallationBinding.RequireLegacyLaunchAllowed(capability.ExecutablePath);
             if (_authorityValidator != null && !_authorityValidator(capability))
                 throw new InvalidOperationException("LaunchCapabilityNotCurrent");
             _prepareExternal?.Invoke(capability);

@@ -137,6 +137,7 @@ try {
             }
             New-Service -Name $serviceName -BinaryPathName $serviceCommand -StartupType Automatic -Description $description | Out-Null
             $createdService=$true
+            [MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::Install($RegistrationPath)
             Write-Output '独立服务和交互任务已注册，保持维护模式；尚未允许恢复或启动试验。'
         }
         'Enable' {

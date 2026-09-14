@@ -77,8 +77,17 @@ namespace MTEmbTest
 
         internal static IndependentRecoveryStartup Parse(string[] args)
         {
+            IndependentInstallationBinding installed;
+            using (var process = Process.GetCurrentProcess())
+                installed = IndependentInstallationBinding.Resolve(process.MainModule.FileName);
             var present = args.Any(value => value == "--independent-registration" || value == "--independent-ticket" || value == "--independent-installation");
-            if (!present) return null;
+            if (!present)
+            {
+                if (installed == null) return null;
+                if (args.Contains("--watchdog-recover") || args.Contains("--epb-recover"))
+                    throw new InvalidOperationException("IndependentExecutorOwnsProcessRelaunch");
+                return new IndependentRecoveryStartup { RegistrationPath = installed.RegistrationPath };
+            }
             if (args.Contains("--watchdog-recover") || args.Contains("--epb-recover"))
                 throw new InvalidOperationException("MixedRecoveryProtocolsRejected");
             string Read(string key)
@@ -93,10 +102,14 @@ namespace MTEmbTest
                 if (args.Contains("--independent-registration") || args.Contains("--independent-ticket"))
                     throw new InvalidOperationException("MixedIndependentLaunchModesRejected");
                 var installedPath = Read("--independent-installation");
+                if (installed != null && !string.Equals(installedPath, installed.RegistrationPath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("IndependentInstallationArgumentMismatch");
                 if (!Path.IsPathRooted(installedPath)) throw new InvalidOperationException("IndependentBootstrapArgumentsInvalid");
                 return new IndependentRecoveryStartup { RegistrationPath = installedPath };
             }
             var path = Read("--independent-registration");
+            if (installed != null && !string.Equals(path, installed.RegistrationPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentInstallationArgumentMismatch");
             var nonce = Read("--independent-ticket");
             if (!Path.IsPathRooted(path) || !Guid.TryParseExact(nonce, "N", out _))
                 throw new InvalidOperationException("IndependentBootstrapArgumentsInvalid");

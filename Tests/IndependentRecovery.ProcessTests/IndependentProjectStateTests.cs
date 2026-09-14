@@ -451,6 +451,22 @@ namespace AdaptiveControlTests
             };
             registration.RequireBoundIntent(safetyIntent);
             var registrationPath = Path.Combine(root, "executor.json");
+            var binding = new IndependentInstallationBinding
+            { InstallationId = registration.InstallationId, RegistrationPath = registrationPath };
+            binding.Validate(registration, registration.ExecutablePath);
+            Assert(true, "matching installed executable must bind its registered authority");
+            foreach (var mismatch in new Action[] {
+                () => binding.Validate(registration, Path.Combine(root, "different.exe")),
+                () => new IndependentInstallationBinding { InstallationId = Guid.NewGuid().ToString("N"), RegistrationPath = registrationPath }.Validate(registration, Exe),
+                () => new IndependentInstallationBinding { InstallationId = registration.InstallationId, RegistrationPath = Path.Combine(root, "other", "executor.json") }.Validate(registration, Exe)
+            })
+            {
+                var failedBinding = false;
+                try { mismatch(); } catch (InvalidDataException) { failedBinding = true; }
+                Assert(failedBinding, "installation binding crossed executable, installation or state directory");
+            }
+            Assert(IndependentInstallationBinding.Resolve(Path.Combine(root, "unmanaged.exe")) == null,
+                "unmanaged installation was silently enrolled");
             var launchTask = new IndependentLaunchTaskDefinition
             {
                 Path = registration.LaunchTaskName, Executable = registration.ExecutablePath,

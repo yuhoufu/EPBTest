@@ -2670,6 +2670,7 @@ namespace MTEmbTest
                 var attachedToRevocationGate = false;
                 try
                 {
+                    IndependentInstallationBinding.RequireLegacyLaunchAllowed(executable);
                     child = Process.Start(new ProcessStartInfo
                     {
                         FileName = executable,
