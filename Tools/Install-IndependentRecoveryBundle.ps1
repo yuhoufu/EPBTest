@@ -117,7 +117,7 @@ function Get-IndependentUpgradePlan($CurrentPlan,$NextPlan,$Receipt) {
     [pscustomobject]@{FromVersion=$CurrentPlan.Version;ToVersion=$NextPlan.Version;Destination=$CurrentPlan.Destination;
         ReplacementFiles=$next;ObsoleteFiles=$obsolete;PreservedFiles=$preserved}
 }
-function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory) {
+function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory,[object[]]$RetiredFiles=@(),[scriptblock]$VerifyReplacement=$null) {
     # Caller must own installation maintenance and the executor lease. This
     # primitive is deliberately not exposed as an ungated installer mode.
     $root=[IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
@@ -179,7 +179,25 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
             if((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -ne $file.Sha256){throw '修复载荷暂存摘要不符。'}
             $exists=[IO.File]::Exists($target)
             $entries+=,[ordered]@{target=$target;staged=$staged;backup=(Join-Path $transaction ($index.ToString()+'.old'));
-                existed=$exists;sha256=[string]$file.Sha256;originalSha256=if($exists){[string](Get-FileHash -LiteralPath $target).Hash}else{''}}
+                retired=$false;existed=$exists;sha256=[string]$file.Sha256;originalSha256=if($exists){[string](Get-FileHash -LiteralPath $target).Hash}else{''}}
+        }
+        foreach($file in $RetiredFiles){
+            $relative=([string]$file.Relative).Replace('\','/')
+            $target=[IO.Path]::GetFullPath((Join-Path $root $relative))
+            if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or
+               $relative -notmatch '^(Current|FallbackGuard|Tools)/' -or $relative -like 'Current/Config/*' -or
+               $relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$' -or $file.Sha256 -notmatch '^[a-fA-F0-9]{64}$'){
+                throw 'Retired component identity is invalid.'
+            }
+            $seen[$target]=$true;Assert-RepairPath $target
+            if(-not [IO.File]::Exists($target)){throw 'Retired component is missing; reconcile the original installation first.'}
+            $length=(Get-Item -LiteralPath $target).Length;$bytes+=$length
+            if($length -gt 256MB -or $bytes -gt 2GB -or $entries.Count -ge 10000){throw 'Retired component budget exceeded.'}
+            if((Get-FileHash -LiteralPath $target).Hash -ne $file.Sha256){throw 'Retired component ownership hash mismatch.'}
+            $index=$entries.Count
+            $entries+=,[ordered]@{target=$target;staged=(Join-Path $transaction ($index.ToString()+'.new'));
+                backup=(Join-Path $transaction ($index.ToString()+'.old'));retired=$true;existed=$true;
+                sha256='';originalSha256=[string]$file.Sha256}
         }
         Save-RepairJournal 'Prepared' ''
         foreach($entry in $entries){
@@ -187,13 +205,19 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
             $touched+=,$entry
             if($entry.existed){
                 if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.originalSha256){throw '修复目标在替换前变化。'}
-                [IO.File]::Replace($entry.staged,$entry.target,$entry.backup)
+                if($entry.retired){[IO.File]::Move($entry.target,$entry.backup)}
+                else{[IO.File]::Replace($entry.staged,$entry.target,$entry.backup)}
             }else{
                 [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($entry.target))|Out-Null
                 [IO.File]::Move($entry.staged,$entry.target)
             }
-            if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.sha256){throw '修复后摘要不符。'}
+            if($entry.retired){
+                if([IO.File]::Exists($entry.target) -or (Get-FileHash -LiteralPath $entry.backup).Hash -ne $entry.originalSha256){throw 'Retired component backup verification failed.'}
+            }elseif((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.sha256){throw '修复后摘要不符。'}
         }
+        # Read-only postconditions run within the rollback boundary. Metadata
+        # mutations require their own coordinated transaction, not this callback.
+        if($VerifyReplacement){& $VerifyReplacement | Out-Null}
         Save-RepairJournal 'Replaced' ''
         return $transaction
     }catch{
