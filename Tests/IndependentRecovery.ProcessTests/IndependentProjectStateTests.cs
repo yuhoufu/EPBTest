@@ -644,6 +644,52 @@ namespace AdaptiveControlTests
                 Files = command.Files, Runtime = command.Runtime
             };
             registration.RequireBoundIntent(safetyIntent);
+            var registryStore = new IndependentProjectStateStore(Path.Combine(root, "session-registry"));
+            registryStore.Update(0, state => { state.Maintenance = false; return true; });
+            var registryParent = Identity();
+            registryStore.ArmManualRun(1, Intent(root), registryParent, now);
+            var savedSafetyPath = registration.SafetyExecutablePath;
+            var savedRegistryDirectory = registration.StateDirectory;
+            registration.StateDirectory = Path.Combine(root, "session-registry");
+            registration.SafetyExecutablePath = Path.Combine(root, "MTTFTest.SafetyAgent.exe");
+            var registeredExe = Path.Combine(root, "MTTFTest.Watchdog.exe");
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), registeredExe);
+            IndependentProcessIdentity registeredIdentity = null;
+            using (var registeredWorker = IndependentBoundedWorker.StartSession(registeredExe, "/c exit 0", root,
+                (pid, ticks) =>
+                {
+                    registeredIdentity = new IndependentProcessIdentity { Pid = pid, StartUtcTicks = ticks,
+                        ExecutablePath = registeredExe, WindowsSessionId = Process.GetCurrentProcess().SessionId,
+                        SessionToken = Guid.NewGuid().ToString("N") };
+                    var child = new IndependentSessionProcess { Process = registeredIdentity, Role = "Watchdog",
+                        ParentPid = registryParent.Pid, ParentStartUtcTicks = registryParent.StartUtcTicks };
+                    registryStore.RegisterSessionProcess(registration, child);
+                    var registeredRevision = registryStore.Read().Revision;
+                    registryStore.RegisterSessionProcess(registration, child);
+                    Assert(registryStore.Read().SessionProcesses.Length == 1 && registryStore.Read().Revision == registeredRevision,
+                        "suspended registration was not durable/idempotent");
+                    Reject(() => registryStore.AcknowledgeSessionProcessExit(registeredIdentity), "live helper removed from cleanup registry");
+                }))
+            {
+                var deadline = Stopwatch.StartNew();
+                while (registeredWorker.Poll() == IndependentWorkerState.Running && deadline.ElapsedMilliseconds < 5000) Thread.Sleep(10);
+                Assert(registeredWorker.Poll() == IndependentWorkerState.Completed, "registered session child failed to execute");
+            }
+            registryStore.AcknowledgeSessionProcessExit(registeredIdentity);
+            Assert(registryStore.Read().SessionProcesses.Length == 0, "exited helper was not retired from registry");
+            registryStore.BeginRecovery(registryStore.Read().Revision, "executor", now);
+            Reject(() =>
+            {
+                using (var rejectedWorker = IndependentBoundedWorker.StartSession(registeredExe, "/c exit 0", root,
+                    (pid, ticks) => registryStore.RegisterSessionProcess(registration, new IndependentSessionProcess
+                    {
+                        ParentPid = registryParent.Pid, ParentStartUtcTicks = registryParent.StartUtcTicks, Role = "Watchdog",
+                        Process = new IndependentProcessIdentity { Pid = pid, StartUtcTicks = ticks, ExecutablePath = registeredExe,
+                            WindowsSessionId = Process.GetCurrentProcess().SessionId, SessionToken = Guid.NewGuid().ToString("N") }
+                    }))) { }
+            }, "new helper executed after cleanup claimed the project");
+            registration.SafetyExecutablePath = savedSafetyPath;
+            registration.StateDirectory = savedRegistryDirectory;
             var registrationPath = Path.Combine(root, "executor.json");
             var binding = new IndependentInstallationBinding
             { InstallationId = registration.InstallationId, RegistrationPath = registrationPath };

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.IO;
 using System.Security.Principal;
 
@@ -15,6 +16,7 @@ namespace MTTFTest.Watchdog.Protocol
         private readonly object _operationGate = new object();
         private IndependentSafetyWorkerOperation _hardware;
         private IndependentProcessRetirement _retirement;
+        private IndependentProcessIdentity _retiringSession;
         private string _request;
         private long _generation;
         private IndependentRecoveryPhase _phase;
@@ -70,6 +72,34 @@ namespace MTTFTest.Watchdog.Protocol
             _request = tx.RequestId; _generation = tx.Generation; _phase = tx.Phase;
             try
             {
+                if (tx.Phase == IndependentRecoveryPhase.PowerOff)
+                {
+                    if (state.Controller == null) throw new InvalidDataException("IndependentSafetyControllerIdentityMissing");
+                    IndependentExecutionFence.Revoke(_registration.InstallationId, state.Controller);
+                    // Retire old recovery helpers before opening their hardware
+                    // handles. The old main remains until PSU OFF is confirmed.
+                    var child = state.SessionProcesses.FirstOrDefault(p => p.ParentPid == state.Controller.Pid &&
+                        p.ParentStartUtcTicks == state.Controller.StartUtcTicks);
+                    if (child != null)
+                    {
+                        if (_retirement == null)
+                        {
+                            _retiringSession = child.Process;
+                            _retirement = new IndependentProcessRetirement(child.Process, child.Process,
+                                child.Process.ExecutablePath, (int)Math.Min(10000, Math.Max(1,
+                                    TimeSpan.FromTicks(tx.PhaseDeadlineUtcTicks - now).TotalMilliseconds)));
+                        }
+                        var retired = _retirement.Poll();
+                        Detail = "SessionHelper:" + _retirement.Detail;
+                        if (retired == IndependentOperationResult.Completed)
+                        {
+                            _store.AcknowledgeSessionProcessExit(_retiringSession);
+                            _retirement.Dispose(); _retirement = null; _retiringSession = null;
+                            return IndependentOperationResult.Pending;
+                        }
+                        return retired;
+                    }
+                }
                 if (tx.Phase == IndependentRecoveryPhase.RetireControls)
                 {
                     if (_retirement == null)
@@ -116,6 +146,7 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 _hardware?.Dispose(); _hardware = null;
                 _retirement?.Dispose(); _retirement = null;
+                _retiringSession = null;
                 _request = null;
             }
         }

@@ -18,6 +18,7 @@ namespace MTTFTest.Watchdog.Protocol
         private IntPtr _job, _process;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private readonly int _deadlineMs;
+        private readonly bool _sessionLifetime;
         private bool _disposed;
         private IndependentWorkerState _state;
         public int ProcessId { get; private set; }
@@ -26,12 +27,26 @@ namespace MTTFTest.Watchdog.Protocol
 
         public IndependentBoundedWorker(string executable, string arguments, string workingDirectory,
             int deadlineMs, int memoryLimitMiB = 256, Action<int, long> beforeResume = null)
+            : this(executable, arguments, workingDirectory, deadlineMs, memoryLimitMiB, beforeResume, false) { }
+
+        // A supervised session has no worker execution deadline. Registration
+        // remains bounded; its Job is owned until the Supervisor releases it.
+        public static IndependentBoundedWorker StartSession(string executable, string arguments, string workingDirectory,
+            Action<int, long> beforeResume)
+        {
+            if (beforeResume == null) throw new ArgumentNullException(nameof(beforeResume));
+            return new IndependentBoundedWorker(executable, arguments, workingDirectory, 10000, 256, beforeResume, true);
+        }
+
+        private IndependentBoundedWorker(string executable, string arguments, string workingDirectory,
+            int deadlineMs, int memoryLimitMiB, Action<int, long> beforeResume, bool sessionLifetime)
         {
             if (deadlineMs < 1 || deadlineMs > 300000 || memoryLimitMiB < 32 || memoryLimitMiB > 512)
                 throw new ArgumentOutOfRangeException(nameof(deadlineMs));
             if (!Path.IsPathRooted(executable) || !File.Exists(executable) || executable.Contains("\""))
                 throw new ArgumentException("IndependentWorkerExecutableInvalid");
             _deadlineMs = deadlineMs;
+            _sessionLifetime = sessionLifetime;
             PROCESS_INFORMATION info = default;
             try
             {
@@ -92,7 +107,7 @@ namespace MTTFTest.Watchdog.Protocol
                 // No detached descendant may survive successful parent exit.
                 RetireJob();
             }
-            else if (_clock.ElapsedMilliseconds >= _deadlineMs)
+            else if (!_sessionLifetime && _clock.ElapsedMilliseconds >= _deadlineMs)
             {
                 _state = IndependentWorkerState.TimedOut;
                 RetireJob();

@@ -134,6 +134,15 @@ namespace AdaptiveControlTests
             if (!rejectedRegistration || rejectedPid == 0) throw new Exception("registration rejection not observed");
             Until(() => Gone(rejectedPid, rejectedTicks), "rejected suspended child survived");
             if (File.Exists(rejectedPath)) throw new Exception("rejected child executed");
+            using (var session = IndependentBoundedWorker.StartSession(Executable,
+                "--independent-worker-child hang \"" + root + "\"", Path.GetDirectoryName(Executable), (pid, ticks) => { }))
+            {
+                Thread.Sleep(10200);
+                if (session.Poll() != IndependentWorkerState.Running)
+                    throw new Exception("long-lived session inherited the registration deadline");
+                session.Dispose();
+                Until(() => Gone(session.ProcessId, session.StartUtcTicks), "session survived lifetime owner disposal");
+            }
             IndependentBoundedWorker Start(string mode, string path, int deadline) => new IndependentBoundedWorker(
                 Executable, "--independent-worker-child " + mode + " \"" + path + "\"", root, deadline);
             using (var success = Start("exit", root, 10000))
@@ -267,7 +276,7 @@ namespace AdaptiveControlTests
                 if (!rejected) throw new Exception("disposed executor lease still grants authority");
                 using (var next = new IndependentExecutorLease(root, installation)) next.RequireHeld();
             }
-            return 19;
+            return 20;
         }
     }
 }

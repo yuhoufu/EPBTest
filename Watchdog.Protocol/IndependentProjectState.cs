@@ -51,6 +51,21 @@ namespace MTTFTest.Watchdog.Protocol
         public IndependentProcessIdentity Controller { get; set; }
     }
 
+    public sealed class IndependentSessionProcess
+    {
+        public IndependentProcessIdentity Process { get; set; }
+        public int ParentPid { get; set; }
+        public long ParentStartUtcTicks { get; set; }
+        public string Role { get; set; }
+        public void Validate()
+        {
+            Process?.Validate();
+            if (Process == null || ParentPid <= 0 || ParentStartUtcTicks <= 0 ||
+                (Role != "Watchdog" && Role != "SafetyAgent"))
+                throw new InvalidDataException("IndependentSessionProcessInvalid");
+        }
+    }
+
     public sealed class IndependentNearZeroRetry
     {
         public int Channel { get; set; }
@@ -90,11 +105,15 @@ namespace MTTFTest.Watchdog.Protocol
         public IndependentCooperativeStopReceipt CooperativeStopReceipt { get; set; }
         public IndependentIntentAudit[] Audit { get; set; } = Array.Empty<IndependentIntentAudit>();
         public IndependentNearZeroRetry[] NearZeroRetries { get; set; } = Array.Empty<IndependentNearZeroRetry>();
+        public IndependentSessionProcess[] SessionProcesses { get; set; } = Array.Empty<IndependentSessionProcess>();
 
         public void Validate()
         {
             if (SchemaVersion != 2 || Revision <= 0 || Audit == null || Audit.Length > 32)
                 throw new InvalidDataException("IndependentProjectStateInvalid");
+            if (SessionProcesses == null || SessionProcesses.Length > 24 || SessionProcesses.Any(p => p == null))
+                throw new InvalidDataException("IndependentSessionProcessRegistryInvalid");
+            foreach (var child in SessionProcesses) child.Validate();
             if (NearZeroRetries == null || NearZeroRetries.Length > 12 ||
                 NearZeroRetries.Any(r => r == null || r.Channel < 1 || r.Channel > 12 || r.FirstGeneration < 0 ||
                     !Guid.TryParseExact(r.FirstRunId, "N", out _)) ||
@@ -257,6 +276,60 @@ namespace MTTFTest.Watchdog.Protocol
                 BoundedJson.Write(_path, state);
                 return true;
             });
+        }
+
+        public void RegisterSessionProcess(IndependentExecutorRegistration registration, IndependentSessionProcess child)
+        {
+            registration.Validate(); child.Validate();
+            if (!string.Equals(Path.GetDirectoryName(_path), registration.StateDirectory, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentSessionStateDirectoryMismatch");
+            var expectedPath = Path.Combine(Path.GetDirectoryName(registration.SafetyExecutablePath),
+                child.Role == "Watchdog" ? "MTTFTest.Watchdog.exe" : "MTTFTest.SafetyAgent.exe");
+            if (!string.Equals(Path.GetFullPath(child.Process.ExecutablePath), expectedPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentSessionExecutableMismatch");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent != null) registration.RequireBoundIntent(state.Intent);
+                IndependentInstallationBinding.RequireSessionHostState(state, registration.ProjectDirectory,
+                    registration.ProjectDirectory, child.ParentPid, child.ParentStartUtcTicks);
+                var retained = state.SessionProcesses.Where(p => !SessionProcessGone(p.Process)).ToArray();
+                if (retained.Any(p => p.Process.Matches(child.Process))) return true;
+                if (retained.Length >= 24 || retained.Any(p => p.ParentPid == child.ParentPid &&
+                    p.ParentStartUtcTicks == child.ParentStartUtcTicks && p.Role == child.Role &&
+                    p.Process.SessionToken == child.Process.SessionToken))
+                    throw new InvalidOperationException("IndependentSessionProcessAlreadyOwned");
+                state.SessionProcesses = retained.Concat(new[] { child }).ToArray();
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public void AcknowledgeSessionProcessExit(IndependentProcessIdentity identity)
+        {
+            identity.Validate();
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state == null || !SessionProcessGone(identity))
+                    throw new InvalidOperationException("IndependentSessionExitUnconfirmed");
+                var remaining = state.SessionProcesses.Where(p => !p.Process.Matches(identity)).ToArray();
+                if (remaining.Length == state.SessionProcesses.Length) return true;
+                state.SessionProcesses = remaining; state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        private static bool SessionProcessGone(IndependentProcessIdentity identity)
+        {
+            try
+            {
+                using (var process = System.Diagnostics.Process.GetProcessById(identity.Pid))
+                    return process.HasExited || process.StartTime.ToUniversalTime().Ticks != identity.StartUtcTicks;
+            }
+            catch (ArgumentException) { return true; }
         }
 
         public void RecordVerificationCompletions(long expectedRevision, string databasePath, long creationUtcTicks,

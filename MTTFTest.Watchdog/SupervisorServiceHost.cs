@@ -464,7 +464,8 @@ namespace MTTFTest.Watchdog
                 request,
                 receipt,
                 projectDirectory,
-                StateDirectory);
+                StateDirectory,
+                _sessions[request.SessionId].ReadRegistration(StateDirectory));
             WriteAudit(
                 "SafetyAgentRegistered",
                 $"Session={request.SessionId};Permit={request.PermitGeneration}/" +
@@ -678,6 +679,34 @@ namespace MTTFTest.Watchdog
             // 不再额外绑定版本包槽，避免可写配置导致安全停机本身无法执行。
         }
 
+        private static Process StartRegisteredSessionProcess(SupervisorLaunchRecord parent, string role,
+            ProcessStartInfo startInfo, out IndependentBoundedWorker lifetime)
+        {
+            lifetime = null;
+            var binding = IndependentInstallationBinding.Resolve(parent.MainExecutablePath);
+            if (binding == null) return Process.Start(startInfo);
+            var registration = IndependentExecutorRegistration.LoadTrusted(binding.RegistrationPath);
+            if (!string.Equals(Path.GetFullPath(parent.ProjectDirectory), registration.ProjectDirectory, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentSessionProjectMismatch");
+            var store = new IndependentProjectStateStore(registration.StateDirectory);
+            lifetime = IndependentBoundedWorker.StartSession(startInfo.FileName, startInfo.Arguments, startInfo.WorkingDirectory,
+                (pid, ticks) =>
+                {
+                    using (var child = Process.GetProcessById(pid))
+                        store.RegisterSessionProcess(registration, new IndependentSessionProcess
+                        {
+                            ParentPid = parent.ParentProcessId, ParentStartUtcTicks = parent.ParentProcessStartUtcTicks,
+                            Role = role, Process = new IndependentProcessIdentity
+                            {
+                                Pid = pid, StartUtcTicks = ticks, WindowsSessionId = child.SessionId,
+                                ExecutablePath = Path.GetFullPath(startInfo.FileName), SessionToken = parent.SessionId
+                            }
+                        });
+                });
+            try { return Process.GetProcessById(lifetime.ProcessId); }
+            catch { lifetime.Dispose(); lifetime = null; throw; }
+        }
+
         private static string ReadLaunchArgument(string arguments, string name)
         {
             var pattern = "(?:^|\\s)" + Regex.Escape(name) +
@@ -739,9 +768,11 @@ namespace MTTFTest.Watchdog
             private readonly CancellationTokenSource _monitorStop =
                 new CancellationTokenSource();
             private Process _process;
+            private IndependentBoundedWorker _independentLifetime;
             private long _processStartUtcTicks;
             private Task _monitorTask;
             private string _stateDirectory;
+            private string _mainExecutablePath;
 
             internal SupervisorOwnedSession(string sessionId)
             {
@@ -757,6 +788,7 @@ namespace MTTFTest.Watchdog
             {
                 lock (_gate)
                 {
+                    _mainExecutablePath = mainExecutablePath;
                     if (IsCurrentProcessAlive())
                     {
                         EnsureMonitor(stateDirectory);
@@ -812,6 +844,7 @@ namespace MTTFTest.Watchdog
                             StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException(
                             "PersistedSupervisorOwnedSessionMismatch");
+                    _mainExecutablePath = record.MainExecutablePath;
                     TryAttachRecordProcess(record);
                     if (!IsCurrentProcessAlive())
                         StartFromRecord(record, stateDirectory);
@@ -923,13 +956,27 @@ namespace MTTFTest.Watchdog
                 _processStartUtcTicks = record.ProcessStartUtcTicks;
             }
 
+            internal SupervisorLaunchRecord ReadRegistration(string stateDirectory)
+            {
+                // Legacy safety-only recovery did not require another disk
+                // read here. Preserve it when independent ownership is absent.
+                if (!string.IsNullOrWhiteSpace(_mainExecutablePath) &&
+                    IndependentInstallationBinding.Resolve(_mainExecutablePath) == null)
+                    return new SupervisorLaunchRecord { MainExecutablePath = _mainExecutablePath };
+                var record = BoundedJson.Read<SupervisorLaunchRecord>(RecordPath(stateDirectory, _sessionId));
+                if (record == null || record.SessionId != _sessionId)
+                    throw new InvalidDataException("SupervisorSessionRegistrationMismatch");
+                return record;
+            }
+
             private void StartFromRecord(
                 SupervisorLaunchRecord record,
                 string stateDirectory)
             {
+                _independentLifetime?.Dispose(); _independentLifetime = null;
                 IndependentInstallationBinding.RequireCurrentSessionHost(record.MainExecutablePath,
                     record.ProjectDirectory, record.ParentProcessId, record.ParentProcessStartUtcTicks);
-                var process = Process.Start(new ProcessStartInfo
+                var process = StartRegisteredSessionProcess(record, "Watchdog", new ProcessStartInfo
                 {
                     FileName = record.ExecutablePath,
                     Arguments = "--session-host " + record.Arguments,
@@ -937,7 +984,7 @@ namespace MTTFTest.Watchdog
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
-                });
+                }, out _independentLifetime);
                 if (process == null)
                     throw new InvalidOperationException(
                         "SupervisorSessionHostStartReturnedNull");
@@ -1026,6 +1073,8 @@ namespace MTTFTest.Watchdog
                 try { _monitorTask?.Wait(3000); } catch { }
                 lock (_gate)
                 {
+                    try { _independentLifetime?.Dispose(); } catch { }
+                    _independentLifetime = null;
                     try { _process?.Dispose(); } catch { }
                     _process = null;
                 }
@@ -1447,6 +1496,7 @@ namespace MTTFTest.Watchdog
             private readonly object _gate = new object();
             private readonly string _key;
             private Process _process;
+            private IndependentBoundedWorker _independentLifetime;
             private long _processStartUtcTicks;
 
             internal SupervisorOwnedSafetyAgent(string key)
@@ -1458,7 +1508,8 @@ namespace MTTFTest.Watchdog
                 SupervisorSafetyAgentLaunchRequest request,
                 WatchdogSafetyHandoffReceipt receipt,
                 string projectDirectory,
-                string stateDirectory)
+                string stateDirectory,
+                SupervisorLaunchRecord parent)
             {
                 lock (_gate)
                 {
@@ -1486,7 +1537,8 @@ namespace MTTFTest.Watchdog
                         Revision = DateTime.UtcNow.Ticks
                     };
                     WriteSafetyRecord(stateDirectory, record);
-                    var process = Process.Start(new ProcessStartInfo
+                    _independentLifetime?.Dispose(); _independentLifetime = null;
+                    var process = StartRegisteredSessionProcess(parent, "SafetyAgent", new ProcessStartInfo
                     {
                         FileName = record.ExecutablePath,
                         Arguments = record.Arguments,
@@ -1494,7 +1546,7 @@ namespace MTTFTest.Watchdog
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         WindowStyle = ProcessWindowStyle.Hidden
-                    });
+                    }, out _independentLifetime);
                     if (process == null)
                         throw new InvalidOperationException(
                             "SupervisorSafetyAgentStartReturnedNull");
@@ -1508,7 +1560,28 @@ namespace MTTFTest.Watchdog
                         record.Revision + 1,
                         DateTime.UtcNow.Ticks);
                     WriteSafetyRecord(stateDirectory, record);
-                    return CurrentIdentity();
+                    var startedIdentity = CurrentIdentity();
+                    if (_independentLifetime != null)
+                    {
+                        var ownedLifetime = _independentLifetime;
+                        process.Exited += (_, __) =>
+                        {
+                            lock (_gate)
+                            {
+                                if (!ReferenceEquals(_independentLifetime, ownedLifetime)) return;
+                                try
+                                {
+                                    ownedLifetime.Dispose(); _independentLifetime = null;
+                                    if (ReferenceEquals(_process, process))
+                                    { _process.Dispose(); _process = null; _processStartUtcTicks = 0; }
+                                }
+                                catch (Exception error)
+                                { WriteAudit("SafetySessionJobCleanupFailed", error.GetType().Name); }
+                            }
+                        };
+                        process.EnableRaisingEvents = true;
+                    }
+                    return startedIdentity;
                 }
             }
 
@@ -1616,6 +1689,8 @@ namespace MTTFTest.Watchdog
             {
                 lock (_gate)
                 {
+                    try { _independentLifetime?.Dispose(); } catch { }
+                    _independentLifetime = null;
                     try { _process?.Dispose(); } catch { }
                     _process = null;
                 }
