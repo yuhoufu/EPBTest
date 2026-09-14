@@ -112,8 +112,9 @@ namespace MTTFTest.FallbackGuard
                 else snapshot = DatabaseProgressReader.ReadIsolated(_registration.DatabasePath, targets);
                 if (alive == false)
                 {
-                    _store.BeginRecovery(state.Revision, _executor, now);
-                    Detail = "ExactControllerExited;IndependentTakeoverRequested";
+                    const string reason = "ExactControllerExited;IndependentTakeoverRequested";
+                    _store.BeginRecovery(state.Revision, _executor, now, reason);
+                    Detail = reason;
                     return;
                 }
                 var intent = new DatabaseWatchIntent
@@ -131,8 +132,9 @@ namespace MTTFTest.FallbackGuard
                 { Detail = "ObservingStartupWithinDurableBudget"; return; }
                 if (stalled)
                 {
-                    _store.BeginRecovery(state.Revision, _executor, now);
-                    Detail = "DatabaseStalled:" + string.Join(",", _monitor.StalledChannels);
+                    var reason = "DatabaseStalled:" + string.Join(",", _monitor.StalledChannels);
+                    _store.BeginRecovery(state.Revision, _executor, now, reason);
+                    Detail = reason;
                 }
                 else Detail = "ObservingFormalDatabaseProgress";
             }
@@ -143,8 +145,9 @@ namespace MTTFTest.FallbackGuard
                 _monitor.Unreadable();
                 if (alive == false)
                 {
-                    _store.BeginRecovery(state.Revision, _executor, now);
-                    Detail = "ExactControllerExited;DatabaseUnreadable;IndependentTakeoverRequested";
+                    const string reason = "ExactControllerExited;DatabaseUnreadable;IndependentTakeoverRequested";
+                    _store.BeginRecovery(state.Revision, _executor, now, reason);
+                    Detail = reason;
                     return;
                 }
                 Detail = "DatabaseObservationOrAdmissionFailed:" + error.GetType().Name + ":" + Clip(error.Message);

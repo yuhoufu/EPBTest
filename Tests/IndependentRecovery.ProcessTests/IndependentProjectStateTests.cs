@@ -66,6 +66,43 @@ namespace AdaptiveControlTests
             catch (InvalidOperationException) { return 23; }
         }
 
+        private static void VerifyTakeoverAudit(string root, long now)
+        {
+            var directory = Path.Combine(root, "takeover-audit");
+            var store = Fixture(directory, now);
+            var original = store.Read();
+            var tx = store.BeginRecovery(original.Revision, "executor", now, "DatabaseStalled:8,9");
+            store = new IndependentProjectStateStore(directory);
+            var row = store.Read().Audit.Last();
+            Assert(row.Source == "IndependentTakeover" && row.RunId == original.Intent.RunId &&
+                row.RunEpoch == original.Intent.RunEpoch && row.Reason.Contains("RequestId=" + tx.RequestId) &&
+                row.Reason.Contains("Generation=1;DatabaseStalled:8,9"), "takeover cause was not durably bound to old run and transaction");
+            Assert(row.Before.SequenceEqual(original.Intent.SelectedChannels) && row.After.SequenceEqual(row.Before) &&
+                store.Read().Intent.Revision == original.Intent.Revision, "diagnostic admission changed channel authorization");
+            var revision = store.Read().Revision;
+            Reject(() => store.BeginRecovery(revision, "executor", now, "RejectedDuplicate"), "duplicate takeover admitted");
+            Assert(store.Read().Revision == revision && store.Read().Audit.Last().Reason == row.Reason,
+                "rejected takeover rewrote committed trigger");
+            foreach (var phase in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
+                IndependentRecoveryPhase.RetireControls, IndependentRecoveryPhase.OutputsSafe })
+                store.CompleteSafetyStage(store.Read().Revision, "executor", tx.Generation, tx.RequestId, phase, true, now, 30000, "PhaseReplaced");
+            var ticket = store.IssueLaunchTicket(store.Read().Revision, "executor", tx.Generation, Hash,
+                Process.GetCurrentProcess().SessionId, now);
+            store.MarkLaunchDispatched(store.Read().Revision, ticket.Nonce, "executor", now);
+            var consumer = Identity();
+            store.ConsumeLaunchTicket(store.Read().Revision, ticket.Nonce, consumer, Hash, now);
+            store.CommitReplacementRun(store.Read().Revision, consumer, Guid.NewGuid().ToString("N"), 2, now + 1);
+            var replaced = new IndependentProjectStateStore(directory).Read();
+            Assert(replaced.Audit.Single(a => a.Source == "IndependentTakeover").Reason == row.Reason &&
+                replaced.Audit.Single(a => a.Source == "IndependentTakeover").RunId == original.Intent.RunId &&
+                replaced.Intent.RunId != original.Intent.RunId, "replacement binding erased original trigger");
+            var bounded = Fixture(Path.Combine(root, "takeover-audit-bounded"), now);
+            var boundedTx = bounded.BeginRecovery(bounded.Read().Revision, "executor", now, new string('x', 1000));
+            var boundedRow = bounded.Read().Audit.Last();
+            Assert(boundedRow.Reason.Length <= 192 && boundedRow.Reason.Contains(boundedTx.RequestId),
+                "oversize trigger lost transaction identity or exceeded diagnostic limit");
+        }
+
         private static void VerifySessionRegistry(string root, long now, IndependentExecutorRegistration registration)
         {
             var registryStore = new IndependentProjectStateStore(Path.Combine(root, "session-registry"));
@@ -247,6 +284,7 @@ namespace AdaptiveControlTests
             var now = DateTime.UtcNow.Ticks;
             if (!cooperationOnly)
             {
+                VerifyTakeoverAudit(root, now);
                 Reject(() => IndependentInstallationBinding.RequireControllerAbsent(Exe),
                     "binding admitted live controller executable");
                 IndependentInstallationBinding.RequireControllerAbsent(Path.Combine(root, Path.GetFileName(Exe)));

@@ -592,6 +592,9 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public IndependentRecoveryTransaction BeginRecovery(long expectedRevision, string executor, long now)
+            => BeginRecovery(expectedRevision, executor, now, "IndependentTakeoverRequested");
+
+        public IndependentRecoveryTransaction BeginRecovery(long expectedRevision, string executor, long now, string reason)
         {
             return Update(expectedRevision, state =>
             {
@@ -601,6 +604,11 @@ namespace MTTFTest.Watchdog.Protocol
                 state.Transaction = IndependentRecoveryTransitions.Begin(state.Transaction, state.Intent, executor, now);
                 state.Ticket = null;
                 state.SafetyCleanupPending = true;
+                // Commit the trigger in the same atomic state write as admission.
+                // Phase/observation text is transient and cannot be its archive.
+                AppendAudit(state, "IndependentTakeover", "RequestId=" + state.Transaction.RequestId +
+                    ";Generation=" + state.Transaction.Generation + ";" + Clip(reason ?? "IndependentTakeoverRequested", 112),
+                    now, state.Intent.SelectedChannels.ToArray());
                 return state.Transaction;
             });
         }
