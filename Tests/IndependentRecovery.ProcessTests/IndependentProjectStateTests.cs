@@ -96,6 +96,27 @@ namespace AdaptiveControlTests
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            if (!cooperationOnly)
+            {
+                var installStore = Fixture(Path.Combine(root, "installation-maintenance"), now);
+                var installState = installStore.Read();
+                Reject(() => installStore.SetInstallationMaintenance(installState.Revision, true), "installation admitted armed run");
+                installStore.SetControllerManualPause(installState.Controller, installState.Intent.RunId,
+                    installState.Intent.RunEpoch, true, Guid.NewGuid().ToString("N"), now);
+                Reject(() => installStore.SetInstallationMaintenance(installStore.Read().Revision, true), "installation treated pause as stop");
+                installStore.RecordControllerManualStop(installState.Controller, installState.Intent.RunId,
+                    installState.Intent.RunEpoch, Guid.NewGuid().ToString("N"), now);
+                installStore.SetInstallationMaintenance(installStore.Read().Revision, true);
+                Assert(installStore.Read().Maintenance && installStore.Read().Intent.ManualStopped,
+                    "maintenance lost manual stop");
+                installStore.SetInstallationMaintenance(installStore.Read().Revision, false);
+                Assert(!installStore.Read().Maintenance && !installStore.Read().Intent.Armed,
+                    "leaving maintenance armed the experiment");
+                var cleanupStore = Fixture(Path.Combine(root, "installation-cleanup"), now);
+                cleanupStore.BeginRecovery(cleanupStore.Read().Revision, "executor", now);
+                Reject(() => cleanupStore.SetInstallationMaintenance(cleanupStore.Read().Revision, true),
+                    "installation erased active cleanup");
+            }
             var cooperationStore = Fixture(Path.Combine(root, "cooperation"), now);
             var cooperationState = cooperationStore.Read();
             var cooperation = cooperationStore.BeginRecovery(cooperationState.Revision, "executor", now);

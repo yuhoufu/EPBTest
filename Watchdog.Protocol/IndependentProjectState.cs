@@ -184,6 +184,21 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void SetInstallationMaintenance(long expectedRevision, bool maintenance)
+        {
+            Update(expectedRevision, state =>
+            {
+                // Installation must not reinterpret pause as permission to replace
+                // a controller, nor erase an outstanding physical cleanup obligation.
+                if (state.SafetyCleanupPending || state.Transaction != null && !state.Transaction.IsTerminal ||
+                    state.Intent != null && state.Intent.Armed && !state.Intent.ManualStopped)
+                    throw new InvalidOperationException("IndependentInstallationRequiresStoppedRun");
+                state.Maintenance = maintenance;
+                if (state.Ticket != null) state.Ticket.Revoked = true;
+                return true;
+            });
+        }
+
         public IndependentRunIntent UpdateOperatorIntent(long expectedRevision, string source, string reason,
             long now, Action<IndependentRunIntent> change)
         {
