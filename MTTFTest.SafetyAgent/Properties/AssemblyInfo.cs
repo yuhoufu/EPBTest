@@ -11,3 +11,4 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyFileVersion("4.0.0.3")]
 [assembly: AssemblyInformationalVersion("4.0.0.3")]
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("AdaptiveControlTests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("IndependentRecovery.ProcessTests")]

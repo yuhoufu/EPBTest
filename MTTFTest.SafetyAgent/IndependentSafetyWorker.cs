@@ -9,6 +9,9 @@ namespace MTTFTest.SafetyAgent
     internal static class IndependentSafetyWorker
     {
         internal static int Run(string commandPath)
+            => Run(commandPath, new ProductionSafetyHardwareFactory());
+
+        internal static int Run(string commandPath, ISafetyHardwareFactory factory)
         {
             using (var identity = WindowsIdentity.GetCurrent())
                 if (!identity.IsSystem) return 77;
@@ -27,7 +30,7 @@ namespace MTTFTest.SafetyAgent
             if (!string.Equals(SupervisorProtocol.ComputeSha256(commandPath), commandHash, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("IndependentSafetyCommandChangedDuringValidation");
             var result = IndependentSafetyStages.Execute(command.Transaction, command.ConfigDirectory,
-                command.Runtime, new ProductionSafetyHardwareFactory());
+                command.Runtime, factory);
             using (var current = Process.GetCurrentProcess())
             {
                 var completed = DateTime.UtcNow.Ticks;

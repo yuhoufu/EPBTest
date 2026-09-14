@@ -8,6 +8,8 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 2 && args[0] == "--independent-stage")
+                    return SimulatedSafetyWorker.Run(args[1]);
                 if (args.Length == 3 && args[0] == "--simulation-resume")
                     return TicketDatabaseSimulationTests.Resume(args[1], args[2]);
                 if ((args.Length == 1 || args.Length == 2) && args[0] == "--ticket-database-simulation")
