@@ -220,8 +220,51 @@ namespace AdaptiveControlTests
             var invalidManifest = false;
             try { command.Validate(now); } catch (InvalidDataException) { invalidManifest = true; }
             Assert(invalidManifest, "config traversal accepted");
+            var pumpStore = Fixture(Path.Combine(root, "pump-stop"), now);
+            pumpStore.BeginRecovery(pumpStore.Read().Revision, "executor", now);
+            var operations = new PumpOperations();
+            var pump = new IndependentProjectRecoveryPump(pumpStore, operations, "executor", 30000, 30000);
+            var pumpNow = now + TimeSpan.FromSeconds(25).Ticks;
+            pump.Tick(pumpNow);
+            Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.PowerOff && operations.CancelWorkers > 0,
+                "pump did not independently expire collaborative stop");
+            pump.Tick(pumpNow + 1);
+            pumpStore.UpdateOperatorIntent(pumpStore.Read().Revision, "OperatorStop", "stop during cleanup", pumpNow + 2,
+                intent => intent.ManualStopped = true);
+            pump.Tick(pumpNow + 3); pump.Tick(pumpNow + 4);
+            Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Cancelled &&
+                !pumpStore.Read().SafetyCleanupPending && operations.Launches == 0,
+                "pump stopped cleanup or launched after operator revocation");
+            pumpStore = Fixture(Path.Combine(root, "pump-launch"), now);
+            ticket = Ready(pumpStore, now);
+            operations = new PumpOperations();
+            pump = new IndependentProjectRecoveryPump(pumpStore, operations, "executor", 30000, 30000);
+            Reject(() => pump.Tick(now), "pump trusted nondurable launcher PID");
+            consumer = Identity();
+            pumpStore.ConsumeLaunchTicket(pumpStore.Read().Revision, ticket.Nonce, consumer, Hash, now);
+            pump.Tick(now + 1);
+            pump.Tick(now + 2);
+            Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Verifying && operations.Verifications == 0,
+                "process alive verified before new run binding");
+            pumpStore.CommitReplacementRun(pumpStore.Read().Revision, consumer, Guid.NewGuid().ToString("N"), 2, now + 3);
+            pump.Tick(now + 4);
+            Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Verified && operations.Verifications == 1,
+                "verified replacement could not complete transaction");
             Console.WriteLine("PASS independent project state " + _count + "/" + _count);
             return _count;
+        }
+
+        private sealed class PumpOperations : IIndependentProjectRuntimeOperations
+        {
+            internal int CancelWorkers, Launches, Verifications;
+            public void CancelStageWorkers() { CancelWorkers++; }
+            public void CancelPendingLaunch(IndependentRecoveryTransaction tx) { }
+            public IndependentOperationResult CooperativeStop(IndependentRecoveryTransaction tx) => IndependentOperationResult.Pending;
+            public IndependentOperationResult ConfirmPowerOff(IndependentRecoveryTransaction tx) => IndependentOperationResult.Completed;
+            public IndependentOperationResult RetireExactControls(IndependentRecoveryTransaction tx) => IndependentOperationResult.Completed;
+            public IndependentOperationResult ConfirmOutputsAndPressure(IndependentRecoveryTransaction tx) => IndependentOperationResult.Completed;
+            public IndependentOperationResult LaunchOnce(IndependentRecoveryTransaction tx) { Launches++; return IndependentOperationResult.Completed; }
+            public IndependentOperationResult VerifyActionsAndDatabase(IndependentRecoveryTransaction tx) { Verifications++; return IndependentOperationResult.Completed; }
         }
     }
 }

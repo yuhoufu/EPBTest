@@ -39,6 +39,7 @@
     <Compile Include="IndependentRecoveryExecutor.cs" />
     <Compile Include="IndependentBoundedWorker.cs" />
     <Compile Include="IndependentProjectState.cs" />
+    <Compile Include="IndependentProjectRecoveryPump.cs" />
     <Compile Include="IndependentSafetyWorkerProtocol.cs" />
     <Compile Include="FallbackControlPipe.cs" />
     <Compile Include="FallbackProgressVerifier.cs" />
