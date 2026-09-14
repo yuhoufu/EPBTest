@@ -206,6 +206,12 @@ namespace MTEmbTest
                 ExecutablePath = Registration.ExecutablePath, ConfigurationSha256 = Registration.ConfigurationSha256,
                 RunId = runId.ToString("N"), RunEpoch = epoch, SelectedChannels = channels.ToArray(), Armed = true,
                 PermanentChannels = Enumerable.Range(1, 12).Where(channel => config.Test.GetEpbRecord(channel).PermanentAlarmLatched).ToArray(),
+                MechanicalTargets = Enumerable.Range(1, 12).Select(channel => new IndependentMechanicalTarget
+                {
+                    Channel = channel,
+                    TotalCount = config.Test.GetEpbRecord(channel).TotalCount > 0
+                        ? config.Test.GetEpbRecord(channel).TotalCount : config.Test.TestTarget
+                }).ToArray(),
                 PeriodMs = config.Test.PeriodMs,
                 StartupBudgetMs = checked(Registration.StartupPositioningBudgetMs +
                     (Math.Max(0L, learnCycles) + 2) * config.Test.PeriodMs)

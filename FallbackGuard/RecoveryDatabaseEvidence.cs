@@ -49,6 +49,21 @@ namespace MTTFTest.FallbackGuard
 
     public static class RecoveryDatabaseEvidence
     {
+        public static int[] CompletedTargets(RecoveryDatabaseSnapshot snapshot,
+            MTTFTest.Watchdog.Protocol.IndependentRunIntent intent)
+        {
+            if (snapshot == null || intent == null) throw new ArgumentNullException();
+            snapshot.Validate(); intent.Validate();
+            if (!string.Equals(Path.GetFullPath(snapshot.DatabasePath), Path.GetFullPath(intent.DatabasePath), StringComparison.OrdinalIgnoreCase) ||
+                snapshot.CreationUtcTicks != intent.DatabaseCreationUtcTicks ||
+                snapshot.Channels.Any(lane => !intent.SelectedChannels.Contains(lane.Channel)) ||
+                intent.MechanicalTargets.Length == 0)
+                throw new InvalidDataException("IndependentCompletionEvidenceIdentityMissingOrChanged");
+            return snapshot.Channels.Where(lane => lane.MechanicalCompletedCount >=
+                intent.MechanicalTargets.Single(target => target.Channel == lane.Channel).TotalCount)
+                .Select(lane => lane.Channel).OrderBy(channel => channel).ToArray();
+        }
+
         // Invoke in the bounded database child, never on the service/UI thread.
         // No schema migration or backfill: an unsupported schema is unreadable,
         // not stalled and not proof of recovery.

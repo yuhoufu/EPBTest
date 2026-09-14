@@ -358,6 +358,19 @@ namespace AdaptiveControlTests
                     insert(channel, 101, "running", 0, 0);
                 }
                 var baseline = RecoveryDatabaseEvidence.Read(path, new[] { 7, 8 });
+                var completionIntent = new MTTFTest.Watchdog.Protocol.IndependentRunIntent
+                {
+                    Revision = 1, ProjectDirectory = Path.GetDirectoryName(path), DatabasePath = path,
+                    DatabaseCreationUtcTicks = baseline.CreationUtcTicks, ExecutablePath = Path.Combine(Path.GetDirectoryName(path), "main.exe"),
+                    ConfigurationSha256 = new string('a', 64), RunId = Guid.NewGuid().ToString("N"), RunEpoch = 1,
+                    SelectedChannels = new[] { 7, 8 }, Armed = true, PeriodMs = 15000, StartupBudgetMs = 180000,
+                    MechanicalTargets = baseline.Channels.Select(lane => new MTTFTest.Watchdog.Protocol.IndependentMechanicalTarget
+                    { Channel = lane.Channel, TotalCount = lane.MechanicalCompletedCount + (lane.Channel == 8 ? 1 : 0) }).ToArray()
+                };
+                Assert(RecoveryDatabaseEvidence.CompletedTargets(baseline, completionIntent).SequenceEqual(new[] { 7 }),
+                    "committed target completion was not distinguished from pending lane");
+                Assert(RecoveryDatabaseEvidence.UnverifiedChannels(baseline, baseline).Length == 2,
+                    "target completion weakened three-formal-cycle recovery verification");
                 Func<int[]> pending = () => RecoveryDatabaseEvidence.UnverifiedChannels(baseline,
                     RecoveryDatabaseEvidence.Read(path, new[] { 7, 8 }));
                 Assert(pending().Length == 2, "old rows proved recovery");

@@ -84,15 +84,38 @@ namespace MTTFTest.FallbackGuard
             if (now - _lastDatabaseRead < TimeSpan.FromSeconds(5).Ticks) return;
             _lastDatabaseRead = now;
             var alive = ExactProcessAlive(state.Controller);
-            if (alive == false)
-            {
-                _store.BeginRecovery(state.Revision, _executor, now);
-                Detail = "ExactControllerExited;IndependentTakeoverRequested";
-                return;
-            }
             try
             {
-                var snapshot = DatabaseProgressReader.ReadIsolated(_registration.DatabasePath, targets);
+                DatabaseProgressSnapshot snapshot;
+                if (state.Intent.MechanicalTargets.Length > 0)
+                {
+                    var proof = DatabaseProgressReader.ReadRecoveryIsolated(_registration.DatabasePath, targets);
+                    var completed = RecoveryDatabaseEvidence.CompletedTargets(proof, state.Intent);
+                    if (completed.Length > 0)
+                    {
+                        _store.RecordDatabaseCompletions(state.Revision, proof.DatabasePath, proof.CreationUtcTicks,
+                            proof.Channels.ToDictionary(lane => lane.Channel, lane => lane.MechanicalCompletedCount), now);
+                        _monitor.Observe(null, null, 0);
+                        Detail = "MechanicalTargetCompleted:" + string.Join(",", completed) + ";NotRecoveryVerification";
+                        return;
+                    }
+                    snapshot = new DatabaseProgressSnapshot
+                    {
+                        DatabasePath = proof.DatabasePath, CreationUtcTicks = proof.CreationUtcTicks,
+                        Channels = proof.Channels.Select(lane => new DatabaseLaneProgress
+                        {
+                            Channel = lane.Channel, Cycle = lane.FormalRecords.Select(row => row.Cycle).DefaultIfEmpty(0).Max(),
+                            RecentCompletedCycles = lane.FormalRecords.Select(row => row.Cycle).ToArray()
+                        }).ToArray()
+                    };
+                }
+                else snapshot = DatabaseProgressReader.ReadIsolated(_registration.DatabasePath, targets);
+                if (alive == false)
+                {
+                    _store.BeginRecovery(state.Revision, _executor, now);
+                    Detail = "ExactControllerExited;IndependentTakeoverRequested";
+                    return;
+                }
                 var intent = new DatabaseWatchIntent
                 {
                     SessionId = state.Controller.SessionToken, RunId = state.Intent.RunId,
@@ -118,6 +141,12 @@ namespace MTTFTest.FallbackGuard
                 // Includes the externally enforced reader timeout. Failed reads
                 // must break consecutive stall confirmations, never count as one.
                 _monitor.Unreadable();
+                if (alive == false)
+                {
+                    _store.BeginRecovery(state.Revision, _executor, now);
+                    Detail = "ExactControllerExited;DatabaseUnreadable;IndependentTakeoverRequested";
+                    return;
+                }
                 Detail = "DatabaseObservationOrAdmissionFailed:" + error.GetType().Name + ":" + Clip(error.Message);
             }
         }

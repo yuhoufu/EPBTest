@@ -145,6 +145,27 @@ namespace AdaptiveControlTests
                 return _count;
             }
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
+            var completedStore = Fixture(Path.Combine(root, "database-completion"), now);
+            completedStore.Update(completedStore.Read().Revision, state =>
+            {
+                state.Intent.MechanicalTargets = state.Intent.SelectedChannels.Select(channel =>
+                    new IndependentMechanicalTarget { Channel = channel, TotalCount = 5 }).ToArray();
+                return true;
+            });
+            var completionState = completedStore.Read();
+            var completionCounts = new System.Collections.Generic.Dictionary<int, long> { [4] = 5, [5] = 4 };
+            Reject(() => completedStore.RecordDatabaseCompletions(completionState.Revision, completionState.Intent.DatabasePath,
+                completionState.Intent.DatabaseCreationUtcTicks + 1, completionCounts, now), "foreign database completed channels");
+            completedStore.RecordDatabaseCompletions(completionState.Revision, completionState.Intent.DatabasePath,
+                completionState.Intent.DatabaseCreationUtcTicks, completionCounts, now);
+            Assert(completedStore.Read().Intent.CompletedChannels.SequenceEqual(new[] { 4 }) &&
+                completedStore.Read().Intent.RecoveryChannels().Contains(5), "completion stopped unfinished peer or retained completed lane");
+            Reject(() => completedStore.RecordDatabaseCompletions(completionState.Revision, completionState.Intent.DatabasePath,
+                completionState.Intent.DatabaseCreationUtcTicks, completionCounts, now), "stale completion overwrote run state");
+            completedStore.RecordDatabaseCompletions(completedStore.Read().Revision, completionState.Intent.DatabasePath,
+                completionState.Intent.DatabaseCreationUtcTicks, completionState.Intent.SelectedChannels.ToDictionary(channel => channel, channel => 5L), now);
+            Assert(!completedStore.Read().Intent.Armed && completedStore.Read().Intent.RecoveryChannels().Length == 0 &&
+                completedStore.Read().Transaction == null, "completed project restarted or falsely claimed recovery verification");
             var permanentRoot = Path.Combine(root, "controller-permanent");
             var permanentStore = Fixture(permanentRoot, now);
             var permanentState = permanentStore.Read();

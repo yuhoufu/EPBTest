@@ -246,6 +246,37 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void RecordDatabaseCompletions(long expectedRevision, string databasePath, long creationUtcTicks,
+            System.Collections.Generic.IReadOnlyDictionary<int, long> counts, long now)
+        {
+            if (counts == null || counts.Count == 0 || counts.Count > 12 ||
+                counts.Any(pair => pair.Key < 1 || pair.Key > 12 || pair.Value < 0) || now <= 0)
+                throw new ArgumentException("IndependentCompletionCountsInvalid");
+            Update(expectedRevision, state =>
+            {
+                var intent = state.Intent;
+                if (intent == null || state.SafetyCleanupPending || state.Transaction != null && !state.Transaction.IsTerminal ||
+                    !string.Equals(databasePath, intent.DatabasePath, StringComparison.OrdinalIgnoreCase) ||
+                    creationUtcTicks != intent.DatabaseCreationUtcTicks || intent.MechanicalTargets.Length == 0 ||
+                    counts.Keys.Except(intent.SelectedChannels).Any())
+                    throw new InvalidOperationException("IndependentCompletionIdentityOrPhaseMismatch");
+                var before = intent.SelectedChannels.ToArray();
+                var completed = counts.Where(pair => pair.Value >= intent.MechanicalTargets.Single(target => target.Channel == pair.Key).TotalCount)
+                    .Select(pair => pair.Key).ToArray();
+                intent.CompletedChannels = intent.CompletedChannels.Union(completed).OrderBy(channel => channel).ToArray();
+                if (intent.SelectedChannels.All(channel => intent.CompletedChannels.Contains(channel))) intent.Armed = false;
+                intent.Revision = checked(intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "DatabaseTargetCompleted", "Channels=" + string.Join(",", completed), now, before);
+                return true;
+            });
+        }
+
         public void RecordControllerPermanentExclusion(IndependentProcessIdentity controller, string runId, long runEpoch,
             int[] channels, string reason, string commandId, long now)
         {

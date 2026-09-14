@@ -8,6 +8,12 @@ namespace MTTFTest.Watchdog.Protocol
 {
     // This journal is an authority record, not a heartbeat. Never infer operator
     // intent from the liveness of a process or from a channel's displayed state.
+    public sealed class IndependentMechanicalTarget
+    {
+        public int Channel { get; set; }
+        public long TotalCount { get; set; }
+    }
+
     public sealed class IndependentRunIntent
     {
         public int SchemaVersion { get; set; } = 2;
@@ -23,6 +29,7 @@ namespace MTTFTest.Watchdog.Protocol
         public int[] PausedChannels { get; set; } = Array.Empty<int>();
         public int[] PermanentChannels { get; set; } = Array.Empty<int>();
         public int[] CompletedChannels { get; set; } = Array.Empty<int>();
+        public IndependentMechanicalTarget[] MechanicalTargets { get; set; } = Array.Empty<IndependentMechanicalTarget>();
         public bool Armed { get; set; }
         public bool ManualStopped { get; set; }
         public bool ManualPaused { get; set; }
@@ -51,6 +58,11 @@ namespace MTTFTest.Watchdog.Protocol
                 if (channels == null || channels.Length > 12 || channels.Any(c => c < 1 || c > 12) ||
                     channels.Distinct().Count() != channels.Length)
                     throw new InvalidDataException("IndependentIntentChannelsInvalid");
+            if (MechanicalTargets == null || MechanicalTargets.Length > 12 ||
+                MechanicalTargets.Any(target => target == null || target.Channel < 1 || target.Channel > 12 || target.TotalCount <= 0) ||
+                MechanicalTargets.Select(target => target.Channel).Distinct().Count() != MechanicalTargets.Length ||
+                (MechanicalTargets.Length > 0 && SelectedChannels.Except(MechanicalTargets.Select(target => target.Channel)).Any()))
+                throw new InvalidDataException("IndependentMechanicalTargetsInvalid");
         }
     }
 
