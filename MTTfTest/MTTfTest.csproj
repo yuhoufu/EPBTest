@@ -214,6 +214,7 @@
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="IndependentRecoveryStartup.cs" />
+    <Compile Include="IndependentRegistrationExport.cs" />
     <Compile Include="FrmEpbMainMonitor.IndependentFallback.cs" />
     <Compile Include="UnattendedRecovery.cs" />
     <Compile Include="WatchdogRuntime.cs" />
