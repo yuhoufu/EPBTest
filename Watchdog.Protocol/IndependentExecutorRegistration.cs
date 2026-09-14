@@ -48,6 +48,38 @@ namespace MTTFTest.Watchdog.Protocol
         public static IndependentInstallationBinding ResolveForStartup(string executablePath)
             => WithBindingLock(executablePath, () => Resolve(executablePath));
 
+        public static void RequireCurrentSessionHost(string mainExecutable, string projectDirectory, int parentPid, long parentStartTicks)
+        {
+            var binding = Resolve(mainExecutable);
+            if (binding == null) return;
+            var registration = IndependentExecutorRegistration.LoadTrusted(binding.RegistrationPath);
+            var state = new IndependentProjectStateStore(registration.StateDirectory).Read();
+            if (state?.Intent != null) registration.RequireBoundIntent(state.Intent);
+            RequireSessionHostState(state, registration.ProjectDirectory, projectDirectory, parentPid, parentStartTicks);
+            using (var parent = System.Diagnostics.Process.GetProcessById(parentPid))
+                if (parent.HasExited || parent.StartTime.ToUniversalTime().Ticks != parentStartTicks ||
+                    !string.Equals(Path.GetFullPath(parent.MainModule.FileName), Path.GetFullPath(mainExecutable), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("IndependentSessionParentIdentityMismatch");
+        }
+
+        public static void RequireSessionHostState(IndependentProjectState state, string registeredProject,
+            string requestedProject, int parentPid, long parentStartTicks)
+        {
+            if (state == null || parentPid <= 0 || parentStartTicks <= 0 ||
+                !string.Equals(Path.GetFullPath(registeredProject), Path.GetFullPath(requestedProject), StringComparison.OrdinalIgnoreCase) ||
+                state.Maintenance || state.SafetyCleanupPending ||
+                state.Transaction != null && !state.Transaction.IsTerminal &&
+                    state.Transaction.Phase != IndependentRecoveryPhase.Verifying &&
+                    state.Transaction.Phase != IndependentRecoveryPhase.LaunchPending)
+                throw new InvalidOperationException("IndependentSessionLaunchNotAdmitted");
+            // During replacement bootstrap the consumed ticket identifies the
+            // new parent before it commits its new run. Old snapshots cannot.
+            var parent = state.Ticket != null && !state.Ticket.Revoked && state.Ticket.Consumer != null
+                ? state.Ticket.Consumer : state.Controller;
+            if (state.Intent?.Armed == true && (parent == null || parent.Pid != parentPid || parent.StartUtcTicks != parentStartTicks))
+                throw new InvalidOperationException("IndependentSessionParentSuperseded");
+        }
+
         public static void Install(string registrationPath)
         {
             var registration = IndependentExecutorRegistration.LoadTrusted(registrationPath);

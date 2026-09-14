@@ -780,6 +780,8 @@ namespace MTTFTest.Watchdog
                         ExecutablePath = request.ExecutablePath,
                         ExecutableSha256 = request.ExecutableSha256,
                         MainExecutablePath = mainExecutablePath,
+                        ParentProcessId = request.RequesterProcessId,
+                        ParentProcessStartUtcTicks = request.RequesterProcessStartUtcTicks,
                         MainExecutableSha256 =
                             SupervisorProtocol.ComputeSha256(mainExecutablePath),
                         ProjectDirectory = projectDirectory,
@@ -925,6 +927,8 @@ namespace MTTFTest.Watchdog
                 SupervisorLaunchRecord record,
                 string stateDirectory)
             {
+                IndependentInstallationBinding.RequireCurrentSessionHost(record.MainExecutablePath,
+                    record.ProjectDirectory, record.ParentProcessId, record.ParentProcessStartUtcTicks);
                 var process = Process.Start(new ProcessStartInfo
                 {
                     FileName = record.ExecutablePath,
@@ -1620,6 +1624,8 @@ namespace MTTFTest.Watchdog
 
         private sealed class SupervisorLaunchRecord
         {
+            public int ParentProcessId { get; set; }
+            public long ParentProcessStartUtcTicks { get; set; }
             public int SchemaVersion { get; set; }
             public string SessionId { get; set; }
             public string RequestId { get; set; }

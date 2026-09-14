@@ -29,7 +29,7 @@ namespace MTTFTest.Watchdog.Client
                 return await LaunchThroughSupervisorAsync(request, cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch when (!IsFormalModeRequired(request.ExecutablePath))
+            catch when (!IsFormalModeRequired(request.ExecutablePath) && !IsIndependentModeRequired())
             {
                 return await _engineeringFallback.LaunchAsync(request, cancellationToken)
                     .ConfigureAwait(false);
@@ -41,6 +41,15 @@ namespace MTTFTest.Watchdog.Client
             var directory = Path.GetDirectoryName(executablePath ?? string.Empty);
             return !string.IsNullOrWhiteSpace(directory) &&
                    File.Exists(Path.Combine(directory, FormalModeMarkerName));
+        }
+
+        private static bool IsIndependentModeRequired()
+        {
+            // A bound installation cannot evade a Supervisor rejection through
+            // the engineering fallback, even if its legacy marker is absent.
+            // Invalid binding exceptions in this filter also deny fallback.
+            using (var current = Process.GetCurrentProcess())
+                return IndependentInstallationBinding.Resolve(current.MainModule.FileName) != null;
         }
 
         private static async Task<SidecarProcessLaunchResult> LaunchThroughSupervisorAsync(

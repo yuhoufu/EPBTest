@@ -21,6 +21,9 @@ namespace MTTFTest.Watchdog.Client
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                using (var parent = Process.GetCurrentProcess())
+                    if (IndependentInstallationBinding.Resolve(parent.MainModule.FileName) != null)
+                        throw new InvalidOperationException("IndependentInstallationRequiresSupervisorSessionLaunch");
                 process = Process.Start(new ProcessStartInfo
                 {
                     FileName = request.ExecutablePath,

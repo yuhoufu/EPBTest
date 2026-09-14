@@ -185,6 +185,22 @@ namespace AdaptiveControlTests
             }
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
             var verificationDone = Fixture(Path.Combine(root, "verification-target-completion"), now);
+            var sessionState = verificationDone.Read();
+            IndependentInstallationBinding.RequireSessionHostState(sessionState, root, root,
+                sessionState.Controller.Pid, sessionState.Controller.StartUtcTicks);
+            Assert(true, "current session host rejected");
+            Reject(() => IndependentInstallationBinding.RequireSessionHostState(sessionState, root, root,
+                sessionState.Controller.Pid + 1, sessionState.Controller.StartUtcTicks), "old session parent accepted");
+            Reject(() => IndependentInstallationBinding.RequireSessionHostState(sessionState, root, root,
+                sessionState.Controller.Pid, sessionState.Controller.StartUtcTicks + 1), "reused parent PID accepted");
+            sessionState.SafetyCleanupPending = true;
+            Reject(() => IndependentInstallationBinding.RequireSessionHostState(sessionState, root, root,
+                sessionState.Controller.Pid, sessionState.Controller.StartUtcTicks), "session respawn admitted during cleanup");
+            sessionState.SafetyCleanupPending = false;
+            sessionState.Intent.Armed = false; sessionState.Intent.ManualStopped = true;
+            IndependentInstallationBinding.RequireSessionHostState(sessionState, root, root,
+                sessionState.Controller.Pid + 1, sessionState.Controller.StartUtcTicks + 1);
+            Assert(true, "stopped old intent blocked fresh manual process supervision");
             var nearZeroStore = Fixture(Path.Combine(root, "near-zero-retry"), now);
             var nz = nearZeroStore.Read();
             Assert(!nearZeroStore.RecordNearZeroFault(nz.Controller, nz.Intent.RunId, nz.Intent.RunEpoch, 4, false,
