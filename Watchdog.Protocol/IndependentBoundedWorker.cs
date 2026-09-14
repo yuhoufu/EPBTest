@@ -25,7 +25,7 @@ namespace MTTFTest.Watchdog.Protocol
         public uint ExitCode { get; private set; }
 
         public IndependentBoundedWorker(string executable, string arguments, string workingDirectory,
-            int deadlineMs, int memoryLimitMiB = 256)
+            int deadlineMs, int memoryLimitMiB = 256, Action<int, long> beforeResume = null)
         {
             if (deadlineMs < 1 || deadlineMs > 300000 || memoryLimitMiB < 32 || memoryLimitMiB > 512)
                 throw new ArgumentOutOfRangeException(nameof(deadlineMs));
@@ -61,6 +61,12 @@ namespace MTTFTest.Watchdog.Protocol
                 if (!AssignProcessToJobObject(_job, _process)) throw new Win32Exception();
                 if (!GetProcessTimes(_process, out var created, out _, out _, out _)) throw new Win32Exception();
                 StartUtcTicks = DateTime.FromFileTimeUtc(created).Ticks;
+                // The callback can durably bind this exact suspended child to
+                // its session. A rejected or late registration never executes
+                // even the child's first instruction.
+                beforeResume?.Invoke(ProcessId, StartUtcTicks);
+                if (_clock.ElapsedMilliseconds >= _deadlineMs)
+                    throw new TimeoutException("IndependentWorkerRegistrationDeadlineExceeded");
                 if (ResumeThread(info.hThread) == uint.MaxValue) throw new Win32Exception();
             }
             catch

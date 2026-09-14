@@ -16,6 +16,7 @@ namespace AdaptiveControlTests
         internal static int Child(string mode, string evidence)
         {
             if (mode == "exit") return 0;
+            if (mode == "started") { File.WriteAllText(evidence, "executed"); return 0; }
             if (mode == "fail") return 17;
             if (mode == "lease")
             {
@@ -98,6 +99,41 @@ namespace AdaptiveControlTests
             var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ??
                 Path.GetTempPath(), "independent-workers-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
+            var admittedPath = Path.Combine(root, "admitted.txt");
+            var registrationObserved = false;
+            using (var admitted = new IndependentBoundedWorker(Executable,
+                "--independent-worker-child started \"" + admittedPath + "\"", Path.GetDirectoryName(Executable), 10000,
+                beforeResume: (pid, ticks) =>
+                {
+                    using (var suspended = Process.GetProcessById(pid))
+                        if (suspended.StartTime.ToUniversalTime().Ticks != ticks)
+                            throw new Exception("suspended child identity mismatch");
+                    if (File.Exists(admittedPath)) throw new Exception("child executed before registration");
+                    registrationObserved = true;
+                }))
+            {
+                Until(() => admitted.Poll() != IndependentWorkerState.Running, "registered child did not finish");
+                if (!registrationObserved || admitted.Poll() != IndependentWorkerState.Completed || !File.Exists(admittedPath))
+                    throw new Exception("registered child did not execute after admission");
+            }
+            var rejectedPath = Path.Combine(root, "rejected.txt");
+            var rejectedPid = 0; long rejectedTicks = 0;
+            var rejectedRegistration = false;
+            try
+            {
+                using (var rejectedChild = new IndependentBoundedWorker(Executable,
+                    "--independent-worker-child started \"" + rejectedPath + "\"", Path.GetDirectoryName(Executable), 10000,
+                    beforeResume: (pid, ticks) =>
+                    {
+                        rejectedPid = pid; rejectedTicks = ticks;
+                        throw new InvalidOperationException("InjectedRegistrationRejected");
+                    })) { }
+            }
+            catch (InvalidOperationException error) when (error.Message == "InjectedRegistrationRejected")
+            { rejectedRegistration = true; }
+            if (!rejectedRegistration || rejectedPid == 0) throw new Exception("registration rejection not observed");
+            Until(() => Gone(rejectedPid, rejectedTicks), "rejected suspended child survived");
+            if (File.Exists(rejectedPath)) throw new Exception("rejected child executed");
             IndependentBoundedWorker Start(string mode, string path, int deadline) => new IndependentBoundedWorker(
                 Executable, "--independent-worker-child " + mode + " \"" + path + "\"", root, deadline);
             using (var success = Start("exit", root, 10000))
@@ -231,7 +267,7 @@ namespace AdaptiveControlTests
                 if (!rejected) throw new Exception("disposed executor lease still grants authority");
                 using (var next = new IndependentExecutorLease(root, installation)) next.RequireHeld();
             }
-            return 17;
+            return 19;
         }
     }
 }
