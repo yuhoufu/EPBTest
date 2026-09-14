@@ -95,6 +95,27 @@ namespace AdaptiveControlTests
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            var pauseStore = Fixture(Path.Combine(root, "durable-controller-pause"), now);
+            var pauseState = pauseStore.Read();
+            var pauseCommand = Guid.NewGuid().ToString("N");
+            pauseStore.SetControllerManualPause(pauseState.Controller, pauseState.Intent.RunId, pauseState.Intent.RunEpoch,
+                true, pauseCommand, now + 1);
+            var pausedState = pauseStore.Read();
+            Assert(pausedState.Intent.RecoveryChannels().Length == 0 && pausedState.Intent.Armed,
+                "pause retained recovery targets or lost explicit resume intent");
+            pauseStore.SetControllerManualPause(pauseState.Controller, pauseState.Intent.RunId, pauseState.Intent.RunEpoch,
+                true, pauseCommand, now + 2);
+            Assert(pauseStore.Read().Revision == pausedState.Revision, "duplicate pause was not idempotent");
+            Reject(() => pauseStore.SetControllerManualPause(Identity(), pauseState.Intent.RunId, pauseState.Intent.RunEpoch,
+                false, pauseCommand, now + 3), "foreign process resumed the paused run");
+            pauseStore.SetControllerManualPause(pauseState.Controller, pauseState.Intent.RunId, pauseState.Intent.RunEpoch,
+                false, Guid.NewGuid().ToString("N"), now + 4);
+            Assert(pauseStore.Read().Intent.RecoveryChannels().Length == 6 && pauseStore.Read().RunStartedUtcTicks == now + 4,
+                "explicit continue failed to restore authorized targets and startup window");
+            pauseStore.RecordControllerManualStop(pauseState.Controller, pauseState.Intent.RunId, pauseState.Intent.RunEpoch,
+                Guid.NewGuid().ToString("N"), now + 5);
+            Reject(() => pauseStore.SetControllerManualPause(pauseState.Controller, pauseState.Intent.RunId, pauseState.Intent.RunEpoch,
+                false, Guid.NewGuid().ToString("N"), now + 6), "continue undid a whole-run manual stop");
             var startupStore = Fixture(Path.Combine(root, "durable-startup-deadline"), now);
             var startup = startupStore.Read();
             Assert(startup.SchemaVersion == 2 && startup.RunStartedUtcTicks == now &&
@@ -479,6 +500,17 @@ namespace AdaptiveControlTests
             pump.Tick(now + 4);
             Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Verified && operations.Verifications == 1,
                 "verified replacement could not complete transaction");
+            var verifiedRun = pumpStore.Read();
+            pumpStore.SetControllerManualPause(consumer, verifiedRun.Intent.RunId, verifiedRun.Intent.RunEpoch,
+                true, Guid.NewGuid().ToString("N"), now + 5);
+            Assert(pumpStore.Read().Intent.RecoveryChannels().Length == 0 && !pumpStore.Read().Ticket.Revoked &&
+                pumpStore.Read().Transaction.IntentRevision == pumpStore.Read().Intent.Revision,
+                "pause broke verified binding or retained restart targets");
+            pumpStore.SetControllerManualPause(consumer, verifiedRun.Intent.RunId, verifiedRun.Intent.RunEpoch,
+                false, Guid.NewGuid().ToString("N"), now + 6);
+            Assert(pumpStore.Read().Intent.RecoveryChannels().Length == 6 &&
+                pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Verified &&
+                pumpStore.Read().Controller.Matches(consumer), "continue replaced verified process or failed to restore targets");
             var abandonedStore = Fixture(Path.Combine(root, "consumed-before-bootstrap-stop"), now);
             var abandonedTicket = Ready(abandonedStore, now);
             var abandonedConsumer = Identity();

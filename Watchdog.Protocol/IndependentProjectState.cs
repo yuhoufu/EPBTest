@@ -214,6 +214,49 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void SetControllerManualPause(IndependentProcessIdentity controller, string runId, long runEpoch,
+            bool paused, string commandId, long now)
+        {
+            controller.Validate();
+            if (!Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentPauseCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentPauseStaleController");
+                if (!paused && (state.Maintenance || state.SafetyCleanupPending ||
+                    state.Transaction?.IsTerminal == false || state.Intent.ManualStopped || !state.Intent.Armed))
+                    throw new InvalidOperationException("IndependentPauseResumeNotAuthorized");
+                if (state.Intent.ManualPaused == paused) return true;
+                var before = state.Intent.SelectedChannels.ToArray();
+                state.Intent.ManualPaused = paused;
+                if (!paused)
+                {
+                    // Only an explicit continue opens a new startup observation
+                    // window; service restarts and duplicate commands cannot.
+                    state.RunStartedUtcTicks = now;
+                    state.StartupDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(state.Intent.StartupBudgetMs).Ticks);
+                }
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    // This consumed historical ticket cannot launch again. Keep
+                    // the verified controller binding while explicit pause/resume
+                    // updates its authority; a pending launch is revoked below.
+                    state.Transaction.IntentRevision = state.Intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, paused ? "OperatorPause" : "OperatorContinue", "CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
         public IndependentRecoveryTransaction BeginRecovery(long expectedRevision, string executor, long now)
         {
             return Update(expectedRevision, state =>

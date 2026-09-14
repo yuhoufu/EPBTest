@@ -151,6 +151,13 @@ namespace MTEmbTest
             return task;
         }
 
+        internal System.Threading.Tasks.Task PersistManualPauseAsync(bool paused, string commandId)
+        {
+            if (RunId == null) throw new InvalidOperationException("IndependentPauseRunMissing");
+            return System.Threading.Tasks.Task.Run(() =>
+                _store.SetControllerManualPause(Identity, RunId, RunEpoch, paused, commandId, DateTime.UtcNow.Ticks));
+        }
+
         internal void RequireManualStopPersistenceCompleted()
         {
             if (_manualStopPersistence != null && _manualStopPersistence.Status != System.Threading.Tasks.TaskStatus.RanToCompletion)

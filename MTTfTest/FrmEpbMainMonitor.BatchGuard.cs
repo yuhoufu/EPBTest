@@ -110,6 +110,8 @@ namespace MTEmbTest
                             "自动重启子进程出现非预期 Paused 状态，拒绝把它当作新运行继续。");
                     var commandId = Guid.NewGuid().ToString("N");
                     LogInfo($"已接收继续试验命令，正在执行恢复预检。CommandId={commandId}");
+                    if (IndependentRecoveryStartup.Current != null)
+                        await IndependentRecoveryStartup.Current.PersistManualPauseAsync(false, commandId).ConfigureAwait(true);
                     PostSafetyStatus("继续命令已接收，正在执行恢复预检…", false);
                     RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
@@ -147,6 +149,8 @@ namespace MTEmbTest
                             "自动重启子进程已存在 Running 批次，拒绝重复提交恢复启动。");
                     var commandId = Guid.NewGuid().ToString("N");
                     LogInfo($"已接收暂停试验命令，等待所有运行卡钳完成当前圈。CommandId={commandId}");
+                    if (IndependentRecoveryStartup.Current != null)
+                        await IndependentRecoveryStartup.Current.PersistManualPauseAsync(true, commandId).ConfigureAwait(true);
                     PostSafetyStatus("暂停命令已接收，正在等待当前圈安全结束…", false);
                     await _epb.PauseBatchGracefullyAsync().ConfigureAwait(true);
                     SaveGracefulPauseCheckpoint();
