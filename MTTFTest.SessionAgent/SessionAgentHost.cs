@@ -166,7 +166,7 @@ namespace MTTFTest.SessionAgent
                 ConsumedUtcTicks = now
             };
             WriteNew(path, Json.Serialize(record));
-            var process = Process.Start(new ProcessStartInfo
+            var process = IndependentInstallationBinding.StartLegacyProcess(new ProcessStartInfo
             {
                 FileName = executable,
                 Arguments = capability.Arguments ?? string.Empty,

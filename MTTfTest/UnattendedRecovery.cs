@@ -2675,7 +2675,7 @@ namespace MTEmbTest
                 try
                 {
                     IndependentInstallationBinding.RequireLegacyLaunchAllowed(executable);
-                    child = Process.Start(new ProcessStartInfo
+                    child = IndependentInstallationBinding.StartLegacyProcess(new ProcessStartInfo
                     {
                         FileName = executable,
                         Arguments = arguments,

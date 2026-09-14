@@ -45,11 +45,59 @@ namespace MTTFTest.Watchdog.Protocol
                 throw new InvalidOperationException("IndependentExecutorOwnsProcessRelaunch");
         }
 
+        public static IndependentInstallationBinding ResolveForStartup(string executablePath)
+            => WithBindingLock(executablePath, () => Resolve(executablePath));
+
         public static void Install(string registrationPath)
         {
             var registration = IndependentExecutorRegistration.LoadTrusted(registrationPath);
+            WithBindingLock(registration.ExecutablePath, () =>
+            {
+                RequireControllerAbsent(registration.ExecutablePath);
+                InstallCore(registrationPath, registration);
+                return true;
+            });
+        }
+
+        public static System.Diagnostics.Process StartLegacyProcess(System.Diagnostics.ProcessStartInfo startInfo)
+        {
+            if (startInfo == null || !Path.IsPathRooted(startInfo.FileName ?? string.Empty))
+                throw new ArgumentException("IndependentLegacyExecutableMustBeAbsolute");
+            return WithBindingLock(startInfo.FileName, () =>
+            {
+                RequireLegacyLaunchAllowed(startInfo.FileName);
+                return System.Diagnostics.Process.Start(startInfo);
+            });
+        }
+
+        public static void RequireControllerAbsent(string executablePath)
+        {
+            var expected = Path.GetFullPath(executablePath);
+            var processes = System.Diagnostics.Process.GetProcessesByName(Path.GetFileNameWithoutExtension(expected));
+            try
+            {
+                if (processes.Length > 128) throw new InvalidOperationException("IndependentControllerInspectionLimit");
+                foreach (var process in processes)
+                {
+                    try
+                    {
+                        if (process.HasExited) continue;
+                        if (string.Equals(Path.GetFullPath(process.MainModule.FileName), expected, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException("IndependentBindingControllerStillRunning");
+                    }
+                    catch (System.ComponentModel.Win32Exception)
+                    {
+                        if (!process.HasExited) throw;
+                    }
+                }
+            }
+            finally { foreach (var process in processes) process.Dispose(); }
+        }
+
+        private static T WithBindingLock<T>(string executablePath, Func<T> action)
+        {
             using (var mutex = new System.Threading.Mutex(false, "Global\\MTTF-IndependentBinding-" +
-                SupervisorProtocol.ComputeTextSha256(registration.ExecutablePath.ToUpperInvariant())))
+                SupervisorProtocol.ComputeTextSha256(Path.GetFullPath(executablePath).ToUpperInvariant())))
             {
                 var held = false;
                 try
@@ -57,7 +105,7 @@ namespace MTTFTest.Watchdog.Protocol
                     try { held = mutex.WaitOne(5000); }
                     catch (System.Threading.AbandonedMutexException) { held = true; }
                     if (!held) throw new TimeoutException("IndependentInstallationBindingBusy");
-                    InstallCore(registrationPath, registration);
+                    return action();
                 }
                 finally { if (held) mutex.ReleaseMutex(); }
             }

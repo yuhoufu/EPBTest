@@ -78,7 +78,7 @@ namespace MTTFTest.Watchdog
                     "MTTFTest.UnattendedMode.required");
                 process = File.Exists(formalMarker)
                     ? SessionAgentLaunchClient.Start(capability)
-                    : Process.Start(new ProcessStartInfo
+                    : IndependentInstallationBinding.StartLegacyProcess(new ProcessStartInfo
                     {
                         FileName = capability.ExecutablePath,
                         Arguments = capability.Arguments ?? string.Empty,

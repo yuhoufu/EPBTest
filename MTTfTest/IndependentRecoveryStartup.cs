@@ -79,7 +79,7 @@ namespace MTEmbTest
         {
             IndependentInstallationBinding installed;
             using (var process = Process.GetCurrentProcess())
-                installed = IndependentInstallationBinding.Resolve(process.MainModule.FileName);
+                installed = IndependentInstallationBinding.ResolveForStartup(process.MainModule.FileName);
             var present = args.Any(value => value == "--independent-registration" || value == "--independent-ticket" || value == "--independent-installation");
             if (!present)
             {

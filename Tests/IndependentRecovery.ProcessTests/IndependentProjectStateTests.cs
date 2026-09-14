@@ -98,6 +98,45 @@ namespace AdaptiveControlTests
             var now = DateTime.UtcNow.Ticks;
             if (!cooperationOnly)
             {
+                Reject(() => IndependentInstallationBinding.RequireControllerAbsent(Exe),
+                    "binding admitted live controller executable");
+                IndependentInstallationBinding.RequireControllerAbsent(Path.Combine(root, Path.GetFileName(Exe)));
+                Assert(true, "unrelated same-name executable blocked installation");
+                var legacyExe = Path.Combine(root, "legacy-launch.exe");
+                File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), legacyExe);
+                var mutexName = "Global\\MTTF-IndependentBinding-" + SupervisorProtocol.ComputeTextSha256(legacyExe.ToUpperInvariant());
+                using (var bindingLock = new Mutex(false, mutexName))
+                using (var entered = new ManualResetEventSlim(false))
+                {
+                    bindingLock.WaitOne();
+                    System.Threading.Tasks.Task<bool> launchAttempt = null;
+                    try
+                    {
+                        launchAttempt = System.Threading.Tasks.Task.Run(() =>
+                        {
+                            entered.Set();
+                            try
+                            {
+                                using (var child = IndependentInstallationBinding.StartLegacyProcess(new ProcessStartInfo
+                                { FileName = legacyExe, Arguments = "/c exit 0", UseShellExecute = false, CreateNoWindow = true }))
+                                {
+                                    if (child != null && !child.WaitForExit(3000))
+                                    { child.Kill(); child.WaitForExit(3000); }
+                                }
+                                return false;
+                            }
+                            catch (Exception error) when (error is InvalidOperationException || error is InvalidDataException ||
+                                error is UnauthorizedAccessException) { return true; }
+                        });
+                        if (!entered.Wait(3000)) throw new Exception("legacy launch worker did not start");
+                        Assert(!launchAttempt.Wait(100), "legacy launch ignored installation mutex");
+                        // An invalid/new binding must also fail closed. This is
+                        // deliberately written after the launch request began.
+                        File.WriteAllText(IndependentInstallationBinding.PathFor(legacyExe), "{}");
+                    }
+                    finally { bindingLock.ReleaseMutex(); }
+                    Assert(launchAttempt.Wait(6000) && launchAttempt.Result, "legacy launch did not recheck binding after installation lock");
+                }
                 var installStore = Fixture(Path.Combine(root, "installation-maintenance"), now);
                 var installState = installStore.Read();
                 Reject(() => installStore.SetInstallationMaintenance(installState.Revision, true), "installation admitted armed run");
