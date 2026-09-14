@@ -78,6 +78,10 @@ namespace AdaptiveControlTests
                     try { using (var operation = new IndependentSafetyWorkerOperation(Exe, Hash, Path.Combine(root, "missing.json"))) { } }
                     catch (UnauthorizedAccessException) { accessDenied = true; }
                     Assert(accessDenied, "non-SYSTEM operation invoked a hardware worker");
+                    accessDenied = false;
+                    try { using (var runner = new IndependentProjectSafetyRunner(Path.Combine(root, "missing.json"), "executor")) { } }
+                    catch (UnauthorizedAccessException) { accessDenied = true; }
+                    Assert(accessDenied, "non-SYSTEM runner accessed installed hardware configuration");
                 }
             }
             var now = DateTime.UtcNow.Ticks;

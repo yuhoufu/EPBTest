@@ -43,6 +43,8 @@
     <Compile Include="IndependentSafetyWorkerProtocol.cs" />
     <Compile Include="IndependentSafetyWorkerOperation.cs" />
     <Compile Include="IndependentExecutorRegistration.cs" />
+    <Compile Include="IndependentProcessRetirement.cs" />
+    <Compile Include="IndependentProjectSafetyRunner.cs" />
     <Compile Include="FallbackControlPipe.cs" />
     <Compile Include="FallbackProgressVerifier.cs" />
     <Compile Include="DeadlinePipeExchange.cs" />

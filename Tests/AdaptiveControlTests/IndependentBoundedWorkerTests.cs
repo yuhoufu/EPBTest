@@ -98,7 +98,41 @@ namespace AdaptiveControlTests
                 }
                 finally { if (!owner.HasExited) { owner.Kill(); owner.WaitForExit(5000); } }
             }
-            return 5;
+            using (var target = Start("hang", root, 20000))
+            using (var unrelated = Start("hang", root, 20000))
+            {
+                var session = Process.GetCurrentProcess().SessionId;
+                var identity = new IndependentProcessIdentity
+                { Pid = target.ProcessId, StartUtcTicks = target.StartUtcTicks, WindowsSessionId = session,
+                    ExecutablePath = Executable, SessionToken = Guid.NewGuid().ToString("N") };
+                var stale = new IndependentProcessIdentity
+                { Pid = target.ProcessId, StartUtcTicks = target.StartUtcTicks - 1, WindowsSessionId = session,
+                    ExecutablePath = Executable, SessionToken = identity.SessionToken };
+                using (var reused = new IndependentProcessRetirement(stale, stale, Executable, 1000))
+                    if (reused.Poll() != IndependentOperationResult.Completed || Gone(target.ProcessId, target.StartUtcTicks))
+                        throw new Exception("reused PID process terminated or old identity not retired");
+                var wrongSession = new IndependentProcessIdentity
+                { Pid = target.ProcessId, StartUtcTicks = target.StartUtcTicks, WindowsSessionId = session + 1,
+                    ExecutablePath = Executable, SessionToken = identity.SessionToken };
+                var rejected = false;
+                try { using (var wrong = new IndependentProcessRetirement(wrongSession, wrongSession, Executable, 1000)) { } }
+                catch (InvalidOperationException) { rejected = true; }
+                if (!rejected || Gone(target.ProcessId, target.StartUtcTicks)) throw new Exception("wrong OS session terminated");
+                rejected = false;
+                try { using (var wrong = new IndependentProcessRetirement(identity, stale, Executable, 1000)) { } }
+                catch (InvalidOperationException) { rejected = true; }
+                if (!rejected || Gone(target.ProcessId, target.StartUtcTicks)) throw new Exception("wrong durable binding terminated");
+                using (var retirement = new IndependentProcessRetirement(identity, identity, Executable, 5000))
+                {
+                    Until(() => retirement.Poll() != IndependentOperationResult.Pending, "exact retirement hung");
+                    if (retirement.Poll() != IndependentOperationResult.Completed) throw new Exception("exact retirement failed");
+                    Until(() => Gone(target.ProcessId, target.StartUtcTicks), "exact target survived");
+                    if (Gone(unrelated.ProcessId, unrelated.StartUtcTicks)) throw new Exception("same-name unrelated process terminated");
+                }
+                using (var repeated = new IndependentProcessRetirement(identity, identity, Executable, 1000))
+                    if (repeated.Poll() != IndependentOperationResult.Completed) throw new Exception("repeated retirement not idempotent");
+            }
+            return 10;
         }
     }
 }
