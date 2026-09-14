@@ -231,6 +231,30 @@ function Remove-IndependentOwnedComponents([object[]]$Files,[string]$InstallDire
     }
     foreach($target in $targets){if(Test-Path -LiteralPath $target.Path){throw '组件删除未完成。'}}
 }
+function Invoke-IndependentUninstallSteps([string]$Root,[string]$Version,[string]$InstallationId,[scriptblock]$Unregister,[scriptblock]$RemoveFiles) {
+    $journal=Join-Path $Root 'uninstall-result.json'
+    $requestId=[Guid]::NewGuid().ToString('N')
+    function Save-UninstallStage([string]$Stage,[string]$Failure){
+        $text=[ordered]@{schemaVersion=1;requestId=$requestId;installationId=$InstallationId;version=$Version;
+            stage=$Stage;failure=$Failure;maintenance=$true;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 3
+        $temporary=$journal+'.'+$requestId+'.tmp'
+        try{
+            [IO.File]::WriteAllText($temporary,$text)
+            if([IO.File]::Exists($journal)){[IO.File]::Replace($temporary,$journal,$journal+'.previous')}
+            else{[IO.File]::Move($temporary,$journal)}
+        }finally{if([IO.File]::Exists($temporary)){Remove-Item -LiteralPath $temporary}}
+    }
+    Save-UninstallStage 'Unregistering' ''
+    try{
+        & $Unregister|Out-Null
+        Save-UninstallStage 'RemovingComponents' ''
+        & $RemoveFiles|Out-Null
+        Save-UninstallStage 'ComponentsRemoved' ''
+    }catch{
+        Save-UninstallStage 'Failed' ([string]$_.Exception.Message)
+        throw
+    }
+}
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
 if($Mode -eq 'ValidateRepair'){
@@ -302,9 +326,11 @@ if($Mode -in @('Repair','Uninstall')){
             $fileLease=[IO.File]::Open((Join-Path $plan.Destination 'file-repair.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
             try{
                 $manager=@($plan.Files|Where-Object Relative -eq 'Tools/Manage-IndependentRecovery.ps1')[0].Source
-                & $manager -Mode Uninstall -RegistrationPath $registrationPath -ExecutorPath $executor -ProtocolAssemblyPath $cachedProtocol -InstalledVersion $plan.Version
-                Remove-IndependentOwnedComponents $repairFiles $plan.Destination
-                [IO.File]::WriteAllText((Join-Path $plan.Destination 'uninstall-result.json'),([ordered]@{schemaVersion=1;installationId=$registration.InstallationId;version=$plan.Version;stage='ComponentsRemoved';maintenance=$true;projectDataPreserved=$true;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 3))
+                Invoke-IndependentUninstallSteps $plan.Destination $plan.Version $registration.InstallationId {
+                    & $manager -Mode Uninstall -RegistrationPath $registrationPath -ExecutorPath $executor -ProtocolAssemblyPath $cachedProtocol -InstalledVersion $plan.Version
+                } {
+                    Remove-IndependentOwnedComponents $repairFiles $plan.Destination
+                }
                 Write-Output '本安装服务、任务、快捷方式及原程序组件已移除。项目配置、数据、诊断和重复卸载所需的受保护维护协议保留。'
             }finally{$fileLease.Dispose()}
             return
