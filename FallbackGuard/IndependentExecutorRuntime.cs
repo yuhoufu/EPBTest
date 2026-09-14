@@ -124,8 +124,19 @@ namespace MTTFTest.FallbackGuard
 
         public IndependentOperationResult CooperativeStop(IndependentRecoveryTransaction tx)
         {
-            // The durable CooperativeStop phase is the request. Lack of a main
-            // reply cannot extend its deadline; the pump escalates at 25 s.
+            var state = _store.Read();
+            var receipt = state?.CooperativeStopReceipt;
+            if (receipt != null && state.Transaction?.RequestId == tx.RequestId &&
+                state.Transaction.Phase == IndependentRecoveryPhase.CooperativeStop &&
+                receipt.RequestId == tx.RequestId && receipt.Generation == tx.Generation &&
+                state.Controller?.Matches(receipt.Controller) == true &&
+                receipt.CompletedUtcTicks >= tx.LastAttemptUtcTicks &&
+                receipt.CompletedUtcTicks < tx.PhaseDeadlineUtcTicks)
+            {
+                Detail = "CooperativeStopAcknowledged;IndependentSafetyStillRequired";
+                return IndependentOperationResult.Completed;
+            }
+            // A missing reply cannot extend the independent 25 s deadline.
             Detail = "CooperativeStopRequested;WaitingWithinDurableDeadline";
             return IndependentOperationResult.Pending;
         }

@@ -1239,6 +1239,23 @@ namespace MTEmbTest
                     logger?.Info("Raw 原始数据落盘未启用；不创建 DataStore\\时间戳空目录。", "Storage");
                 }
                 SetMonitorLifecycle(EpbMonitorLifecycle.Idle);
+                if (IndependentRecoveryStartup.Current != null)
+                {
+                    var manager = _epb;
+                    var observer = IndependentRecoveryStartup.Current.ObserveCooperativeStop(async requestId =>
+                    {
+                        var result = await manager.StopAllAsync(new StopContext
+                        {
+                            Source = StopSource.SystemFault,
+                            Reason = "独立执行器协作停止",
+                            Initiator = "IndependentFallbackGuard",
+                            CorrelationId = requestId,
+                            RequestedUtc = DateTime.UtcNow
+                        }, CancellationToken.None).ConfigureAwait(false);
+                        return result?.LogicalQuiescenceConfirmed == true;
+                    });
+                    FormClosed += (sender, args) => observer.Dispose();
+                }
             }
 
             catch (Exception ex)

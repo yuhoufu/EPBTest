@@ -23,6 +23,58 @@ namespace MTEmbTest
         private IndependentProjectStateStore _store;
         private System.Threading.Tasks.Task _manualStopPersistence;
 
+        internal IDisposable ObserveCooperativeStop(Func<string, System.Threading.Tasks.Task<bool>> stop)
+            => new CooperativeObserver(this, stop);
+
+        private sealed class CooperativeObserver : IDisposable
+        {
+            private readonly IndependentRecoveryStartup _owner;
+            private readonly Func<string, System.Threading.Tasks.Task<bool>> _stop;
+            private readonly System.Threading.Timer _timer;
+            private int _busy, _disposed;
+            private string _lastRequest;
+
+            internal CooperativeObserver(IndependentRecoveryStartup owner, Func<string, System.Threading.Tasks.Task<bool>> stop)
+            {
+                _owner = owner;
+                _stop = stop ?? throw new ArgumentNullException(nameof(stop));
+                _timer = new System.Threading.Timer(Tick, null, 1000, 1000);
+            }
+
+            private async void Tick(object unused)
+            {
+                if (System.Threading.Volatile.Read(ref _disposed) != 0 ||
+                    System.Threading.Interlocked.CompareExchange(ref _busy, 1, 0) != 0) return;
+                try
+                {
+                    var state = _owner._store.Read();
+                    var tx = state?.Transaction;
+                    if (tx == null || tx.Phase != IndependentRecoveryPhase.CooperativeStop ||
+                        !state.SafetyCleanupPending || state.Controller?.Matches(_owner.Identity) != true ||
+                        tx.RunId != _owner.RunId || tx.RunEpoch != _owner.RunEpoch ||
+                        tx.RequestId == _lastRequest || DateTime.UtcNow.Ticks >= tx.PhaseDeadlineUtcTicks ||
+                        System.Threading.Volatile.Read(ref _disposed) != 0) return;
+                    _lastRequest = tx.RequestId;
+                    // This runs off the UI and status publisher. A hung stop remains
+                    // bounded by the external executor's process-retirement deadline.
+                    if (await _stop(tx.RequestId).ConfigureAwait(false))
+                        _owner._store.AcknowledgeCooperativeStop(_owner.Identity, tx.RunId, tx.RunEpoch,
+                            tx.RequestId, tx.Generation, DateTime.UtcNow.Ticks);
+                }
+                catch (Exception error)
+                {
+                    Trace.TraceError("IndependentCooperativeStop: " + error.GetType().Name + ":" + error.Message);
+                }
+                finally { System.Threading.Interlocked.Exchange(ref _busy, 0); }
+            }
+
+            public void Dispose()
+            {
+                System.Threading.Interlocked.Exchange(ref _disposed, 1);
+                _timer.Dispose();
+            }
+        }
+
         internal static IndependentRecoveryStartup Parse(string[] args)
         {
             var present = args.Any(value => value == "--independent-registration" || value == "--independent-ticket" || value == "--independent-installation");

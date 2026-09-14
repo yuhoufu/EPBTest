@@ -43,6 +43,14 @@ namespace MTTFTest.Watchdog.Protocol
         public IndependentProcessIdentity Consumer { get; set; }
     }
 
+    public sealed class IndependentCooperativeStopReceipt
+    {
+        public string RequestId { get; set; }
+        public long Generation { get; set; }
+        public long CompletedUtcTicks { get; set; }
+        public IndependentProcessIdentity Controller { get; set; }
+    }
+
     public sealed class IndependentIntentAudit
     {
         public long UtcTicks { get; set; }
@@ -72,6 +80,7 @@ namespace MTTFTest.Watchdog.Protocol
         public IndependentRecoveryTransaction Transaction { get; set; }
         public IndependentProcessIdentity Controller { get; set; }
         public IndependentLaunchTicket Ticket { get; set; }
+        public IndependentCooperativeStopReceipt CooperativeStopReceipt { get; set; }
         public IndependentIntentAudit[] Audit { get; set; } = Array.Empty<IndependentIntentAudit>();
 
         public void Validate()
@@ -79,6 +88,14 @@ namespace MTTFTest.Watchdog.Protocol
             if (SchemaVersion != 2 || Revision <= 0 || Audit == null || Audit.Length > 32)
                 throw new InvalidDataException("IndependentProjectStateInvalid");
             Intent?.Validate(); Transaction?.Validate(); Controller?.Validate();
+            if (CooperativeStopReceipt != null)
+            {
+                CooperativeStopReceipt.Controller?.Validate();
+                if (!Guid.TryParseExact(CooperativeStopReceipt.RequestId, "N", out _) ||
+                    CooperativeStopReceipt.Generation <= 0 || CooperativeStopReceipt.CompletedUtcTicks <= 0 ||
+                    CooperativeStopReceipt.Controller == null)
+                    throw new InvalidDataException("IndependentCooperativeReceiptInvalid");
+            }
             if (Intent != null && (!Guid.TryParseExact(RootRunId, "N", out _) || RunStartedUtcTicks <= 0 || StartupDeadlineUtcTicks <= RunStartedUtcTicks ||
                 StartupDeadlineUtcTicks - RunStartedUtcTicks != TimeSpan.FromMilliseconds(Intent.StartupBudgetMs).Ticks))
                 throw new InvalidDataException("IndependentRunStartupDeadlineInvalid");
@@ -347,6 +364,32 @@ namespace MTTFTest.Watchdog.Protocol
                 // No ticket can survive a retry, including maintenance/manual stop.
                 state.Ticket = null;
                 return state.Transaction;
+            });
+        }
+
+        // This acknowledges cooperation only. The executor must still independently
+        // confirm power-off, retire the old controller and verify outputs/pressure.
+        public void AcknowledgeCooperativeStop(IndependentProcessIdentity controller, string runId,
+            long runEpoch, string requestId, long generation, long now)
+        {
+            controller?.Validate();
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                var tx = state?.Transaction;
+                if (controller == null || state?.Controller?.Matches(controller) != true || tx == null ||
+                    !state.SafetyCleanupPending || tx.Phase != IndependentRecoveryPhase.CooperativeStop ||
+                    tx.RequestId != requestId || tx.Generation != generation || tx.RunId != runId ||
+                    tx.RunEpoch != runEpoch || now < tx.LastAttemptUtcTicks || now >= tx.PhaseDeadlineUtcTicks)
+                    throw new InvalidOperationException("IndependentCooperativeReceiptMismatch");
+                if (state.CooperativeStopReceipt?.RequestId == requestId &&
+                    state.CooperativeStopReceipt.Generation == generation) return true;
+                state.CooperativeStopReceipt = new IndependentCooperativeStopReceipt
+                { RequestId = requestId, Generation = generation, CompletedUtcTicks = now, Controller = controller };
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
             });
         }
 

@@ -95,6 +95,28 @@ namespace AdaptiveControlTests
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            var cooperationStore = Fixture(Path.Combine(root, "cooperation"), now);
+            var cooperationState = cooperationStore.Read();
+            var cooperation = cooperationStore.BeginRecovery(cooperationState.Revision, "executor", now);
+            Reject(() => cooperationStore.AcknowledgeCooperativeStop(Identity(), cooperation.RunId,
+                cooperation.RunEpoch, cooperation.RequestId, cooperation.Generation, now), "foreign cooperation accepted");
+            Reject(() => cooperationStore.AcknowledgeCooperativeStop(cooperationState.Controller, cooperation.RunId,
+                cooperation.RunEpoch + 1, cooperation.RequestId, cooperation.Generation, now), "old run cooperation accepted");
+            Reject(() => cooperationStore.AcknowledgeCooperativeStop(cooperationState.Controller, cooperation.RunId,
+                cooperation.RunEpoch, cooperation.RequestId, cooperation.Generation, cooperation.PhaseDeadlineUtcTicks), "late cooperation accepted");
+            cooperationStore.AcknowledgeCooperativeStop(cooperationState.Controller, cooperation.RunId,
+                cooperation.RunEpoch, cooperation.RequestId, cooperation.Generation, now);
+            var acknowledged = cooperationStore.Read();
+            Assert(acknowledged.CooperativeStopReceipt.RequestId == cooperation.RequestId &&
+                acknowledged.SafetyCleanupPending && acknowledged.Transaction.Phase == IndependentRecoveryPhase.CooperativeStop &&
+                acknowledged.Ticket == null, "cooperation skipped independent safety");
+            cooperationStore.AcknowledgeCooperativeStop(cooperationState.Controller, cooperation.RunId,
+                cooperation.RunEpoch, cooperation.RequestId, cooperation.Generation, now);
+            Assert(cooperationStore.Read().Revision == acknowledged.Revision, "duplicate cooperation changed revision");
+            cooperationStore.CompleteSafetyStage(acknowledged.Revision, "executor", cooperation.Generation,
+                cooperation.RequestId, IndependentRecoveryPhase.CooperativeStop, true, now, 30000, "CooperationOnly");
+            Reject(() => cooperationStore.AcknowledgeCooperativeStop(cooperationState.Controller, cooperation.RunId,
+                cooperation.RunEpoch, cooperation.RequestId, cooperation.Generation, now), "receipt accepted after stage advanced");
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
             var selectionState = selectionStore.Read();
             var selectionCommand = Guid.NewGuid().ToString("N");
