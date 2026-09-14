@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('Provision','Prepare','Seal','Install','Repair','Status','Enable','Maintenance','Uninstall')][string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('Provision','Prepare','Seal','Install','Repair','Status','Stop','Enable','Maintenance','Uninstall')][string]$Mode,
     [Parameter(Mandatory=$true)][string]$RegistrationPath,
     [Parameter(Mandatory=$true)][string]$ExecutorPath,
     [string]$DraftPath,
@@ -257,6 +257,27 @@ try {
             } catch {Set-Maintenance $true;throw}
             Write-Output '独立执行服务已运行；试验是否恢复须另行验证动作、计数与落盘。'
         }
+        'Stop' {
+            $state=$store.Read()
+            if(-not $state -or -not $state.Intent -or -not $state.Controller){
+                throw '没有可核验的项目批次与控制进程身份，未执行停止；不能按进程名称强杀。'
+            }
+            $registration.RequireBoundIntent($state.Intent)
+            $commandId=[Guid]::NewGuid().ToString('N')
+            # Persist revocation before starting the executor. A failed service
+            # start must never restore the old continuation permission.
+            $store.RequestOperatorSafetyStop($state.Revision,$state.Intent.RunId,$state.Intent.RunEpoch,
+                ('IndependentExecutor:'+$registration.InstallationId),$commandId,[DateTime]::UtcNow.Ticks)
+            if(-not $service){throw ('停止意图已持久保存，但独立服务缺失，安全收尾尚未执行。CommandId='+$commandId)}
+            Start-Service -Name $serviceName
+            Wait-OwnedServiceStatus 'Running' 10
+            $state=$store.Read()
+            [pscustomobject]@{CommandId=$commandId;StopIntentPersisted=$true;
+                SafetyCleanupPending=[bool]$state.SafetyCleanupPending;
+                TransactionId=[string]$state.Transaction.RequestId;Phase=[string]$state.Transaction.Phase;
+                Detail=[string]$state.Transaction.Detail}
+            Write-Output '已受理人工停止并撤销续测许可。独立服务继续安全收尾；请通过检查运行状态确认结果，此提示不代表所有进程已退出。'
+        }
         'Maintenance' {Set-Maintenance $true;Write-Output '已进入维护模式，保留运行历史及停止意图。'}
         'Uninstall' {
             Set-Maintenance $true
@@ -287,6 +308,9 @@ try {
             [pscustomobject]@{Installation=$registration.InstallationId;ServicePresent=[bool]$service;
                 ServiceState=if($service){[string]$service.State}else{'Absent'};LaunchTaskPresent=[bool]$task;
                 Maintenance=if($state){[bool]$state.Maintenance}else{$true};SafetyCleanupPending=if($state){[bool]$state.SafetyCleanupPending}else{$false};
+                ManualStopped=if($state -and $state.Intent){[bool]$state.Intent.ManualStopped}else{$false};
+                OperatorStopCommandId=[string]$state.LastOperatorStopCommandId;
+                DurableTransactionPhase=[string]$state.Transaction.Phase;DurableTransactionDetail=[string]$state.Transaction.Detail;
                 ObservationFresh=[bool]$observationFresh;
                 BindingObservation=if($observationFresh){[string]$observation.BindingState}else{'STALE_OR_MISSING'};
                 ObservedRunId=[string]$observation.RunId;ObservedRunEpoch=[long]$observation.RunEpoch;

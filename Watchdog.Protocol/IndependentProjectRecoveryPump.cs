@@ -37,7 +37,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (now < tx.LastAttemptUtcTicks) throw new InvalidOperationException("IndependentPumpClockRegressed");
             if (tx.IsTerminal)
             {
-                if (tx.Phase == IndependentRecoveryPhase.NeedsAttention && state.SafetyCleanupPending &&
+                if (!tx.OperatorStopOnly && tx.Phase == IndependentRecoveryPhase.NeedsAttention && state.SafetyCleanupPending &&
                     tx.AttemptsUtcTicks.Length < 3 && now - tx.LastAttemptUtcTicks >= TimeSpan.FromSeconds(60).Ticks)
                 {
                     _operations.CancelStageWorkers();

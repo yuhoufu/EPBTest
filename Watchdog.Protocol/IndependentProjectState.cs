@@ -98,6 +98,7 @@ namespace MTTFTest.Watchdog.Protocol
         public string RootRunId { get; set; }
         public bool Maintenance { get; set; } = true;
         public bool SafetyCleanupPending { get; set; }
+        public string LastOperatorStopCommandId { get; set; }
         public IndependentRunIntent Intent { get; set; }
         public IndependentRecoveryTransaction Transaction { get; set; }
         public IndependentProcessIdentity Controller { get; set; }
@@ -111,6 +112,8 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (SchemaVersion != 2 || Revision <= 0 || Audit == null || Audit.Length > 32)
                 throw new InvalidDataException("IndependentProjectStateInvalid");
+            if (LastOperatorStopCommandId != null && !Guid.TryParseExact(LastOperatorStopCommandId, "N", out _))
+                throw new InvalidDataException("IndependentOperatorStopCommandInvalid");
             if (SessionProcesses == null || SessionProcesses.Length > 24 || SessionProcesses.Any(p => p == null))
                 throw new InvalidDataException("IndependentSessionProcessRegistryInvalid");
             foreach (var child in SessionProcesses) child.Validate();
@@ -274,6 +277,41 @@ namespace MTTFTest.Watchdog.Protocol
                 state.Revision = checked(state.Revision + 1);
                 state.Validate();
                 BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public void RequestOperatorSafetyStop(long expectedRevision, string runId, long runEpoch,
+            string executor, string commandId, long now)
+        {
+            if (!Guid.TryParseExact(commandId, "N", out _) || string.IsNullOrWhiteSpace(executor) || now <= 0)
+                throw new ArgumentException("IndependentOperatorStopRequestInvalid");
+            Update(expectedRevision, state =>
+            {
+                if (state.Intent == null || state.Controller == null || state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch ||
+                    state.Transaction != null && !state.Transaction.IsTerminal && state.Transaction.ExecutorIdentity != executor)
+                    throw new InvalidOperationException("IndependentOperatorStopStaleOrForeignRun");
+                if (state.LastOperatorStopCommandId == commandId) return true;
+                var before = state.Intent.SelectedChannels.ToArray();
+                state.Intent.Armed = false; state.Intent.ManualStopped = true;
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Ticket != null) state.Ticket.Revoked = true;
+                state.LastOperatorStopCommandId = commandId;
+                if (!state.SafetyCleanupPending || state.Transaction.IsTerminal)
+                {
+                    if (!(state.Transaction?.OperatorStopOnly == true && state.Transaction.Phase == IndependentRecoveryPhase.Cancelled &&
+                        !state.SafetyCleanupPending))
+                    {
+                        // A consumed launch can precede replacement run binding.
+                        // Retire the consumer, not only the already-dead old PID.
+                        if (state.Ticket?.Consumer != null) state.Controller = state.Ticket.Consumer;
+                        var channels = before.Union(state.Transaction?.Channels ?? Array.Empty<int>()).OrderBy(c => c).ToArray();
+                        if (channels.Length == 0) channels = Enumerable.Range(1, 12).ToArray(); // shutdown only; never resume targets
+                        state.Transaction = IndependentRecoveryTransitions.BeginOperatorStop(state.Transaction, state.Intent, executor, now, channels);
+                        state.Ticket = null; state.CooperativeStopReceipt = null; state.SafetyCleanupPending = true;
+                    }
+                }
+                AppendAudit(state, "OperatorSafetyStop", "CommandId=" + commandId, now, before);
                 return true;
             });
         }
@@ -636,6 +674,7 @@ namespace MTTFTest.Watchdog.Protocol
                     !string.Equals(intent.ExecutablePath, controller.ExecutablePath, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("IndependentManualRunNotAuthorized");
                 state.Intent = intent; state.Controller = controller; state.Ticket = null;
+                state.LastOperatorStopCommandId = null;
                 state.RunStartedUtcTicks = now;
                 state.RootRunId = intent.RunId;
                 state.StartupDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(intent.StartupBudgetMs).Ticks);
@@ -723,7 +762,7 @@ namespace MTTFTest.Watchdog.Protocol
                 if (completedPhase == IndependentRecoveryPhase.OutputsSafe)
                 {
                     state.SafetyCleanupPending = false;
-                    var stillAuthorized = !state.Maintenance && state.Intent != null &&
+                    var stillAuthorized = !tx.OperatorStopOnly && !state.Maintenance && state.Intent != null &&
                         state.Intent.Revision == tx.IntentRevision && state.Intent.RunId == tx.RunId &&
                         state.Intent.RunEpoch == tx.RunEpoch && tx.Channels.SequenceEqual(state.Intent.RecoveryChannels());
                     if (!stillAuthorized)

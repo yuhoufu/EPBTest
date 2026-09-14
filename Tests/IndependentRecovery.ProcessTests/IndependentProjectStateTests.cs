@@ -103,6 +103,71 @@ namespace AdaptiveControlTests
                 "oversize trigger lost transaction identity or exceeded diagnostic limit");
         }
 
+        private static void VerifyOperatorSafetyStop(string root, long now)
+        {
+            var store = Fixture(Path.Combine(root, "operator-safety-stop"), now);
+            var initial = store.Read(); var command = Guid.NewGuid().ToString("N");
+            store.RequestOperatorSafetyStop(initial.Revision, initial.Intent.RunId, initial.Intent.RunEpoch, "executor", command, now);
+            var stopped = store.Read(); var tx = stopped.Transaction;
+            Assert(!stopped.Intent.Armed && stopped.Intent.ManualStopped && stopped.SafetyCleanupPending && tx.OperatorStopOnly &&
+                tx.AttemptsUtcTicks.Length == 0 && stopped.Ticket == null, "operator stop did not atomically revoke and enqueue cleanup");
+            store.RequestOperatorSafetyStop(stopped.Revision, initial.Intent.RunId, initial.Intent.RunEpoch, "executor", command, now + 1);
+            Assert(store.Read().Transaction.RequestId == tx.RequestId && store.Read().Intent.Revision == stopped.Intent.Revision,
+                "duplicate operator stop restarted cleanup");
+            Reject(() => store.RequestOperatorSafetyStop(store.Read().Revision, Guid.NewGuid().ToString("N"), 1, "executor", command, now),
+                "old run stop could affect current batch");
+            Reject(() => store.IssueLaunchTicket(store.Read().Revision, "executor", tx.Generation, Hash, 1, now), "stop minted a launch ticket");
+            foreach (var phase in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
+                IndependentRecoveryPhase.RetireControls, IndependentRecoveryPhase.OutputsSafe })
+                store.CompleteSafetyStage(store.Read().Revision, "executor", tx.Generation, tx.RequestId, phase, true, now, 30000, "StopConfirmed");
+            Assert(store.Read().Transaction.Phase == IndependentRecoveryPhase.Cancelled && !store.Read().SafetyCleanupPending &&
+                store.Read().Ticket == null, "safe stop did not finish without launch");
+            store.RequestOperatorSafetyStop(store.Read().Revision, initial.Intent.RunId, 1, "executor", Guid.NewGuid().ToString("N"), now + 2);
+            Assert(store.Read().Transaction.RequestId == tx.RequestId, "completed stop repeated hardware cleanup");
+            var next = Intent(root); next.RunId = Guid.NewGuid().ToString("N");
+            next.ProjectDirectory = initial.Intent.ProjectDirectory; next.DatabasePath = initial.Intent.DatabasePath;
+            store.ArmManualRun(store.Read().Revision, next, Identity(), now + 3);
+            var recovery = store.BeginRecovery(store.Read().Revision, "executor", now + 4);
+            Assert(recovery.AttemptsUtcTicks.Length == 1 && !recovery.OperatorStopOnly,
+                "manual shutdown consumed restart budget or imposed a restart cooldown");
+
+            var busy = Fixture(Path.Combine(root, "operator-stop-during-safety"), now);
+            var active = busy.BeginRecovery(busy.Read().Revision, "executor", now);
+            var before = busy.Read();
+            busy.RequestOperatorSafetyStop(before.Revision, before.Intent.RunId, 1, "executor", Guid.NewGuid().ToString("N"), now + 1);
+            Assert(busy.Read().Transaction.RequestId == active.RequestId && !busy.Read().Intent.Armed,
+                "operator stop replaced an already-running safe-off transaction");
+
+            var launched = Fixture(Path.Combine(root, "operator-stop-during-launch"), now);
+            var ticket = Ready(launched, now); var consumer = Identity();
+            launched.ConsumeLaunchTicket(launched.Read().Revision, ticket.Nonce, consumer, Hash, now);
+            before = launched.Read();
+            launched.RequestOperatorSafetyStop(before.Revision, before.Intent.RunId, 1, "executor", Guid.NewGuid().ToString("N"), now + 1);
+            Assert(launched.Read().Controller.Matches(consumer) && launched.Read().Ticket == null && launched.Read().Transaction.OperatorStopOnly,
+                "stop before bootstrap lost replacement identity");
+
+            var failed = Fixture(Path.Combine(root, "operator-stop-exhausted"), now);
+            failed.Update(failed.Read().Revision, state =>
+            {
+                var prior = IndependentRecoveryTransitions.Begin(null, state.Intent, "executor", now - TimeSpan.FromMinutes(3).Ticks);
+                prior.Phase = IndependentRecoveryPhase.NeedsAttention;
+                prior.AttemptsUtcTicks = new[] { now - TimeSpan.FromMinutes(3).Ticks, now - TimeSpan.FromMinutes(2).Ticks, now - TimeSpan.FromSeconds(5).Ticks };
+                prior.LastAttemptUtcTicks = prior.AttemptsUtcTicks.Last(); state.Transaction = prior; return true;
+            });
+            before = failed.Read();
+            failed.RequestOperatorSafetyStop(before.Revision, before.Intent.RunId, 1, "executor", Guid.NewGuid().ToString("N"), now);
+            tx = failed.Read().Transaction;
+            Assert(tx.OperatorStopOnly && tx.AttemptsUtcTicks.SequenceEqual(before.Transaction.AttemptsUtcTicks),
+                "stop was rate-limited or erased exhausted restart history");
+            failed.CompleteSafetyStage(failed.Read().Revision, "executor", tx.Generation, tx.RequestId,
+                IndependentRecoveryPhase.CooperativeStop, false, now, 30000, "InjectedStopFailure");
+            var operations = new PumpOperations();
+            new IndependentProjectRecoveryPump(failed, operations, "executor", 30000, 30000).Tick(now + TimeSpan.FromMinutes(2).Ticks);
+            Assert(failed.Read().Transaction.Phase == IndependentRecoveryPhase.NeedsAttention && failed.Read().SafetyCleanupPending &&
+                operations.Launches == 0 && failed.Read().Transaction.RequestId == tx.RequestId,
+                "failed operator stop silently retried or resumed");
+        }
+
         private static void VerifySessionRegistry(string root, long now, IndependentExecutorRegistration registration)
         {
             var registryStore = new IndependentProjectStateStore(Path.Combine(root, "session-registry"));
@@ -285,6 +350,7 @@ namespace AdaptiveControlTests
             if (!cooperationOnly)
             {
                 VerifyTakeoverAudit(root, now);
+                VerifyOperatorSafetyStop(root, now);
                 Reject(() => IndependentInstallationBinding.RequireControllerAbsent(Exe),
                     "binding admitted live controller executable");
                 IndependentInstallationBinding.RequireControllerAbsent(Path.Combine(root, Path.GetFileName(Exe)));

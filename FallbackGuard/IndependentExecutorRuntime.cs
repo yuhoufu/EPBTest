@@ -40,6 +40,7 @@ namespace MTTFTest.FallbackGuard
         private readonly DatabaseStallMonitor _monitor = new DatabaseStallMonitor();
         private IndependentLaunchWorkerOperation _launch;
         private string _launchRequest;
+        private string _activeTransactionRequest;
         private long _lastDatabaseRead;
         private long _lastVerificationRead;
         private bool _disposed;
@@ -63,6 +64,14 @@ namespace MTTFTest.FallbackGuard
             var state = _store.Read();
             if (state?.Intent == null) { Detail = "AwaitingDurableRunIntent"; return; }
             _registration.RequireBoundIntent(state.Intent);
+            if (_activeTransactionRequest != state.Transaction?.RequestId)
+            {
+                // An operator stop can replace a launch transaction between
+                // ticks. Retire its bounded workers immediately, not after the
+                // new cooperative window expires.
+                CancelStageWorkers();
+                _activeTransactionRequest = state.Transaction?.RequestId;
+            }
             var now = DateTime.UtcNow.Ticks;
             if (state.Transaction != null && (!state.Transaction.IsTerminal || state.SafetyCleanupPending))
             {
