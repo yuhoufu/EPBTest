@@ -234,7 +234,6 @@ namespace MTTFTest.FallbackGuard
                 state.Ticket?.Consumer == null || !state.Ticket.Consumer.Matches(state.Controller))
                 return IndependentOperationResult.Failed;
             var alive = ExactProcessAlive(state.Controller);
-            if (alive == false) return IndependentOperationResult.Failed;
             if (alive == null) { Detail = "ReplacementIdentityUnreadable"; return IndependentOperationResult.Pending; }
             var now = DateTime.UtcNow.Ticks;
             if (now < _lastVerificationRead) throw new InvalidOperationException("IndependentVerificationClockRegressed");
@@ -243,6 +242,21 @@ namespace MTTFTest.FallbackGuard
             var baseline = ReadBaseline(state);
             var snapshot = DatabaseProgressReader.ReadRecoveryIsolated(_registration.DatabasePath, tx.Channels);
             var pending = RecoveryDatabaseEvidence.UnverifiedChannels(baseline.Database, snapshot);
+            if (state.Intent.MechanicalTargets.Length > 0)
+            {
+                var completed = RecoveryDatabaseEvidence.CompletedTargets(snapshot, state.Intent);
+                if (state.Intent.CompletedChannels.Intersect(tx.Channels).Except(completed).Any())
+                    throw new InvalidDataException("IndependentCompletedTargetRegressed");
+                if (completed.Except(state.Intent.CompletedChannels).Any())
+                {
+                    _store.RecordVerificationCompletions(state.Revision, snapshot.DatabasePath, snapshot.CreationUtcTicks,
+                        snapshot.Channels.ToDictionary(lane => lane.Channel, lane => lane.MechanicalCompletedCount), now);
+                    Detail = "TargetCompletionRecorded;AwaitingRemainingVerificationOrSafetyCleanup";
+                    return IndependentOperationResult.Pending;
+                }
+                pending = pending.Except(completed).ToArray();
+            }
+            if (alive == false) return IndependentOperationResult.Failed;
             Detail = pending.Length == 0 ? "MechanicalAndThreeFormalRecordsAdvanced" :
                 "AwaitingRecoveredChannels:" + string.Join(",", pending);
             return pending.Length == 0 ? IndependentOperationResult.Completed : IndependentOperationResult.Pending;

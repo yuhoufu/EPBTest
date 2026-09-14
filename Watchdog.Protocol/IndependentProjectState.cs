@@ -246,6 +246,52 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void RecordVerificationCompletions(long expectedRevision, string databasePath, long creationUtcTicks,
+            System.Collections.Generic.IReadOnlyDictionary<int, long> counts, long now)
+        {
+            if (counts == null || counts.Count == 0 || counts.Count > 12 || counts.Any(pair => pair.Value < 0) || now <= 0)
+                throw new ArgumentException("IndependentVerificationCompletionCountsInvalid");
+            Update(expectedRevision, state =>
+            {
+                var intent = state.Intent;
+                var tx = state.Transaction;
+                if (intent == null || tx == null || tx.Phase != IndependentRecoveryPhase.Verifying || state.SafetyCleanupPending ||
+                    state.Maintenance || !intent.Armed || intent.ManualStopped || intent.ManualPaused ||
+                    tx.IntentRevision != intent.Revision || tx.RunId != intent.RunId || tx.RunEpoch != intent.RunEpoch ||
+                    now >= tx.PhaseDeadlineUtcTicks || now < tx.LastAttemptUtcTicks || state.Ticket == null || state.Ticket.Revoked ||
+                    state.Ticket.Consumer?.Matches(state.Controller) != true ||
+                    !string.Equals(databasePath, intent.DatabasePath, StringComparison.OrdinalIgnoreCase) ||
+                    creationUtcTicks != intent.DatabaseCreationUtcTicks || intent.MechanicalTargets.Length == 0 ||
+                    !counts.Keys.OrderBy(channel => channel).SequenceEqual(tx.Channels.OrderBy(channel => channel)))
+                    throw new InvalidOperationException("IndependentVerificationCompletionIdentityMismatch");
+                var completed = counts.Where(pair => pair.Value >= intent.MechanicalTargets.Single(target => target.Channel == pair.Key).TotalCount)
+                    .Select(pair => pair.Key).ToArray();
+                if (intent.CompletedChannels.Intersect(tx.Channels).Except(completed).Any())
+                    throw new InvalidOperationException("IndependentCompletedTargetRegressed");
+                if (completed.Except(intent.CompletedChannels).Any() == false)
+                    throw new InvalidOperationException("IndependentVerificationHasNoNewCompletedTarget");
+                var before = intent.SelectedChannels.ToArray();
+                intent.CompletedChannels = intent.CompletedChannels.Union(completed).OrderBy(channel => channel).ToArray();
+                intent.Revision = checked(intent.Revision + 1);
+                tx.IntentRevision = intent.Revision;
+                tx.Revision = checked(tx.Revision + 1);
+                if (tx.Channels.Except(intent.CompletedChannels).Any() == false)
+                {
+                    if (intent.SelectedChannels.All(channel => intent.CompletedChannels.Contains(channel))) intent.Armed = false;
+                    // Keep the exact replacement identity and physical scope. This
+                    // is final cleanup, not a new restart attempt or Verified.
+                    state.Ticket.Revoked = true;
+                    state.SafetyCleanupPending = true;
+                    tx.Phase = IndependentRecoveryPhase.CooperativeStop;
+                    tx.PhaseDeadlineUtcTicks = checked(now + TimeSpan.FromSeconds(25).Ticks);
+                    tx.Detail = "TargetsCompleted;IndependentSafetyCleanupRequired";
+                }
+                else tx.Detail = "SomeTargetsCompleted;RemainingChannelsRequireThreeFormalCycles";
+                AppendAudit(state, "VerificationTargetCompleted", "Channels=" + string.Join(",", completed), now, before);
+                return true;
+            });
+        }
+
         public void RecordDatabaseCompletions(long expectedRevision, string databasePath, long creationUtcTicks,
             System.Collections.Generic.IReadOnlyDictionary<int, long> counts, long now)
         {
@@ -552,7 +598,9 @@ namespace MTTFTest.Watchdog.Protocol
                     if (!stillAuthorized)
                     {
                         tx.Phase = IndependentRecoveryPhase.Cancelled;
-                        tx.Detail = "SafetyCleanupCompleted;RestartAuthorityRevoked";
+                        tx.Detail = state.Intent != null && tx.Channels.All(channel => state.Intent.CompletedChannels.Contains(channel))
+                            ? "TargetsCompleted;SafetyCleanupCompleted;NoRestart"
+                            : "SafetyCleanupCompleted;RestartAuthorityRevoked";
                         if (state.Ticket != null) state.Ticket.Revoked = true;
                     }
                 }

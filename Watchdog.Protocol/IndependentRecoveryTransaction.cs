@@ -168,7 +168,9 @@ namespace MTTFTest.Watchdog.Protocol
             intent?.Validate();
             if (tx == null || tx.SchemaVersion != 2 || tx.IsTerminal || tx.ExecutorIdentity != executor ||
                 intent == null || tx.Generation != generation || tx.IntentRevision != intent.Revision || tx.RunId != intent.RunId ||
-                tx.RunEpoch != intent.RunEpoch || !tx.Channels.SequenceEqual(intent.RecoveryChannels()))
+                tx.RunEpoch != intent.RunEpoch || !(tx.Phase == IndependentRecoveryPhase.Verifying
+                    ? tx.Channels.Except(intent.CompletedChannels).SequenceEqual(intent.RecoveryChannels())
+                    : tx.Channels.SequenceEqual(intent.RecoveryChannels())))
                 throw new InvalidOperationException("IndependentRecoveryAuthorityChanged");
         }
 

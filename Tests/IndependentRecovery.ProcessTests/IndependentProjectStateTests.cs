@@ -145,6 +145,56 @@ namespace AdaptiveControlTests
                 return _count;
             }
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
+            var verificationDone = Fixture(Path.Combine(root, "verification-target-completion"), now);
+            verificationDone.Update(verificationDone.Read().Revision, state =>
+            {
+                state.Intent.MechanicalTargets = state.Intent.SelectedChannels.Select(channel =>
+                    new IndependentMechanicalTarget { Channel = channel, TotalCount = 5 }).ToArray();
+                return true;
+            });
+            var doneTicket = Ready(verificationDone, now);
+            var doneConsumer = Identity();
+            verificationDone.ConsumeLaunchTicket(verificationDone.Read().Revision, doneTicket.Nonce, doneConsumer, Hash, now);
+            verificationDone.CommitReplacementRun(verificationDone.Read().Revision, doneConsumer, Guid.NewGuid().ToString("N"), 2, now);
+            verificationDone.Update(verificationDone.Read().Revision, state =>
+            {
+                IndependentRecoveryTransitions.Advance(state.Transaction, state.Intent, "executor", state.Transaction.Generation,
+                    IndependentRecoveryPhase.Verifying, now, 60000, "VerificationFixture");
+                return true;
+            });
+            var doneState = verificationDone.Read();
+            var doneCounts = doneState.Transaction.Channels.ToDictionary(channel => channel, channel => channel == 4 ? 5L : 1L);
+            verificationDone.RecordVerificationCompletions(doneState.Revision, doneState.Intent.DatabasePath,
+                doneState.Intent.DatabaseCreationUtcTicks, doneCounts, now);
+            var partialDone = verificationDone.Read();
+            IndependentRecoveryTransitions.RequireCurrent(partialDone.Transaction, partialDone.Intent, "executor", partialDone.Transaction.Generation);
+            Assert(partialDone.Transaction.Phase == IndependentRecoveryPhase.Verifying && !partialDone.Ticket.Revoked &&
+                !partialDone.Intent.RecoveryChannels().Contains(4) && partialDone.Intent.RecoveryChannels().Contains(5),
+                "partial target completion disrupted healthy verification or retained completed target");
+            Reject(() => verificationDone.RecordVerificationCompletions(doneState.Revision, doneState.Intent.DatabasePath,
+                doneState.Intent.DatabaseCreationUtcTicks, doneCounts, now), "late completion overwrote authority");
+            var regressedCounts = doneCounts.Keys.ToDictionary(channel => channel, channel => channel == 4 ? 4L : 5L);
+            Reject(() => verificationDone.RecordVerificationCompletions(partialDone.Revision, doneState.Intent.DatabasePath,
+                doneState.Intent.DatabaseCreationUtcTicks, regressedCounts, now), "completed mechanical count regression accepted");
+            var partialProof = verificationDone.Read();
+            IndependentRecoveryTransitions.Advance(partialProof.Transaction, partialProof.Intent, "executor",
+                partialProof.Transaction.Generation, IndependentRecoveryPhase.Verified, now, 10000, "RemainingChannelsProofFixture");
+            Assert(partialProof.Transaction.Phase == IndependentRecoveryPhase.Verified,
+                "completed target prevented remaining channels from reaching verified state");
+            verificationDone.RecordVerificationCompletions(partialDone.Revision, doneState.Intent.DatabasePath,
+                doneState.Intent.DatabaseCreationUtcTicks, doneCounts.Keys.ToDictionary(channel => channel, channel => 5L), now + 1);
+            var allDone = verificationDone.Read();
+            Assert(allDone.SafetyCleanupPending && allDone.Ticket.Revoked && allDone.Controller.Matches(doneConsumer) &&
+                allDone.Transaction.Phase == IndependentRecoveryPhase.CooperativeStop && allDone.Transaction.AttemptsUtcTicks.Length == 1,
+                "target completion skipped exact replacement cleanup or charged a new restart");
+            foreach (var stage in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
+                IndependentRecoveryPhase.RetireControls, IndependentRecoveryPhase.OutputsSafe })
+                verificationDone.CompleteSafetyStage(verificationDone.Read().Revision, "executor", allDone.Transaction.Generation,
+                    allDone.Transaction.RequestId, stage, true, now + 2, 30000, "SimulatedCompletionCleanup");
+            Assert(!verificationDone.Read().SafetyCleanupPending && !verificationDone.Read().Intent.Armed &&
+                verificationDone.Read().Transaction.Phase == IndependentRecoveryPhase.Cancelled &&
+                verificationDone.Read().Transaction.Detail == "TargetsCompleted;SafetyCleanupCompleted;NoRestart",
+                "final completion became recovery success or permitted restart");
             var completedStore = Fixture(Path.Combine(root, "database-completion"), now);
             completedStore.Update(completedStore.Read().Revision, state =>
             {

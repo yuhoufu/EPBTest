@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 
 namespace MTTFTest.Watchdog.Protocol
 {
@@ -108,7 +109,9 @@ namespace MTTFTest.Watchdog.Protocol
                     tx.Phase == IndependentRecoveryPhase.LaunchPending ? IndependentRecoveryPhase.Verifying : IndependentRecoveryPhase.Verified,
                     now, tx.Phase == IndependentRecoveryPhase.LaunchPending ?
                         checked(latest.Intent.StartupBudgetMs + latest.Intent.PeriodMs * 3 + 60000) : 10000,
-                    tx.Phase == IndependentRecoveryPhase.LaunchPending ? "ReplacementTicketConsumed" : "ActionsCountersAndThreeDatabaseCommitsVerified");
+                    tx.Phase == IndependentRecoveryPhase.LaunchPending ? "ReplacementTicketConsumed" :
+                        "ActionsCountersAndThreeDatabaseCommitsVerified:Channels=" + string.Join(",", tx.Channels.Except(latest.Intent.CompletedChannels)) +
+                        ";TargetCompleted=" + string.Join(",", tx.Channels.Intersect(latest.Intent.CompletedChannels)));
                 return true;
             });
         }
