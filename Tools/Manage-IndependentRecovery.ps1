@@ -114,6 +114,11 @@ function Get-OwnedService {
     if($found -and ($found.PathName -ne $serviceCommand -or $found.StartName -notin @('LocalSystem','NT AUTHORITY\SYSTEM'))){throw '同名服务身份不匹配。'}
     return $found
 }
+function Wait-OwnedServiceStatus([string]$expected,[int]$seconds) {
+    $controller=Get-Service -Name $serviceName -ErrorAction Stop
+    try {$controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]$expected,[TimeSpan]::FromSeconds($seconds))}
+    finally {$controller.Dispose()}
+}
 function Set-Maintenance([bool]$value) {
     if($value){
         $mainName=[IO.Path]::GetFileName($registration.ExecutablePath).Replace("'","''")
@@ -134,11 +139,11 @@ try {
     $rootFolder=$scheduler.GetFolder('\')
     [MTTFTest.Watchdog.Protocol.IndependentLaunchTaskDefinition]::ValidateAncestorSecurityDescriptor($rootFolder.GetSecurityDescriptor(7))
     try {$folder=$scheduler.GetFolder('\MTTFTest')} catch {
-        if($_.Exception.HResult -ne -2147024894 -or $Mode -ne 'Install'){throw}
+        if($_.Exception.GetBaseException().HResult -ne -2147024894 -or $Mode -ne 'Install'){throw}
         $folder=$rootFolder.CreateFolder('MTTFTest','O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)')
     }
     [MTTFTest.Watchdog.Protocol.IndependentLaunchTaskDefinition]::ValidateSecurityDescriptor($folder.GetSecurityDescriptor(7))
-    try {$task=$folder.GetTask($taskName)} catch {if($_.Exception.HResult -ne -2147024894){throw}}
+    try {$task=$folder.GetTask($taskName)} catch {if($_.Exception.GetBaseException().HResult -ne -2147024894){throw}}
     if($task){
         $definition=$task.Definition
         try {
@@ -207,7 +212,7 @@ try {
             Set-Maintenance $true
             try {
                 Start-Service -Name $serviceName
-                (Get-Service $serviceName).WaitForStatus('Running',[TimeSpan]::FromSeconds(10))
+                Wait-OwnedServiceStatus 'Running' 10
                 Set-Maintenance $false
             } catch {Set-Maintenance $true;throw}
             Write-Output '独立执行服务已运行；试验是否恢复须另行验证动作、计数与落盘。'
@@ -217,7 +222,7 @@ try {
             Set-Maintenance $true
             if($service){
                 Stop-Service -Name $serviceName
-                (Get-Service $serviceName).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(15))
+                Wait-OwnedServiceStatus 'Stopped' 15
             }
             if($task){$folder.DeleteTask($taskName,0)}
             if($service){& "$env:SystemRoot\System32\sc.exe" delete $serviceName; if($LASTEXITCODE -ne 0){throw '删除服务失败。'}}
