@@ -71,6 +71,11 @@ namespace MTTFTest.Watchdog.Protocol
                 }
                 if (_hardware == null)
                 {
+                    if (tx.Phase == IndependentRecoveryPhase.PowerOff)
+                    {
+                        if (state.Controller == null) throw new InvalidDataException("IndependentSafetyControllerIdentityMissing");
+                        IndependentExecutionFence.Revoke(_registration.InstallationId, state.Controller);
+                    }
                     var command = _registration.CreateSafetyCommand(state, _executor, now);
                     var commandPath = Path.Combine(_registration.StateDirectory, "safety-" + command.StageNonce + ".json");
                     if (File.Exists(commandPath)) throw new IOException("IndependentSafetyCommandAlreadyExists");

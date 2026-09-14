@@ -9980,6 +9980,7 @@ namespace Controller
 
         internal void EnsurePowerSupplyEnergizationPermit(int channel)
         {
+            MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
             if (_powerSupply == null) return;
             var groupId = GetElectricalGroupId(channel);
             var reason = "GroupMappingMissing";

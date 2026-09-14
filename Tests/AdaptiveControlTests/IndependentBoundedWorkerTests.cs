@@ -8,10 +8,43 @@ namespace AdaptiveControlTests
 {
     internal static class IndependentBoundedWorkerTests
     {
+        public sealed class FenceProbe
+        {
+            public string InstallationId { get; set; }
+            public IndependentProcessIdentity Identity { get; set; }
+        }
         internal static int Child(string mode, string evidence)
         {
             if (mode == "exit") return 0;
             if (mode == "fail") return 17;
+            if (mode == "fence")
+            {
+                using (var process = Process.GetCurrentProcess())
+                {
+                    var probe = new FenceProbe
+                    {
+                        InstallationId = Guid.NewGuid().ToString("N"),
+                        Identity = new IndependentProcessIdentity
+                        { Pid = process.Id, StartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                            WindowsSessionId = process.SessionId, ExecutablePath = Executable,
+                            SessionToken = Guid.NewGuid().ToString("N") }
+                    };
+                    IndependentExecutionFence.AttachCurrent(probe.InstallationId, probe.Identity);
+                    BoundedJson.Write(evidence, probe);
+                    while (true)
+                    {
+                        try { IndependentExecutionFence.RequireCurrentAuthority(); }
+                        catch (InvalidOperationException)
+                        {
+                            // Original power-supply boundary must observe the same fence.
+                            try { FallbackPowerBoundary.ValidateCurrentProcess(); }
+                            catch (InvalidOperationException) { return 0; }
+                            return 19;
+                        }
+                        Thread.Sleep(10);
+                    }
+                }
+            }
             if (mode == "owner")
             {
                 // Intentionally skip Dispose: killing the owner must retire its
@@ -132,7 +165,24 @@ namespace AdaptiveControlTests
                 using (var repeated = new IndependentProcessRetirement(identity, identity, Executable, 1000))
                     if (repeated.Poll() != IndependentOperationResult.Completed) throw new Exception("repeated retirement not idempotent");
             }
-            return 10;
+            var fencePath = Path.Combine(root, "fence.json");
+            using (var fenced = Start("fence", fencePath, 20000))
+            {
+                Until(() => File.Exists(fencePath), "fence child did not bind");
+                var probe = BoundedJson.Read<FenceProbe>(fencePath);
+                var wrong = new IndependentProcessIdentity
+                { Pid = probe.Identity.Pid, StartUtcTicks = probe.Identity.StartUtcTicks, WindowsSessionId = probe.Identity.WindowsSessionId,
+                    ExecutablePath = probe.Identity.ExecutablePath, SessionToken = Guid.NewGuid().ToString("N") };
+                var rejected = false;
+                try { IndependentExecutionFence.Revoke(probe.InstallationId, wrong); }
+                catch (WaitHandleCannotBeOpenedException) { rejected = true; }
+                if (!rejected || Gone(fenced.ProcessId, fenced.StartUtcTicks)) throw new Exception("wrong fence session accepted");
+                IndependentExecutionFence.Revoke(probe.InstallationId, probe.Identity);
+                Until(() => fenced.Poll() != IndependentWorkerState.Running, "external revocation not observed");
+                if (fenced.Poll() != IndependentWorkerState.Completed) throw new Exception("power boundary ignored independent fence");
+                IndependentExecutionFence.Revoke(probe.InstallationId, probe.Identity);
+            }
+            return 13;
         }
     }
 }

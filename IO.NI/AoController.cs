@@ -105,6 +105,7 @@ namespace IO.NI
 
                 try
                 {
+                    if (v != 0) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
                     writer.WriteSingleSample(true, v);
                     _log.Info($"AO[{deviceName}] 输出百分比 {percent:F1}% -> 电压 {v:F2} V", "AO");
                     return true;
@@ -143,6 +144,7 @@ namespace IO.NI
 
                 try
                 {
+                    if (v != 0) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
                     writer.WriteSingleSample(true, v);
                     _log.Info($"AO[{deviceName}] CommandPressure={pressure:F1}bar AoVoltage={v:F3}V", "AO");
                     return new AoWriteResult(true, deviceName, pressure, v);

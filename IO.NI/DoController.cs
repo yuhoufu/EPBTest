@@ -1109,6 +1109,7 @@ namespace IO.NI
                         dev.States = dev.DefaultStates.ToArray();
 
                         // 下发默认
+                        if (dev.States.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
                         dev.Writer.WriteSingleSampleSingleLine(true, dev.States);
                         totalLines += dev.Lines.Count;
                     }
@@ -1170,6 +1171,7 @@ namespace IO.NI
                         toWrite[map.posIdx] = directionIsForward;
                         toWrite[map.negIdx] = !directionIsForward;
 
+                        if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
                         dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                         dev.States = toWrite;
                     }
@@ -1234,6 +1236,7 @@ namespace IO.NI
                     toWrite[map.posIdx] = false;
                     toWrite[map.negIdx] = false;
                     niWriteStartedTicks = Stopwatch.GetTimestamp();
+                    if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
                     dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                     niWriteCompletedTicks = Stopwatch.GetTimestamp();
                     dev.States = toWrite;
@@ -1415,6 +1418,7 @@ namespace IO.NI
                     }
                     else
                     {
+                        if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
                         targetDevice.Writer.WriteSingleSampleSingleLine(true, toWrite);
                     }
                     niWriteCompletedTicks = Stopwatch.GetTimestamp();
@@ -1528,6 +1532,7 @@ namespace IO.NI
                         var toWrite = (bool[])dev.States.Clone();
                         toWrite[map.idx] = start;
 
+                        if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
                         dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                         dev.States = toWrite;
                     }

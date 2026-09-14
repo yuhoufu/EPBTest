@@ -272,6 +272,7 @@ namespace MTTFTest.Watchdog.Protocol
     {
         public static void ValidateCurrentProcess()
         {
+            IndependentExecutionFence.RequireCurrentAuthority();
             var args = Environment.GetCommandLineArgs();
             string Read(string key) { var i = Array.IndexOf(args, key); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
             var session = Read("--watchdog-recover");
