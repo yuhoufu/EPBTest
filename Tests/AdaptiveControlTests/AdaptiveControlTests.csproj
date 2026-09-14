@@ -27,6 +27,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
+    <Compile Include="IndependentBootstrapTests.cs" />
     <Reference Include="System.Core" />
     <Reference Include="System.Data" />
     <Reference Include="System.Web.Extensions" />

@@ -1049,6 +1049,34 @@ namespace MTEmbTest
             }
         }
 
+        internal static UnattendedRunCheckpoint PrepareIndependentCheckpoint(GlobalConfig config, IndependentRecoveryStartup startup)
+        {
+            var intent = startup.ValidateConfiguration(config);
+            var selected = intent.RecoveryChannels();
+            // Called after monitor initialization has reconciled mechanical
+            // completion facts from the committed project database.
+            var checkpoint = new UnattendedRunCheckpoint
+            {
+                SchemaVersion = CurrentSchemaVersion, Armed = true, RecoveryChainPendingStart = true,
+                StoreDir = config.Test.StoreDir, TestName = config.Test.TestName,
+                SelectedChannels = selected, LearnCycles = Math.Max(5, config.Test.LearnCycles),
+                ConfigurationSha256 = startup.Registration.ConfigurationSha256,
+                ExecutableSha256 = startup.Registration.ExecutableSha256,
+                BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString(),
+                RootRunId = startup.ParentRunId, ParentRunId = startup.ParentRunId, RunId = startup.ParentRunId,
+                RunEpoch = startup.RunEpoch - 1, RestartGeneration = checked((int)startup.Generation - 1),
+                LastReason = "IndependentTicketConsumed", UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                RemainingFormalCycles = selected.ToDictionary(channel => channel.ToString(CultureInfo.InvariantCulture),
+                    channel => config.Test.GetEpbRecord(channel).GetRemainingMechanicalCycles(config.Test.TestTarget))
+            };
+            lock (Sync)
+            {
+                startup.ValidateCurrent();
+                SaveUnsafe(checkpoint);
+            }
+            return checkpoint;
+        }
+
         internal static string ComputeConfigurationHash(GlobalConfig config)
         {
             try

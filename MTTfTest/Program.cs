@@ -39,12 +39,17 @@ namespace MtEmbTest
         {
             if (FirstRunBootstrap.TryRunElevatedWorker(args)) return;
             if (!FirstRunBootstrap.PrepareOrExit(args)) return;
+            IndependentRecoveryStartup independentStartup;
+            try { independentStartup = IndependentRecoveryStartup.Parse(args); }
+            catch (Exception error) { TryWriteFatalLog("IndependentRecoveryArguments", error); return; }
             var watchdogRecoveryIntent = WatchdogRecoveryIntent.Parse(args);
             var recoveryIntent = watchdogRecoveryIntent == null
                 ? RecoveryProcessBootstrap.Parse(args)
                 : null;
+            if (independentStartup != null && (watchdogRecoveryIntent != null || recoveryIntent != null))
+            { TryWriteFatalLog("IndependentRecoveryArguments", new InvalidOperationException("MixedRecoveryProtocolsRejected")); return; }
             UnattendedRecoveryCoordinator.SetRecoveryProcessMode(
-                recoveryIntent != null || watchdogRecoveryIntent != null);
+                recoveryIntent != null || watchdogRecoveryIntent != null || independentStartup != null);
             using var recoveryHandoff = RecoveryProcessBootstrap.AttachHandoff(recoveryIntent);
             if (recoveryIntent != null && recoveryHandoff == null)
             {
@@ -74,6 +79,11 @@ namespace MtEmbTest
                     ownsMutex = true;
                 }
                 if (!ownsMutex) return;
+                if (independentStartup != null)
+                {
+                    try { independentStartup.ConsumeAndBind(); }
+                    catch (Exception error) { TryWriteFatalLog("IndependentRecoveryBootstrap", error); return; }
+                }
 
             if (Environment.OSVersion.Version.Major >= 6)
                 SetProcessDPIAware();

@@ -850,6 +850,17 @@ namespace MTEmbTest
             ApplyBatchPauseState(BatchPauseState.Idle);
         }
 
+        internal async Task ResumeFromIndependentRecoveryAsync(IndependentRecoveryStartup startup)
+        {
+            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
+                await Task.Delay(100);
+            if (_epb == null || _cfg?.Test == null)
+                throw new InvalidOperationException("IndependentRecoveryControllerInitializationTimeout");
+            var checkpoint = UnattendedRunCheckpointStore.PrepareIndependentCheckpoint(_cfg, startup);
+            startup.ValidateCurrent();
+            await ResumeFromUnattendedCheckpointAsync(checkpoint);
+        }
+
         internal async Task ResumeFromUnattendedCheckpointAsync(UnattendedRunCheckpoint checkpoint)
         {
             if (checkpoint == null) throw new ArgumentNullException(nameof(checkpoint));

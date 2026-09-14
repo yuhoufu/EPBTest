@@ -2607,19 +2607,30 @@ namespace MTEmbTest
                     RunChainIdentity chainIdentity = null;
                     if (unattendedRecovery)
                     {
-                        var checkpoint = UnattendedRunCheckpointStore.Load();
-                        if (checkpoint == null ||
-                            !Guid.TryParse(checkpoint.RunId, out var recoveredRunId) ||
-                            recoveredRunId == Guid.Empty)
-                            throw new InvalidOperationException("无人值守恢复缺少有效父RunId，拒绝创建无身份学习链。");
-                        Guid.TryParse(checkpoint.RootRunId, out var rootRunId);
-                        Guid.TryParse(checkpoint.ParentRunId, out var parentRunId);
-                        chainIdentity = new RunChainIdentity(
-                            Guid.NewGuid(),
-                            rootRunId == Guid.Empty ? recoveredRunId : rootRunId,
-                            parentRunId == Guid.Empty ? recoveredRunId : parentRunId,
-                            Math.Max(0, checkpoint.RestartGeneration + 1),
-                            Math.Max(1, checkpoint.RunEpoch + 1));
+                        var independent = IndependentRecoveryStartup.Current;
+                        if (independent != null)
+                        {
+                            independent.ValidateConfiguration(_cfg);
+                            chainIdentity = new RunChainIdentity(Guid.Parse(independent.RunId),
+                                Guid.Parse(independent.ParentRunId), Guid.Parse(independent.ParentRunId),
+                                checked((int)independent.Generation), independent.RunEpoch);
+                        }
+                        else
+                        {
+                            var checkpoint = UnattendedRunCheckpointStore.Load();
+                            if (checkpoint == null ||
+                                !Guid.TryParse(checkpoint.RunId, out var recoveredRunId) ||
+                                recoveredRunId == Guid.Empty)
+                                throw new InvalidOperationException("无人值守恢复缺少有效父RunId，拒绝创建无身份学习链。");
+                            Guid.TryParse(checkpoint.RootRunId, out var rootRunId);
+                            Guid.TryParse(checkpoint.ParentRunId, out var parentRunId);
+                            chainIdentity = new RunChainIdentity(
+                                Guid.NewGuid(),
+                                rootRunId == Guid.Empty ? recoveredRunId : rootRunId,
+                                parentRunId == Guid.Empty ? recoveredRunId : parentRunId,
+                                Math.Max(0, checkpoint.RestartGeneration + 1),
+                                Math.Max(1, checkpoint.RunEpoch + 1));
+                        }
                     }
                     var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
                         channels, // 批量要跑的通道

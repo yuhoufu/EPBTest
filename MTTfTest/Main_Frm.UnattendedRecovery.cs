@@ -34,6 +34,27 @@ namespace MtEmbTest
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            if (IndependentRecoveryStartup.Current != null)
+            {
+                BeginInvoke((Action)(async () =>
+                {
+                    try
+                    {
+                        var startup = IndependentRecoveryStartup.Current;
+                        startup.ValidateConfiguration(Cfg);
+                        var monitor = new FrmEpbMainMonitor(Guid.Parse(startup.ParentRunId), _daqRuntimeSettings) { Name = "实时监视" };
+                        OpenChildForm(monitor);
+                        await monitor.ResumeFromIndependentRecoveryAsync(startup);
+                    }
+                    catch (Exception error)
+                    {
+                        ProjectLogHub.Write(ProjectLogLevel.Error,
+                            "独立恢复启动未完成，交由独立执行器按持久事务验证和处理：" + error.Message,
+                            "独立恢复", error);
+                    }
+                }));
+                return;
+            }
             if (_watchdogRecoveryIntent != null)
             {
                 var watchdogIntent = _watchdogRecoveryIntent;

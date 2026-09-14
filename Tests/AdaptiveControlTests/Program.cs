@@ -33,6 +33,8 @@ namespace AdaptiveControlTests
                     Console.WriteLine($"PASS independent workers {passed}/{passed}");
                     return 0;
                 }
+                if (args.Length == 1 && args[0] == "--independent-bootstrap")
+                { IndependentBootstrapTests.RunAll(); return 0; }
                 if (args.Length == 1 && args[0] == "--startup-stagger-regression")
                 {
                     OverduePhaseDoesNotCaptureUiContext();
@@ -536,6 +538,7 @@ namespace AdaptiveControlTests
                 _passed += DatabaseFallbackTests.RunAll();
                 _passed += IndependentRecoveryTransactionTests.RunAll();
                 _passed += IndependentBoundedWorkerTests.RunAll();
+                _passed += IndependentBootstrapTests.RunAll();
                 _passed += FallbackCoordinationTests.RunAll();
                 // Recovery coordination owns process-wide owner/preemption registries. Run it
                 // before broader controller suites that intentionally leave terminal evidence.
