@@ -1,10 +1,14 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('Seal','Install','Status','Enable','Maintenance','Uninstall')][string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('Prepare','Seal','Install','Status','Enable','Maintenance','Uninstall')][string]$Mode,
     [Parameter(Mandatory=$true)][string]$RegistrationPath,
     [Parameter(Mandatory=$true)][string]$ExecutorPath,
-    [string]$DraftPath
+    [string]$DraftPath,
+    [string]$MainExecutablePath,
+    [string]$ProjectDirectory,
+    [string]$InteractiveUserSid,
+    [string]$InstallationId
 )
 $ErrorActionPreference='Stop'
 $user=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -41,6 +45,56 @@ while($cursor){
 }
 [Reflection.Assembly]::LoadFrom($assemblyPath) | Out-Null
 [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($ExecutorPath)
+if($Mode -eq 'Prepare'){
+    foreach($value in @($MainExecutablePath,$ProjectDirectory,$InteractiveUserSid)){
+        if([string]::IsNullOrWhiteSpace($value) -or $value.Contains('"')){throw '准备注册必须提供有效主程序、项目路径及交互用户 SID。'}
+    }
+    $MainExecutablePath=[IO.Path]::GetFullPath($MainExecutablePath)
+    $ProjectDirectory=[IO.Path]::GetFullPath($ProjectDirectory).TrimEnd('\')
+    if($MainExecutablePath.StartsWith('\\') -or $ProjectDirectory.StartsWith('\\')){throw '准备注册仅允许本机路径。'}
+    $sid=New-Object Security.Principal.SecurityIdentifier($InteractiveUserSid)
+    if(-not $sid.IsAccountSid()){throw '交互用户必须为账户 SID。'}
+    if(-not $InstallationId){$InstallationId=[Guid]::NewGuid().ToString('N')}
+    $parsedId=[Guid]::Empty
+    if(-not [Guid]::TryParseExact($InstallationId,'N',[ref]$parsedId)){throw '安装 ID 无效。'}
+    [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($MainExecutablePath)
+    $mainProtocol=Join-Path ([IO.Path]::GetDirectoryName($MainExecutablePath)) 'MTTFTest.Watchdog.Protocol.dll'
+    [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($mainProtocol)
+    if((Get-FileHash -LiteralPath $mainProtocol).Hash -ne (Get-FileHash -LiteralPath $assemblyPath).Hash){throw '主程序与执行器协议不同源。'}
+    # An older exe may ignore an unknown option and open its UI. Check capability
+    # before creating any child; loading trusted metadata does not run the entrypoint.
+    $mainAssembly=[Reflection.Assembly]::LoadFrom($MainExecutablePath)
+    if(-not $mainAssembly.GetType('MTEmbTest.IndependentRegistrationExport',$false)){throw '主程序不支持独立注册导出。'}
+    [MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::RequireControllerAbsent($MainExecutablePath)
+    if([MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::Resolve($MainExecutablePath)){throw '已有安装绑定，必须走维护升级流程，不能创建新注册替代。'}
+    $stateDirectory=[IO.Path]::GetDirectoryName($RegistrationPath)
+    if([IO.Directory]::Exists($stateDirectory)){
+        [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedDirectory($stateDirectory)
+        if(@([IO.Directory]::EnumerateFileSystemEntries($stateDirectory) | Select-Object -First 1).Count){throw '状态目录非空，拒绝覆盖已有准备或运行状态。'}
+    }else{
+        [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedDirectory([IO.Path]::GetDirectoryName($stateDirectory))
+        [IO.Directory]::CreateDirectory($stateDirectory)|Out-Null
+        $stateAcl=New-Object Security.AccessControl.DirectorySecurity
+        $stateAcl.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+        Set-Acl -LiteralPath $stateDirectory -AclObject $stateAcl
+    }
+    $preparedDraft=Join-Path $stateDirectory 'registration-draft.json'
+    $worker=$null
+    try{
+        $arguments='--export-independent-registration-draft "'+$ProjectDirectory+'" "'+$stateDirectory+'" "'+$InteractiveUserSid+'" '+$InstallationId+' "'+$preparedDraft+'"'
+        $beforeResume=[Action[int,long]]{
+            param([int]$childPid,[long]$started)
+            $owner=[ordered]@{pid=$childPid;startUtcTicks=$started;executable=[string]$MainExecutablePath;installationId=[string]$InstallationId;purpose='RegistrationExport'}
+            [IO.File]::WriteAllText((Join-Path $stateDirectory 'export-owner.json'),($owner|ConvertTo-Json -Depth 3),[Text.UTF8Encoding]::new($false))
+        }
+        $worker=New-Object MTTFTest.Watchdog.Protocol.IndependentBoundedWorker($MainExecutablePath,$arguments,[IO.Path]::GetDirectoryName($MainExecutablePath),15000,256,$beforeResume)
+        do {$outcome=$worker.Poll();if($outcome.ToString() -eq 'Running'){Start-Sleep -Milliseconds 50}}while($outcome.ToString() -eq 'Running')
+        if($outcome.ToString() -ne 'Completed' -or $worker.ExitCode -ne 0){throw ('注册导出失败：'+$outcome+'，退出码='+$worker.ExitCode)}
+        [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::SealDraft($preparedDraft,$RegistrationPath)|Out-Null
+    }finally{if($worker){$worker.Dispose()}}
+    Write-Output ('注册准备完成：'+$RegistrationPath+'；InstallationId='+$InstallationId+'；尚未安装服务或启动试验。')
+    return
+}
 if($Mode -eq 'Seal'){
     if([string]::IsNullOrWhiteSpace($DraftPath)){throw '封存必须提供本次安装导出的受保护草稿路径。'}
     [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::SealDraft(
