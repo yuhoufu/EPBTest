@@ -176,6 +176,17 @@ namespace MTEmbTest
             return state.Intent;
         }
 
+        internal void ResetPermanentExclusion(GlobalConfig config, int channel, bool selected)
+        {
+            ValidateProjectConfiguration(config);
+            var state = _store.Read();
+            if (state?.Intent == null) return;
+            if (RunId != null && (RunId != state.Intent.RunId || RunEpoch != state.Intent.RunEpoch))
+                throw new InvalidOperationException("IndependentPermanentResetStaleRun");
+            _store.ResetPermanentExclusionForOperator(state.Revision, Identity, channel, selected,
+                Guid.NewGuid().ToString("N"), DateTime.UtcNow.Ticks);
+        }
+
         internal void PersistPermanentExclusion(Guid runId, long epoch, int[] channels, string code, Guid command)
             => _store.RecordControllerPermanentExclusion(Identity, runId.ToString("N"), epoch, channels,
                 code, command.ToString("N"), DateTime.UtcNow.Ticks);

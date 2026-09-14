@@ -341,6 +341,7 @@ namespace Controller
                         "当前项目专用 TestConfig.xml 不存在。",
                         projectPath);
 
+                PermanentRecoveryResetWriter?.Invoke(channel, enableAfterReset);
                 ConfigLoader.UpdateTestEpbAlarmState(
                     projectPath,
                     new[]

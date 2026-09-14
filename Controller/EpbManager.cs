@@ -139,6 +139,7 @@ namespace Controller
         /// <summary>通道已停机但项目禁用状态写盘失败，UI必须高可见度提示。</summary>
         public event Action<int, string> ChannelDisablePersistenceFailed;
         public Action<Guid, long, int[], string, Guid> PermanentRecoveryExclusionWriter { get; set; }
+        public Action<int, bool> PermanentRecoveryResetWriter { get; set; }
 
         /// <summary>事件：某个通道被暂停。</summary>
         public event Action<int> ChannelPaused;

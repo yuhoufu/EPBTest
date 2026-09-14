@@ -167,6 +167,30 @@ namespace AdaptiveControlTests
                 "ordinary restart cleared permanent isolation");
             Reject(() => permanentStore.RecordControllerPermanentExclusion(permanentState.Controller, permanentState.Intent.RunId,
                 permanentState.Intent.RunEpoch, new[] { 7 }, "OldRun", exclusionCommand, now), "old run excluded new batch");
+            Reject(() => permanentStore.ResetPermanentExclusionForOperator(permanentStore.Read().Revision, Identity(),
+                4, true, Guid.NewGuid().ToString("N"), now), "unbound process reset active run isolation");
+            var resetRevision = permanentStore.Read().Revision;
+            permanentStore.ResetPermanentExclusionForOperator(resetRevision, permanentState.Controller,
+                4, true, Guid.NewGuid().ToString("N"), now);
+            Assert(permanentStore.Read().Intent.PermanentChannels.SequenceEqual(new[] { 5 }) &&
+                permanentStore.Read().Intent.PausedChannels.Contains(4) && !permanentStore.Read().Intent.RecoveryChannels().Contains(4),
+                "manual isolation reset silently resumed lane");
+            Reject(() => permanentStore.ResetPermanentExclusionForOperator(resetRevision, permanentState.Controller,
+                5, true, Guid.NewGuid().ToString("N"), now), "stale reset overwrote newer authority");
+            permanentStore.BeginRecovery(permanentStore.Read().Revision, "executor", now);
+            Reject(() => permanentStore.ResetPermanentExclusionForOperator(permanentStore.Read().Revision, permanentState.Controller,
+                5, true, Guid.NewGuid().ToString("N"), now), "operator reset crossed active takeover");
+            var resetCold = Fixture(Path.Combine(root, "reset-stopped-installation"), now);
+            var resetColdState = resetCold.Read();
+            resetCold.RecordControllerPermanentExclusion(resetColdState.Controller, resetColdState.Intent.RunId,
+                resetColdState.Intent.RunEpoch, new[] { 4 }, "Permanent", exclusionCommand, now);
+            resetCold.RecordControllerManualStop(resetColdState.Controller, resetColdState.Intent.RunId,
+                resetColdState.Intent.RunEpoch, Guid.NewGuid().ToString("N"), now);
+            resetCold.ResetPermanentExclusionForOperator(resetCold.Read().Revision, Identity(),
+                4, false, Guid.NewGuid().ToString("N"), now);
+            Assert(!resetCold.Read().Intent.PermanentChannels.Contains(4) && resetCold.Read().Intent.ManualStopped &&
+                !resetCold.Read().Intent.Armed && !resetCold.Read().Intent.SelectedChannels.Contains(4),
+                "stopped installation reset lost manual stop or selected excluded lane");
             var selectionState = selectionStore.Read();
             var selectionCommand = Guid.NewGuid().ToString("N");
             selectionStore.SetControllerSelection(selectionState.Controller, selectionState.Intent.RunId,

@@ -279,6 +279,40 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void ResetPermanentExclusionForOperator(long expectedRevision, IndependentProcessIdentity actor,
+            int channel, bool selected, string commandId, long now)
+        {
+            actor?.Validate();
+            if (actor == null || channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentPermanentResetInvalid");
+            Update(expectedRevision, state =>
+            {
+                var intent = state.Intent;
+                if (intent == null || state.Maintenance || state.SafetyCleanupPending ||
+                    state.Transaction != null && !state.Transaction.IsTerminal ||
+                    !string.Equals(actor.ExecutablePath, intent.ExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+                    (!actor.Matches(state.Controller) && (intent.Armed || !intent.ManualStopped)))
+                    throw new InvalidOperationException("IndependentPermanentResetNotAdmitted");
+                var before = intent.SelectedChannels.ToArray();
+                intent.PermanentChannels = intent.PermanentChannels.Where(c => c != channel).ToArray();
+                intent.SelectedChannels = selected ? before.Union(new[] { channel }).OrderBy(c => c).ToArray() :
+                    before.Where(c => c != channel).ToArray();
+                // A confirmed repair is not an instruction to resume. If XML
+                // persistence subsequently fails, this pause still excludes it.
+                intent.PausedChannels = intent.PausedChannels.Union(new[] { channel }).OrderBy(c => c).ToArray();
+                intent.Revision = checked(intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "OperatorPermanentReset", "Channel=" + channel + ";Selected=" + selected +
+                    ";CommandId=" + commandId, now, before);
+                return true;
+            });
+        }
+
         public void SetControllerSelection(IndependentProcessIdentity controller, string runId, long runEpoch,
             int channel, bool selected, string commandId, long now)
         {
