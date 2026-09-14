@@ -12,6 +12,7 @@
   <ItemGroup><Reference Include="System" /><Reference Include="System.Core" /></ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="IndependentProjectStateTests.cs" />
     <Compile Include="..\AdaptiveControlTests\IndependentBoundedWorkerTests.cs"><Link>IndependentBoundedWorkerTests.cs</Link></Compile>
   </ItemGroup>
   <ItemGroup><ProjectReference Include="..\..\Watchdog.Protocol\Watchdog.Protocol.csproj">

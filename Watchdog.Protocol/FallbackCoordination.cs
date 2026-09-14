@@ -299,6 +299,11 @@ namespace MTTFTest.Watchdog.Protocol
     public static class BoundedJson
     {
         public const int MaximumBytes = 65536;
+        private static void RequireFields(System.Collections.Generic.Dictionary<string, object> fields, params string[] required)
+        {
+            if (fields == null || required.Any(key => !fields.ContainsKey(key)))
+                throw new InvalidDataException("IndependentStateFieldsMissing");
+        }
         public static T Read<T>(string path)
         {
             using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -310,6 +315,31 @@ namespace MTTFTest.Watchdog.Protocol
                 { var count = stream.Read(data, offset, data.Length - offset); if (count == 0) throw new EndOfStreamException(); offset += count; }
                 var serializer = new JavaScriptSerializer { MaxJsonLength = MaximumBytes, RecursionLimit = 12 };
                 var json = new UTF8Encoding(false, true).GetString(data);
+                if (typeof(T) == typeof(IndependentProjectState))
+                {
+                    var fields = serializer.DeserializeObject(json) as System.Collections.Generic.Dictionary<string, object>;
+                    RequireFields(fields, "SchemaVersion", "Revision", "Maintenance", "SafetyCleanupPending",
+                        "Intent", "Transaction", "Controller", "Ticket", "Audit");
+                    if (!(fields["Maintenance"] is bool) || !(fields["SafetyCleanupPending"] is bool))
+                        throw new InvalidDataException("IndependentStateFlagsInvalid");
+                    if (fields["Intent"] != null)
+                    {
+                        var intent = fields["Intent"] as System.Collections.Generic.Dictionary<string, object>;
+                        RequireFields(intent, "SchemaVersion", "Revision", "ProjectDirectory", "DatabasePath",
+                            "DatabaseCreationUtcTicks", "ExecutablePath", "ConfigurationSha256", "RunId", "RunEpoch",
+                            "SelectedChannels", "PausedChannels", "PermanentChannels", "CompletedChannels", "Armed",
+                            "ManualStopped", "ManualPaused", "PeriodMs", "StartupBudgetMs");
+                        if (!(intent["Armed"] is bool) || !(intent["ManualStopped"] is bool) || !(intent["ManualPaused"] is bool))
+                            throw new InvalidDataException("IndependentIntentFlagsInvalid");
+                    }
+                    if (fields["Ticket"] != null)
+                    {
+                        var ticket = fields["Ticket"] as System.Collections.Generic.Dictionary<string, object>;
+                        RequireFields(ticket, "Nonce", "RequestId", "Generation", "IntentRevision",
+                            "ExecutableSha256", "WindowsSessionId", "ExpiresUtcTicks", "Revoked", "Consumer");
+                        if (!(ticket["Revoked"] is bool)) throw new InvalidDataException("IndependentTicketFlagInvalid");
+                    }
+                }
                 if (typeof(T) == typeof(FallbackLedger))
                 {
                     var fields = serializer.DeserializeObject(json) as System.Collections.Generic.Dictionary<string, object>;
