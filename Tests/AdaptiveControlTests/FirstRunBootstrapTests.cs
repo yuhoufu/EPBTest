@@ -10,6 +10,22 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
+            foreach (var flag in new[] { "--independent-registration", "--independent-ticket", "--independent-installation" })
+            {
+                // Even a missing value must reach protocol rejection, not the
+                // installer or an interactive configuration wizard.
+                var recovery = FirstRunBootstrap.HasRecoveryArguments(new[] { flag });
+                Assert(recovery, "独立入口必须先进入协议校验：" + flag);
+                AssertEqual(FirstRunBootstrapAction.Continue,
+                    FirstRunBootstrap.Decide(true, false, recovery, false),
+                    "独立入口不得转入包目录首次安装：" + flag);
+                AssertEqual(FirstRunBootstrapAction.Continue,
+                    FirstRunBootstrap.Decide(true, false, recovery, true),
+                    "独立入口不得等待安装目录交互配置：" + flag);
+                passed += 3;
+            }
+            Assert(!FirstRunBootstrap.HasRecoveryArguments(Array.Empty<string>()), "普通启动保留首启配置流程");
+            passed++;
             AssertEqual(
                 FirstRunBootstrapAction.Continue,
                 FirstRunBootstrap.Decide(false, false, false, false),
