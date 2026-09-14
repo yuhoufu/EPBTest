@@ -32,6 +32,7 @@ function Test-Bundle {
     }
     if ($independent) {
         if ('Tools/Install-IndependentRecoveryBundle.ps1' -notin @($manifest.files.path)) { throw '缺少独立文件安装器。' }
+        if ('Tools/Export-IndependentRecoveryEvidence.ps1' -notin @($manifest.files.path)) { throw '缺少独立关键证据采集器。' }
         & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Validate -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot | Out-Null
     }
     foreach ($file in Get-ChildItem -LiteralPath $base -File -Recurse) {
@@ -115,7 +116,7 @@ try {
     $manifest = Test-Bundle
     Write-Host ('候选版本：' + $manifest.version + '；现场耐久验收未完成。')
     if ($Mode -eq 'ValidatePackage') { Write-Output ('PASS BundleIntegrity ' + @($manifest.files).Count); exit 0 }
-    if ($Mode -in @('Install','Repair','Restore','Launch','Stop','Uninstall')) {
+    if ($Mode -in @('Install','Repair','Restore','Launch','Stop','Uninstall','Evidence')) {
         $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             if ($Elevated) { throw '提权后仍无管理员权限。' }
@@ -140,6 +141,11 @@ try {
             & $manager -Mode $managerMode -RegistrationPath (Join-Path $InstallRoot 'IndependentState\registration.json') `
                 -ExecutorPath (Join-Path $InstallRoot 'FallbackGuard\MTTFTest.FallbackGuard.exe')
             Write-Host '组件状态不代表续测成功；动作、计数和三周期落盘须单独核验。'
+        } elseif ($Mode -eq 'Evidence') {
+            if (-not $EvidenceDirectory) { $EvidenceDirectory = Join-Path $PSScriptRoot ('Evidence\' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')) }
+            & (Join-Path $PSScriptRoot 'Tools\Export-IndependentRecoveryEvidence.ps1') `
+                -RegistrationPath (Join-Path $InstallRoot 'IndependentState\registration.json') `
+                -ExecutorPath (Join-Path $InstallRoot 'FallbackGuard\MTTFTest.FallbackGuard.exe') -OutputDirectory $EvidenceDirectory
         } elseif ($Mode -eq 'Launch') {
             $registrationPath = Join-Path $InstallRoot 'IndependentState\registration.json'
             & (Join-Path $PSScriptRoot 'Tools\Manage-IndependentRecovery.ps1') -Mode Status -RegistrationPath $registrationPath `

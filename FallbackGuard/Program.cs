@@ -31,7 +31,15 @@ namespace MTTFTest.FallbackGuard
             {
                 var result = RecoveryDatabaseEvidence.Read(Read("--read-recovery-database"),
                     (Read("--channels") ?? "").Split(',').Select(int.Parse).ToArray());
-                Console.WriteLine(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(result));
+                var json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(result);
+                var output = Read("--output");
+                if (output == null) Console.WriteLine(json);
+                else
+                {
+                    if (json.Length > 65536) throw new InvalidDataException("RecoveryEvidenceOutputTooLarge");
+                    using (var file = new FileStream(Path.GetFullPath(output), FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+                    using (var writer = new StreamWriter(file, new System.Text.UTF8Encoding(false))) writer.Write(json);
+                }
                 return 0;
             }
             if (args.Contains("--read-database"))

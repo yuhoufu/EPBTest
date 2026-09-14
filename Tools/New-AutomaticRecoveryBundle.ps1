@@ -39,7 +39,7 @@ foreach ($relative in @('System.Data.SQLite.dll', 'x86\SQLite.Interop.dll')) {
 }
 $toolsOutput = Join-Path $output 'Tools'
 [IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
-$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1')
+$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Export-IndependentRecoveryEvidence.ps1')
 if ($LegacyRecovery) { $toolNames += @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
     'Resolve-FallbackBinding.ps1','Persistent-Fallback.ps1','Manage-PersistentFallback.ps1',
     'Watch-ActiveFallback.ps1','Test-FallbackBinding.ps1','Test-PersistentFallback.ps1','Test-PersistentTask.ps1') }
@@ -111,7 +111,8 @@ if (-not $LegacyRecovery) {
 4. 安装成功表示文件校验、服务和任务注册完成，不代表试验已运行。启动入口只打开主程序，试验仍经过原安全预检。
 5. 检查入口显示组件状态；修复入口只修复缺失服务/任务，保留原绑定并进入维护。修复后用“恢复后台服务”显式启用监督。
 6. 卸载删除本安装服务和任务，保留受保护程序文件、注册及项目数据。现阶段不是完整二进制卸载或旧版回滚。
-7. Stop、Evidence、二进制修复和版本升级尚未完成时不得将本包作为最终现场交付。未完成入口返回错误，不转用旧恢复架构。
+7. Evidence 导出有界独立状态、当前事务安全回执及只读正式记录摘要，缺失项写入清单；不包含完整数据库快照或全部波形，也不证明动作恢复。
+8. Stop、二进制修复和版本升级尚未完成时不得将本包作为最终现场交付。未完成入口返回错误，不转用旧恢复架构。
 
 真实台架和耐久验收未完成。RecoveryGuard-Acceptance 仅检查包/宿主，NOT_VERIFIED 不能视为通过。本轮不自动部署 WJ-EPB。
 '@
