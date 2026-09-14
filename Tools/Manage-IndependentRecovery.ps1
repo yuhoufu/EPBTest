@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('Prepare','Seal','Install','Status','Enable','Maintenance','Uninstall')][string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('Provision','Prepare','Seal','Install','Status','Enable','Maintenance','Uninstall')][string]$Mode,
     [Parameter(Mandatory=$true)][string]$RegistrationPath,
     [Parameter(Mandatory=$true)][string]$ExecutorPath,
     [string]$DraftPath,
@@ -11,6 +11,22 @@ param(
     [string]$InstallationId
 )
 $ErrorActionPreference='Stop'
+function Invoke-IndependentProvision([scriptblock]$Step) {
+    # Prepare and Install reject existing bindings/objects. Only after our
+    # Install returns successfully do we own the objects that Enable may leave.
+    & $Step 'Prepare'
+    & $Step 'Install'
+    try { & $Step 'Enable' }
+    catch {
+        $enableFailure=$_.Exception
+        try { & $Step 'Uninstall' }
+        catch {
+            throw [AggregateException]::new('启用失败且本次安装收尾失败，保留维护状态和证据。',
+                [Exception[]]@($enableFailure,$_.Exception))
+        }
+        throw $enableFailure
+    }
+}
 $user=[Security.Principal.WindowsIdentity]::GetCurrent()
 try {
     $principal=New-Object Security.Principal.WindowsPrincipal($user)
@@ -45,6 +61,19 @@ while($cursor){
 }
 [Reflection.Assembly]::LoadFrom($assemblyPath) | Out-Null
 [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($ExecutorPath)
+if($Mode -eq 'Provision'){
+    $managerPath=$PSCommandPath
+    $common=@{RegistrationPath=$RegistrationPath;ExecutorPath=$ExecutorPath}
+    $prepare=@{MainExecutablePath=$MainExecutablePath;ProjectDirectory=$ProjectDirectory;
+        InteractiveUserSid=$InteractiveUserSid;InstallationId=$InstallationId}
+    Invoke-IndependentProvision {
+        param([string]$phase)
+        if($phase -eq 'Prepare'){& $managerPath -Mode Prepare @common @prepare}
+        else{& $managerPath -Mode $phase @common}
+    }
+    Write-Output '独立执行器准备、安装和启用已完成；未启动试验，运行意图须由用户明确开始建立。'
+    return
+}
 if($Mode -eq 'Prepare'){
     foreach($value in @($MainExecutablePath,$ProjectDirectory,$InteractiveUserSid)){
         if([string]::IsNullOrWhiteSpace($value) -or $value.Contains('"')){throw '准备注册必须提供有效主程序、项目路径及交互用户 SID。'}
