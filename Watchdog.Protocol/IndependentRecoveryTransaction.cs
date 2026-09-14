@@ -236,5 +236,50 @@ namespace MTTFTest.Watchdog.Protocol
             tx.Validate();
             BoundedJson.Write(Path.Combine(_directory, "independent-recovery-v2.json"), tx);
         }
+
+        // The durable record, not an in-memory copy obtained on a previous tick,
+        // decides whether a worker may start. Operations must remain nonblocking.
+        public IndependentRecoveryTransaction Tick(string executor, long generation, long now,
+            IIndependentRecoveryOperations operations, long powerBudgetMs, long outputsBudgetMs)
+        {
+            return Execute(() =>
+            {
+                var tx = ReadTransaction();
+                if (tx == null || tx.IsTerminal) return tx;
+                var intent = ReadIntent();
+                var engine = new IndependentRecoveryExecutor(operations, WriteTransaction,
+                    powerBudgetMs, outputsBudgetMs);
+                engine.Tick(tx, intent, executor, generation, now);
+                return tx;
+            });
+        }
+
+        public void CompareExchangeTransaction(long expectedRevision, string executor, long generation,
+            IndependentRecoveryTransaction replacement)
+        {
+            Execute(() =>
+            {
+                var current = ReadTransaction();
+                if (current == null || current.Revision != expectedRevision ||
+                    current.ExecutorIdentity != executor || current.Generation != generation ||
+                    replacement == null || replacement.ExecutorIdentity != executor ||
+                    replacement.Generation != generation || replacement.RequestId != current.RequestId ||
+                    replacement.Revision != checked(expectedRevision + 1))
+                    throw new InvalidOperationException("IndependentTransactionRevisionConflict");
+                IndependentRecoveryTransitions.RequireCurrent(current, ReadIntent(), executor, generation);
+                // Phase progression belongs to Tick. This path only persists a
+                // newly observed worker/process identity within the same stage.
+                if (replacement.Phase != current.Phase || replacement.IntentRevision != current.IntentRevision ||
+                    replacement.RunId != current.RunId || replacement.RunEpoch != current.RunEpoch ||
+                    replacement.PhaseDeadlineUtcTicks != current.PhaseDeadlineUtcTicks ||
+                    (current.ReplacementPid > 0 && (replacement.ReplacementPid != current.ReplacementPid ||
+                        replacement.ReplacementStartUtcTicks != current.ReplacementStartUtcTicks)) ||
+                    !replacement.Channels.SequenceEqual(current.Channels) ||
+                    !replacement.AttemptsUtcTicks.SequenceEqual(current.AttemptsUtcTicks))
+                    throw new InvalidOperationException("IndependentTransactionStageChanged");
+                WriteTransaction(replacement);
+                return true;
+            });
+        }
     }
 }

@@ -85,13 +85,14 @@ namespace AdaptiveControlTests
         {
             Run("数据库单路/部分/全部停滞及短暂空窗", StallScopes);
             Run("数据库失败不等于停滞、停止与旧数据隔离", UnknownAndStop);
+            Run("人工暂停与通道选择变更不继承旧停滞及旧恢复证明", SelectionAndPauseInvalidateEvidence);
             Run("数据库恢复需全部通道三圈和稳定观察", RecoveryEvidence);
             Run("SQLite并发写入、未提交及原行完成可见性", ConcurrentReader);
             Run("独立兜底仅接受当前请求的新安全回执", IndependentSafetyReceipt);
             Run("独立接管隔离原Watchdog的延迟启动", IndependentRetirement);
             Run("无Watchdog端点的独立恢复编排与六通道推进验收", IndependentOrchestration);
             Run("独立请求等待中人工停止或心跳消失能够有界收口", IndependentRequestCancellation);
-            return 8;
+            return 9;
         }
 
         private static void IndependentRequestCancellation()
@@ -306,6 +307,29 @@ namespace AdaptiveControlTests
             Assert(!monitor.RecoveryVerified, "replacement process inherited old proof");
             monitor.Unreadable();
             Assert(!monitor.RecoveryVerified, "failed database read retained success");
+        }
+
+        private static void SelectionAndPauseInvalidateEvidence()
+        {
+            var monitor = new DatabaseStallMonitor(); var intent = Intent();
+            monitor.Observe(intent, Snapshot(100, 100, 100), 0);
+            monitor.Observe(intent, Snapshot(100, 100, 100), 90000);
+            monitor.Observe(intent, Snapshot(100, 100, 100), 95000);
+            intent.ManualStopped = true;
+            monitor.Observe(intent, Snapshot(100, 100, 100), 100000);
+            intent.ManualStopped = false;
+            Assert(!monitor.Observe(intent, Snapshot(100, 100, 100), 1000000), "pause time counted as stall");
+            Assert(!monitor.Observe(intent, Snapshot(100, 100, 100), 1005000), "old confirmations reused");
+            monitor.BeginVerification(10, 123);
+            monitor.Observe(intent, Snapshot(100, 100, 100), 1010000);
+            monitor.Observe(intent, Snapshot(103, 103, 103), 1055000);
+            monitor.Observe(intent, Snapshot(105, 105, 105), 1085000);
+            Assert(monitor.RecoveryVerified, "verification fixture did not progress");
+            intent.Channels = new[] { 7 };
+            monitor.Observe(intent, Snapshot(105, 105, 105), 1090000);
+            Assert(!monitor.RecoveryVerified, "changed target set inherited success");
+            intent.Channels = new[] { 4, 5, 7 };
+            Assert(!monitor.Observe(intent, Snapshot(105, 105, 105), 2000000), "re-enabled target inherited old stall");
         }
 
         private static void ConcurrentReader()

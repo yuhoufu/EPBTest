@@ -1,0 +1,21 @@
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" />
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">AnyCPU</Platform>
+    <ProjectGuid>{E40729A9-136C-4F2B-A9D5-D93973760A6E}</ProjectGuid>
+    <OutputType>Exe</OutputType><AssemblyName>IndependentRecovery.ProcessTests</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion><LangVersion>9</LangVersion>
+    <OutputPath>bin\$(Configuration)\</OutputPath><PlatformTarget>x86</PlatformTarget>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <ItemGroup><Reference Include="System" /><Reference Include="System.Core" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\AdaptiveControlTests\IndependentBoundedWorkerTests.cs"><Link>IndependentBoundedWorkerTests.cs</Link></Compile>
+  </ItemGroup>
+  <ItemGroup><ProjectReference Include="..\..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+    <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project><Name>Watchdog.Protocol</Name>
+  </ProjectReference></ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

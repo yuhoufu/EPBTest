@@ -174,12 +174,29 @@ namespace MTTFTest.FallbackGuard
 
         public bool Observe(DatabaseWatchIntent intent, DatabaseProgressSnapshot snapshot, long nowMs)
         {
-            if (intent == null || intent.ManualStopped || snapshot == null) { Unreadable(); return false; }
+            if (intent == null || intent.ManualStopped)
+            {
+                _identity = null;
+                _lanes.Clear();
+                _verificationBaseline.Clear();
+                Unreadable();
+                return false;
+            }
+            if (snapshot == null) { Unreadable(); return false; }
+            if (intent.Channels == null || intent.Channels.Length > 12 ||
+                intent.Channels.Any(c => c < 1 || c > 12) || intent.Channels.Distinct().Count() != intent.Channels.Length ||
+                intent.PeriodMs <= 0 || intent.PeriodMs > 86400000)
+                throw new InvalidDataException("DatabaseIntentChannelsOrPeriodInvalid");
             if (snapshot.CreationUtcTicks != intent.DatabaseCreationUtcTicks ||
                 !string.Equals(snapshot.DatabasePath, intent.DatabasePath, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("DatabaseIdentityChanged");
-            var identity = intent.SessionId + ":" + intent.RunId + ":" + intent.RunEpoch;
-            if (_identity != identity) { _identity = identity; _lanes.Clear(); _lastSuccessful = -1; }
+            var identity = intent.SessionId + ":" + intent.RunId + ":" + intent.RunEpoch + ":" +
+                intent.PeriodMs + ":" + string.Join(",", intent.Channels.OrderBy(c => c));
+            if (_identity != identity)
+            {
+                _identity = identity; _lanes.Clear(); _lastSuccessful = -1;
+                _verificationBaseline.Clear(); _verifiedSince = -1; RecoveryVerified = false;
+            }
             if (nowMs < _lastSuccessful) throw new InvalidDataException("MonotonicClockRegressed");
             if (nowMs == _lastSuccessful) return StalledChannels.Length > 0;
             _lastSuccessful = nowMs;

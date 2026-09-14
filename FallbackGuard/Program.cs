@@ -153,6 +153,7 @@ namespace MTTFTest.FallbackGuard
                     {
                         var channels = (heartbeat.RecoveryEligibleChannels ?? Array.Empty<int>())
                             .Except(heartbeat.CompletedChannels ?? Array.Empty<int>())
+                            .Except(heartbeat.PermanentAlarmedChannels ?? Array.Empty<int>())
                             .Except(heartbeat.ManuallyDisabledChannels ?? Array.Empty<int>()).ToArray();
                         if (channels.Length == 0) throw new InvalidDataException("NoAuthorizedDatabaseChannels");
                         var path = Path.Combine(Path.GetDirectoryName(directory.TrimEnd(Path.DirectorySeparatorChar)), "index.db");
@@ -174,6 +175,7 @@ namespace MTTFTest.FallbackGuard
                         if (sourceFresh && heartbeat.RunId == intent.RunId && heartbeat.RunEpoch == intent.RunEpoch)
                         {
                             var remaining = intent.Channels.Except(heartbeat.CompletedChannels ?? Array.Empty<int>())
+                                .Except(heartbeat.PermanentAlarmedChannels ?? Array.Empty<int>())
                                 .Except(heartbeat.ManuallyDisabledChannels ?? Array.Empty<int>()).ToArray();
                             if (!remaining.SequenceEqual(intent.Channels))
                             { intent.Channels = remaining; BoundedJson.Write(intentPath, intent); }

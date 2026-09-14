@@ -106,10 +106,29 @@ namespace AdaptiveControlTests
                 "stale writer restored manually excluded channels");
             Assert(reloaded.ReadIntent().RecoveryChannels().SequenceEqual(new[] { 7, 8, 9 }), "intent update not durable");
             operations = new FakeOperations();
-            engine = new IndependentRecoveryExecutor(operations, reloaded.WriteTransaction, 10000, 15000);
-            reloaded.Execute(() => { engine.Tick(reloaded.ReadTransaction(), reloaded.ReadIntent(), "executor", tx.Generation, now); return true; });
+            reloaded.Tick("executor", tx.Generation, now, operations, 10000, 15000);
             Assert(reloaded.ReadTransaction().Phase == IndependentRecoveryPhase.Cancelled && operations.Launches == 0,
                 "durable revision change did not cancel old transaction");
+            var resumed = reloaded.Begin("executor", now + TimeSpan.FromSeconds(61).Ticks);
+            var expectedRevision = resumed.Revision;
+            var stale = reloaded.ReadTransaction();
+            resumed.Revision++;
+            resumed.Detail = "WorkerIdentityObserved";
+            reloaded.CompareExchangeTransaction(expectedRevision, "executor", resumed.Generation, resumed);
+            stale.Revision++;
+            Reject(() => reloaded.CompareExchangeTransaction(expectedRevision, "executor", stale.Generation, stale),
+                "late worker result overwrote newer transaction");
+            var skipped = reloaded.ReadTransaction();
+            expectedRevision = skipped.Revision;
+            skipped.Revision++; skipped.Phase = IndependentRecoveryPhase.LaunchPending;
+            Reject(() => reloaded.CompareExchangeTransaction(expectedRevision, "executor", skipped.Generation, skipped),
+                "worker receipt bypassed safety stages");
+            var beforeRevocation = reloaded.ReadTransaction();
+            reloaded.UpdateIntent(2, current => { current.ManualStopped = true; return current; });
+            reloaded.Tick("executor", beforeRevocation.Generation, now + TimeSpan.FromSeconds(62).Ticks,
+                operations, 10000, 15000);
+            Assert(reloaded.ReadTransaction().Phase == IndependentRecoveryPhase.Cancelled && operations.Launches == 0,
+                "atomic tick did not observe manual revocation");
             intent = Intent();
             tx = IndependentRecoveryTransitions.Begin(null, intent, "executor", now);
             var safety = new FakeSafety();
