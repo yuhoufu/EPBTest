@@ -95,6 +95,7 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
     # Caller must own installation maintenance and the executor lease. This
     # primitive is deliberately not exposed as an ungated installer mode.
     $root=[IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
+    if(-not $Files -or $Files.Count -gt 10000){throw '修复候选数量无效。'}
     $transaction=Join-Path $root ('Repair\'+[Guid]::NewGuid().ToString('N'))
     $entries=@();$touched=@();$journal=$null
     function Assert-RepairPath([string]$Path){
@@ -107,6 +108,26 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
         }
     }
     Assert-RepairPath $transaction
+    $lockPath=Join-Path $root 'file-repair.lock'
+    Assert-RepairPath $lockPath
+    $repairLease=[IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    try {
+    $history=Join-Path $root 'Repair'
+    if([IO.Directory]::Exists($history)){
+        $count=0
+        foreach($directory in [IO.Directory]::EnumerateDirectories($history)){
+            if(++$count -gt 256){throw '修复历史超过检查上限，未开始新的替换。'}
+            Assert-RepairPath $directory
+            $record=Join-Path $directory 'transaction.json'
+            if(-not [IO.File]::Exists($record)){throw ('修复事务记录缺失，禁止覆盖未确认状态：'+$directory)}
+            Assert-RepairPath $record
+            if((Get-Item -LiteralPath $record).Length -gt 4MB){throw '修复历史记录超限。'}
+            $previous=[IO.File]::ReadAllText($record)|ConvertFrom-Json
+            if($previous.schemaVersion -ne 1 -or $previous.phase -notin @('Replaced','RolledBack')){
+                throw ('存在未收尾修复事务，必须先恢复该事务：'+$directory)
+            }
+        }
+    }
     [IO.Directory]::CreateDirectory($transaction)|Out-Null
     $journal=Join-Path $transaction 'transaction.json'
     function Save-RepairJournal([string]$Phase,[string]$Failure){
@@ -168,6 +189,7 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
         Save-RepairJournal $(if($rollbackFailures.Count){'RollbackFailed'}else{'RolledBack'}) ($failure+'; '+($rollbackFailures -join '; '))
         throw ('文件修复失败，事务证据：'+$transaction+'；'+$failure+'；回滚错误：'+($rollbackFailures -join '; '))
     }
+    } finally {$repairLease.Dispose()}
 }
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
