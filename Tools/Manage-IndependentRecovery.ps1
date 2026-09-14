@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('Provision','Prepare','Seal','Install','Status','Enable','Maintenance','Uninstall')][string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('Provision','Prepare','Seal','Install','Repair','Status','Enable','Maintenance','Uninstall')][string]$Mode,
     [Parameter(Mandatory=$true)][string]$RegistrationPath,
     [Parameter(Mandatory=$true)][string]$ExecutorPath,
     [string]$DraftPath,
@@ -168,7 +168,7 @@ try {
     $rootFolder=$scheduler.GetFolder('\')
     [MTTFTest.Watchdog.Protocol.IndependentLaunchTaskDefinition]::ValidateAncestorSecurityDescriptor($rootFolder.GetSecurityDescriptor(7))
     try {$folder=$scheduler.GetFolder('\MTTFTest')} catch {
-        if($_.Exception.GetBaseException().HResult -ne -2147024894 -or $Mode -ne 'Install'){throw}
+        if($_.Exception.GetBaseException().HResult -ne -2147024894 -or $Mode -notin @('Install','Repair')){throw}
         $folder=$rootFolder.CreateFolder('MTTFTest','O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)')
     }
     [MTTFTest.Watchdog.Protocol.IndependentLaunchTaskDefinition]::ValidateSecurityDescriptor($folder.GetSecurityDescriptor(7))
@@ -208,9 +208,17 @@ try {
     }
     $service=Get-OwnedService
     switch($Mode){
-        'Install' {
-            if($service -or $task){throw '安装对象已存在；先检查，禁止猜测覆盖或迁移。'}
+        {$_ -in @('Install','Repair')} {
+            if($Mode -eq 'Install' -and ($service -or $task)){throw '安装对象已存在；先检查，禁止猜测覆盖或迁移。'}
+            if($Mode -eq 'Repair'){
+                $binding=[MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::Resolve($registration.ExecutablePath)
+                if(-not $binding -or $binding.InstallationId -ne $registration.InstallationId -or
+                    -not [string]::Equals($binding.RegistrationPath,$RegistrationPath,[StringComparison]::OrdinalIgnoreCase)){
+                    throw '修复要求完整且一致的原安装绑定，不能猜测迁移。'
+                }
+            }
             Set-Maintenance $true
+            if(-not $task){
             $definition=$scheduler.NewTask(0)
             try {
                 $definition.RegistrationInfo.Description=$description
@@ -231,8 +239,11 @@ try {
             } finally {
                 foreach($com in @($action,$settings,$definition)){if($com){[Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) | Out-Null}}
             }
+            }
+            if(-not $service){
             New-Service -Name $serviceName -BinaryPathName $serviceCommand -StartupType Automatic -Description $description | Out-Null
             $createdService=$true
+            }
             [MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::Install($RegistrationPath)
             Write-Output '独立服务和交互任务已注册，保持维护模式；尚未允许恢复或启动试验。'
         }
@@ -266,7 +277,7 @@ try {
     }
 } catch {
     # Only roll back objects created by this invocation; preserve state/evidence.
-    if($Mode -eq 'Install'){
+    if($Mode -in @('Install','Repair')){
         if($createdService){$owned=Get-OwnedService;if($owned){& "$env:SystemRoot\System32\sc.exe" delete $serviceName | Out-Null}}
         if($createdTask){$folder.DeleteTask($taskName,0)}
     }
