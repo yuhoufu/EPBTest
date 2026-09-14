@@ -4,6 +4,7 @@ param(
     [string]$Mode = 'ValidatePackage',
     [string]$InstallRoot = '',
     [string]$ProjectDirectory = '',
+    [string]$InteractiveUserSid = '',
     [string]$EvidenceDirectory = '',
     [switch]$ForceUninstall,
     [switch]$Elevated
@@ -15,7 +16,9 @@ $base = Join-Path $PSScriptRoot 'Base'
 $manifestPath = Join-Path $PSScriptRoot 'automatic-bundle.json'
 function Test-Bundle {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($manifest.schemaVersion -ne 1 -or $manifest.recoveryArchitecture -ne 'V2-Supervisor-SessionAgent-SafetyAgent') { throw '不支持的候选包架构。' }
+    $legacy = $manifest.schemaVersion -eq 1 -and $manifest.recoveryArchitecture -eq 'V2-Supervisor-SessionAgent-SafetyAgent'
+    $independent = $manifest.schemaVersion -eq 2 -and $manifest.recoveryArchitecture -eq 'V4-Independent-SystemExecutor'
+    if (-not $legacy -and -not $independent) { throw '不支持的候选包架构。' }
     foreach ($entry in $manifest.files) {
         $relative = [string]$entry.path
         if ([IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)') { throw '包清单包含越界路径。' }
@@ -26,6 +29,10 @@ function Test-Bundle {
     }
     foreach ($required in @('Base/MTTFTest.exe','Base/Deployment/Install-MTTFTest-Unattended.ps1','Install-AutomaticRecoveryBundle.ps1','RecoveryGuard-Acceptance.ps1')) {
         if ($required -notin @($manifest.files.path)) { throw "包清单缺少必要文件：$required" }
+    }
+    if ($independent) {
+        if ('Tools/Install-IndependentRecoveryBundle.ps1' -notin @($manifest.files.path)) { throw '缺少独立文件安装器。' }
+        & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Validate -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot | Out-Null
     }
     foreach ($file in Get-ChildItem -LiteralPath $base -File -Recurse) {
         $relative = $file.FullName.Substring($PSScriptRoot.Length).TrimStart('\').Replace('\','/')
@@ -113,12 +120,40 @@ try {
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             if ($Elevated) { throw '提权后仍无管理员权限。' }
             # Arguments are data, quoted for the Windows command line; reject quote injection.
-            foreach ($argument in @($PSScriptRoot,$InstallRoot)) { if ($argument.Contains('"')) { throw '路径不能含引号。' } }
+            foreach ($argument in @($PSScriptRoot,$InstallRoot,$ProjectDirectory,$InteractiveUserSid,$EvidenceDirectory)) { if ($argument.Contains('"')) { throw '参数不能含引号。' } }
             $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Mode ' + $Mode + ' -InstallRoot "' + $InstallRoot + '" -Elevated'
+            if ($ProjectDirectory) { $arguments += ' -ProjectDirectory "' + $ProjectDirectory + '"' }
+            if ($InteractiveUserSid) { $arguments += ' -InteractiveUserSid "' + $InteractiveUserSid + '"' }
+            if ($EvidenceDirectory) { $arguments += ' -EvidenceDirectory "' + $EvidenceDirectory + '"' }
             if ($ForceUninstall) { $arguments += ' -ForceUninstall' }
             $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments -Verb RunAs -Wait -PassThru
             exit $child.ExitCode
         }
+    }
+    if ($manifest.recoveryArchitecture -eq 'V4-Independent-SystemExecutor') {
+        if ($Mode -eq 'Install') {
+            & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Install `
+                -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot -ProjectDirectory $ProjectDirectory -InteractiveUserSid $InteractiveUserSid
+        } elseif ($Mode -in @('Status','Restore','Uninstall')) {
+            $manager = Join-Path $PSScriptRoot 'Tools\Manage-IndependentRecovery.ps1'
+            $managerMode = if ($Mode -eq 'Restore') { 'Enable' } else { $Mode }
+            & $manager -Mode $managerMode -RegistrationPath (Join-Path $InstallRoot 'IndependentState\registration.json') `
+                -ExecutorPath (Join-Path $InstallRoot 'FallbackGuard\MTTFTest.FallbackGuard.exe')
+            Write-Host '组件状态不代表续测成功；动作、计数和三周期落盘须单独核验。'
+        } elseif ($Mode -eq 'Launch') {
+            $registrationPath = Join-Path $InstallRoot 'IndependentState\registration.json'
+            & (Join-Path $PSScriptRoot 'Tools\Manage-IndependentRecovery.ps1') -Mode Status -RegistrationPath $registrationPath `
+                -ExecutorPath (Join-Path $InstallRoot 'FallbackGuard\MTTFTest.FallbackGuard.exe') | Out-Null
+            $registration = [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)
+            if (-not [string]::Equals($registration.ExecutablePath,(Join-Path $InstallRoot 'Current\MTTFTest.exe'),[StringComparison]::OrdinalIgnoreCase)) { throw '注册主程序路径与安装目录不一致。' }
+            if (@(Get-ExactProcesses 'MTTFTest.exe').Count -gt 0) { Write-Host '本安装主程序已运行。' }
+            else {
+                $current = Join-Path $InstallRoot 'Current'
+                Start-Process -FilePath (Join-Path $current 'MTTFTest.exe') -WorkingDirectory $current | Out-Null
+                Write-Host '已请求打开本安装主程序；未声明试验已启动。'
+            }
+        } else { throw ('独立架构尚未实现此入口，未调用旧架构脚本：' + $Mode) }
+        exit 0
     }
     $installer = Join-Path $base 'Deployment\Install-MTTFTest-Unattended.ps1'
     switch ($Mode) {
