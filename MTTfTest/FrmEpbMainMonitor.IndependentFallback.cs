@@ -57,7 +57,10 @@ namespace MTEmbTest
                                     IndependentFallbackProtocol.IsAlive(request.GuardProcessId, request.GuardStartUtcTicks))
                                 {
                                     handled = request.Id;
-                                    preparation = PrepareIndependentFallbackAsync(directory, request);
+                                    // An async method executes synchronously until its first
+                                    // incomplete await. Never let controller admission/DO work
+                                    // block the independent status publisher.
+                                    preparation = Task.Run(() => PrepareIndependentFallbackAsync(directory, request));
                                 }
                             }
                         }

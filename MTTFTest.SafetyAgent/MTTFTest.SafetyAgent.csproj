@@ -27,6 +27,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="SafetyAgentRunner.cs" />
+    <Compile Include="IndependentSafetyStages.cs" />
     <Compile Include="ProductionSafetyHardware.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

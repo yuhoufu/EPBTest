@@ -38,6 +38,7 @@ namespace AdaptiveControlTests
                 {
                     _passed += FallbackSafetyRegressionTests.RunAll();
                     _passed += DatabaseFallbackTests.RunAll();
+                    _passed += IndependentRecoveryTransactionTests.RunAll();
                     _passed += FallbackCoordinationTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
@@ -525,6 +526,7 @@ namespace AdaptiveControlTests
                 _passed += DaqRealtimeControlTests.RunAll();
                 _passed += FallbackSafetyRegressionTests.RunAll();
                 _passed += DatabaseFallbackTests.RunAll();
+                    _passed += IndependentRecoveryTransactionTests.RunAll();
                 _passed += FallbackCoordinationTests.RunAll();
                 // Recovery coordination owns process-wide owner/preemption registries. Run it
                 // before broader controller suites that intentionally leave terminal evidence.
