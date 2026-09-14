@@ -19,6 +19,7 @@ namespace MTEmbTest
         internal long RunEpoch { get; private set; }
         internal long Generation { get; private set; }
         private IndependentProjectStateStore _store;
+        private System.Threading.Tasks.Task _manualStopPersistence;
 
         internal static IndependentRecoveryStartup Parse(string[] args)
         {
@@ -80,6 +81,25 @@ namespace MTEmbTest
                 (state.Transaction.Phase != IndependentRecoveryPhase.Verified && DateTime.UtcNow.Ticks >= state.Transaction.PhaseDeadlineUtcTicks))
                 throw new InvalidOperationException("IndependentBootstrapAuthorityChanged");
             return state.Intent;
+        }
+
+        internal System.Threading.Tasks.Task PersistManualStopAsync(string commandId)
+        {
+            var task = System.Threading.Tasks.Task.Run(() =>
+                _store.RecordControllerManualStop(Identity, RunId, RunEpoch, commandId, DateTime.UtcNow.Ticks));
+            _manualStopPersistence = task;
+            task.ContinueWith(failed => ProjectLogHub.Write(ProjectLogLevel.Error,
+                    "独立人工停止授权写入失败：" + failed.Exception.GetBaseException().Message, "独立恢复", failed.Exception),
+                System.Threading.CancellationToken.None,
+                System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted,
+                System.Threading.Tasks.TaskScheduler.Default);
+            return task;
+        }
+
+        internal void RequireManualStopPersistenceCompleted()
+        {
+            if (_manualStopPersistence != null && _manualStopPersistence.Status != System.Threading.Tasks.TaskStatus.RanToCompletion)
+                throw new InvalidOperationException("独立人工停止授权仍未持久确认，不能重新开始。");
         }
 
         internal IndependentRunIntent ValidateConfiguration(GlobalConfig config)

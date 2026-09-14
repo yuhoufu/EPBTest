@@ -2085,6 +2085,7 @@ namespace MTEmbTest
 
         private void RevokeManualStopExitAuthorizationBeforeEnergization()
         {
+            IndependentRecoveryStartup.Current?.RequireManualStopPersistenceCompleted();
             _manualCloseTrialObserved = true;
             _stopSessionReceipt.RevokeForNewStart();
             _manualStopExitReceipt.RevokeForNewStart();
@@ -2766,6 +2767,8 @@ namespace MTEmbTest
             BtnStop.Cursor = Cursors.WaitCursor;
             BtnStartTest.Enabled = false;
             BtnStartTest.Cursor = Cursors.WaitCursor;
+            var independentStopTask = IndependentRecoveryStartup.Current?.PersistManualStopAsync(stopCommandId)
+                ?? System.Threading.Tasks.Task.CompletedTask;
             try
             {
                 // 物理断电必须成为停止按钮后的第一个可能阻塞操作。恢复检查点的
@@ -2838,6 +2841,9 @@ namespace MTEmbTest
                 }
                 var safety = await stopTask;
                 completedSafety = safety;
+                if (await System.Threading.Tasks.Task.WhenAny(independentStopTask, System.Threading.Tasks.Task.Delay(5000)) != independentStopTask)
+                    throw new TimeoutException("设备停止已返回，但独立续测授权撤销尚未持久确认。");
+                await independentStopTask;
                 WatchdogRuntime.AdvanceSessionCloseSafety(stopWatchdogContext, safety);
                 if (!_manualStopExitReceipt.Publish(safety, stopCommandId))
                     logger?.Warn(
@@ -2903,7 +2909,9 @@ namespace MTEmbTest
                     Error = ex.GetBaseException().Message
                 });
                 // 操作员的停止意图已经成立；关闭或下一次启动会再次执行幂等清场。
-                LogInfo($"设备已 OFF，监督会话关闭待重试；自动恢复保持撤权：{ex.Message}");
+                LogInfo(independentStopTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion
+                    ? $"停止收尾异常，监督会话关闭待重试，请检查停止结果：{ex.Message}"
+                    : $"人工停止收尾异常，独立续测授权撤销未确认，禁止再次开始：{ex.Message}");
                 BtnStartTest.Enabled = false;
             }
             finally
@@ -2917,7 +2925,7 @@ namespace MTEmbTest
                 if (!IsDisposed && BtnStartTest != null)
                 {
                     ApplyBatchPauseState(_epb?.CurrentBatchPauseState ?? BatchPauseState.Idle);
-                    if (_epb?.RequiresProcessRestart == true)
+                    if (_epb?.RequiresProcessRestart == true || independentStopTask.Status != System.Threading.Tasks.TaskStatus.RanToCompletion)
                         BtnStartTest.Enabled = false;
                 }
             }

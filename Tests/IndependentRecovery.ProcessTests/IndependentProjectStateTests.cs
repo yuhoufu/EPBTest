@@ -85,6 +85,22 @@ namespace AdaptiveControlTests
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            var manualStore = Fixture(Path.Combine(root, "controller-manual-stop"), now);
+            var manualState = manualStore.Read();
+            var manualCommand = Guid.NewGuid().ToString("N");
+            Reject(() => manualStore.RecordControllerManualStop(Identity(), manualState.Intent.RunId,
+                manualState.Intent.RunEpoch, manualCommand, now), "unbound process revoked current run");
+            var manualTicket = Ready(manualStore, now);
+            manualStore.RecordControllerManualStop(manualState.Controller, manualState.Intent.RunId,
+                manualState.Intent.RunEpoch, manualCommand, now);
+            var manualStopped = manualStore.Read();
+            Assert(manualStopped.Intent.ManualStopped && !manualStopped.Intent.Armed && manualStopped.Ticket.Revoked,
+                "controller stop failed to revoke pending ticket");
+            manualStore.RecordControllerManualStop(manualState.Controller, manualState.Intent.RunId,
+                manualState.Intent.RunEpoch, manualCommand, now);
+            Assert(manualStore.Read().Revision == manualStopped.Revision, "duplicate controller stop was not idempotent");
+            Reject(() => manualStore.ConsumeLaunchTicket(manualStopped.Revision, manualTicket.Nonce, Identity(), Hash, now),
+                "controller stop left ticket consumable");
             var retryStore = Fixture(Path.Combine(root, "cleanup-retry"), now);
             var retryTx = retryStore.BeginRecovery(retryStore.Read().Revision, "executor", now);
             void FailPower(IndependentProjectStateStore target, IndependentRecoveryTransaction attempt, long time)
@@ -197,6 +213,11 @@ namespace AdaptiveControlTests
             Assert(recovered.Intent.RunId == run && recovered.Transaction.RunId == run &&
                 recovered.Intent.Revision == recovered.Transaction.IntentRevision && recovered.Controller.Matches(consumer),
                 "replacement left mixed run identities");
+            var staleController = Identity(); staleController.Pid += 100000;
+            Reject(() => store.RecordControllerManualStop(staleController, run, 2, Guid.NewGuid().ToString("N"), now),
+                "old controller revoked replacement run");
+            Reject(() => store.RecordControllerManualStop(consumer, Guid.NewGuid().ToString("N"), 2, Guid.NewGuid().ToString("N"), now),
+                "old run stop revoked current batch");
             Reject(() => store.CommitReplacementRun(recovered.Revision, consumer, Guid.NewGuid().ToString("N"), 3, now),
                 "bootstrap committed a second run using old ticket");
 

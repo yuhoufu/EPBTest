@@ -179,6 +179,32 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void RecordControllerManualStop(IndependentProcessIdentity controller, string runId, long runEpoch,
+            string commandId, long now)
+        {
+            controller.Validate();
+            if (!Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentManualStopCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentManualStopStaleController");
+                if (state.Intent.ManualStopped && !state.Intent.Armed) return true;
+                var before = state.Intent.SelectedChannels.ToArray();
+                state.Intent.ManualStopped = true;
+                state.Intent.Armed = false;
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "OperatorStop", "CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
         public IndependentRecoveryTransaction BeginRecovery(long expectedRevision, string executor, long now)
         {
             return Update(expectedRevision, state =>
