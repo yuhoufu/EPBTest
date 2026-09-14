@@ -11,6 +11,8 @@ namespace MTTFTest.Watchdog.Protocol
         private readonly IndependentExecutorRegistration _registration;
         private readonly IndependentProjectStateStore _store;
         private readonly string _executor;
+        private readonly IndependentExecutorLease _lease;
+        private readonly object _operationGate = new object();
         private IndependentSafetyWorkerOperation _hardware;
         private IndependentProcessRetirement _retirement;
         private string _request;
@@ -18,6 +20,7 @@ namespace MTTFTest.Watchdog.Protocol
         private IndependentRecoveryPhase _phase;
         private bool _disposed;
         public string Detail { get; private set; }
+        public string ExecutorIdentity => _executor;
 
         public IndependentProjectSafetyRunner(string registrationPath, string executorIdentity)
         {
@@ -25,13 +28,24 @@ namespace MTTFTest.Watchdog.Protocol
                 if (!identity.IsSystem) throw new UnauthorizedAccessException("IndependentSafetyRunnerRequiresSystem");
             if (string.IsNullOrWhiteSpace(executorIdentity)) throw new ArgumentException(nameof(executorIdentity));
             _registration = IndependentExecutorRegistration.LoadTrusted(registrationPath);
+            if (executorIdentity != "IndependentExecutor:" + _registration.InstallationId)
+                throw new InvalidOperationException("IndependentSafetyRunnerRegisteredExecutorMismatch");
             _store = new IndependentProjectStateStore(_registration.StateDirectory);
             _executor = executorIdentity;
+            var leasePath = Path.Combine(_registration.StateDirectory, "independent-executor.lease");
+            if (File.Exists(leasePath)) IndependentProtectedFiles.RequireTrustedFile(leasePath);
+            _lease = new IndependentExecutorLease(_registration.StateDirectory, _registration.InstallationId);
         }
 
         public IndependentOperationResult Poll(IndependentRecoveryTransaction expected, long now)
         {
+            lock (_operationGate) return PollCore(expected, now);
+        }
+
+        private IndependentOperationResult PollCore(IndependentRecoveryTransaction expected, long now)
+        {
             if (_disposed) throw new ObjectDisposedException(nameof(IndependentProjectSafetyRunner));
+            _lease.RequireHeld();
             if (expected == null) throw new ArgumentNullException(nameof(expected));
             IndependentProjectState state;
             try
@@ -98,11 +112,23 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void Cancel()
         {
-            _hardware?.Dispose(); _hardware = null;
-            _retirement?.Dispose(); _retirement = null;
-            _request = null;
+            lock (_operationGate)
+            {
+                _hardware?.Dispose(); _hardware = null;
+                _retirement?.Dispose(); _retirement = null;
+                _request = null;
+            }
         }
 
-        public void Dispose() { if (_disposed) return; _disposed = true; Cancel(); }
+        public void Dispose()
+        {
+            lock (_operationGate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                try { Cancel(); }
+                finally { _lease.Dispose(); }
+            }
+        }
     }
 }

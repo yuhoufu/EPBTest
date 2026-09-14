@@ -17,6 +17,14 @@ namespace AdaptiveControlTests
         {
             if (mode == "exit") return 0;
             if (mode == "fail") return 17;
+            if (mode == "lease")
+            {
+                var installationId = Guid.NewGuid().ToString("N");
+                var lease = new IndependentExecutorLease(Path.GetDirectoryName(evidence), installationId);
+                File.WriteAllText(evidence, installationId);
+                Thread.Sleep(Timeout.Infinite);
+                GC.KeepAlive(lease);
+            }
             if (mode == "fence")
             {
                 using (var process = Process.GetCurrentProcess())
@@ -182,7 +190,48 @@ namespace AdaptiveControlTests
                 if (fenced.Poll() != IndependentWorkerState.Completed) throw new Exception("power boundary ignored independent fence");
                 IndependentExecutionFence.Revoke(probe.InstallationId, probe.Identity);
             }
-            return 13;
+            var leasePath = Path.Combine(root, "lease-owner.txt");
+            string ReadLease()
+            {
+                using (var file = new FileStream(Path.Combine(root, "independent-executor.lease"),
+                    FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var reader = new StreamReader(file))
+                {
+                    if (file.Length > 2048) throw new Exception("lease evidence not bounded");
+                    return reader.ReadToEnd();
+                }
+            }
+            using (var owner = Start("lease", leasePath, 20000))
+            {
+                Until(() => File.Exists(leasePath) && new FileInfo(leasePath).Length == 32, "lease owner did not publish");
+                var installation = File.ReadAllText(leasePath);
+                var before = ReadLease();
+                foreach (var id in new[] { installation, Guid.NewGuid().ToString("N") })
+                {
+                    var refused = false;
+                    try { using (var duplicate = new IndependentExecutorLease(root, id)) { } }
+                    catch (IOException) { refused = true; }
+                    if (!refused || ReadLease() != before)
+                        throw new Exception("duplicate executor acquired lease or overwrote owner evidence");
+                }
+                var otherProject = Path.Combine(root, "other-project");
+                Directory.CreateDirectory(otherProject);
+                using (var other = new IndependentExecutorLease(otherProject, installation)) other.RequireHeld();
+                owner.Dispose();
+                Until(() => Gone(owner.ProcessId, owner.StartUtcTicks), "lease owner survived crash injection");
+                IndependentExecutorLease replacement = null;
+                Until(() => (replacement = IndependentExecutorLease.TryAcquire(root, installation)) != null,
+                    "executor lease not released after owner crash");
+                if (replacement.ExecutorIdentity != "IndependentExecutor:" + installation)
+                    throw new Exception("executor identity not stable across replacement");
+                replacement.RequireHeld();
+                System.Threading.Tasks.Task.Run(() => replacement.Dispose()).GetAwaiter().GetResult();
+                var rejected = false;
+                try { replacement.RequireHeld(); } catch (InvalidOperationException) { rejected = true; }
+                if (!rejected) throw new Exception("disposed executor lease still grants authority");
+                using (var next = new IndependentExecutorLease(root, installation)) next.RequireHeld();
+            }
+            return 17;
         }
     }
 }
