@@ -83,6 +83,75 @@ namespace AdaptiveControlTests
             store.ArmManualRun(state.Revision, intent, old, DateTime.UtcNow.Ticks);
         }
 
+        internal static int RunStalledController(string registrationPath, string scenario)
+        {
+            var healthy = scenario == "single" ? new[] { 7, 8 } : scenario == "partial" ? new[] { 7 } :
+                scenario == "all" ? Array.Empty<int>() : throw new ArgumentException("Unknown stall scenario");
+            var registration = IndependentExecutorRegistration.LoadTrusted(registrationPath);
+            var root = registration.ProjectDirectory;
+            if (!Path.GetFileName(root).StartsWith("service-controller-simulation-", StringComparison.Ordinal))
+                throw new InvalidOperationException("Isolated service fixture required");
+            var marker = Path.Combine(root, "SERVICE-CONTROLLER-SIMULATION-ONLY.txt");
+            IndependentProtectedFiles.RequireTrustedFile(marker);
+            if (new FileInfo(marker).Length > 128 || File.ReadAllText(marker) != "SIMULATED_NO_HARDWARE")
+                throw new InvalidDataException("Service simulation marker invalid");
+            using (var user = WindowsIdentity.GetCurrent())
+                if (user.IsSystem || user.User.Value != registration.InteractiveUserSid)
+                    throw new UnauthorizedAccessException("Interactive simulation account required");
+            IndependentProcessIdentity identity;
+            using (var process = Process.GetCurrentProcess()) identity = new IndependentProcessIdentity
+            {
+                Pid = process.Id, StartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                WindowsSessionId = process.SessionId, ExecutablePath = process.MainModule.FileName,
+                SessionToken = Guid.NewGuid().ToString("N")
+            };
+            // The owner is recorded before arming; independent test supervision
+            // can identify this process even if subsequent initialization fails.
+            BoundedJson.Write(Path.Combine(root, "old-controller-owner.json"), identity);
+            var store = new IndependentProjectStateStore(registration.StateDirectory);
+            var intent = new IndependentRunIntent
+            {
+                Revision = 1, RunId = Guid.NewGuid().ToString("N"), RunEpoch = 1, Armed = true,
+                ProjectDirectory = root, DatabasePath = registration.DatabasePath,
+                DatabaseCreationUtcTicks = registration.DatabaseCreationUtcTicks, ExecutablePath = registration.ExecutablePath,
+                ConfigurationSha256 = registration.ConfigurationSha256, PeriodMs = 1000, StartupBudgetMs = 5000,
+                SelectedChannels = new[] { 4, 5, 7, 8, 9, 12 }, PausedChannels = new[] { 4 },
+                PermanentChannels = new[] { 5 }, CompletedChannels = new[] { 12 }
+            };
+            store.ArmManualRun(store.Read().Revision, intent, identity, DateTime.UtcNow.Ticks);
+            IndependentExecutionFence.AttachCurrent(registration.InstallationId, identity);
+            var elapsed = Stopwatch.StartNew(); var cycle = 100; var fenced = false;
+            try
+            {
+                // Deliberately ignore cooperative stop requests. Healthy lanes
+                // continue formal commits until the independent fence revokes
+                // output authority; then remain alive for exact forced retirement.
+                while (elapsed.ElapsedMilliseconds < 250000 && !File.Exists(Path.Combine(root, "finish-simulation.txt")))
+                {
+                    if (!fenced)
+                    {
+                        try { IndependentExecutionFence.RequireCurrentAuthority(); }
+                        catch (Exception error)
+                        {
+                            fenced = true;
+                            BoundedJson.Write(Path.Combine(root, "old-controller-fenced.json"), new
+                            { pid = identity.Pid, elapsedMs = elapsed.ElapsedMilliseconds, reason = error.Message });
+                        }
+                    }
+                    if (!fenced && healthy.Length > 0)
+                        TicketDatabaseSimulationTests.CommitCycle(root, healthy, ++cycle);
+                    Thread.Sleep(1000);
+                }
+                throw new TimeoutException("Stalled controller was not independently retired");
+            }
+            finally
+            {
+                var state = store.Read();
+                if (identity.Matches(state.Controller))
+                    store.RecordControllerManualStop(identity, intent.RunId, intent.RunEpoch, Guid.NewGuid().ToString("N"), DateTime.UtcNow.Ticks);
+            }
+        }
+
         internal static int Resume(string registrationPath, string nonce)
         {
             var registration = IndependentExecutorRegistration.LoadTrusted(registrationPath);
@@ -121,14 +190,21 @@ namespace AdaptiveControlTests
                     if (!identity.Matches(state.Controller) || state.Intent.RunId != runId || state.Intent.RunEpoch != epoch ||
                         state.Maintenance || state.Ticket.Revoked || state.Intent.RecoveryChannels().Length == 0)
                         throw new InvalidOperationException("Simulation authority revoked");
-                    int next;
-                    using (var db = new SQLiteConnection(new SQLiteConnectionStringBuilder
-                    { DataSource = registration.DatabasePath, FailIfMissing = true, Pooling = false, DefaultTimeout = 1 }.ConnectionString))
+                    foreach (var channel in state.Intent.RecoveryChannels())
                     {
-                        db.Open(); using (var query = db.CreateCommand())
-                        { query.CommandText = "SELECT COALESCE(MAX(cycle_number),0)+1 FROM epb_cycles"; next = Convert.ToInt32(query.ExecuteScalar()); }
+                        int next;
+                        using (var db = new SQLiteConnection(new SQLiteConnectionStringBuilder
+                        { DataSource = registration.DatabasePath, FailIfMissing = true, Pooling = false, DefaultTimeout = 1 }.ConnectionString))
+                        {
+                            db.Open(); using (var query = db.CreateCommand())
+                            {
+                                query.CommandText = "SELECT COALESCE(MAX(cycle_number),0)+1 FROM epb_cycles WHERE epb_id=@channel";
+                                query.Parameters.AddWithValue("@channel", channel);
+                                next = Convert.ToInt32(query.ExecuteScalar());
+                            }
+                        }
+                        TicketDatabaseSimulationTests.CommitCycle(root, new[] { channel }, next);
                     }
-                    TicketDatabaseSimulationTests.CommitCycle(root, state.Intent.RecoveryChannels(), next);
                     Thread.Sleep((int)Math.Min(1000, state.Intent.PeriodMs));
                 }
                 File.WriteAllText(Path.Combine(root, "three-formal-records.txt"), "SIMULATED_ACTIONS_REAL_SQLITE");

@@ -8,6 +8,8 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 3 && args[0] == "--live-service-simulation")
+                    return ServiceControllerSimulation.RunStalledController(args[1], args[2]);
                 if (args.Length == 3 && args[0] == "--independent-launch")
                 {
                     Console.WriteLine(MTTFTest.Watchdog.Protocol.IndependentInteractiveLauncher.Dispatch(args[1], args[2]));
