@@ -68,6 +68,14 @@ function Assert-IndependentInstallParent([string]$Path) {
         $cursor=$cursor.Parent
     }
 }
+function Assert-IndependentComponentVersions($Plan) {
+    foreach($relative in @('Current/MTTFTest.exe','Current/MTTFTest.SafetyAgent.exe','FallbackGuard/MTTFTest.FallbackGuard.exe')){
+        $files=@($Plan.Files|Where-Object Relative -eq $relative)
+        if($files.Count -ne 1 -or [Diagnostics.FileVersionInfo]::GetVersionInfo($files[0].Source).FileVersion -cne $Plan.Version){
+            throw ('包内组件实际版本与清单不一致：'+$relative)
+        }
+    }
+}
 function Get-IndependentRepairFiles($Plan,$Receipt) {
     if($Receipt.schemaVersion -ne 1 -or $Receipt.version -cne $Plan.Version -or
        -not [string]::Equals([string]$Receipt.installRoot,$Plan.Destination,[StringComparison]::OrdinalIgnoreCase)){
@@ -206,6 +214,7 @@ $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
+Assert-IndependentComponentVersions $plan
 if($Mode -eq 'Repair'){
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
