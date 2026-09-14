@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.IO;
 using System.Security.Principal;
 
@@ -78,8 +77,7 @@ namespace MTTFTest.Watchdog.Protocol
                     IndependentExecutionFence.Revoke(_registration.InstallationId, state.Controller);
                     // Retire old recovery helpers before opening their hardware
                     // handles. The old main remains until PSU OFF is confirmed.
-                    var child = state.SessionProcesses.FirstOrDefault(p => p.ParentPid == state.Controller.Pid &&
-                        p.ParentStartUtcTicks == state.Controller.StartUtcTicks);
+                    var child = _registration.SelectSessionCleanupTarget(state, _executor);
                     if (child != null)
                     {
                         if (_retirement == null)

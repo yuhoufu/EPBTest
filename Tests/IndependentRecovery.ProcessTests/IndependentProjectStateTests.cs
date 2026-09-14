@@ -102,6 +102,35 @@ namespace AdaptiveControlTests
             registryStore.AcknowledgeSessionProcessExit(registeredIdentity);
             Assert(registryStore.Read().SessionProcesses.Length == 0, "exited helper was not retired from registry");
             registryStore.BeginRecovery(registryStore.Read().Revision, "executor", now);
+            var cleanupState = registryStore.Read();
+            cleanupState.Transaction.Phase = IndependentRecoveryPhase.PowerOff;
+            var olderChild = new IndependentSessionProcess
+            {
+                Process = registeredIdentity, Role = "Watchdog", ParentPid = registryParent.Pid,
+                ParentStartUtcTicks = registryParent.StartUtcTicks - 1
+            };
+            cleanupState.SessionProcesses = new[] { olderChild };
+            Assert(registration.SelectSessionCleanupTarget(cleanupState, "executor") == olderChild,
+                "older parent helper disappeared from installation cleanup");
+            Reject(() => registration.SelectSessionCleanupTarget(cleanupState, "other-executor"),
+                "foreign executor selected cleanup target");
+            cleanupState.SafetyCleanupPending = false;
+            Reject(() => registration.SelectSessionCleanupTarget(cleanupState, "executor"),
+                "helper selected without active cleanup");
+            cleanupState.SafetyCleanupPending = true;
+            cleanupState.Transaction.Phase = IndependentRecoveryPhase.CooperativeStop;
+            Reject(() => registration.SelectSessionCleanupTarget(cleanupState, "executor"),
+                "helper selected before independent takeover");
+            cleanupState.Transaction.Phase = IndependentRecoveryPhase.PowerOff;
+            var savedChildPath = registeredIdentity.ExecutablePath;
+            registeredIdentity.ExecutablePath = Path.Combine(root, "foreign-install", "MTTFTest.Watchdog.exe");
+            Reject(() => registration.SelectSessionCleanupTarget(cleanupState, "executor"),
+                "foreign installation helper accepted from persisted state");
+            registeredIdentity.ExecutablePath = savedChildPath;
+            olderChild.Role = "SafetyAgent";
+            Reject(() => registration.SelectSessionCleanupTarget(cleanupState, "executor"),
+                "persisted role and executable mismatch accepted");
+            olderChild.Role = "Watchdog";
             Reject(() =>
             {
                 using (var rejectedWorker = IndependentBoundedWorker.StartSession(registeredExe, "/c exit 0", root,

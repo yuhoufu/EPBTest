@@ -240,6 +240,33 @@ namespace MTTFTest.Watchdog.Protocol
                 throw new InvalidDataException("IndependentRegistrationIntentBindingMismatch");
         }
 
+        public void RequireSessionProcess(IndependentSessionProcess child)
+        {
+            Validate();
+            if (child == null) throw new ArgumentNullException(nameof(child));
+            child.Validate();
+            var expected = Path.Combine(Path.GetDirectoryName(SafetyExecutablePath),
+                child.Role == "Watchdog" ? "MTTFTest.Watchdog.exe" : "MTTFTest.SafetyAgent.exe");
+            if (!SamePath(child.Process.ExecutablePath, expected))
+                throw new InvalidOperationException("IndependentSessionExecutableMismatch");
+        }
+
+        public IndependentSessionProcess SelectSessionCleanupTarget(IndependentProjectState state, string executorIdentity)
+        {
+            if (state == null) throw new ArgumentNullException(nameof(state));
+            state.Validate();
+            RequireBoundIntent(state.Intent);
+            if (!state.SafetyCleanupPending || state.Transaction == null ||
+                state.Transaction.Phase != IndependentRecoveryPhase.PowerOff ||
+                string.IsNullOrWhiteSpace(executorIdentity) || state.Transaction.ExecutorIdentity != executorIdentity)
+                throw new InvalidOperationException("IndependentSessionCleanupAuthorityMismatch");
+            // Every entry was admitted for this installation under the same durable
+            // lock. An older parent identity must not hide a surviving helper.
+            // Validate the entire bounded registry before retiring any process.
+            foreach (var child in state.SessionProcesses) RequireSessionProcess(child);
+            return state.SessionProcesses.FirstOrDefault();
+        }
+
         public static IndependentExecutorRegistration LoadTrusted(string path)
         {
             IndependentProtectedFiles.RequireTrustedFile(path);

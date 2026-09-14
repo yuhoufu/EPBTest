@@ -280,13 +280,9 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void RegisterSessionProcess(IndependentExecutorRegistration registration, IndependentSessionProcess child)
         {
-            registration.Validate(); child.Validate();
+            registration.RequireSessionProcess(child);
             if (!string.Equals(Path.GetDirectoryName(_path), registration.StateDirectory, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("IndependentSessionStateDirectoryMismatch");
-            var expectedPath = Path.Combine(Path.GetDirectoryName(registration.SafetyExecutablePath),
-                child.Role == "Watchdog" ? "MTTFTest.Watchdog.exe" : "MTTFTest.SafetyAgent.exe");
-            if (!string.Equals(Path.GetFullPath(child.Process.ExecutablePath), expectedPath, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("IndependentSessionExecutableMismatch");
             Locked(() =>
             {
                 var state = ReadUnsafe();
