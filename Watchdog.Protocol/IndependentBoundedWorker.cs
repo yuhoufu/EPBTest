@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace MTTFTest.Watchdog.Protocol
 {
@@ -97,6 +98,17 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (_job == IntPtr.Zero) return;
             if (!TerminateJobObject(_job, 124)) throw new Win32Exception();
+            var retirement = Stopwatch.StartNew();
+            while (true)
+            {
+                if (!QueryInformationJobObject(_job, 1, out var accounting,
+                    (uint)Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), IntPtr.Zero))
+                    throw new Win32Exception();
+                if (accounting.ActiveProcesses == 0) break;
+                if (retirement.ElapsedMilliseconds >= 1000)
+                    throw new IOException("IndependentWorkerJobRetirementUnconfirmed");
+                Thread.Sleep(10);
+            }
             CloseHandle(_job); _job = IntPtr.Zero;
         }
 
@@ -110,6 +122,11 @@ namespace MTTFTest.Watchdog.Protocol
 
         [StructLayout(LayoutKind.Sequential)] private struct PROCESS_INFORMATION
         { public IntPtr hProcess, hThread; public uint dwProcessId, dwThreadId; }
+        [StructLayout(LayoutKind.Sequential)] private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+        {
+            public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime;
+            public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
+        }
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] private struct STARTUPINFO
         {
             public int cb; public string lpReserved, lpDesktop, lpTitle;
@@ -139,6 +156,8 @@ namespace MTTFTest.Watchdog.Protocol
             IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment, string directory,
             ref STARTUPINFO startup, out PROCESS_INFORMATION process);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(
+            IntPtr job, int infoClass, out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information, uint size, IntPtr returnedLength);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern uint ResumeThread(IntPtr thread);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(IntPtr process, uint code);

@@ -70,6 +70,16 @@ namespace AdaptiveControlTests
             var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ??
                 Path.GetTempPath(), "independent-state-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
+            using (var currentIdentity = System.Security.Principal.WindowsIdentity.GetCurrent())
+            {
+                if (!currentIdentity.IsSystem)
+                {
+                    var accessDenied = false;
+                    try { using (var operation = new IndependentSafetyWorkerOperation(Exe, Hash, Path.Combine(root, "missing.json"))) { } }
+                    catch (UnauthorizedAccessException) { accessDenied = true; }
+                    Assert(accessDenied, "non-SYSTEM operation invoked a hardware worker");
+                }
+            }
             var now = DateTime.UtcNow.Ticks;
             var store = Fixture(Path.Combine(root, "revocation"), now);
             var tx = store.BeginRecovery(store.Read().Revision, "executor", now);
