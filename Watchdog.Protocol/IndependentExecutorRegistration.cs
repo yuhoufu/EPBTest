@@ -285,6 +285,48 @@ namespace MTTFTest.Watchdog.Protocol
             return registration;
         }
 
+        public static IndependentExecutorRegistration SealDraft(string draftPath, string registrationPath)
+        {
+            // This prepares files only. Binding installation and enabling the
+            // service remain separate maintenance-controlled operations.
+            IndependentProtectedFiles.RequireTrustedFile(draftPath);
+            var registration = BoundedJson.Read<IndependentExecutorRegistration>(draftPath);
+            if (registration == null) throw new InvalidDataException("IndependentRegistrationDraftMissing");
+            registration.Validate();
+            registrationPath = Path.GetFullPath(registrationPath);
+            if (!SamePath(Path.GetDirectoryName(registrationPath), registration.StateDirectory))
+                throw new InvalidDataException("IndependentRegistrationStateDirectoryMismatch");
+            IndependentProtectedFiles.RequireTrustedDirectory(registration.StateDirectory);
+            if (File.Exists(registrationPath)) throw new IOException("IndependentRegistrationAlreadyExists");
+            var snapshot = Path.Combine(registration.StateDirectory, "safety-config-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(snapshot);
+            IndependentProtectedFiles.RequireTrustedDirectory(snapshot);
+            foreach (var file in registration.Files)
+            {
+                var source = Path.Combine(registration.ConfigDirectory, file.Name);
+                var target = Path.Combine(snapshot, file.Name);
+                using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    if (input.Length > 4 * 1024 * 1024) throw new InvalidDataException("IndependentConfigFileTooLarge");
+                    using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    { input.CopyTo(output, 16384); output.Flush(true); }
+                }
+                registration.VerifyFile(target, file.Sha256);
+            }
+            registration.ConfigDirectory = snapshot;
+            var temporary = registrationPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                BoundedJson.Write(temporary, registration);
+                LoadTrusted(temporary);
+                File.Move(temporary, registrationPath);
+                return LoadTrusted(registrationPath);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            // Failed snapshots deliberately remain as bounded installation
+            // evidence. They never install a binding or authorize a run.
+        }
+
         public IndependentSafetyWorkerCommand CreateSafetyCommand(IndependentProjectState state,
             string executorIdentity, long now)
         {

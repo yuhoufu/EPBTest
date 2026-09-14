@@ -1,9 +1,10 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('Install','Status','Enable','Maintenance','Uninstall')][string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('Seal','Install','Status','Enable','Maintenance','Uninstall')][string]$Mode,
     [Parameter(Mandatory=$true)][string]$RegistrationPath,
-    [Parameter(Mandatory=$true)][string]$ExecutorPath
+    [Parameter(Mandatory=$true)][string]$ExecutorPath,
+    [string]$DraftPath
 )
 $ErrorActionPreference='Stop'
 $user=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -40,6 +41,13 @@ while($cursor){
 }
 [Reflection.Assembly]::LoadFrom($assemblyPath) | Out-Null
 [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($ExecutorPath)
+if($Mode -eq 'Seal'){
+    if([string]::IsNullOrWhiteSpace($DraftPath)){throw '封存必须提供本次安装导出的受保护草稿路径。'}
+    [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::SealDraft(
+        [IO.Path]::GetFullPath($DraftPath),$RegistrationPath) | Out-Null
+    Write-Output '配置已封存并校验；尚未安装服务、启动任务或授予恢复许可。'
+    return
+}
 $registration=[MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($RegistrationPath)
 $store=New-Object MTTFTest.Watchdog.Protocol.IndependentProjectStateStore($registration.StateDirectory)
 $serviceName='MTTFTestIndependent-'+$registration.InstallationId

@@ -151,7 +151,14 @@ namespace AdaptiveControlTests
             var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
                 "session-registry-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
-            var registration = new IndependentExecutorRegistration
+            var registration = CreateRegistrationFixture(root);
+            VerifySessionRegistry(root, DateTime.UtcNow.Ticks, registration);
+            return _count;
+        }
+
+        private static IndependentExecutorRegistration CreateRegistrationFixture(string root)
+        {
+            return new IndependentExecutorRegistration
             {
                 InstallationId = Guid.NewGuid().ToString("N"), ProjectDirectory = root,
                 // Fixture metadata only: this mode never creates an interactive launch task.
@@ -165,7 +172,46 @@ namespace AdaptiveControlTests
                     PressureChannels = new[] { "Pressure_1" }, ReleaseSafePressureBar = new[] { 1d },
                     PressureSampleMaxAgeMs = 100, ReleaseStableMs = 300, ReleaseTimeoutMs = 5000 }
             };
-            VerifySessionRegistry(root, DateTime.UtcNow.Ticks, registration);
+        }
+
+        internal static int RunRegistrationSealOnly()
+        {
+            _count = 0;
+            var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                "registration-seal-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var registration = CreateRegistrationFixture(root);
+            registration.ExecutableSha256 = registration.SafetyExecutableSha256 = SupervisorProtocol.ComputeSha256(Exe);
+            foreach (var file in registration.Files)
+            {
+                var path = Path.Combine(root, file.Name);
+                File.WriteAllText(path, "<isolated-config />");
+                file.Sha256 = SupervisorProtocol.ComputeSha256(path);
+            }
+            var draft = Path.Combine(root, "draft.json");
+            var destination = Path.Combine(root, "registration.json");
+            BoundedJson.Write(draft, registration);
+            var original = SupervisorProtocol.ComputeSha256(draft);
+            var sealedRegistration = IndependentExecutorRegistration.SealDraft(draft, destination);
+            Assert(sealedRegistration.ConfigDirectory != root && sealedRegistration.Files.All(file =>
+                SupervisorProtocol.ComputeSha256(Path.Combine(sealedRegistration.ConfigDirectory, file.Name)) == file.Sha256),
+                "sealed files differ from draft manifest");
+            Assert(SupervisorProtocol.ComputeSha256(draft) == original, "sealing mutated the draft");
+            var finalHash = SupervisorProtocol.ComputeSha256(destination);
+            var rejected = false;
+            try { IndependentExecutorRegistration.SealDraft(draft, destination); }
+            catch (IOException) { rejected = true; }
+            Assert(rejected && SupervisorProtocol.ComputeSha256(destination) == finalHash, "existing registration overwritten");
+            File.AppendAllText(Path.Combine(root, registration.Files[0].Name), "tampered");
+            var failed = Path.Combine(root, "failed.json");
+            rejected = false;
+            try { IndependentExecutorRegistration.SealDraft(draft, failed); }
+            catch (InvalidDataException) { rejected = true; }
+            Assert(rejected && !File.Exists(failed), "changed source configuration published");
+            rejected = false;
+            try { IndependentExecutorRegistration.SealDraft(draft, Path.Combine(root, "other-state", "registration.json")); }
+            catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "registration published outside its state directory");
             return _count;
         }
 

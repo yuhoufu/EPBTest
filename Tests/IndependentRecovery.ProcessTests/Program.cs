@@ -12,9 +12,10 @@ namespace AdaptiveControlTests
                     return IndependentBoundedWorkerTests.Child(args[1], args[2]);
                 if (args.Length == 4 && args[0] == "--state-consume")
                     return IndependentProjectStateTests.ConsumeChild(args[1], args[2], long.Parse(args[3]));
-                if (args.Length == 2 && args[0] == "--session-registry")
+                if (args.Length == 2 && (args[0] == "--session-registry" || args[0] == "--registration-seal"))
                 {
-                    var count = IndependentProjectStateTests.RunSessionRegistryOnly();
+                    var count = args[0] == "--registration-seal" ? IndependentProjectStateTests.RunRegistrationSealOnly() :
+                        IndependentProjectStateTests.RunSessionRegistryOnly();
                     MTTFTest.Watchdog.Protocol.BoundedJson.Write(args[1], new
                     {
                         passed = count, isSystem = System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem,

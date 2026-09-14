@@ -90,7 +90,15 @@ namespace MTTFTest.Watchdog.Protocol
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("IndependentProtectedFileReparsePoint");
             CheckAcl(File.GetAccessControl(path), true);
-            var directory = new DirectoryInfo(Path.GetDirectoryName(path));
+            RequireTrustedDirectory(Path.GetDirectoryName(path));
+        }
+
+        public static void RequireTrustedDirectory(string path)
+        {
+            path = Path.GetFullPath(path);
+            if (path.StartsWith(@"\\", StringComparison.Ordinal) || !Directory.Exists(path))
+                throw new InvalidDataException("IndependentProtectedDirectoryMissingOrRemote");
+            var directory = new DirectoryInfo(path);
             var immediate = true;
             while (directory != null)
             {
