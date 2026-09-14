@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
@@ -68,8 +68,40 @@ function Assert-IndependentInstallParent([string]$Path) {
         $cursor=$cursor.Parent
     }
 }
+function Get-IndependentRepairFiles($Plan,$Receipt) {
+    if($Receipt.schemaVersion -ne 1 -or $Receipt.version -cne $Plan.Version -or
+       -not [string]::Equals([string]$Receipt.installRoot,$Plan.Destination,[StringComparison]::OrdinalIgnoreCase)){
+        throw '修复包与原安装版本或目录不一致。'
+    }
+    $owned=@($Receipt.files)
+    if($owned.Count -ne $Plan.Files.Count){throw '原安装文件数量与修复包不一致。'}
+    $index=@{}
+    foreach($file in $owned){
+        $relative=[string]$file.path
+        if($index.ContainsKey($relative)){throw '原安装文件记录重复。'}
+        $index[$relative]=[string]$file.sha256
+    }
+    foreach($file in $Plan.Files){
+        if(-not $index.ContainsKey($file.Relative) -or $index[$file.Relative] -ne $file.Sha256){throw '修复包不是原安装的同一构建。'}
+    }
+    # Site configuration, state, databases and unknown file types are never
+    # reset from package defaults by binary repair.
+    foreach($file in $Plan.Files){
+        if($file.Relative -notlike 'Current/Config/*' -and
+           $file.Relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){$file}
+    }
+}
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
+if($Mode -eq 'ValidateRepair'){
+    Assert-IndependentInstallParent $plan.Destination
+    $receiptPath=Join-Path $plan.Destination 'installed-files.json'
+    $receiptFile=Get-Item -LiteralPath $receiptPath
+    if($receiptFile.Length -gt 4MB -or ($receiptFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '原安装记录大小或路径无效。'}
+    $receipt=[IO.File]::ReadAllText($receiptPath)|ConvertFrom-Json
+    Get-IndependentRepairFiles $plan $receipt
+    return
+}
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
@@ -91,6 +123,11 @@ if($createdAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @(
 if(((Get-Item -LiteralPath $plan.Destination).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '安装目录身份已变化。'}
 $journal=Join-Path $plan.Destination 'installation-result.json'
 try{
+    # Persist ownership before the first payload write. Failed installation
+    # retains this receipt so later maintenance never guesses owned files.
+    $receipt=[ordered]@{schemaVersion=1;version=$plan.Version;installRoot=$plan.Destination;
+        files=@($plan.Files|ForEach-Object{[ordered]@{path=[string]$_.Relative;sha256=[string]$_.Sha256}})}
+    [IO.File]::WriteAllText((Join-Path $plan.Destination 'installed-files.json'),($receipt|ConvertTo-Json -Depth 4))
     foreach($file in $plan.Files){
         $target=Join-Path $plan.Destination $file.Relative
         [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))|Out-Null
