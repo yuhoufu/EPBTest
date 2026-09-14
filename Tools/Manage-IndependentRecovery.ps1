@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('Provision','Prepare','Seal','Install','Repair','Status','Stop','Enable','Maintenance','Uninstall')][string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('Provision','Prepare','Seal','Install','Repair','Shortcut','Status','Stop','Enable','Maintenance','Uninstall')][string]$Mode,
     [Parameter(Mandatory=$true)][string]$RegistrationPath,
     [Parameter(Mandatory=$true)][string]$ExecutorPath,
     [string]$DraftPath,
@@ -11,6 +11,39 @@ param(
     [string]$InstallationId
 )
 $ErrorActionPreference='Stop'
+function Set-IndependentShortcut([string]$Main,[string]$Version,[string]$Id,[string]$Directory,[bool]$Remove) {
+    if($Version -notmatch '^\d+\.\d+\.\d+\.\d+$' -or $Id -notmatch '^[a-f0-9]{32}$'){throw '快捷方式版本或安装身份无效。'}
+    $mainPath=[IO.Path]::GetFullPath($Main)
+    $directoryPath=[IO.Path]::GetFullPath($Directory)
+    $path=Join-Path $directoryPath ('MT EPB V'+$Version+' ['+$Id+'].lnk')
+    $description='EPB Independent Installation '+$Id
+    $shell=$null;$link=$null;$temporary=$null
+    try{
+        $shell=New-Object -ComObject WScript.Shell
+        if([IO.File]::Exists($path)){
+            if(((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '快捷方式是重解析点。'}
+            $link=$shell.CreateShortcut($path)
+            if(-not [string]::Equals([string]$link.TargetPath,$mainPath,[StringComparison]::OrdinalIgnoreCase) -or
+               [string]$link.Arguments -ne '' -or [string]$link.Description -cne $description -or
+               -not [string]::Equals([string]$link.WorkingDirectory,[IO.Path]::GetDirectoryName($mainPath),[StringComparison]::OrdinalIgnoreCase)){
+                throw '快捷方式身份不匹配，保留原文件。'
+            }
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)|Out-Null;$link=$null
+            if($Remove){Remove-Item -LiteralPath $path -ErrorAction Stop}
+            return
+        }
+        if($Remove){return}
+        $temporary=Join-Path $directoryPath ([Guid]::NewGuid().ToString('N')+'.tmp.lnk')
+        $link=$shell.CreateShortcut($temporary)
+        $link.TargetPath=$mainPath;$link.WorkingDirectory=[IO.Path]::GetDirectoryName($mainPath)
+        $link.Arguments='';$link.Description=$description;$link.IconLocation=$mainPath+',0';$link.Save()
+        [Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)|Out-Null;$link=$null
+        [IO.File]::Move($temporary,$path);$temporary=$null
+    }finally{
+        foreach($com in @($link,$shell)){if($com){[Runtime.InteropServices.Marshal]::FinalReleaseComObject($com)|Out-Null}}
+        if($temporary -and [IO.File]::Exists($temporary)){Remove-Item -LiteralPath $temporary}
+    }
+}
 function Invoke-IndependentProvision([scriptblock]$Step) {
     # Prepare and Install reject existing bindings/objects. Only after our
     # Install returns successfully do we own the objects that Enable may leave.
@@ -208,6 +241,11 @@ try {
     }
     $service=Get-OwnedService
     switch($Mode){
+        'Shortcut' {
+            $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($registration.ExecutablePath).FileVersion
+            Set-IndependentShortcut $registration.ExecutablePath $version $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $false
+            Write-Output ('已创建与已安装程序一致的 V'+$version+' 快捷方式；未启动试验。')
+        }
         {$_ -in @('Install','Repair')} {
             if($Mode -eq 'Install' -and ($service -or $task)){throw '安装对象已存在；先检查，禁止猜测覆盖或迁移。'}
             if($Mode -eq 'Repair'){
@@ -287,6 +325,8 @@ try {
             }
             if($task){$folder.DeleteTask($taskName,0)}
             if($service){& "$env:SystemRoot\System32\sc.exe" delete $serviceName; if($LASTEXITCODE -ne 0){throw '删除服务失败。'}}
+            $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($registration.ExecutablePath).FileVersion
+            Set-IndependentShortcut $registration.ExecutablePath $version $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $true
             Write-Output '已卸载本安装的服务及启动任务；保留项目数据、持久状态与诊断。'
         }
         'Status' {
