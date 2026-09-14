@@ -4,14 +4,17 @@ $ErrorActionPreference = 'Stop'
 $hostPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 & $hostPath -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Install-AutomaticRecoveryBundle.ps1') -Mode ValidatePackage
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$manifestPath = Join-Path $PSScriptRoot 'automatic-bundle.json'
+if ((Get-Item -LiteralPath $manifestPath).Length -gt 4MB) { throw '包清单超出读取上限。' }
+$manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
 $report = [ordered]@{
     computer = $env:COMPUTERNAME
     utc = [DateTime]::UtcNow.ToString('O')
     powershell = $PSVersionTable.PSVersion.ToString()
     frameworkRelease = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction Stop).Release
     packageIntegrity = 'PASS'
-    recoveryArchitecture = 'V2-Supervisor-SessionAgent-SafetyAgent'
-    separateRecoveryGuard = 'FallbackGuard-v1-ObservationDefault'
+    recoveryArchitecture = [string]$manifest.recoveryArchitecture
+    separateRecoveryGuard = $(if ($manifest.schemaVersion -eq 2) {'Independent-SystemExecutor'} else {'FallbackGuard-v1-ObservationDefault'})
     fallbackActiveHardwareAcceptance = 'NOT_VERIFIED'
     hardwareActions = 'NOT_VERIFIED'
     countersAndPersistence = 'NOT_VERIFIED'

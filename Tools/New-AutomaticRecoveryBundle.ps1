@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$ReleaseDirectory,
-    [Parameter(Mandatory=$true)][string]$OutputRoot
+    [Parameter(Mandatory=$true)][string]$OutputRoot,
+    [switch]$LegacyRecovery
 )
 $ErrorActionPreference = 'Stop'
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\')
@@ -38,11 +39,14 @@ foreach ($relative in @('System.Data.SQLite.dll', 'x86\SQLite.Interop.dll')) {
 }
 $toolsOutput = Join-Path $output 'Tools'
 [IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
-foreach ($name in @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
+$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1')
+if ($LegacyRecovery) { $toolNames += @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
     'Resolve-FallbackBinding.ps1','Persistent-Fallback.ps1','Manage-PersistentFallback.ps1',
-    'Watch-ActiveFallback.ps1','Test-FallbackBinding.ps1','Test-PersistentFallback.ps1','Test-PersistentTask.ps1')) {
+    'Watch-ActiveFallback.ps1','Test-FallbackBinding.ps1','Test-PersistentFallback.ps1','Test-PersistentTask.ps1') }
+foreach ($name in $toolNames) {
     [IO.File]::WriteAllText((Join-Path $toolsOutput $name), [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name), [Text.Encoding]::UTF8), $utf8)
 }
+if ($LegacyRecovery) {
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-13_V4数据库监督实施与候选验收.md') -Destination (Join-Path $output '独立兜底说明.md')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\02_Issues\2026-09-13_V4项目数据库独立监督与恢复修复实施方案_待确认.md') -Destination $output
 foreach ($entry in @(
@@ -55,6 +59,9 @@ foreach ($entry in @(
         'set EPB_EXIT=%ERRORLEVEL%' + "`r`n" + 'echo ExitCode=%EPB_EXIT%' + "`r`n" +
         'if not defined EPB_BUNDLE_NONINTERACTIVE pause' + "`r`n" + 'exit /b %EPB_EXIT%' + "`r`n"
     [IO.File]::WriteAllText((Join-Path $output $entry.Name), $line, [Text.Encoding]::ASCII)
+}
+} else {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\docs\2026-09-14_V4.1_独立执行器组合安装入口验证.md') -Destination (Join-Path $output '独立兜底说明.md')
 }
 $commands = [ordered]@{
     '恢复后台服务.cmd'='Restore'; '检查运行状态.cmd'='Status'; '启动试验.cmd'='Launch'
@@ -87,15 +94,38 @@ RecoveryGuard-Acceptance.ps1 是只读包/环境检查；NOT_VERIFIED 不是通�
 验收要求每个应恢复通道真实动作、计数推进、正式圈持续落盘，至少连续三圈，并补充长期观察。
 严禁据包完整性检查结果直接宣布现场稳定，不自动部署到 wj-epb。
 '@
+if (-not $LegacyRecovery) {
+    $instructions = @'
+# 独立执行器候选安装说明
+
+本包使用独立 SYSTEM 执行服务及专属交互启动任务。主程序明确开始试验后建立持久运行意图；没有运行意图时服务等待，不自动启动卡钳。不是仅观察模式，仍须通过真实动作、计数推进及至少三周期正式落盘验证恢复。
+
+1. 完整解压到本机，先安全停止并退出原控制程序。不得覆盖运行中的安装。
+2. 首次安装须明确项目路径和实际交互账户 SID。管理员 PowerShell 中执行：
+
+```powershell
+.\Install-AutomaticRecoveryBundle.ps1 -Mode Install -InstallRoot 'C:\Program Files (x86)\MTTFTest' -ProjectDirectory 'D:\实际项目' -InteractiveUserSid '实际账户SID'
+```
+
+3. InstallRoot 必须不存在，父目录必须受保护。已有安装的版本升级/回滚不能使用首次安装覆盖。
+4. 安装成功表示文件校验、服务和任务注册完成，不代表试验已运行。启动入口只打开主程序，试验仍经过原安全预检。
+5. 检查入口显示组件状态；修复入口只修复缺失服务/任务，保留原绑定并进入维护。修复后用“恢复后台服务”显式启用监督。
+6. 卸载删除本安装服务和任务，保留受保护程序文件、注册及项目数据。现阶段不是完整二进制卸载或旧版回滚。
+7. Stop、Evidence、二进制修复和版本升级尚未完成时不得将本包作为最终现场交付。未完成入口返回错误，不转用旧恢复架构。
+
+真实台架和耐久验收未完成。RecoveryGuard-Acceptance 仅检查包/宿主，NOT_VERIFIED 不能视为通过。本轮不自动部署 WJ-EPB。
+'@
+}
 [IO.File]::WriteAllText((Join-Path $output '自动恢复安装说明.md'), $instructions, $utf8)
 $files = @(Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object FullName | ForEach-Object {
     [ordered]@{path=$_.FullName.Substring($output.Length).TrimStart('\').Replace('\','/');sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
 })
 $manifest = [ordered]@{
-    schemaVersion=1; version=$version; gitCommit=$commit; releaseStatus='CANDIDATE_NOT_FIELD_VALIDATED'
+    schemaVersion=$(if ($LegacyRecovery) {1} else {2}); version=$version; gitCommit=$commit; releaseStatus='CANDIDATE_NOT_FIELD_VALIDATED'
     packagingGitCommit=([string](& git -C (Join-Path $PSScriptRoot '..') rev-parse HEAD)).Trim()
-    fieldDeploymentApproved=$false; recoveryArchitecture='V2-Supervisor-SessionAgent-SafetyAgent'
-    fallbackGuard='Independent-Database-v2'; fallbackDefault='ObservationOnly'; candidateTag=('v'+[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $fallbackOutput 'MTTFTest.FallbackGuard.exe')).ProductVersion)
+    fieldDeploymentApproved=$false; recoveryArchitecture=$(if ($LegacyRecovery) {'V2-Supervisor-SessionAgent-SafetyAgent'} else {'V4-Independent-SystemExecutor'})
+    fallbackGuard=$(if ($LegacyRecovery) {'Independent-Database-v2'} else {'Independent-SystemExecutor'})
+    fallbackDefault=$(if ($LegacyRecovery) {'ObservationOnly'} else {'RequiresDurableRunIntent'}); candidateTag=('v'+[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $fallbackOutput 'MTTFTest.FallbackGuard.exe')).ProductVersion)
     createdUtc=[DateTime]::UtcNow.ToString('O'); files=$files
 }
 [IO.File]::WriteAllText((Join-Path $output 'automatic-bundle.json'), ($manifest | ConvertTo-Json -Depth 6), $utf8)
