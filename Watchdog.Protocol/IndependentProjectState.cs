@@ -214,6 +214,41 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void SetControllerSelection(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int channel, bool selected, string commandId, long now)
+        {
+            controller.Validate();
+            if (channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentSelectionCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentSelectionStaleController");
+                var before = state.Intent.SelectedChannels.ToArray();
+                if (before.Contains(channel) == selected) return true;
+                state.Intent.SelectedChannels = selected ? before.Concat(new[] { channel }).OrderBy(c => c).ToArray() :
+                    before.Where(c => c != channel).ToArray();
+                // Checking a box is selection, not an instruction to restart a
+                // motor in an active batch. Only explicit new start/continue may
+                // remove this per-channel pause; never clear permanent isolation.
+                state.Intent.PausedChannels = state.Intent.PausedChannels.Union(new[] { channel }).OrderBy(c => c).ToArray();
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = state.Intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "OperatorSelection", "Channel=" + channel + ";Selected=" + selected + ";CommandId=" + commandId,
+                    now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
         public void SetControllerManualPause(IndependentProcessIdentity controller, string runId, long runEpoch,
             bool paused, string commandId, long now)
         {

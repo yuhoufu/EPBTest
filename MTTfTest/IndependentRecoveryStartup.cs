@@ -151,6 +151,15 @@ namespace MTEmbTest
             return task;
         }
 
+        internal System.Threading.Tasks.Task PersistChannelSelectionAsync(int channel, bool selected)
+        {
+            var runId = RunId; var epoch = RunEpoch;
+            if (runId == null) return System.Threading.Tasks.Task.CompletedTask;
+            var command = Guid.NewGuid().ToString("N");
+            return System.Threading.Tasks.Task.Run(() =>
+                _store.SetControllerSelection(Identity, runId, epoch, channel, selected, command, DateTime.UtcNow.Ticks));
+        }
+
         internal System.Threading.Tasks.Task PersistManualPauseAsync(bool paused, string commandId)
         {
             if (RunId == null) throw new InvalidOperationException("IndependentPauseRunMissing");
@@ -176,7 +185,7 @@ namespace MTEmbTest
             if (config?.Test == null ||
                 !string.Equals(Path.GetFullPath(Path.Combine(config.Test.StoreDir, config.Test.TestName)).TrimEnd('\\'),
                     Path.GetFullPath(Registration.ProjectDirectory).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(UnattendedRunCheckpointStore.ComputeConfigurationHash(config),
+                !string.Equals(UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config),
                     Registration.ConfigurationSha256, StringComparison.OrdinalIgnoreCase) ||
                 !File.Exists(Registration.DatabasePath) ||
                 File.GetCreationTimeUtc(Registration.DatabasePath).Ticks != Registration.DatabaseCreationUtcTicks)

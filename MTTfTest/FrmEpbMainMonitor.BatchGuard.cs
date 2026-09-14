@@ -69,6 +69,12 @@ namespace MTEmbTest
         {
             if (_manualCloseAccepted)
                 throw new InvalidOperationException("后台停止收尾尚未完成，不能开始新试验。");
+            if (_selectionPersistencePending.Count != 0)
+            {
+                if (unattendedRecovery) throw new InvalidOperationException("通道选择仍在持久确认，拒绝使用旧集合启动。");
+                LogInfo("通道选择正在保存，完成后再开始试验。");
+                return null;
+            }
             if (Interlocked.CompareExchange(ref _batchStartUiGuard, 1, 0) != 0)
             {
                 if (unattendedRecovery)

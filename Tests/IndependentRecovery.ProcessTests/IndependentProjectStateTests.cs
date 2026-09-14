@@ -95,6 +95,24 @@ namespace AdaptiveControlTests
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
+            var selectionState = selectionStore.Read();
+            var selectionCommand = Guid.NewGuid().ToString("N");
+            selectionStore.SetControllerSelection(selectionState.Controller, selectionState.Intent.RunId,
+                selectionState.Intent.RunEpoch, 4, false, selectionCommand, now);
+            Assert(!selectionStore.Read().Intent.SelectedChannels.Contains(4) &&
+                !selectionStore.Read().Intent.RecoveryChannels().Contains(4), "unchecked lane retained restart permission");
+            var selectionRevision = selectionStore.Read().Revision;
+            selectionStore.SetControllerSelection(selectionState.Controller, selectionState.Intent.RunId,
+                selectionState.Intent.RunEpoch, 4, false, selectionCommand, now);
+            Assert(selectionStore.Read().Revision == selectionRevision, "duplicate selection changed authority");
+            selectionStore.SetControllerSelection(selectionState.Controller, selectionState.Intent.RunId,
+                selectionState.Intent.RunEpoch, 4, true, Guid.NewGuid().ToString("N"), now);
+            Assert(selectionStore.Read().Intent.SelectedChannels.Contains(4) &&
+                !selectionStore.Read().Intent.RecoveryChannels().Contains(4) &&
+                selectionStore.Read().Intent.RecoveryChannels().Length == 5, "checking box silently restarted a stopped lane");
+            Reject(() => selectionStore.SetControllerSelection(Identity(), selectionState.Intent.RunId,
+                selectionState.Intent.RunEpoch, 5, false, Guid.NewGuid().ToString("N"), now), "foreign process changed selection");
             var pauseStore = Fixture(Path.Combine(root, "durable-controller-pause"), now);
             var pauseState = pauseStore.Read();
             var pauseCommand = Guid.NewGuid().ToString("N");

@@ -1060,7 +1060,7 @@ namespace MTEmbTest
                 SchemaVersion = CurrentSchemaVersion, Armed = true, RecoveryChainPendingStart = true,
                 StoreDir = config.Test.StoreDir, TestName = config.Test.TestName,
                 SelectedChannels = selected, LearnCycles = Math.Max(5, config.Test.LearnCycles),
-                ConfigurationSha256 = startup.Registration.ConfigurationSha256,
+                ConfigurationSha256 = ComputeConfigurationHash(config),
                 ExecutableSha256 = startup.Registration.ExecutableSha256,
                 BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString(),
                 RootRunId = startup.RootRunId, ParentRunId = startup.ParentRunId, RunId = startup.ParentRunId,
@@ -1078,6 +1078,15 @@ namespace MTEmbTest
         }
 
         internal static string ComputeConfigurationHash(GlobalConfig config)
+            => ComputeConfigurationHashCore(config, false);
+
+        // Independent recovery protects channel selection in its durable run
+        // intent. Its immutable configuration hash must therefore not reject an
+        // authorized checkbox change. Targets, limits and other fields remain.
+        internal static string ComputeIndependentConfigurationHash(GlobalConfig config)
+            => ComputeConfigurationHashCore(config, true);
+
+        private static string ComputeConfigurationHashCore(GlobalConfig config, bool independentSelection)
         {
             try
             {
@@ -1096,12 +1105,17 @@ namespace MTEmbTest
                 using (var sha = SHA256.Create())
                 using (var buffer = new MemoryStream())
                 {
+                    if (independentSelection)
+                    {
+                        var profile = Encoding.UTF8.GetBytes("IndependentSelectionV1\n");
+                        buffer.Write(profile, 0, profile.Length);
+                    }
                     foreach (var path in candidates.Distinct(StringComparer.OrdinalIgnoreCase)
                                  .OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
                     {
                         var name = Encoding.UTF8.GetBytes(Path.GetFileName(path).ToLowerInvariant() + "\n");
                         buffer.Write(name, 0, name.Length);
-                        var content = ReadStableConfiguration(path);
+                        var content = ReadStableConfiguration(path, independentSelection);
                         buffer.Write(content, 0, content.Length);
                         buffer.WriteByte((byte)'\n');
                     }
@@ -1115,7 +1129,7 @@ namespace MTEmbTest
             }
         }
 
-        private static byte[] ReadStableConfiguration(string path)
+        internal static byte[] ReadStableConfiguration(string path, bool independentSelection = false)
         {
             try
             {
@@ -1134,6 +1148,15 @@ namespace MTEmbTest
                 if (runtimeFields != null)
                     foreach (XmlNode node in runtimeFields.Cast<XmlNode>().ToArray())
                         node.ParentNode?.RemoveChild(node);
+                if (independentSelection)
+                {
+                    var selection = document.SelectNodes("//EpbRecords/Record/Enabled | //EpbRecords/Record/@Enabled");
+                    foreach (XmlNode node in selection.Cast<XmlNode>().ToArray())
+                    {
+                        if (node is XmlAttribute attribute) attribute.OwnerElement.RemoveAttributeNode(attribute);
+                        else node.ParentNode?.RemoveChild(node);
+                    }
+                }
                 return Encoding.UTF8.GetBytes(document.OuterXml);
             }
             catch

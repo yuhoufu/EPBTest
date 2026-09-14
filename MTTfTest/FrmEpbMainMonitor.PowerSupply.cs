@@ -67,6 +67,7 @@ namespace MTEmbTest
         private readonly Dictionary<int, ChannelWarningOverlayChangedEvent> _channelWarningOverlays =
             new Dictionary<int, ChannelWarningOverlayChangedEvent>();
         private readonly HashSet<int> _channelSelectionUiGuard = new HashSet<int>();
+        private readonly HashSet<int> _selectionPersistencePending = new HashSet<int>();
         private readonly HashSet<int> _powerGroupInterlockLatches = new HashSet<int>();
         private readonly object _powerSupplyTelemetryGate = new object();
         private readonly Dictionary<int, PowerSupplyTelemetry> _latestPowerSupplyTelemetry =
@@ -714,13 +715,16 @@ namespace MTEmbTest
                 true);
         }
 
-        private void PersistRuntimeChannelSelection(int channelIndex)
+        private async void PersistRuntimeChannelSelection(int channelIndex)
         {
             if (_cfg?.Test == null || channelIndex < 0 || channelIndex >= EpbGroup.Length) return;
             var channel = channelIndex + 1;
             if (_channelSelectionUiGuard.Contains(channel)) return;
             var selected = EpbGroup[channelIndex]?.CtrlJoinTest?.Checked == true;
             var configured = _cfg.Test.GetEpbRecord(channel);
+            if (configured.Enabled == selected) return;
+            if (_selectionPersistencePending.Contains(channel) || Volatile.Read(ref _batchStartUiGuard) != 0)
+            { SetChannelSelectionChecked(channel, configured.Enabled); return; }
             if (selected && configured.PermanentAlarmLatched)
             {
                 var answer = ShowOperatorMessage(
@@ -756,6 +760,25 @@ namespace MTEmbTest
                 }
                 ApplyLatestChannelRuntimeState(channel);
                 return;
+            }
+            if (IndependentRecoveryStartup.Current != null)
+            {
+                var check = EpbGroup[channelIndex].CtrlJoinTest;
+                var wasEnabled = check.Enabled;
+                _selectionPersistencePending.Add(channel);
+                check.Enabled = false;
+                try { await IndependentRecoveryStartup.Current.PersistChannelSelectionAsync(channel, selected).ConfigureAwait(true); }
+                catch (Exception error)
+                {
+                    SetChannelSelectionChecked(channel, configured.Enabled);
+                    ShowOperatorMessage("通道选择未能持久确认：" + error.Message, "选择未完成", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+                finally
+                {
+                    _selectionPersistencePending.Remove(channel);
+                    if (!check.IsDisposed) check.Enabled = wasEnabled;
+                }
             }
             lock (_epbRecordsLock)
             {

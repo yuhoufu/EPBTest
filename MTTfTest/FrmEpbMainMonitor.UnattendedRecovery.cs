@@ -928,8 +928,8 @@ namespace MTEmbTest
             _cfg.Test.LearnCycles = Math.Max(5, checkpoint.LearnCycles);
             for (var channel = 1; channel <= 12; channel++)
             {
-                var control = EpbGroup[channel - 1]?.CtrlJoinTest;
-                if (control != null) control.Checked = selected.Contains(channel);
+                // Restoring an authorized checkpoint is not an operator selection change.
+                SetChannelSelectionChecked(channel, selected.Contains(channel));
             }
             _epb.EpbTestCycle = remainingPlan.RemainingCycles
                 .Where(pair => pair.Value > 0)

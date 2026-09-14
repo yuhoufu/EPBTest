@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using MTEmbTest;
 
 namespace AdaptiveControlTests
@@ -42,6 +43,20 @@ namespace AdaptiveControlTests
             var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
                 "bootstrap-rejection-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
+            var selectionConfig = Path.Combine(root, "selection.xml");
+            var xml = "<TestConfig><EpbRecords><Record><Id>7</Id><Enabled>true</Enabled><TotalCount>12</TotalCount></Record></EpbRecords></TestConfig>";
+            File.WriteAllText(selectionConfig, xml);
+            var legacyConfig = UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig);
+            var independentConfig = UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true);
+            File.WriteAllText(selectionConfig, xml.Replace("true", "false"));
+            if (legacyConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig)) ||
+                !independentConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true)))
+                throw new Exception("selection hash separation weakened legacy identity or rejected independent selection");
+            count++;
+            File.WriteAllText(selectionConfig, xml.Replace(">12<", ">13<"));
+            if (independentConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true)))
+                throw new Exception("independent configuration ignored target changes");
+            count++;
             var missing = IndependentRecoveryStartup.Parse(new[] { "--independent-registration", Path.Combine(root, "missing.json"),
                 "--independent-ticket", nonce });
             var denied = false;
