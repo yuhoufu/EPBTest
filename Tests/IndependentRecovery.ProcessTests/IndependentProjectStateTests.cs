@@ -66,6 +66,80 @@ namespace AdaptiveControlTests
             catch (InvalidOperationException) { return 23; }
         }
 
+        private static void VerifySessionRegistry(string root, long now, IndependentExecutorRegistration registration)
+        {
+            var registryStore = new IndependentProjectStateStore(Path.Combine(root, "session-registry"));
+            registryStore.Update(0, state => { state.Maintenance = false; return true; });
+            var registryParent = Identity();
+            registryStore.ArmManualRun(1, Intent(root), registryParent, now);
+            var savedSafetyPath = registration.SafetyExecutablePath;
+            var savedRegistryDirectory = registration.StateDirectory;
+            registration.StateDirectory = Path.Combine(root, "session-registry");
+            registration.SafetyExecutablePath = Path.Combine(root, "MTTFTest.SafetyAgent.exe");
+            var registeredExe = Path.Combine(root, "MTTFTest.Watchdog.exe");
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), registeredExe);
+            IndependentProcessIdentity registeredIdentity = null;
+            using (var registeredWorker = IndependentBoundedWorker.StartSession(registeredExe, "/c exit 0", root,
+                (pid, ticks) =>
+                {
+                    registeredIdentity = new IndependentProcessIdentity { Pid = pid, StartUtcTicks = ticks,
+                        ExecutablePath = registeredExe, WindowsSessionId = Process.GetCurrentProcess().SessionId,
+                        SessionToken = Guid.NewGuid().ToString("N") };
+                    var child = new IndependentSessionProcess { Process = registeredIdentity, Role = "Watchdog",
+                        ParentPid = registryParent.Pid, ParentStartUtcTicks = registryParent.StartUtcTicks };
+                    registryStore.RegisterSessionProcess(registration, child);
+                    var registeredRevision = registryStore.Read().Revision;
+                    registryStore.RegisterSessionProcess(registration, child);
+                    Assert(registryStore.Read().SessionProcesses.Length == 1 && registryStore.Read().Revision == registeredRevision,
+                        "suspended registration was not durable/idempotent");
+                    Reject(() => registryStore.AcknowledgeSessionProcessExit(registeredIdentity), "live helper removed from cleanup registry");
+                }))
+            {
+                var deadline = Stopwatch.StartNew();
+                while (registeredWorker.Poll() == IndependentWorkerState.Running && deadline.ElapsedMilliseconds < 5000) Thread.Sleep(10);
+                Assert(registeredWorker.Poll() == IndependentWorkerState.Completed, "registered session child failed to execute");
+            }
+            registryStore.AcknowledgeSessionProcessExit(registeredIdentity);
+            Assert(registryStore.Read().SessionProcesses.Length == 0, "exited helper was not retired from registry");
+            registryStore.BeginRecovery(registryStore.Read().Revision, "executor", now);
+            Reject(() =>
+            {
+                using (var rejectedWorker = IndependentBoundedWorker.StartSession(registeredExe, "/c exit 0", root,
+                    (pid, ticks) => registryStore.RegisterSessionProcess(registration, new IndependentSessionProcess
+                    {
+                        ParentPid = registryParent.Pid, ParentStartUtcTicks = registryParent.StartUtcTicks, Role = "Watchdog",
+                        Process = new IndependentProcessIdentity { Pid = pid, StartUtcTicks = ticks, ExecutablePath = registeredExe,
+                            WindowsSessionId = Process.GetCurrentProcess().SessionId, SessionToken = Guid.NewGuid().ToString("N") }
+                    }))) { }
+            }, "new helper executed after cleanup claimed the project");
+            registration.SafetyExecutablePath = savedSafetyPath;
+            registration.StateDirectory = savedRegistryDirectory;
+        }
+
+        internal static int RunSessionRegistryOnly()
+        {
+            _count = 0;
+            var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                "session-registry-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var registration = new IndependentExecutorRegistration
+            {
+                InstallationId = Guid.NewGuid().ToString("N"), ProjectDirectory = root,
+                // Fixture metadata only: this mode never creates an interactive launch task.
+                InteractiveUserSid = "S-1-5-21-1-2-3-1001",
+                DatabasePath = Path.Combine(root, "index.db"), DatabaseCreationUtcTicks = 1,
+                StateDirectory = root, ExecutablePath = Exe, ExecutableSha256 = Hash,
+                SafetyExecutablePath = Exe, SafetyExecutableSha256 = Hash, ConfigurationSha256 = Hash, ConfigDirectory = root,
+                Files = new[] { "AIConfig.xml", "AOConfig.xml", "DOConfig.xml", "PowerSupplyConfig.xml" }
+                    .Select(n => new IndependentSafetyConfigFile { Name = n, Sha256 = Hash }).ToArray(),
+                Runtime = new SafetyRuntimeSnapshot { SampleRateHz = 2000, SamplesPerChannel = 20,
+                    PressureChannels = new[] { "Pressure_1" }, ReleaseSafePressureBar = new[] { 1d },
+                    PressureSampleMaxAgeMs = 100, ReleaseStableMs = 300, ReleaseTimeoutMs = 5000 }
+            };
+            VerifySessionRegistry(root, DateTime.UtcNow.Ticks, registration);
+            return _count;
+        }
+
         internal static int RunAll(bool cooperationOnly = false)
         {
             _count = 0;
@@ -644,52 +718,7 @@ namespace AdaptiveControlTests
                 Files = command.Files, Runtime = command.Runtime
             };
             registration.RequireBoundIntent(safetyIntent);
-            var registryStore = new IndependentProjectStateStore(Path.Combine(root, "session-registry"));
-            registryStore.Update(0, state => { state.Maintenance = false; return true; });
-            var registryParent = Identity();
-            registryStore.ArmManualRun(1, Intent(root), registryParent, now);
-            var savedSafetyPath = registration.SafetyExecutablePath;
-            var savedRegistryDirectory = registration.StateDirectory;
-            registration.StateDirectory = Path.Combine(root, "session-registry");
-            registration.SafetyExecutablePath = Path.Combine(root, "MTTFTest.SafetyAgent.exe");
-            var registeredExe = Path.Combine(root, "MTTFTest.Watchdog.exe");
-            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), registeredExe);
-            IndependentProcessIdentity registeredIdentity = null;
-            using (var registeredWorker = IndependentBoundedWorker.StartSession(registeredExe, "/c exit 0", root,
-                (pid, ticks) =>
-                {
-                    registeredIdentity = new IndependentProcessIdentity { Pid = pid, StartUtcTicks = ticks,
-                        ExecutablePath = registeredExe, WindowsSessionId = Process.GetCurrentProcess().SessionId,
-                        SessionToken = Guid.NewGuid().ToString("N") };
-                    var child = new IndependentSessionProcess { Process = registeredIdentity, Role = "Watchdog",
-                        ParentPid = registryParent.Pid, ParentStartUtcTicks = registryParent.StartUtcTicks };
-                    registryStore.RegisterSessionProcess(registration, child);
-                    var registeredRevision = registryStore.Read().Revision;
-                    registryStore.RegisterSessionProcess(registration, child);
-                    Assert(registryStore.Read().SessionProcesses.Length == 1 && registryStore.Read().Revision == registeredRevision,
-                        "suspended registration was not durable/idempotent");
-                    Reject(() => registryStore.AcknowledgeSessionProcessExit(registeredIdentity), "live helper removed from cleanup registry");
-                }))
-            {
-                var deadline = Stopwatch.StartNew();
-                while (registeredWorker.Poll() == IndependentWorkerState.Running && deadline.ElapsedMilliseconds < 5000) Thread.Sleep(10);
-                Assert(registeredWorker.Poll() == IndependentWorkerState.Completed, "registered session child failed to execute");
-            }
-            registryStore.AcknowledgeSessionProcessExit(registeredIdentity);
-            Assert(registryStore.Read().SessionProcesses.Length == 0, "exited helper was not retired from registry");
-            registryStore.BeginRecovery(registryStore.Read().Revision, "executor", now);
-            Reject(() =>
-            {
-                using (var rejectedWorker = IndependentBoundedWorker.StartSession(registeredExe, "/c exit 0", root,
-                    (pid, ticks) => registryStore.RegisterSessionProcess(registration, new IndependentSessionProcess
-                    {
-                        ParentPid = registryParent.Pid, ParentStartUtcTicks = registryParent.StartUtcTicks, Role = "Watchdog",
-                        Process = new IndependentProcessIdentity { Pid = pid, StartUtcTicks = ticks, ExecutablePath = registeredExe,
-                            WindowsSessionId = Process.GetCurrentProcess().SessionId, SessionToken = Guid.NewGuid().ToString("N") }
-                    }))) { }
-            }, "new helper executed after cleanup claimed the project");
-            registration.SafetyExecutablePath = savedSafetyPath;
-            registration.StateDirectory = savedRegistryDirectory;
+            VerifySessionRegistry(root, now, registration);
             var registrationPath = Path.Combine(root, "executor.json");
             var binding = new IndependentInstallationBinding
             { InstallationId = registration.InstallationId, RegistrationPath = registrationPath };
