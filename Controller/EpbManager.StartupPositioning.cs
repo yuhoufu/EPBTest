@@ -315,6 +315,7 @@ namespace Controller
         internal async Task PublishStartupPositioningFailureAsync(StartupPositioningResult result)
         {
             if (result == null || result.Succeeded) return;
+            var faultRunIdentity = _activeRunChainIdentity;
             RefreshStartupPositioningEvidence(result);
             var openCircuit = StartupPositioningFaultPolicy.IsOpenCircuit(result);
             var classification = ClassifyStartupPositioningFailure(
@@ -334,6 +335,20 @@ namespace Controller
             {
                 reason += " OutputOffCommandFailed：保持电源组安全自恢复，断电确认后继续启动定位。";
             }
+            var independentNearZero = openCircuit && NearZeroRecoveryDecisionWriter != null && faultRunIdentity != null;
+            var permanentlyIsolate = false;
+            if (independentNearZero)
+            {
+                // Accepted output and an energization permit do not prove
+                // physical supply voltage. Keep the physical cause unconfirmed.
+                permanentlyIsolate = await Task.Run(() => NearZeroRecoveryDecisionWriter(
+                    faultRunIdentity.RunId, faultRunIdentity.RunEpoch, result.Channel, false, Guid.NewGuid()))
+                    .ConfigureAwait(false);
+                classification = FaultClassification.SoftwareTransient;
+                reason = BuildStartupPositioningFailureReason(result, openCircuit, classification) +
+                    (permanentlyIsolate ? " IndependentNearZeroRetryFailed;PermanentIsolation" :
+                        " IndependentNearZeroRetryRequired;CurrentRunStopped");
+            }
             var fault = new ControlFault(
                 string.IsNullOrWhiteSpace(result.Code) ? "StartupPositioningFailed" : result.Code,
                 reason,
@@ -343,11 +358,12 @@ namespace Controller
                 DateTime.UtcNow,
                 Guid.NewGuid(),
                 classification,
+                independentNearZero ? (permanentlyIsolate ? FaultRecoveryPolicy.NonRecoverableDisableChannel : FaultRecoveryPolicy.CurrentRunDisableChannel) :
                 classification == FaultClassification.HardwareConfirmed
                     ? FaultRecoveryPolicy.CurrentRunDisableChannel
                     : FaultRecoveryPolicy.Recoverable);
 
-            if (classification != FaultClassification.HardwareConfirmed)
+            if (classification != FaultClassification.HardwareConfirmed && !independentNearZero)
             {
                 await RunStartupPositioningFailureIncidentAsync(
                         result,
@@ -380,6 +396,8 @@ namespace Controller
                 FaultScope.Channel);
 
             _alarmStopLatch.TryRequestStop(result.Channel);
+            if (permanentlyIsolate)
+                PersistentlyDisableChannel(result.Channel, result.Code, reason, fault.CorrelationId);
             _log?.Error(
                 $"EPB[{result.Channel}] 启动定位失败并隔离。CorrelationId={fault.CorrelationId:N} {reason}",
                 "报警");

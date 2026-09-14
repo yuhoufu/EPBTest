@@ -51,6 +51,13 @@ namespace MTTFTest.Watchdog.Protocol
         public IndependentProcessIdentity Controller { get; set; }
     }
 
+    public sealed class IndependentNearZeroRetry
+    {
+        public int Channel { get; set; }
+        public long FirstGeneration { get; set; }
+        public string FirstRunId { get; set; }
+    }
+
     public sealed class IndependentIntentAudit
     {
         public long UtcTicks { get; set; }
@@ -82,11 +89,17 @@ namespace MTTFTest.Watchdog.Protocol
         public IndependentLaunchTicket Ticket { get; set; }
         public IndependentCooperativeStopReceipt CooperativeStopReceipt { get; set; }
         public IndependentIntentAudit[] Audit { get; set; } = Array.Empty<IndependentIntentAudit>();
+        public IndependentNearZeroRetry[] NearZeroRetries { get; set; } = Array.Empty<IndependentNearZeroRetry>();
 
         public void Validate()
         {
             if (SchemaVersion != 2 || Revision <= 0 || Audit == null || Audit.Length > 32)
                 throw new InvalidDataException("IndependentProjectStateInvalid");
+            if (NearZeroRetries == null || NearZeroRetries.Length > 12 ||
+                NearZeroRetries.Any(r => r == null || r.Channel < 1 || r.Channel > 12 || r.FirstGeneration < 0 ||
+                    !Guid.TryParseExact(r.FirstRunId, "N", out _)) ||
+                NearZeroRetries.Select(r => r.Channel).Distinct().Count() != NearZeroRetries.Length)
+                throw new InvalidDataException("IndependentNearZeroRetryInvalid");
             Intent?.Validate(); Transaction?.Validate(); Controller?.Validate();
             if (CooperativeStopReceipt != null)
             {
@@ -356,6 +369,46 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public bool RecordNearZeroFault(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int channel, bool hardwareEvidenceConfirmed, string commandId, long now)
+        {
+            controller?.Validate();
+            if (channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentNearZeroFaultInvalid");
+            return Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || controller?.Matches(state.Controller) != true ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentNearZeroStaleController");
+                if (state.Intent.PermanentChannels.Contains(channel)) return true;
+                var generation = state.Transaction?.Generation ?? 0;
+                var prior = state.NearZeroRetries.SingleOrDefault(r => r.Channel == channel);
+                var isolate = hardwareEvidenceConfirmed || prior != null && generation > prior.FirstGeneration && runId != prior.FirstRunId;
+                if (prior != null && !isolate) return false;
+                var before = state.Intent.SelectedChannels.ToArray();
+                if (prior == null)
+                    state.NearZeroRetries = state.NearZeroRetries.Concat(new[] { new IndependentNearZeroRetry
+                    { Channel = channel, FirstGeneration = generation, FirstRunId = runId } }).ToArray();
+                if (isolate)
+                {
+                    state.Intent.PermanentChannels = state.Intent.PermanentChannels.Union(new[] { channel }).OrderBy(c => c).ToArray();
+                    state.Intent.Revision = checked(state.Intent.Revision + 1);
+                    if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                    {
+                        state.Transaction.IntentRevision = state.Intent.Revision;
+                        state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                    }
+                    else if (state.Ticket != null) state.Ticket.Revoked = true;
+                }
+                AppendAudit(state, "NearZeroFault", "Channel=" + channel + ";HardwareEvidence=" + hardwareEvidenceConfirmed +
+                    ";Isolated=" + isolate + ";Generation=" + generation + ";CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return isolate;
+            });
+        }
+
         public void ResetPermanentExclusionForOperator(long expectedRevision, IndependentProcessIdentity actor,
             int channel, bool selected, string commandId, long now)
         {
@@ -372,6 +425,7 @@ namespace MTTFTest.Watchdog.Protocol
                     throw new InvalidOperationException("IndependentPermanentResetNotAdmitted");
                 var before = intent.SelectedChannels.ToArray();
                 intent.PermanentChannels = intent.PermanentChannels.Where(c => c != channel).ToArray();
+                state.NearZeroRetries = state.NearZeroRetries.Where(r => r.Channel != channel).ToArray();
                 intent.SelectedChannels = selected ? before.Union(new[] { channel }).OrderBy(c => c).ToArray() :
                     before.Where(c => c != channel).ToArray();
                 // A confirmed repair is not an instruction to resume. If XML

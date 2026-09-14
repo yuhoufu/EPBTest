@@ -1247,6 +1247,7 @@ namespace MTEmbTest
                         independent.ResetPermanentExclusion(_cfg, channel, selected);
                     manager.PermanentRecoveryExclusionWriter = (runId, epoch, channels, code, command) =>
                         independent.PersistPermanentExclusion(runId, epoch, channels, code, command);
+                    manager.NearZeroRecoveryDecisionWriter = independent.RecordNearZeroFault;
                     var observer = IndependentRecoveryStartup.Current.ObserveCooperativeStop(async requestId =>
                     {
                         var result = await manager.StopAllAsync(new StopContext

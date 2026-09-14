@@ -146,6 +146,28 @@ namespace AdaptiveControlTests
             }
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
             var verificationDone = Fixture(Path.Combine(root, "verification-target-completion"), now);
+            var nearZeroStore = Fixture(Path.Combine(root, "near-zero-retry"), now);
+            var nz = nearZeroStore.Read();
+            Assert(!nearZeroStore.RecordNearZeroFault(nz.Controller, nz.Intent.RunId, nz.Intent.RunEpoch, 4, false,
+                Guid.NewGuid().ToString("N"), now), "first uncertain near zero became permanent");
+            Assert(!nearZeroStore.RecordNearZeroFault(nz.Controller, nz.Intent.RunId, nz.Intent.RunEpoch, 4, false,
+                Guid.NewGuid().ToString("N"), now), "same run repeated fault consumed independent retry");
+            Assert(new IndependentProjectStateStore(Path.Combine(root, "near-zero-retry")).Read().NearZeroRetries.Length == 1,
+                "near zero retry was not durable");
+            var nzTicket = Ready(nearZeroStore, now);
+            Assert(!nearZeroStore.RecordNearZeroFault(nz.Controller, nz.Intent.RunId, nz.Intent.RunEpoch, 4, false,
+                Guid.NewGuid().ToString("N"), now), "old process fault during takeover became retry failure");
+            var nzConsumer = Identity();
+            nearZeroStore.ConsumeLaunchTicket(nearZeroStore.Read().Revision, nzTicket.Nonce, nzConsumer, Hash, now);
+            nearZeroStore.CommitReplacementRun(nearZeroStore.Read().Revision, nzConsumer, Guid.NewGuid().ToString("N"), 2, now);
+            var nzNew = nearZeroStore.Read();
+            Reject(() => nearZeroStore.RecordNearZeroFault(nz.Controller, nz.Intent.RunId, nz.Intent.RunEpoch, 5, false,
+                Guid.NewGuid().ToString("N"), now), "old process changed replacement near zero policy");
+            Assert(nearZeroStore.RecordNearZeroFault(nzConsumer, nzNew.Intent.RunId, nzNew.Intent.RunEpoch, 4, false,
+                Guid.NewGuid().ToString("N"), now), "failure after independent retry did not isolate");
+            Assert(nearZeroStore.Read().Intent.PermanentChannels.Contains(4) &&
+                !nearZeroStore.Read().Intent.PermanentChannels.Contains(5) && nearZeroStore.Read().Ticket.Revoked,
+                "retry failure affected healthy channel or retained launch authority");
             verificationDone.Update(verificationDone.Read().Revision, state =>
             {
                 state.Intent.MechanicalTargets = state.Intent.SelectedChannels.Select(channel =>
@@ -702,6 +724,9 @@ namespace AdaptiveControlTests
                 !pumpStore.Read().SafetyCleanupPending && operations.Launches == 0,
                 "pump stopped cleanup or launched after operator revocation");
             pumpStore = Fixture(Path.Combine(root, "pump-launch"), now);
+            var pendingNearZero = pumpStore.Read();
+            pumpStore.RecordNearZeroFault(pendingNearZero.Controller, pendingNearZero.Intent.RunId,
+                pendingNearZero.Intent.RunEpoch, 4, false, Guid.NewGuid().ToString("N"), now);
             ticket = Ready(pumpStore, now);
             operations = new PumpOperations();
             pump = new IndependentProjectRecoveryPump(pumpStore, operations, "executor", 30000, 30000);
@@ -712,10 +737,12 @@ namespace AdaptiveControlTests
             pump.Tick(now + 2);
             Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Verifying && operations.Verifications == 0,
                 "process alive verified before new run binding");
+            Assert(pumpStore.Read().NearZeroRetries.Length == 1, "launch alone erased near zero retry history");
             pumpStore.CommitReplacementRun(pumpStore.Read().Revision, consumer, Guid.NewGuid().ToString("N"), 2, now + 3);
             pump.Tick(now + 4);
             Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Verified && operations.Verifications == 1,
                 "verified replacement could not complete transaction");
+            Assert(pumpStore.Read().NearZeroRetries.Length == 0, "verified recovery did not close near zero incident");
             var verifiedRun = pumpStore.Read();
             pumpStore.SetControllerManualPause(consumer, verifiedRun.Intent.RunId, verifiedRun.Intent.RunEpoch,
                 true, Guid.NewGuid().ToString("N"), now + 5);

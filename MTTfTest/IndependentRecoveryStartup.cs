@@ -191,6 +191,10 @@ namespace MTEmbTest
             => _store.RecordControllerPermanentExclusion(Identity, runId.ToString("N"), epoch, channels,
                 code, command.ToString("N"), DateTime.UtcNow.Ticks);
 
+        internal bool RecordNearZeroFault(Guid runId, long epoch, int channel, bool confirmed, Guid command)
+            => _store.RecordNearZeroFault(Identity, runId.ToString("N"), epoch, channel, confirmed,
+                command.ToString("N"), DateTime.UtcNow.Ticks);
+
         internal DataOperation.RunChainIdentity ArmManualRun(GlobalConfig config, int[] channels, int learnCycles)
         {
             RequireManualStopPersistenceCompleted();

@@ -140,6 +140,7 @@ namespace Controller
         public event Action<int, string> ChannelDisablePersistenceFailed;
         public Action<Guid, long, int[], string, Guid> PermanentRecoveryExclusionWriter { get; set; }
         public Action<int, bool> PermanentRecoveryResetWriter { get; set; }
+        public Func<Guid, long, int, bool, Guid, bool> NearZeroRecoveryDecisionWriter { get; set; }
 
         /// <summary>事件：某个通道被暂停。</summary>
         public event Action<int> ChannelPaused;
@@ -4429,6 +4430,7 @@ namespace Controller
             var recoveryPolicy = ResolveChannelFaultRecoveryPolicy(
                 faultCode,
                 hardwareLatched);
+            var nearZeroIdentity = _activeRunChainIdentity;
             var requiresOperatorFullRelearning =
                 RequiresOperatorFullRelearning(faultCode, reason);
             if (requiresOperatorFullRelearning)
@@ -4556,6 +4558,12 @@ namespace Controller
                 {
                     try { StopChannelOnAlarm(affectedChannel); } catch { /* ignore */ }
                 }
+
+                // Persist retry history before diagnostics or snapshot writes
+                // can delay this worker. Safety stop has already been requested.
+                if (faultCode == "OpenCircuitOrOutputFault" && NearZeroRecoveryDecisionWriter != null && nearZeroIdentity != null &&
+                    NearZeroRecoveryDecisionWriter(nearZeroIdentity.RunId, nearZeroIdentity.RunEpoch, channel, false, channelFaultCorrelationId))
+                    recoveryPolicy = FaultRecoveryPolicy.NonRecoverableDisableChannel;
 
                 try
                 {

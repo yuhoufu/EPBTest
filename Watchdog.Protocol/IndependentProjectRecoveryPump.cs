@@ -112,6 +112,15 @@ namespace MTTFTest.Watchdog.Protocol
                     tx.Phase == IndependentRecoveryPhase.LaunchPending ? "ReplacementTicketConsumed" :
                         "ActionsCountersAndThreeDatabaseCommitsVerified:Channels=" + string.Join(",", tx.Channels.Except(latest.Intent.CompletedChannels)) +
                         ";TargetCompleted=" + string.Join(",", tx.Channels.Intersect(latest.Intent.CompletedChannels)));
+                if (latest.Transaction.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    // Close only incidents that this replacement actually
+                    // verified. A later fault is a new incident; process launch
+                    // alone must never erase a pending retry or an isolation.
+                    latest.NearZeroRetries = latest.NearZeroRetries.Where(r =>
+                        !tx.Channels.Contains(r.Channel) || r.FirstGeneration >= tx.Generation ||
+                        r.FirstRunId == latest.Intent.RunId || latest.Intent.PermanentChannels.Contains(r.Channel)).ToArray();
+                }
                 return true;
             });
         }
