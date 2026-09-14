@@ -91,6 +91,84 @@ function Get-IndependentRepairFiles($Plan,$Receipt) {
            $file.Relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){$file}
     }
 }
+function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory) {
+    # Caller must own installation maintenance and the executor lease. This
+    # primitive is deliberately not exposed as an ungated installer mode.
+    $root=[IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
+    $transaction=Join-Path $root ('Repair\'+[Guid]::NewGuid().ToString('N'))
+    $entries=@();$touched=@();$journal=$null
+    function Assert-RepairPath([string]$Path){
+        $cursor=$Path
+        while($cursor){
+            if(Test-Path -LiteralPath $cursor){
+                if(((Get-Item -LiteralPath $cursor).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '修复路径含重解析点。'}
+            }
+            $cursor=[IO.Path]::GetDirectoryName($cursor)
+        }
+    }
+    Assert-RepairPath $transaction
+    [IO.Directory]::CreateDirectory($transaction)|Out-Null
+    $journal=Join-Path $transaction 'transaction.json'
+    function Save-RepairJournal([string]$Phase,[string]$Failure){
+        $text=[ordered]@{schemaVersion=1;phase=$Phase;failure=$Failure;entries=$entries;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 4
+        $temp=$journal+'.tmp';[IO.File]::WriteAllText($temp,$text)
+        if([IO.File]::Exists($journal)){[IO.File]::Replace($temp,$journal,$journal+'.previous')}else{[IO.File]::Move($temp,$journal)}
+    }
+    try{
+        $seen=@{};[long]$bytes=0
+        foreach($file in $Files){
+            $target=[IO.Path]::GetFullPath((Join-Path $root $file.Relative))
+            if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or
+               $file.Relative -like 'Current/Config/*' -or $file.Relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){
+                throw '修复目标不在程序组件范围内。'
+            }
+            $seen[$target]=$true;Assert-RepairPath $target
+            $source=Get-Item -LiteralPath $file.Source
+            $bytes+=$source.Length
+            if($source.Length -gt 256MB -or $bytes -gt 2GB -or $entries.Count -ge 10000){throw '修复文件预算超限。'}
+            $index=$entries.Count
+            $staged=Join-Path $transaction ($index.ToString()+'.new')
+            [IO.File]::Copy($file.Source,$staged,$false)
+            if((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -ne $file.Sha256){throw '修复载荷暂存摘要不符。'}
+            $exists=[IO.File]::Exists($target)
+            $entries+=,[ordered]@{target=$target;staged=$staged;backup=(Join-Path $transaction ($index.ToString()+'.old'));
+                existed=$exists;sha256=[string]$file.Sha256;originalSha256=if($exists){[string](Get-FileHash -LiteralPath $target).Hash}else{''}}
+        }
+        Save-RepairJournal 'Prepared' ''
+        foreach($entry in $entries){
+            Assert-RepairPath $entry.target
+            $touched+=,$entry
+            if($entry.existed){
+                if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.originalSha256){throw '修复目标在替换前变化。'}
+                [IO.File]::Replace($entry.staged,$entry.target,$entry.backup)
+            }else{
+                [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($entry.target))|Out-Null
+                [IO.File]::Move($entry.staged,$entry.target)
+            }
+            if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.sha256){throw '修复后摘要不符。'}
+        }
+        Save-RepairJournal 'Replaced' ''
+        return $transaction
+    }catch{
+        $failure=$_.Exception.Message;$rollbackFailures=@()
+        for($index=$touched.Count-1;$index -ge 0;$index--){
+            $entry=$touched[$index]
+            try{
+                Assert-RepairPath $entry.target
+                if([IO.File]::Exists($entry.backup)){
+                    if((Get-FileHash -LiteralPath $entry.backup).Hash -ne $entry.originalSha256){throw '回滚副本摘要不符。'}
+                    if([IO.File]::Exists($entry.target)){[IO.File]::Replace($entry.backup,$entry.target,$entry.staged+'.failed')}
+                    else{[IO.File]::Move($entry.backup,$entry.target)}
+                }elseif(-not $entry.existed -and [IO.File]::Exists($entry.target)){
+                    if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.sha256){throw '新文件归属变化，拒绝删除。'}
+                    Remove-Item -LiteralPath $entry.target
+                }
+            }catch{$rollbackFailures+=,[string]$_.Exception.Message}
+        }
+        Save-RepairJournal $(if($rollbackFailures.Count){'RollbackFailed'}else{'RolledBack'}) ($failure+'; '+($rollbackFailures -join '; '))
+        throw ('文件修复失败，事务证据：'+$transaction+'；'+$failure+'；回滚错误：'+($rollbackFailures -join '; '))
+    }
+}
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
 if($Mode -eq 'ValidateRepair'){
