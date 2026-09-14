@@ -270,9 +270,30 @@ try {
         }
         'Status' {
             $state=$store.Read()
+            $observation=$null;$observationFresh=$false
+            $observationPath=Join-Path $registration.StateDirectory 'executor-observation.json'
+            if([IO.File]::Exists($observationPath)){
+                try{
+                    if((Get-Item -LiteralPath $observationPath).Length -gt 16384){throw '观察文件超出上限。'}
+                    $candidate=[IO.File]::ReadAllText($observationPath)|ConvertFrom-Json
+                    if($candidate.SchemaVersion -eq 2 -and $candidate.InstallationId -eq $registration.InstallationId){
+                        $age=([DateTime]::UtcNow.Ticks-[long]$candidate.CapturedUtcTicks)/10000000.0
+                        $observation=$candidate
+                        $observationFresh=$age -ge 0 -and $age -le 15 -and $service -and $service.State -eq 'Running' -and
+                            $state -and [long]$candidate.StateRevision -eq $state.Revision
+                    }
+                }catch{Write-Warning ('独立观察读取失败：'+$_.Exception.Message)}
+            }
             [pscustomobject]@{Installation=$registration.InstallationId;ServicePresent=[bool]$service;
                 ServiceState=if($service){[string]$service.State}else{'Absent'};LaunchTaskPresent=[bool]$task;
-                Maintenance=if($state){[bool]$state.Maintenance}else{$true};SafetyCleanupPending=if($state){[bool]$state.SafetyCleanupPending}else{$false}}
+                Maintenance=if($state){[bool]$state.Maintenance}else{$true};SafetyCleanupPending=if($state){[bool]$state.SafetyCleanupPending}else{$false};
+                ObservationFresh=[bool]$observationFresh;
+                BindingObservation=if($observationFresh){[string]$observation.BindingState}else{'STALE_OR_MISSING'};
+                ObservedRunId=[string]$observation.RunId;ObservedRunEpoch=[long]$observation.RunEpoch;
+                ObservedControllerPid=[int]$observation.ControllerPid;ObservedControllerStartUtcTicks=[long]$observation.ControllerStartUtcTicks;
+                ObservedTransactionId=[string]$observation.TransactionId;ObservedTransactionPhase=[string]$observation.TransactionPhase;
+                HistoricalTransactionVerified=[bool]$observation.LastTransactionVerified;
+                CurrentBusinessRecovery='UNVERIFIED: 历史事务和组件状态不能证明当前动作、计数及落盘仍推进'}
         }
     }
 } catch {

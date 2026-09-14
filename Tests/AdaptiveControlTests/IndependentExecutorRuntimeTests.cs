@@ -64,6 +64,14 @@ namespace AdaptiveControlTests
             Reject(() => baseline.ValidateAgainst(baseline.Database.DatabasePath, 2, baseline.RequestId, 3, new[] { 7, 8 }));
             Reject(() => baseline.ValidateAgainst(baseline.Database.DatabasePath, 1, baseline.RequestId, 3, new[] { 7 }));
             Console.WriteLine("PASS 独立恢复验收基线跨进程序列化且不跨事务或目标复用");
+            var observation = IndependentExecutorObservation.Capture(Guid.NewGuid().ToString("N"), null,
+                DateTime.UtcNow.Ticks, new string('x', 700));
+            Assert(observation.SchemaVersion == 2 && observation.BindingState == "AwaitingRunIntent" &&
+                observation.ControllerPid == 0 && observation.RunId == null && !observation.LastTransactionVerified &&
+                observation.Detail.Length == 512, "empty executor observation invented recovery or unbounded detail");
+            Reject(() => IndependentExecutorObservation.Capture("invalid", null, DateTime.UtcNow.Ticks, ""));
+            passed++;
+            Console.WriteLine("PASS 独立观察无运行意图时不伪造绑定或恢复成功");
             return passed;
         }
         private static void Assert(bool value, string message) { if (!value) throw new InvalidOperationException(message); }

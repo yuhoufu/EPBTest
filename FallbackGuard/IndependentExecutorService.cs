@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.ServiceProcess;
 using System.Threading;
@@ -45,6 +45,7 @@ namespace MTTFTest.FallbackGuard
         {
             var registration = _registration;
             var statusPath = Path.Combine(registration.StateDirectory, "executor-observation.json");
+            var store = new IndependentProjectStateStore(registration.StateDirectory);
             long lastPublished = 0;
             string detail = "Starting";
             try
@@ -63,11 +64,8 @@ namespace MTTFTest.FallbackGuard
                     lastPublished = now;
                     try
                     {
-                        BoundedJson.Write(statusPath, new IndependentExecutorObservation
-                        {
-                            InstallationId = registration.InstallationId, CapturedUtcTicks = now,
-                            Detail = detail == null || detail.Length <= 512 ? detail : detail.Substring(0, 512)
-                        });
+                        BoundedJson.Write(statusPath, IndependentExecutorObservation.Capture(
+                            registration.InstallationId, store.Read(), now, detail));
                     }
                     catch { /* Observation failure does not change durable recovery authority. */ }
                 }
@@ -92,11 +90,4 @@ namespace MTTFTest.FallbackGuard
         }
     }
 
-    public sealed class IndependentExecutorObservation
-    {
-        public int SchemaVersion { get; set; } = 1;
-        public string InstallationId { get; set; }
-        public long CapturedUtcTicks { get; set; }
-        public string Detail { get; set; }
-    }
 }

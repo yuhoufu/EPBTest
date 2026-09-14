@@ -187,6 +187,15 @@ namespace AdaptiveControlTests
                 check(store.Read().Transaction.Phase == IndependentRecoveryPhase.Verified &&
                     store.Read().Transaction.Detail.Contains("Channels=7,8,9"),
                     "Production pump did not verify the actual replacement targets after restart");
+                var observation = IndependentExecutorObservation.Capture(Guid.NewGuid().ToString("N"),
+                    store.Read(), DateTime.UtcNow.Ticks, "SimulationVerification");
+                BoundedJson.Write(Path.Combine(root, "executor-observation.json"), observation);
+                observation = BoundedJson.Read<IndependentExecutorObservation>(Path.Combine(root, "executor-observation.json"));
+                check(observation.SchemaVersion == 2 && observation.ControllerPid == worker.ProcessId &&
+                    observation.ControllerStartUtcTicks == worker.StartUtcTicks && observation.RunEpoch == 2 &&
+                    observation.RunId == store.Read().Intent.RunId && observation.BindingState == "BoundToDurableRun" &&
+                    observation.TransactionPhase == "Verified" && observation.LastTransactionVerified,
+                    "Executor observation lost the replacement binding or confused its transaction");
                 pump.Tick(DateTime.UtcNow.Ticks);
                 check(operations.Stages.All(n => n == 1), "Terminal pump repeated a simulated safety stage");
                 File.WriteAllText(Path.Combine(root, "finish"), "finish");
