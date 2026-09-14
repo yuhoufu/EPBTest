@@ -320,7 +320,7 @@ namespace MTTFTest.Watchdog.Protocol
                 {
                     var fields = serializer.DeserializeObject(json) as System.Collections.Generic.Dictionary<string, object>;
                     RequireFields(fields, "SchemaVersion", "Revision", "Maintenance", "SafetyCleanupPending",
-                        "Intent", "Transaction", "Controller", "Ticket", "Audit");
+                        "Intent", "Transaction", "Controller", "Ticket", "Audit", "RunStartedUtcTicks", "StartupDeadlineUtcTicks", "RootRunId");
                     if (!(fields["Maintenance"] is bool) || !(fields["SafetyCleanupPending"] is bool))
                         throw new InvalidDataException("IndependentStateFlagsInvalid");
                     if (fields["Intent"] != null)

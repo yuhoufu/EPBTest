@@ -90,13 +90,6 @@ namespace MTTFTest.FallbackGuard
                 Detail = "ExactControllerExited;IndependentTakeoverRequested";
                 return;
             }
-            if (previous == null || previous.RunId != state.Intent.RunId ||
-                previous.Phase != IndependentRecoveryPhase.Verified)
-            {
-                _monitor.Unreadable();
-                Detail = "AwaitingDurableRunPhase;InitialLearningIntegrationPending";
-                return;
-            }
             try
             {
                 var snapshot = DatabaseProgressReader.ReadIsolated(_registration.DatabasePath, targets);
@@ -109,12 +102,11 @@ namespace MTTFTest.FallbackGuard
                     DatabaseCreationUtcTicks = _registration.DatabaseCreationUtcTicks,
                     Channels = targets, PeriodMs = state.Intent.PeriodMs
                 };
-                // Until a durable learning/start phase has been connected, do
-                // not mistake an empty formal database for a stalled learning
-                // run. This pending integration is exposed, never called healthy.
-                if (snapshot.Channels.Any(c => c.Cycle == 0))
-                { _monitor.Unreadable(); Detail = "AwaitingFormalProgress;LearningDeadlineIntegrationPending"; return; }
-                if (_monitor.Observe(intent, snapshot, now / TimeSpan.TicksPerMillisecond))
+                var stalled = _monitor.Observe(intent, snapshot, now / TimeSpan.TicksPerMillisecond);
+                if (now < state.RunStartedUtcTicks) throw new InvalidDataException("IndependentRunClockRegressed");
+                if (now < state.StartupDeadlineUtcTicks)
+                { Detail = "ObservingStartupWithinDurableBudget"; return; }
+                if (stalled)
                 {
                     _store.BeginRecovery(state.Revision, _executor, now);
                     Detail = "DatabaseStalled:" + string.Join(",", _monitor.StalledChannels);

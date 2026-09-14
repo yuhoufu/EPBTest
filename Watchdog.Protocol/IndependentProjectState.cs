@@ -61,8 +61,11 @@ namespace MTTFTest.Watchdog.Protocol
     // before opening this store; a JSON file is not a security boundary by itself.
     public sealed class IndependentProjectState
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public long Revision { get; set; }
+        public long RunStartedUtcTicks { get; set; }
+        public long StartupDeadlineUtcTicks { get; set; }
+        public string RootRunId { get; set; }
         public bool Maintenance { get; set; } = true;
         public bool SafetyCleanupPending { get; set; }
         public IndependentRunIntent Intent { get; set; }
@@ -73,9 +76,12 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void Validate()
         {
-            if (SchemaVersion != 1 || Revision <= 0 || Audit == null || Audit.Length > 32)
+            if (SchemaVersion != 2 || Revision <= 0 || Audit == null || Audit.Length > 32)
                 throw new InvalidDataException("IndependentProjectStateInvalid");
             Intent?.Validate(); Transaction?.Validate(); Controller?.Validate();
+            if (Intent != null && (!Guid.TryParseExact(RootRunId, "N", out _) || RunStartedUtcTicks <= 0 || StartupDeadlineUtcTicks <= RunStartedUtcTicks ||
+                StartupDeadlineUtcTicks - RunStartedUtcTicks != TimeSpan.FromMilliseconds(Intent.StartupBudgetMs).Ticks))
+                throw new InvalidDataException("IndependentRunStartupDeadlineInvalid");
             if (Transaction != null && Intent == null || SafetyCleanupPending && Transaction == null)
                 throw new InvalidDataException("IndependentProjectAuthorityMissing");
             if (Ticket != null)
@@ -230,6 +236,8 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 if (state.Maintenance || state.SafetyCleanupPending || state.Transaction?.IsTerminal == false)
                     throw new InvalidOperationException("IndependentRecoveryOrMaintenanceStillActive");
+                if (state.Intent?.RecoveryChannels().Length > 0)
+                    throw new InvalidOperationException("IndependentManualRunAlreadyArmed");
                 if (state.Intent != null && (state.Intent.RunId == intent.RunId ||
                     !string.Equals(state.Intent.ProjectDirectory, intent.ProjectDirectory, StringComparison.OrdinalIgnoreCase) ||
                     !string.Equals(state.Intent.DatabasePath, intent.DatabasePath, StringComparison.OrdinalIgnoreCase)))
@@ -243,6 +251,9 @@ namespace MTTFTest.Watchdog.Protocol
                     !string.Equals(intent.ExecutablePath, controller.ExecutablePath, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("IndependentManualRunNotAuthorized");
                 state.Intent = intent; state.Controller = controller; state.Ticket = null;
+                state.RunStartedUtcTicks = now;
+                state.RootRunId = intent.RunId;
+                state.StartupDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(intent.StartupBudgetMs).Ticks);
                 AppendAudit(state, "OperatorStart", "ManualRunArmed", now, before);
                 return true;
             });
@@ -403,6 +414,8 @@ namespace MTTFTest.Watchdog.Protocol
                 // The consumed ticket can never launch again. Retain its original
                 // revision as evidence instead of minting a new permission.
                 state.Controller = consumer;
+                state.RunStartedUtcTicks = now;
+                state.StartupDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(state.Intent.StartupBudgetMs).Ticks);
                 AppendAudit(state, "ReplacementBootstrap", "ReplacementRunCommitted", now, before);
                 return true;
             });

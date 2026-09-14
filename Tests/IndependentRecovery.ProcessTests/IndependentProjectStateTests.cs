@@ -95,6 +95,21 @@ namespace AdaptiveControlTests
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            var startupStore = Fixture(Path.Combine(root, "durable-startup-deadline"), now);
+            var startup = startupStore.Read();
+            Assert(startup.SchemaVersion == 2 && startup.RunStartedUtcTicks == now &&
+                startup.StartupDeadlineUtcTicks == now + TimeSpan.FromMilliseconds(startup.Intent.StartupBudgetMs).Ticks &&
+                startup.RootRunId == startup.Intent.RunId, "initial run deadline/root not durable");
+            Reject(() => startupStore.ArmManualRun(startup.Revision, Intent(Path.Combine(root, "durable-startup-deadline")),
+                Identity(), now + 1), "repeat start replaced an armed batch");
+            Assert(startupStore.Read().Revision == startup.Revision && startupStore.Read().RunStartedUtcTicks == now,
+                "rejected start changed startup deadline");
+            var startupTicket = Ready(startupStore, now);
+            var startupConsumer = Identity();
+            startupStore.ConsumeLaunchTicket(startupStore.Read().Revision, startupTicket.Nonce, startupConsumer, Hash, now);
+            startupStore.CommitReplacementRun(startupStore.Read().Revision, startupConsumer, Guid.NewGuid().ToString("N"), 2, now + 5);
+            Assert(startupStore.Read().RunStartedUtcTicks == now + 5 && startupStore.Read().RootRunId == startup.RootRunId,
+                "replacement reset root or inherited old startup deadline");
             var dispatchStore = Fixture(Path.Combine(root, "dispatch-once"), now);
             var unlaunched = Ready(dispatchStore, now, false);
             Reject(() => dispatchStore.ConsumeLaunchTicket(dispatchStore.Read().Revision, unlaunched.Nonce, Identity(), Hash, now),
@@ -281,6 +296,8 @@ namespace AdaptiveControlTests
             store = Fixture(Path.Combine(root, "isolation"), now);
             store.UpdateOperatorIntent(store.Read().Revision, "PermanentFault", "isolated", now,
                 intent => intent.PermanentChannels = new[] { 4 });
+            store.UpdateOperatorIntent(store.Read().Revision, "OperatorStop", "stop before explicit new run", now,
+                intent => { intent.ManualStopped = true; intent.Armed = false; });
             store.ArmManualRun(store.Read().Revision, Intent(Path.Combine(root, "isolation")), Identity(), now);
             Assert(!store.Read().Intent.RecoveryChannels().Contains(4), "ordinary restart cleared permanent isolation");
             for (var i = 0; i < 80; i++)
@@ -404,7 +421,9 @@ namespace AdaptiveControlTests
             Assert(changedConfig, "changed project configuration accepted");
             registration.ConfigurationSha256 = Hash;
             var cleanupState = new IndependentProjectState
-            { Revision = 1, Intent = safetyIntent, Transaction = safetyTx, SafetyCleanupPending = true };
+            { Revision = 1, Intent = safetyIntent, Transaction = safetyTx, SafetyCleanupPending = true,
+                RootRunId = safetyIntent.RunId, RunStartedUtcTicks = now,
+                StartupDeadlineUtcTicks = now + TimeSpan.FromMilliseconds(safetyIntent.StartupBudgetMs).Ticks };
             safetyIntent.ManualStopped = true;
             var cleanupCommand = registration.CreateSafetyCommand(cleanupState, "executor", now);
             Assert(cleanupCommand.ConfigDirectory == registration.ConfigDirectory && cleanupCommand.StageNonce != command.StageNonce,

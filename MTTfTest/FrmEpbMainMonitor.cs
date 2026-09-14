@@ -2575,7 +2575,8 @@ namespace MTEmbTest
 
                 // Revoke the preceding run's manual-stop authorization before
                 // any new batch can reconfigure or energize control hardware.
-                RevokeManualStopExitAuthorizationBeforeEnergization();
+                if (unattendedRecovery || IndependentRecoveryStartup.Current == null)
+                    RevokeManualStopExitAuthorizationBeforeEnergization();
 
                 // 读取自学习圈数（比如从一个文本框；没有就用3）
                 var learnCycles = _cfg.Test.LearnCycles;
@@ -2613,7 +2614,7 @@ namespace MTEmbTest
                         {
                             independent.ValidateConfiguration(_cfg);
                             chainIdentity = new RunChainIdentity(Guid.Parse(independent.RunId),
-                                Guid.Parse(independent.ParentRunId), Guid.Parse(independent.ParentRunId),
+                                Guid.Parse(independent.RootRunId), Guid.Parse(independent.ParentRunId),
                                 checked((int)independent.Generation), independent.RunEpoch);
                         }
                         else
@@ -2632,6 +2633,12 @@ namespace MTEmbTest
                                 Math.Max(0, checkpoint.RestartGeneration + 1),
                                 Math.Max(1, checkpoint.RunEpoch + 1));
                         }
+                    }
+                    if (!unattendedRecovery && IndependentRecoveryStartup.Current != null)
+                    {
+                        chainIdentity = await System.Threading.Tasks.Task.Run(() =>
+                            IndependentRecoveryStartup.Current.ArmManualRun(_cfg, channels, learnCycles));
+                        RevokeManualStopExitAuthorizationBeforeEnergization();
                     }
                     var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
                         channels, // 批量要跑的通道

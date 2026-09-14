@@ -49,7 +49,7 @@ namespace MtEmbTest
             if (independentStartup != null && (watchdogRecoveryIntent != null || recoveryIntent != null))
             { TryWriteFatalLog("IndependentRecoveryArguments", new InvalidOperationException("MixedRecoveryProtocolsRejected")); return; }
             UnattendedRecoveryCoordinator.SetRecoveryProcessMode(
-                recoveryIntent != null || watchdogRecoveryIntent != null || independentStartup != null);
+                recoveryIntent != null || watchdogRecoveryIntent != null || independentStartup?.IsRecoveryLaunch == true);
             using var recoveryHandoff = RecoveryProcessBootstrap.AttachHandoff(recoveryIntent);
             if (recoveryIntent != null && recoveryHandoff == null)
             {

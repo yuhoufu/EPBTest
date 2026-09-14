@@ -1063,7 +1063,7 @@ namespace MTEmbTest
                 ConfigurationSha256 = startup.Registration.ConfigurationSha256,
                 ExecutableSha256 = startup.Registration.ExecutableSha256,
                 BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString(),
-                RootRunId = startup.ParentRunId, ParentRunId = startup.ParentRunId, RunId = startup.ParentRunId,
+                RootRunId = startup.RootRunId, ParentRunId = startup.ParentRunId, RunId = startup.ParentRunId,
                 RunEpoch = startup.RunEpoch - 1, RestartGeneration = checked((int)startup.Generation - 1),
                 LastReason = "IndependentTicketConsumed", UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
                 RemainingFormalCycles = selected.ToDictionary(channel => channel.ToString(CultureInfo.InvariantCulture),

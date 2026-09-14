@@ -20,6 +20,13 @@ namespace AdaptiveControlTests
             if (IndependentRecoveryStartup.Parse(Array.Empty<string>()) != null)
                 throw new Exception("ordinary launch treated as recovery");
             count++;
+            var manual = IndependentRecoveryStartup.Parse(new[] { "--independent-installation", path });
+            if (manual == null || manual.IsRecoveryLaunch || manual.Nonce != null || IndependentRecoveryStartup.Current != null)
+                throw new Exception("manual installed launch consumed recovery authority");
+            count++;
+            Reject(new[] { "--independent-installation", "relative.json" });
+            Reject(new[] { "--independent-installation", path, "--independent-ticket", nonce });
+            Reject(new[] { "--independent-installation", path, "--epb-recover", nonce });
             Reject(new[] { "--independent-ticket", nonce });
             Reject(new[] { "--independent-registration", path });
             Reject(new[] { "--independent-registration", path, "--independent-ticket" });

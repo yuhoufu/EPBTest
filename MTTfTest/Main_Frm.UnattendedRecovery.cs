@@ -34,7 +34,7 @@ namespace MtEmbTest
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            if (IndependentRecoveryStartup.Current != null)
+            if (IndependentRecoveryStartup.Current?.IsRecoveryLaunch == true)
             {
                 BeginInvoke((Action)(async () =>
                 {
