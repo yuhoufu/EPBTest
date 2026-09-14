@@ -219,6 +219,60 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        // Safety cleanup follows the already-authorized, frozen old session.
+        // Operator revocation prevents restart, but must not strand the session
+        // half-way through power-off / handle release / pressure confirmation.
+        public IndependentRecoveryPhase CompleteSafetyStage(long expectedRevision, string executor,
+            long generation, string requestId, IndependentRecoveryPhase completedPhase,
+            bool confirmed, long now, long nextBudgetMs, string detail)
+        {
+            return Update(expectedRevision, state =>
+            {
+                var tx = state.Transaction;
+                if (tx == null || tx.IsTerminal || !state.SafetyCleanupPending ||
+                    tx.ExecutorIdentity != executor || tx.Generation != generation || tx.RequestId != requestId ||
+                    tx.Phase != completedPhase || now < tx.LastAttemptUtcTicks ||
+                    nextBudgetMs <= 0 || nextBudgetMs > 300000)
+                    throw new InvalidOperationException("IndependentSafetyStageReceiptMismatch");
+                if (completedPhase != IndependentRecoveryPhase.CooperativeStop &&
+                    completedPhase != IndependentRecoveryPhase.PowerOff &&
+                    completedPhase != IndependentRecoveryPhase.RetireControls &&
+                    completedPhase != IndependentRecoveryPhase.OutputsSafe)
+                    throw new InvalidOperationException("IndependentSafetyStageInvalid");
+                // A late affirmative receipt is not current safety evidence.
+                if (completedPhase != IndependentRecoveryPhase.CooperativeStop &&
+                    (!confirmed || now >= tx.PhaseDeadlineUtcTicks))
+                {
+                    tx.Phase = IndependentRecoveryPhase.NeedsAttention;
+                    tx.Detail = "SafetyCleanupUnconfirmed:" + completedPhase + ":" + Clip(detail, 192);
+                    if (state.Ticket != null) state.Ticket.Revoked = true;
+                    tx.Revision = checked(tx.Revision + 1);
+                    return tx.Phase;
+                }
+                tx.Phase = completedPhase == IndependentRecoveryPhase.CooperativeStop ? IndependentRecoveryPhase.PowerOff :
+                    completedPhase == IndependentRecoveryPhase.PowerOff ? IndependentRecoveryPhase.RetireControls :
+                    completedPhase == IndependentRecoveryPhase.RetireControls ? IndependentRecoveryPhase.OutputsSafe :
+                    IndependentRecoveryPhase.LaunchPending;
+                tx.Revision = checked(tx.Revision + 1);
+                tx.PhaseDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(nextBudgetMs).Ticks);
+                tx.Detail = Clip(detail ?? string.Empty, 192);
+                if (completedPhase == IndependentRecoveryPhase.OutputsSafe)
+                {
+                    state.SafetyCleanupPending = false;
+                    var stillAuthorized = !state.Maintenance && state.Intent != null &&
+                        state.Intent.Revision == tx.IntentRevision && state.Intent.RunId == tx.RunId &&
+                        state.Intent.RunEpoch == tx.RunEpoch && tx.Channels.SequenceEqual(state.Intent.RecoveryChannels());
+                    if (!stillAuthorized)
+                    {
+                        tx.Phase = IndependentRecoveryPhase.Cancelled;
+                        tx.Detail = "SafetyCleanupCompleted;RestartAuthorityRevoked";
+                        if (state.Ticket != null) state.Ticket.Revoked = true;
+                    }
+                }
+                return tx.Phase;
+            });
+        }
+
         public IndependentLaunchTicket IssueLaunchTicket(long expectedRevision, string executor, long generation,
             string executableSha256, int windowsSessionId, long now)
         {

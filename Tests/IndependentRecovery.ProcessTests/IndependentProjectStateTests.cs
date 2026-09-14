@@ -44,16 +44,11 @@ namespace AdaptiveControlTests
         private static IndependentLaunchTicket Ready(IndependentProjectStateStore store, long now)
         {
             var tx = store.BeginRecovery(store.Read().Revision, "executor", now);
-            foreach (var phase in new[] { IndependentRecoveryPhase.PowerOff, IndependentRecoveryPhase.RetireControls,
-                IndependentRecoveryPhase.OutputsSafe, IndependentRecoveryPhase.LaunchPending })
+            foreach (var phase in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
+                IndependentRecoveryPhase.RetireControls, IndependentRecoveryPhase.OutputsSafe })
             {
-                store.Update(store.Read().Revision, state =>
-                {
-                    IndependentRecoveryTransitions.Advance(state.Transaction, state.Intent, "executor", tx.Generation,
-                        phase, now, 30000, "SimulatedStageConfirmed");
-                    if (phase == IndependentRecoveryPhase.LaunchPending) state.SafetyCleanupPending = false;
-                    return true;
-                });
+                store.CompleteSafetyStage(store.Read().Revision, "executor", tx.Generation, tx.RequestId,
+                    phase, true, now, 30000, "SimulatedStageConfirmed");
             }
             return store.IssueLaunchTicket(store.Read().Revision, "executor", tx.Generation, Hash,
                 Process.GetCurrentProcess().SessionId, now);
@@ -87,6 +82,26 @@ namespace AdaptiveControlTests
             Assert(stopped.SafetyCleanupPending && stopped.Intent.RecoveryChannels().Length == 0,
                 "operator stop discarded safety cleanup or retained restart authority");
             Reject(() => store.ArmManualRun(stopped.Revision, Intent(root), Identity(), now), "started while cleanup pending");
+            Reject(() => store.CompleteSafetyStage(stopped.Revision, "other", tx.Generation, tx.RequestId,
+                tx.Phase, true, now, 30000, "wrong executor"), "foreign cleanup receipt admitted");
+            foreach (var stage in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
+                IndependentRecoveryPhase.RetireControls, IndependentRecoveryPhase.OutputsSafe })
+                store.CompleteSafetyStage(store.Read().Revision, "executor", tx.Generation, tx.RequestId,
+                    stage, true, now, 30000, "SimulatedCleanupAfterManualStop");
+            Assert(!store.Read().SafetyCleanupPending && store.Read().Transaction.Phase == IndependentRecoveryPhase.Cancelled,
+                "revocation prevented safety cleanup or authorized restart");
+
+            var lateStore = Fixture(Path.Combine(root, "late-safety"), now);
+            var lateTx = lateStore.BeginRecovery(lateStore.Read().Revision, "executor", now);
+            lateStore.CompleteSafetyStage(lateStore.Read().Revision, "executor", lateTx.Generation, lateTx.RequestId,
+                IndependentRecoveryPhase.CooperativeStop, false, now + TimeSpan.FromSeconds(25).Ticks, 1000, "CooperativeTimeout");
+            Assert(lateStore.Read().Transaction.Phase == IndependentRecoveryPhase.PowerOff,
+                "cooperative timeout did not escalate independently");
+            lateStore.CompleteSafetyStage(lateStore.Read().Revision, "executor", lateTx.Generation, lateTx.RequestId,
+                IndependentRecoveryPhase.PowerOff, true, now + TimeSpan.FromSeconds(27).Ticks, 30000, "LateReceipt");
+            Assert(lateStore.Read().SafetyCleanupPending &&
+                lateStore.Read().Transaction.Phase == IndependentRecoveryPhase.NeedsAttention,
+                "late safety success cleared cleanup obligation");
 
             store = Fixture(Path.Combine(root, "ticket"), now);
             var ticket = Ready(store, now);
@@ -172,6 +187,39 @@ namespace AdaptiveControlTests
             var rejected = false;
             try { store.Read(); } catch (InvalidDataException) { rejected = true; }
             Assert(rejected, "missing safety flag silently defaulted to false");
+            var safetyIntent = Intent(root);
+            var safetyTx = IndependentRecoveryTransitions.Begin(null, safetyIntent, "executor", now);
+            IndependentRecoveryTransitions.Advance(safetyTx, safetyIntent, "executor", safetyTx.Generation,
+                IndependentRecoveryPhase.PowerOff, now, 30000, "fixture");
+            var command = new IndependentSafetyWorkerCommand
+            {
+                StageNonce = Guid.NewGuid().ToString("N"), Transaction = safetyTx,
+                IssuedUtcTicks = now, DeadlineUtcTicks = now + TimeSpan.FromSeconds(30).Ticks,
+                ConfigDirectory = root,
+                Files = new[] { "AIConfig.xml", "AOConfig.xml", "DOConfig.xml", "PowerSupplyConfig.xml" }
+                    .Select(n => new IndependentSafetyConfigFile { Name = n, Sha256 = Hash }).ToArray(),
+                Runtime = new SafetyRuntimeSnapshot { SampleRateHz = 2000, SamplesPerChannel = 20,
+                    PressureChannels = new[] { "Pressure_1" }, ReleaseSafePressureBar = new[] { 1d },
+                    PressureSampleMaxAgeMs = 100, ReleaseStableMs = 300, ReleaseTimeoutMs = 5000 }
+            };
+            command.Validate(now);
+            var receipt = new IndependentSafetyWorkerReceipt
+            {
+                StageNonce = command.StageNonce, CommandSha256 = Hash, RequestId = safetyTx.RequestId,
+                Generation = safetyTx.Generation, Phase = safetyTx.Phase, Confirmed = true,
+                WorkerPid = 123, WorkerStartUtcTicks = now, CompletedUtcTicks = now + 1
+            };
+            Assert(receipt.MatchesCurrent(command, Hash, 123, now, now + 2), "matching safety worker receipt rejected");
+            Assert(!receipt.MatchesCurrent(command, Hash, 124, now, now + 2), "wrong worker accepted");
+            Assert(!receipt.MatchesCurrent(command, Hash, 123, now - 1, now + 2), "reused PID accepted");
+            Assert(!receipt.MatchesCurrent(command, new string('b', 64), 123, now, now + 2), "wrong sealed command accepted");
+            Assert(!receipt.MatchesCurrent(command, Hash, 123, now, command.DeadlineUtcTicks), "late receipt accepted");
+            receipt.StageNonce = Guid.NewGuid().ToString("N");
+            Assert(!receipt.MatchesCurrent(command, Hash, 123, now, now + 2), "previous stage nonce accepted");
+            command.Files[0].Name = "..\\AIConfig.xml";
+            var invalidManifest = false;
+            try { command.Validate(now); } catch (InvalidDataException) { invalidManifest = true; }
+            Assert(invalidManifest, "config traversal accepted");
             Console.WriteLine("PASS independent project state " + _count + "/" + _count);
             return _count;
         }
