@@ -138,6 +138,7 @@ namespace Controller
 
         /// <summary>通道已停机但项目禁用状态写盘失败，UI必须高可见度提示。</summary>
         public event Action<int, string> ChannelDisablePersistenceFailed;
+        public Action<Guid, long, int[], string, Guid> PermanentRecoveryExclusionWriter { get; set; }
 
         /// <summary>事件：某个通道被暂停。</summary>
         public event Action<int> ChannelPaused;
@@ -5077,6 +5078,10 @@ namespace Controller
 
                 // 共享故障cohort一次原子替换，进程在任意时刻退出都不会留下
                 // “只禁用了一半通道”的项目配置。
+                var recoveryIdentity = _activeRunChainIdentity;
+                if (recoveryIdentity != null)
+                    PermanentRecoveryExclusionWriter?.Invoke(recoveryIdentity.RunId, recoveryIdentity.RunEpoch,
+                        channels.ToArray(), code, correlationId);
                 ConfigLoader.UpdateTestEpbAlarmState(
                     projectPath,
                     channels.Select(channel =>

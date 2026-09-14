@@ -57,6 +57,11 @@ namespace AdaptiveControlTests
             if (independentConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true)))
                 throw new Exception("independent configuration ignored target changes");
             count++;
+            File.WriteAllText(selectionConfig, xml.Replace("</Record>", "<PermanentAlarmLatched>true</PermanentAlarmLatched><PermanentAlarmReason>Confirmed</PermanentAlarmReason><ConsecutivePeriodOverrunCount>2</ConsecutivePeriodOverrunCount></Record>"));
+            if (!independentConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true)) ||
+                legacyConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig)))
+                throw new Exception("eligibility metadata invalidated independent safety identity or weakened legacy identity");
+            count++;
             var missing = IndependentRecoveryStartup.Parse(new[] { "--independent-registration", Path.Combine(root, "missing.json"),
                 "--independent-ticket", nonce });
             var denied = false;

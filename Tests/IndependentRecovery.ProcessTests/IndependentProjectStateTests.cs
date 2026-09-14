@@ -145,6 +145,28 @@ namespace AdaptiveControlTests
                 return _count;
             }
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
+            var permanentRoot = Path.Combine(root, "controller-permanent");
+            var permanentStore = Fixture(permanentRoot, now);
+            var permanentState = permanentStore.Read();
+            var exclusionCommand = Guid.NewGuid().ToString("N");
+            permanentStore.RecordControllerPermanentExclusion(permanentState.Controller, permanentState.Intent.RunId,
+                permanentState.Intent.RunEpoch, new[] { 4, 5 }, "ConfirmedPermanent", exclusionCommand, now);
+            Assert(permanentStore.Read().Intent.RecoveryChannels().SequenceEqual(new[] { 7, 8, 9, 12 }),
+                "permanent cohort was not atomically excluded from restart");
+            var excludedRevision = permanentStore.Read().Revision;
+            permanentStore.RecordControllerPermanentExclusion(permanentState.Controller, permanentState.Intent.RunId,
+                permanentState.Intent.RunEpoch, new[] { 5, 4 }, "ConfirmedPermanent", exclusionCommand, now);
+            Assert(permanentStore.Read().Revision == excludedRevision, "duplicate permanent cohort changed authority");
+            Reject(() => permanentStore.RecordControllerPermanentExclusion(Identity(), permanentState.Intent.RunId,
+                permanentState.Intent.RunEpoch, new[] { 7 }, "WrongOwner", exclusionCommand, now), "foreign permanent exclusion accepted");
+            permanentStore.RecordControllerManualStop(permanentState.Controller, permanentState.Intent.RunId,
+                permanentState.Intent.RunEpoch, Guid.NewGuid().ToString("N"), now);
+            var nextPermanentIntent = Intent(permanentRoot); nextPermanentIntent.RunEpoch = permanentState.Intent.RunEpoch + 1;
+            permanentStore.ArmManualRun(permanentStore.Read().Revision, nextPermanentIntent, permanentState.Controller, now);
+            Assert(permanentStore.Read().Intent.PermanentChannels.SequenceEqual(new[] { 4, 5 }),
+                "ordinary restart cleared permanent isolation");
+            Reject(() => permanentStore.RecordControllerPermanentExclusion(permanentState.Controller, permanentState.Intent.RunId,
+                permanentState.Intent.RunEpoch, new[] { 7 }, "OldRun", exclusionCommand, now), "old run excluded new batch");
             var selectionState = selectionStore.Read();
             var selectionCommand = Guid.NewGuid().ToString("N");
             selectionStore.SetControllerSelection(selectionState.Controller, selectionState.Intent.RunId,

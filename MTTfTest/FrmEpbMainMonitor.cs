@@ -1242,6 +1242,9 @@ namespace MTEmbTest
                 if (IndependentRecoveryStartup.Current != null)
                 {
                     var manager = _epb;
+                    var independent = IndependentRecoveryStartup.Current;
+                    manager.PermanentRecoveryExclusionWriter = (runId, epoch, channels, code, command) =>
+                        independent.PersistPermanentExclusion(runId, epoch, channels, code, command);
                     var observer = IndependentRecoveryStartup.Current.ObserveCooperativeStop(async requestId =>
                     {
                         var result = await manager.StopAllAsync(new StopContext

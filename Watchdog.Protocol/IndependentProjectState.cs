@@ -246,6 +246,39 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void RecordControllerPermanentExclusion(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int[] channels, string reason, string commandId, long now)
+        {
+            controller?.Validate();
+            if (channels == null || channels.Length == 0 || channels.Length > 12 ||
+                channels.Any(channel => channel < 1 || channel > 12) || channels.Distinct().Count() != channels.Length ||
+                !Guid.TryParseExact(commandId, "N", out _) || now <= 0 || string.IsNullOrWhiteSpace(reason))
+                throw new ArgumentException("IndependentPermanentExclusionInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || controller?.Matches(state.Controller) != true ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentPermanentExclusionStaleController");
+                var before = state.Intent.SelectedChannels.ToArray();
+                var permanent = state.Intent.PermanentChannels.Union(channels).OrderBy(channel => channel).ToArray();
+                if (permanent.SequenceEqual(state.Intent.PermanentChannels.OrderBy(channel => channel))) return true;
+                state.Intent.PermanentChannels = permanent;
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = state.Intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "PermanentExclusion", Clip(reason, 64) + ";Channels=" + string.Join(",", channels) +
+                    ";CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
         public void SetControllerSelection(IndependentProcessIdentity controller, string runId, long runEpoch,
             int channel, bool selected, string commandId, long now)
         {

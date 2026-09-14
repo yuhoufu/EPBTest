@@ -90,6 +90,7 @@ namespace MTTFTest.Watchdog.Protocol
     // source of executable paths, hardware configuration or task names.
     public sealed class IndependentExecutorRegistration
     {
+        public const string CurrentConfigurationHashProfile = "IndependentEligibilityV1";
         public int SchemaVersion { get; set; } = 1;
         public string InstallationId { get; set; }
         public string InteractiveUserSid { get; set; }
@@ -102,7 +103,7 @@ namespace MTTFTest.Watchdog.Protocol
         public string SafetyExecutablePath { get; set; }
         public string SafetyExecutableSha256 { get; set; }
         public string ConfigurationSha256 { get; set; }
-        public string ConfigurationHashProfile { get; set; } = "IndependentSelectionV1";
+        public string ConfigurationHashProfile { get; set; } = CurrentConfigurationHashProfile;
         public string ConfigDirectory { get; set; }
         public IndependentSafetyConfigFile[] Files { get; set; }
         public SafetyRuntimeSnapshot Runtime { get; set; }
@@ -133,7 +134,7 @@ namespace MTTFTest.Watchdog.Protocol
                 throw new InvalidDataException("IndependentRegistrationInteractiveUserInvalid");
             if (SchemaVersion != 1 || !Guid.TryParseExact(InstallationId, "N", out _) ||
                 DatabaseCreationUtcTicks <= 0 || !Hash(ExecutableSha256) ||
-                !Hash(SafetyExecutableSha256) || !Hash(ConfigurationSha256) || ConfigurationHashProfile != "IndependentSelectionV1" || Runtime == null ||
+                !Hash(SafetyExecutableSha256) || !Hash(ConfigurationSha256) || ConfigurationHashProfile != CurrentConfigurationHashProfile || Runtime == null ||
                 StartupPositioningBudgetMs <= 0 || StartupPositioningBudgetMs > 300000)
                 throw new InvalidDataException("IndependentRegistrationInvalid");
             foreach (var path in new[] { ProjectDirectory, DatabasePath, StateDirectory,

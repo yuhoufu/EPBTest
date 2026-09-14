@@ -176,6 +176,10 @@ namespace MTEmbTest
             return state.Intent;
         }
 
+        internal void PersistPermanentExclusion(Guid runId, long epoch, int[] channels, string code, Guid command)
+            => _store.RecordControllerPermanentExclusion(Identity, runId.ToString("N"), epoch, channels,
+                code, command.ToString("N"), DateTime.UtcNow.Ticks);
+
         internal DataOperation.RunChainIdentity ArmManualRun(GlobalConfig config, int[] channels, int learnCycles)
         {
             RequireManualStopPersistenceCompleted();
@@ -190,6 +194,7 @@ namespace MTEmbTest
                 DatabasePath = Registration.DatabasePath, DatabaseCreationUtcTicks = Registration.DatabaseCreationUtcTicks,
                 ExecutablePath = Registration.ExecutablePath, ConfigurationSha256 = Registration.ConfigurationSha256,
                 RunId = runId.ToString("N"), RunEpoch = epoch, SelectedChannels = channels.ToArray(), Armed = true,
+                PermanentChannels = Enumerable.Range(1, 12).Where(channel => config.Test.GetEpbRecord(channel).PermanentAlarmLatched).ToArray(),
                 PeriodMs = config.Test.PeriodMs,
                 StartupBudgetMs = checked(Registration.StartupPositioningBudgetMs +
                     (Math.Max(0L, learnCycles) + 2) * config.Test.PeriodMs)

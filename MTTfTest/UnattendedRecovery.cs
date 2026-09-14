@@ -1107,7 +1107,7 @@ namespace MTEmbTest
                 {
                     if (independentSelection)
                     {
-                        var profile = Encoding.UTF8.GetBytes("IndependentSelectionV1\n");
+                        var profile = Encoding.UTF8.GetBytes(IndependentExecutorRegistration.CurrentConfigurationHashProfile + "\n");
                         buffer.Write(profile, 0, profile.Length);
                     }
                     foreach (var path in candidates.Distinct(StringComparer.OrdinalIgnoreCase)
@@ -1150,7 +1150,11 @@ namespace MTEmbTest
                         node.ParentNode?.RemoveChild(node);
                 if (independentSelection)
                 {
-                    var selection = document.SelectNodes("//EpbRecords/Record/Enabled | //EpbRecords/Record/@Enabled");
+                    var fields = new[] { "Enabled", "PermanentAlarmLatched", "PermanentAlarmCode",
+                        "PermanentAlarmReason", "PermanentAlarmUtc", "PermanentAlarmCorrelationId",
+                        "ConsecutivePeriodOverrunCount", "LastPeriodOverrunUtc" };
+                    var selection = document.SelectNodes(string.Join(" | ", fields.SelectMany(field => new[] {
+                        "//EpbRecords/Record/" + field, "//EpbRecords/Record/@" + field })));
                     foreach (XmlNode node in selection.Cast<XmlNode>().ToArray())
                     {
                         if (node is XmlAttribute attribute) attribute.OwnerElement.RemoveAttributeNode(attribute);
