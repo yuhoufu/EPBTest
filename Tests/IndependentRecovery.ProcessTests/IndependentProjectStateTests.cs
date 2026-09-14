@@ -462,6 +462,22 @@ namespace AdaptiveControlTests
             };
             launchTask.Validate(registration, registrationPath);
             IndependentLaunchTaskDefinition.ValidateSecurityDescriptor("O:SYG:SYD:(A;;FA;;;SY)(A;OICIIO;GA;;;CO)");
+            var taskRootDescriptor = "O:SYG:SYD:PAI(A;CI;FA;;;BA)(A;OI;0x1f019f;;;BA)(A;CI;FA;;;SY)(A;OI;0x1f019f;;;SY)(A;CI;FW;;;AU)(A;CI;FW;;;NS)(A;CI;FW;;;LS)(A;OICIIO;FA;;;CO)";
+            IndependentLaunchTaskDefinition.ValidateAncestorSecurityDescriptor(taskRootDescriptor);
+            Assert(true, "standard task root should permit isolated protected descendants");
+            foreach (var descriptor in new[] { taskRootDescriptor,
+                "O:SYG:SYD:(A;;FA;;;SY)(A;;0x40;;;AU)",
+                "O:SYG:SYD:(A;;FA;;;SY)(A;;WD;;;AU)" })
+            {
+                var rejectedAcl = false;
+                try
+                {
+                    if (descriptor == taskRootDescriptor) IndependentLaunchTaskDefinition.ValidateSecurityDescriptor(descriptor);
+                    else IndependentLaunchTaskDefinition.ValidateAncestorSecurityDescriptor(descriptor);
+                }
+                catch (UnauthorizedAccessException) { rejectedAcl = true; }
+                Assert(rejectedAcl, "task ACL allowed modification/deletion of protected descendants");
+            }
             Assert(true, "inherit-only parent ACE should not grant parent mutation");
             launchTask.Enabled = false;
             var disabledRejected = false;

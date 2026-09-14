@@ -70,7 +70,7 @@ try {
     $scheduler=New-Object -ComObject 'Schedule.Service'
     $scheduler.Connect()
     $rootFolder=$scheduler.GetFolder('\')
-    [MTTFTest.Watchdog.Protocol.IndependentLaunchTaskDefinition]::ValidateSecurityDescriptor($rootFolder.GetSecurityDescriptor(7))
+    [MTTFTest.Watchdog.Protocol.IndependentLaunchTaskDefinition]::ValidateAncestorSecurityDescriptor($rootFolder.GetSecurityDescriptor(7))
     try {$folder=$scheduler.GetFolder('\MTTFTest')} catch {
         if($_.Exception.HResult -ne -2147024894 -or $Mode -ne 'Install'){throw}
         $folder=$rootFolder.CreateFolder('MTTFTest','O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)')

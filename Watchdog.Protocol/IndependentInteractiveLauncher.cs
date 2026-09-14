@@ -52,6 +52,15 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public static void ValidateSecurityDescriptor(string descriptor)
+            => ValidateSecurityDescriptorCore(descriptor, false);
+
+        // Windows' task root normally permits authenticated users to create
+        // their own tasks/folders. That does not confer DELETE_CHILD or control
+        // over our separately protected, non-inheriting installation folder.
+        public static void ValidateAncestorSecurityDescriptor(string descriptor)
+            => ValidateSecurityDescriptorCore(descriptor, true);
+
+        private static void ValidateSecurityDescriptorCore(string descriptor, bool ancestor)
         {
             if (string.IsNullOrWhiteSpace(descriptor) || descriptor.Length > 8192)
                 throw new UnauthorizedAccessException("IndependentLaunchTaskSecurityDescriptorInvalid");
@@ -66,7 +75,7 @@ namespace MTTFTest.Watchdog.Protocol
                 // write, delete, ownership and generic-all grants.
                 if ((ace.AceFlags & AceFlags.InheritOnly) == 0 &&
                     ace.AceQualifier == AceQualifier.AccessAllowed && !Trusted(ace.SecurityIdentifier) &&
-                    (ace.AccessMask & ~0x1200a9) != 0)
+                    (ace.AccessMask & ~(ancestor ? 0x1201bf : 0x1200a9)) != 0)
                     throw new UnauthorizedAccessException("IndependentLaunchTaskWritableByUntrustedPrincipal");
             }
         }
@@ -89,7 +98,7 @@ namespace MTTFTest.Watchdog.Protocol
                 dynamic scheduler = Keep(Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service", true)));
                 scheduler.Connect();
                 dynamic rootFolder = Keep(scheduler.GetFolder(@"\"));
-                IndependentLaunchTaskDefinition.ValidateSecurityDescriptor((string)rootFolder.GetSecurityDescriptor(7));
+                IndependentLaunchTaskDefinition.ValidateAncestorSecurityDescriptor((string)rootFolder.GetSecurityDescriptor(7));
                 dynamic folder = Keep(scheduler.GetFolder(@"\MTTFTest"));
                 IndependentLaunchTaskDefinition.ValidateSecurityDescriptor((string)folder.GetSecurityDescriptor(7));
                 dynamic task = Keep(folder.GetTask("Independent-" + registration.InstallationId));
