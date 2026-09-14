@@ -8,6 +8,17 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 3 && args[0] == "--independent-launch")
+                {
+                    Console.WriteLine(MTTFTest.Watchdog.Protocol.IndependentInteractiveLauncher.Dispatch(args[1], args[2]));
+                    return 0;
+                }
+                if (args.Length == 3 && args[0] == "--prepare-service-simulation")
+                { ServiceControllerSimulation.Prepare(args[1], args[2]); return 0; }
+                if (args.Length == 3 && args[0] == "--arm-exited-service-simulation")
+                { ServiceControllerSimulation.ArmExitedController(args[1], int.Parse(args[2])); return 0; }
+                if (args.Length == 4 && args[0] == "--independent-registration" && args[2] == "--independent-ticket")
+                    return ServiceControllerSimulation.Resume(args[1], args[3]);
                 if (args.Length == 2 && args[0] == "--safety-worker-matrix")
                 {
                     Console.WriteLine("PASS safety worker matrix " + SimulatedSafetyWorker.RunMatrix(args[1]));

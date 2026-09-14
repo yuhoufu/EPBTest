@@ -24,6 +24,7 @@
   <ItemGroup><ProjectReference Include="..\..\FallbackGuard\FallbackGuard.csproj"><Project>{82B9DB08-9925-4B15-83A6-02D43D0BDE2A}</Project><Name>FallbackGuard</Name></ProjectReference></ItemGroup>
   <ItemGroup>
     <Compile Include="SimulatedSafetyWorker.cs" />
+    <Compile Include="ServiceControllerSimulation.cs" />
     <ProjectReference Include="..\..\MTTFTest.SafetyAgent\MTTFTest.SafetyAgent.csproj"><Project>{2F691519-C5A2-4A90-A05A-9B4E739D7E43}</Project><Name>MTTFTest.SafetyAgent</Name></ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

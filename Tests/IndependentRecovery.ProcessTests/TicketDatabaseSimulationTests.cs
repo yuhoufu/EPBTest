@@ -62,7 +62,7 @@ namespace AdaptiveControlTests
             { DataSource = Path.Combine(root, "index.db"), Pooling = false, FailIfMissing = true, DefaultTimeout = 1 }.ConnectionString);
             connection.Open(); return connection;
         }
-        private static void CommitCycle(string root, int[] channels, int cycle)
+        internal static void CommitCycle(string root, int[] channels, int cycle)
         {
             using (var db = Open(root))
             using (var tx = db.BeginTransaction())
