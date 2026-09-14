@@ -15,6 +15,40 @@ namespace AdaptiveControlTests
     {
         private const string Marker = "TICKET-DATABASE-SIMULATION-ONLY";
         private static readonly int[] All = { 4, 5, 7, 8, 9, 12 };
+        // Runs the production durable pump, replacing only the external hardware
+        // operations and launcher with this explicitly simulated test actor.
+        private sealed class PumpOperations : IIndependentProjectRuntimeOperations
+        {
+            internal IndependentProjectStateStore Store;
+            internal string DatabasePath;
+            internal RecoveryDatabaseSnapshot Baseline;
+            internal Func<bool> ReplacementAlive;
+            internal int[] Stages = new int[4];
+            public IndependentOperationResult CooperativeStop(IndependentRecoveryTransaction tx)
+            { Stages[0]++; return IndependentOperationResult.Completed; }
+            public IndependentOperationResult ConfirmPowerOff(IndependentRecoveryTransaction tx)
+            { Stages[1]++; return IndependentOperationResult.Completed; }
+            public IndependentOperationResult RetireExactControls(IndependentRecoveryTransaction tx)
+            { Stages[2]++; return IndependentOperationResult.Completed; }
+            public IndependentOperationResult ConfirmOutputsAndPressure(IndependentRecoveryTransaction tx)
+            { Stages[3]++; return IndependentOperationResult.Completed; }
+            public IndependentOperationResult LaunchOnce(IndependentRecoveryTransaction tx)
+            {
+                var state = Store.Read();
+                return state.Ticket?.Consumer != null && state.Ticket.Consumer.Matches(state.Controller)
+                    ? IndependentOperationResult.Completed : IndependentOperationResult.Pending;
+            }
+            public IndependentOperationResult VerifyActionsAndDatabase(IndependentRecoveryTransaction tx)
+            {
+                if (ReplacementAlive?.Invoke() != true) return IndependentOperationResult.Failed;
+                var pending = RecoveryDatabaseEvidence.UnverifiedChannels(Baseline,
+                    RecoveryDatabaseEvidence.Read(DatabasePath, All));
+                return pending.Intersect(tx.Channels).Any()
+                    ? IndependentOperationResult.Pending : IndependentOperationResult.Completed;
+            }
+            public void CancelPendingLaunch(IndependentRecoveryTransaction tx) { }
+            public void CancelStageWorkers() { } // no hardware worker exists in this fixture
+        }
         private static string Exe => Process.GetCurrentProcess().MainModule.FileName;
         private static IndependentProcessIdentity Identity()
         {
@@ -107,10 +141,16 @@ namespace AdaptiveControlTests
                 Armed = true, PeriodMs = 1000, StartupBudgetMs = 30000 };
             store.ArmManualRun(1, intent, old, DateTime.UtcNow.Ticks);
             var tx = store.BeginRecovery(store.Read().Revision, "simulation", DateTime.UtcNow.Ticks);
+            var operations = new PumpOperations { Store = store, DatabasePath = dbPath, Baseline = baseline };
+            var pump = new IndependentProjectRecoveryPump(store, operations, "simulation", 30000, 30000);
             foreach (var phase in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
                 IndependentRecoveryPhase.RetireControls, IndependentRecoveryPhase.OutputsSafe })
-                store.CompleteSafetyStage(store.Read().Revision, "simulation", tx.Generation, tx.RequestId, phase, true,
-                    DateTime.UtcNow.Ticks, 30000, "SIMULATED: NO HARDWARE EXECUTED");
+            {
+                if (store.Read().Transaction.Phase != phase) throw new InvalidOperationException("Pump safety stage order changed");
+                pump.Tick(DateTime.UtcNow.Ticks);
+            }
+            if (store.Read().Transaction.Phase != IndependentRecoveryPhase.LaunchPending || operations.Stages.Any(n => n != 1))
+                throw new InvalidOperationException("Pump did not execute each simulated safety stage exactly once");
             var ticket = store.IssueLaunchTicket(store.Read().Revision, "simulation", tx.Generation,
                 SupervisorProtocol.ComputeSha256(Exe), Process.GetCurrentProcess().SessionId, DateTime.UtcNow.Ticks);
             store.MarkLaunchDispatched(store.Read().Revision, ticket.Nonce, "simulation", DateTime.UtcNow.Ticks);
@@ -121,6 +161,7 @@ namespace AdaptiveControlTests
                 BoundedJson.Write(Path.Combine(root, "child-owner.json"), new
                 { pid, startUtcTicks = started, executable = Exe, purpose = "SimulationResume" })))
             {
+                operations.ReplacementAlive = () => worker.Poll() == IndependentWorkerState.Running;
                 Wait(Path.Combine(root, "two-records"), () => worker.Poll() == IndependentWorkerState.Running);
                 var state = store.Read();
                 check(state.Controller.Pid == worker.ProcessId && state.Controller.StartUtcTicks == worker.StartUtcTicks && state.Intent.RunEpoch == 2,
@@ -128,6 +169,10 @@ namespace AdaptiveControlTests
                 var two = RecoveryDatabaseEvidence.Read(dbPath, All);
                 check(RecoveryDatabaseEvidence.UnverifiedChannels(baseline, two).Intersect(new[] { 7, 8, 9 }).Count() == 3,
                     "Two records incorrectly proved recovery");
+                pump.Tick(DateTime.UtcNow.Ticks);
+                pump.Tick(DateTime.UtcNow.Ticks);
+                check(store.Read().Transaction.Phase == IndependentRecoveryPhase.Verifying,
+                    "Production pump reported success before three formal records");
                 File.WriteAllText(Path.Combine(root, "continue"), "continue");
                 Wait(Path.Combine(root, "three-records"), () => worker.Poll() == IndependentWorkerState.Running);
                 var three = RecoveryDatabaseEvidence.Read(dbPath, All);
@@ -136,6 +181,14 @@ namespace AdaptiveControlTests
                 check(three.Channels.Where(lane => new[] { 4, 5, 12 }.Contains(lane.Channel)).All(lane => lane.MechanicalCompletedCount == 1),
                     "Excluded lane advanced");
                 check(worker.Poll() == IndependentWorkerState.Running, "Replacement exited before verification");
+                // Reconstruct the production pump to exercise durable phase resume.
+                pump = new IndependentProjectRecoveryPump(store, operations, "simulation", 30000, 30000);
+                pump.Tick(DateTime.UtcNow.Ticks);
+                check(store.Read().Transaction.Phase == IndependentRecoveryPhase.Verified &&
+                    store.Read().Transaction.Detail.Contains("Channels=7,8,9"),
+                    "Production pump did not verify the actual replacement targets after restart");
+                pump.Tick(DateTime.UtcNow.Ticks);
+                check(operations.Stages.All(n => n == 1), "Terminal pump repeated a simulated safety stage");
                 File.WriteAllText(Path.Combine(root, "finish"), "finish");
                 var watch = Stopwatch.StartNew();
                 while (worker.Poll() == IndependentWorkerState.Running && watch.ElapsedMilliseconds < 5000) Thread.Sleep(20);
