@@ -35,6 +35,8 @@ namespace AdaptiveControlTests
                 }
                 if (args.Length == 1 && args[0] == "--independent-bootstrap")
                 { IndependentBootstrapTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--independent-executor-runtime")
+                { var count = IndependentExecutorRuntimeTests.RunAll(); Console.WriteLine($"PASS {count}/{count}"); return 0; }
                 if (args.Length == 1 && args[0] == "--startup-stagger-regression")
                 {
                     OverduePhaseDoesNotCaptureUiContext();
@@ -536,6 +538,7 @@ namespace AdaptiveControlTests
                 _passed += DaqRealtimeControlTests.RunAll();
                 _passed += FallbackSafetyRegressionTests.RunAll();
                 _passed += DatabaseFallbackTests.RunAll();
+                _passed += IndependentExecutorRuntimeTests.RunAll();
                 _passed += IndependentRecoveryTransactionTests.RunAll();
                 _passed += IndependentBoundedWorkerTests.RunAll();
                 _passed += IndependentBootstrapTests.RunAll();

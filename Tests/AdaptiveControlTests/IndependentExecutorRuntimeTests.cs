@@ -1,0 +1,77 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Security.Principal;
+using MTTFTest.FallbackGuard;
+using MTTFTest.Watchdog.Protocol;
+
+namespace AdaptiveControlTests
+{
+    internal static class IndependentExecutorRuntimeTests
+    {
+        internal static int RunAll()
+        {
+            var passed = 2;
+            using (var identity = WindowsIdentity.GetCurrent())
+            {
+                if (!identity.IsSystem)
+                {
+                    var rejected = false;
+                    try { using (var runtime = new IndependentExecutorRuntime("missing-registration.json")) { } }
+                    catch (UnauthorizedAccessException) { rejected = true; }
+                    Assert(rejected, "non-SYSTEM runtime admitted before registration validation");
+                    Console.WriteLine("PASS 独立执行运行时先检查SYSTEM身份");
+                    passed++;
+                }
+                else Console.WriteLine("SKIP non-SYSTEM admission check: current harness is SYSTEM");
+            }
+            using (var process = Process.GetCurrentProcess())
+            {
+                var expected = new IndependentProcessIdentity
+                {
+                    Pid = process.Id, StartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                    WindowsSessionId = process.SessionId, ExecutablePath = process.MainModule.FileName,
+                    SessionToken = Guid.NewGuid().ToString("N")
+                };
+                Assert(IndependentExecutorRuntime.ExactProcessAlive(expected) == true, "own exact identity missing");
+                expected.StartUtcTicks--;
+                Assert(IndependentExecutorRuntime.ExactProcessAlive(expected) == false, "PID reuse identity accepted");
+                expected.StartUtcTicks++;
+                expected.ExecutablePath = Path.Combine(Path.GetDirectoryName(expected.ExecutablePath), "other.exe");
+                Assert(IndependentExecutorRuntime.ExactProcessAlive(expected) == false, "wrong executable accepted");
+            }
+            Console.WriteLine("PASS 独立执行运行时核对精确进程启动时间和路径");
+            var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ??
+                throw new InvalidOperationException("EPB_TEST_ARTIFACT_ROOT required"), "executor-baseline-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var baseline = new IndependentVerificationBaseline
+            {
+                RequestId = Guid.NewGuid().ToString("N"), Generation = 3,
+                Database = new RecoveryDatabaseSnapshot
+                {
+                    DatabasePath = Path.Combine(root, "index.db"), CreationUtcTicks = 1,
+                    Channels = new[] { 7, 8 }.Select(c => new RecoveryDatabaseLane
+                    { Channel = c, FormalRecords = Array.Empty<RecoveryFormalRecord>() }).ToArray()
+                }
+            };
+            var file = Path.Combine(root, "baseline.json");
+            BoundedJson.Write(file, baseline);
+            baseline = BoundedJson.Read<IndependentVerificationBaseline>(file);
+            baseline.ValidateAgainst(baseline.Database.DatabasePath, 1, baseline.RequestId, 3, new[] { 8, 7 });
+            Reject(() => baseline.ValidateAgainst(baseline.Database.DatabasePath, 1, Guid.NewGuid().ToString("N"), 3, new[] { 7, 8 }));
+            Reject(() => baseline.ValidateAgainst(baseline.Database.DatabasePath, 1, baseline.RequestId, 4, new[] { 7, 8 }));
+            Reject(() => baseline.ValidateAgainst(baseline.Database.DatabasePath, 2, baseline.RequestId, 3, new[] { 7, 8 }));
+            Reject(() => baseline.ValidateAgainst(baseline.Database.DatabasePath, 1, baseline.RequestId, 3, new[] { 7 }));
+            Console.WriteLine("PASS 独立恢复验收基线跨进程序列化且不跨事务或目标复用");
+            return passed;
+        }
+        private static void Assert(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
+        private static void Reject(Action action)
+        {
+            try { action(); }
+            catch (InvalidDataException) { return; }
+            throw new InvalidOperationException("Mismatched recovery baseline accepted");
+        }
+    }
+}
