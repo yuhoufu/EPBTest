@@ -42,13 +42,13 @@ namespace MtEmbTest
             if (!FirstRunBootstrap.PrepareOrExit(args)) return;
             IndependentRecoveryStartup independentStartup;
             try { independentStartup = IndependentRecoveryStartup.Parse(args); }
-            catch (Exception error) { TryWriteFatalLog("IndependentRecoveryArguments", error); return; }
+            catch (Exception error) { Environment.ExitCode = 64; TryWriteFatalLog("IndependentRecoveryArguments", error); return; }
             var watchdogRecoveryIntent = WatchdogRecoveryIntent.Parse(args);
             var recoveryIntent = watchdogRecoveryIntent == null
                 ? RecoveryProcessBootstrap.Parse(args)
                 : null;
             if (independentStartup != null && (watchdogRecoveryIntent != null || recoveryIntent != null))
-            { TryWriteFatalLog("IndependentRecoveryArguments", new InvalidOperationException("MixedRecoveryProtocolsRejected")); return; }
+            { Environment.ExitCode = 64; TryWriteFatalLog("IndependentRecoveryArguments", new InvalidOperationException("MixedRecoveryProtocolsRejected")); return; }
             UnattendedRecoveryCoordinator.SetRecoveryProcessMode(
                 recoveryIntent != null || watchdogRecoveryIntent != null || independentStartup?.IsRecoveryLaunch == true);
             using var recoveryHandoff = RecoveryProcessBootstrap.AttachHandoff(recoveryIntent);
@@ -83,7 +83,7 @@ namespace MtEmbTest
                 if (independentStartup != null)
                 {
                     try { independentStartup.ConsumeAndBind(); }
-                    catch (Exception error) { TryWriteFatalLog("IndependentRecoveryBootstrap", error); return; }
+                    catch (Exception error) { Environment.ExitCode = 65; TryWriteFatalLog("IndependentRecoveryBootstrap", error); return; }
                 }
 
             if (Environment.OSVersion.Version.Major >= 6)
