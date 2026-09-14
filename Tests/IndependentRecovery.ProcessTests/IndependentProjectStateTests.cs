@@ -85,6 +85,64 @@ namespace AdaptiveControlTests
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            var retryStore = Fixture(Path.Combine(root, "cleanup-retry"), now);
+            var retryTx = retryStore.BeginRecovery(retryStore.Read().Revision, "executor", now);
+            void FailPower(IndependentProjectStateStore target, IndependentRecoveryTransaction attempt, long time)
+            {
+                target.CompleteSafetyStage(target.Read().Revision, "executor", attempt.Generation, attempt.RequestId,
+                    IndependentRecoveryPhase.CooperativeStop, true, time, 30000, "fixture");
+                target.CompleteSafetyStage(target.Read().Revision, "executor", attempt.Generation, attempt.RequestId,
+                    IndependentRecoveryPhase.PowerOff, false, time, 30000, "InjectedPowerFailure");
+            }
+            FailPower(retryStore, retryTx, now);
+            Reject(() => retryStore.RetrySafetyCleanup(retryStore.Read().Revision, "executor", now + TimeSpan.FromSeconds(59).Ticks),
+                "cleanup retry bypassed minimum interval");
+            Reject(() => retryStore.RetrySafetyCleanup(retryStore.Read().Revision, "other", now + TimeSpan.FromSeconds(60).Ticks),
+                "foreign executor stole failed cleanup");
+            var firstRequest = retryTx.RequestId;
+            var firstGeneration = retryTx.Generation;
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                var time = now + TimeSpan.FromSeconds(60 * attempt).Ticks;
+                retryTx = retryStore.RetrySafetyCleanup(retryStore.Read().Revision, "executor", time);
+                Assert(retryStore.Read().SafetyCleanupPending && retryTx.Generation == firstGeneration + attempt &&
+                    retryTx.AttemptsUtcTicks.Length == attempt + 1, "cleanup retry lost obligation or retry history");
+                FailPower(retryStore, retryTx, time);
+            }
+            Reject(() => retryStore.RetrySafetyCleanup(retryStore.Read().Revision, "executor", now + TimeSpan.FromMinutes(3).Ticks),
+                "fourth project cleanup attempt admitted");
+            new IndependentProjectRecoveryPump(retryStore, new PumpOperations(), "executor", 30000, 30000)
+                .Tick(now + TimeSpan.FromMinutes(40).Ticks);
+            Assert(retryStore.Read().Transaction.RequestId == retryTx.RequestId &&
+                retryStore.Read().Transaction.Phase == IndependentRecoveryPhase.NeedsAttention,
+                "pump automatically cleared exhausted cleanup after cooling window");
+            Reject(() => retryStore.CompleteSafetyStage(retryStore.Read().Revision, "executor", firstGeneration, firstRequest,
+                IndependentRecoveryPhase.PowerOff, true, now + TimeSpan.FromMinutes(3).Ticks, 30000, "LateReceipt"),
+                "old cleanup receipt advanced replacement attempt");
+            retryStore = Fixture(Path.Combine(root, "cleanup-retry-stopped"), now);
+            retryTx = retryStore.BeginRecovery(retryStore.Read().Revision, "executor", now);
+            FailPower(retryStore, retryTx, now);
+            retryStore.UpdateOperatorIntent(retryStore.Read().Revision, "OperatorStop", "manual stop", now,
+                intent => { intent.ManualStopped = true; intent.Armed = false; });
+            var retryTime = now + TimeSpan.FromMinutes(1).Ticks;
+            retryTx = retryStore.RetrySafetyCleanup(retryStore.Read().Revision, "executor", retryTime);
+            foreach (var phase in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
+                IndependentRecoveryPhase.RetireControls, IndependentRecoveryPhase.OutputsSafe })
+                retryStore.CompleteSafetyStage(retryStore.Read().Revision, "executor", retryTx.Generation, retryTx.RequestId,
+                    phase, true, retryTime, 30000, "CleanupConfirmed");
+            Assert(!retryStore.Read().SafetyCleanupPending && retryStore.Read().Transaction.Phase == IndependentRecoveryPhase.Cancelled &&
+                retryStore.Read().Intent.ManualStopped && !retryStore.Read().Intent.Armed && retryStore.Read().Ticket == null,
+                "manual stop cleanup retry authorized restart");
+            var autoStore = Fixture(Path.Combine(root, "cleanup-retry-pump"), now);
+            var autoTx = autoStore.BeginRecovery(autoStore.Read().Revision, "executor", now);
+            FailPower(autoStore, autoTx, now);
+            var retryPump = new IndependentProjectRecoveryPump(autoStore, new PumpOperations(), "executor", 30000, 30000);
+            retryPump.Tick(now + TimeSpan.FromSeconds(59).Ticks);
+            Assert(autoStore.Read().Transaction.RequestId == autoTx.RequestId, "pump retried before minimum interval");
+            retryPump.Tick(now + TimeSpan.FromSeconds(60).Ticks);
+            Assert(autoStore.Read().Transaction.Generation == autoTx.Generation + 1 &&
+                autoStore.Read().Transaction.Phase == IndependentRecoveryPhase.CooperativeStop,
+                "pump left failed cleanup permanently stranded");
             var store = Fixture(Path.Combine(root, "revocation"), now);
             var tx = store.BeginRecovery(store.Read().Revision, "executor", now);
             Assert(store.Read().SafetyCleanupPending, "begin lost safety cleanup obligation");

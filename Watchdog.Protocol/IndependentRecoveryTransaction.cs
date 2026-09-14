@@ -107,6 +107,26 @@ namespace MTTFTest.Watchdog.Protocol
             var channels = intent.RecoveryChannels();
             if (channels.Length == 0 || string.IsNullOrWhiteSpace(executor) || now <= 0)
                 throw new InvalidOperationException("IndependentRecoveryNotAuthorized");
+            return CreateAttempt(previous, intent, channels, executor, now);
+        }
+
+        public static IndependentRecoveryTransaction RetrySafetyCleanup(IndependentRecoveryTransaction previous,
+            IndependentRunIntent intent, string executor, long now)
+        {
+            previous?.Validate(); intent?.Validate();
+            if (previous == null || previous.Phase != IndependentRecoveryPhase.NeedsAttention || intent == null ||
+                previous.ExecutorIdentity != executor || string.IsNullOrWhiteSpace(executor) || now <= 0 ||
+                previous.RunId != intent.RunId || previous.RunEpoch != intent.RunEpoch)
+                throw new InvalidOperationException("IndependentCleanupRetryNotOwned");
+            var channels = intent.RecoveryChannels();
+            // Retain cleanup responsibility after manual revocation without
+            // inventing an armed intent. Final safety commit rechecks authority.
+            return CreateAttempt(previous, intent, channels.Length == 0 ? previous.Channels : channels, executor, now);
+        }
+
+        private static IndependentRecoveryTransaction CreateAttempt(IndependentRecoveryTransaction previous,
+            IndependentRunIntent intent, int[] channels, string executor, long now)
+        {
             if (previous != null && !previous.IsTerminal)
                 throw new InvalidOperationException("IndependentRecoveryAlreadyOwned");
             var attempts = (previous?.AttemptsUtcTicks ?? Array.Empty<long>()).ToList();

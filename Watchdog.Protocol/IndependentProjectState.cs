@@ -219,6 +219,19 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public IndependentRecoveryTransaction RetrySafetyCleanup(long expectedRevision, string executor, long now)
+        {
+            return Update(expectedRevision, state =>
+            {
+                if (!state.SafetyCleanupPending || state.Controller == null || state.Intent == null)
+                    throw new InvalidOperationException("IndependentCleanupRetryNotRequired");
+                state.Transaction = IndependentRecoveryTransitions.RetrySafetyCleanup(state.Transaction, state.Intent, executor, now);
+                // No ticket can survive a retry, including maintenance/manual stop.
+                state.Ticket = null;
+                return state.Transaction;
+            });
+        }
+
         // Safety cleanup follows the already-authorized, frozen old session.
         // Operator revocation prevents restart, but must not strand the session
         // half-way through power-off / handle release / pressure confirmation.

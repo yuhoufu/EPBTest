@@ -31,9 +31,21 @@ namespace MTTFTest.Watchdog.Protocol
         {
             var state = _store.Read();
             var tx = state?.Transaction;
-            if (tx == null || tx.IsTerminal) return;
+            if (tx == null) return;
             if (tx.ExecutorIdentity != _executor) throw new InvalidOperationException("IndependentPumpOwnerMismatch");
             if (now < tx.LastAttemptUtcTicks) throw new InvalidOperationException("IndependentPumpClockRegressed");
+            if (tx.IsTerminal)
+            {
+                if (tx.Phase == IndependentRecoveryPhase.NeedsAttention && state.SafetyCleanupPending &&
+                    tx.AttemptsUtcTicks.Length < 3 && now - tx.LastAttemptUtcTicks >= TimeSpan.FromSeconds(60).Ticks)
+                {
+                    _operations.CancelStageWorkers();
+                    _store.RetrySafetyCleanup(state.Revision, _executor, now);
+                }
+                // Exhausted cleanup remains visible for operator action. Merely
+                // waiting thirty minutes must not clear this failed chain.
+                return;
+            }
             if (state.SafetyCleanupPending)
             {
                 var expired = now >= tx.PhaseDeadlineUtcTicks;
