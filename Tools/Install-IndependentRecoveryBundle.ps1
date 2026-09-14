@@ -199,6 +199,38 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
     }
     } finally {$repairLease.Dispose()}
 }
+function Remove-IndependentOwnedComponents([object[]]$Files,[string]$InstallDirectory) {
+    # Component/task teardown and executor maintenance lease are caller gates.
+    # Never enumerate the install directory to infer ownership.
+    $root=[IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
+    $targets=@();$seen=@{}
+    if(-not $Files -or $Files.Count -gt 10000){throw '卸载文件数量无效。'}
+    foreach($file in $Files){
+        $relative=([string]$file.Relative).Replace('\','/')
+        $target=[IO.Path]::GetFullPath((Join-Path $root $relative))
+        if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or
+           $relative -notmatch '^(Current|FallbackGuard|Tools)/' -or $relative -like 'Current/Config/*' -or
+           $relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$' -or $file.Sha256 -notmatch '^[a-fA-F0-9]{64}$'){
+            throw '卸载目标不属于可删除的原安装组件。'
+        }
+        $seen[$target]=$true
+        $cursor=$target
+        while($cursor){
+            if((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '卸载路径含重解析点。'}
+            $cursor=[IO.Path]::GetDirectoryName($cursor)
+        }
+        if([IO.Directory]::Exists($target)){throw '组件路径已变成目录，拒绝删除。'}
+        if([IO.File]::Exists($target) -and (Get-FileHash -LiteralPath $target).Hash -ne $file.Sha256){throw '组件内容已变化，保留文件并拒绝本次删除。'}
+        $targets+=,[pscustomobject]@{Path=$target;Sha256=[string]$file.Sha256}
+    }
+    foreach($target in $targets){
+        if([IO.File]::Exists($target.Path)){
+            if((Get-FileHash -LiteralPath $target.Path).Hash -ne $target.Sha256){throw '删除前组件身份变化。'}
+            Remove-Item -LiteralPath $target.Path -ErrorAction Stop
+        }
+    }
+    foreach($target in $targets){if(Test-Path -LiteralPath $target.Path){throw '组件删除未完成。'}}
+}
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
 if($Mode -eq 'ValidateRepair'){
