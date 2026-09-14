@@ -213,6 +213,52 @@ namespace AdaptiveControlTests
                     PressureSampleMaxAgeMs = 100, ReleaseStableMs = 300, ReleaseTimeoutMs = 5000 }
             };
             command.Validate(now);
+            var registration = new IndependentExecutorRegistration
+            {
+                InstallationId = Guid.NewGuid().ToString("N"), ProjectDirectory = root,
+                DatabasePath = safetyIntent.DatabasePath, DatabaseCreationUtcTicks = 1,
+                StateDirectory = root, ExecutablePath = Exe, ExecutableSha256 = Hash,
+                SafetyExecutablePath = Exe, SafetyExecutableSha256 = Hash,
+                ConfigurationSha256 = Hash, ConfigDirectory = root,
+                Files = command.Files, Runtime = command.Runtime
+            };
+            registration.RequireBoundIntent(safetyIntent);
+            Assert(registration.LaunchTaskName.EndsWith(registration.InstallationId), "task identity not installation-bound");
+            safetyIntent.DatabaseCreationUtcTicks++;
+            var wrongDatabase = false;
+            try { registration.RequireBoundIntent(safetyIntent); } catch (InvalidDataException) { wrongDatabase = true; }
+            Assert(wrongDatabase, "replacement database accepted by registration");
+            safetyIntent.DatabaseCreationUtcTicks--;
+            safetyIntent.ExecutablePath = Path.Combine(root, "other.exe");
+            var wrongExecutable = false;
+            try { registration.RequireBoundIntent(safetyIntent); } catch (InvalidDataException) { wrongExecutable = true; }
+            Assert(wrongExecutable, "mutable intent redirected elevated executable");
+            safetyIntent.ExecutablePath = Exe;
+            registration.DatabasePath = Path.Combine(root + "-other", "index.db");
+            var siblingProject = false;
+            try { registration.Validate(); } catch (InvalidDataException) { siblingProject = true; }
+            Assert(siblingProject, "project prefix collision accepted");
+            registration.DatabasePath = safetyIntent.DatabasePath;
+            registration.ConfigDirectory = Path.Combine(root, "..", "redirected");
+            var traversal = false;
+            try { registration.Validate(); } catch (InvalidDataException) { traversal = true; }
+            Assert(traversal, "noncanonical config path accepted");
+            registration.ConfigDirectory = root;
+            registration.ConfigurationSha256 = new string('b', 64);
+            var changedConfig = false;
+            try { registration.RequireBoundIntent(safetyIntent); } catch (InvalidDataException) { changedConfig = true; }
+            Assert(changedConfig, "changed project configuration accepted");
+            registration.ConfigurationSha256 = Hash;
+            var cleanupState = new IndependentProjectState
+            { Revision = 1, Intent = safetyIntent, Transaction = safetyTx, SafetyCleanupPending = true };
+            safetyIntent.ManualStopped = true;
+            var cleanupCommand = registration.CreateSafetyCommand(cleanupState, "executor", now);
+            Assert(cleanupCommand.ConfigDirectory == registration.ConfigDirectory && cleanupCommand.StageNonce != command.StageNonce,
+                "manual revocation blocked cleanup or reused stage nonce");
+            Reject(() => registration.CreateSafetyCommand(cleanupState, "other", now), "foreign executor created hardware command");
+            cleanupState.SafetyCleanupPending = false;
+            Reject(() => registration.CreateSafetyCommand(cleanupState, "executor", now), "completed cleanup created hardware command");
+            safetyIntent.ManualStopped = false;
             var receipt = new IndependentSafetyWorkerReceipt
             {
                 StageNonce = command.StageNonce, CommandSha256 = Hash, RequestId = safetyTx.RequestId,
