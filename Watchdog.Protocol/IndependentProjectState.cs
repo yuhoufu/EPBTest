@@ -38,6 +38,7 @@ namespace MTTFTest.Watchdog.Protocol
         public string ExecutableSha256 { get; set; }
         public int WindowsSessionId { get; set; }
         public long ExpiresUtcTicks { get; set; }
+        public long DispatchStartedUtcTicks { get; set; }
         public bool Revoked { get; set; }
         public IndependentProcessIdentity Consumer { get; set; }
     }
@@ -83,6 +84,8 @@ namespace MTTFTest.Watchdog.Protocol
                 if (!Guid.TryParseExact(Ticket.Nonce, "N", out _) || Transaction == null ||
                     Ticket.RequestId != Transaction.RequestId || Ticket.Generation != Transaction.Generation ||
                     Ticket.IntentRevision <= 0 || Ticket.ExpiresUtcTicks <= 0 || Ticket.WindowsSessionId <= 0 ||
+                    Ticket.DispatchStartedUtcTicks < 0 || Ticket.DispatchStartedUtcTicks >= Ticket.ExpiresUtcTicks ||
+                    (Ticket.Consumer != null && Ticket.DispatchStartedUtcTicks == 0) ||
                     Ticket.ExecutableSha256?.Length != 64 || !Ticket.ExecutableSha256.All(Uri.IsHexDigit))
                     throw new InvalidDataException("IndependentLaunchTicketInvalid");
             }
@@ -334,6 +337,21 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void MarkLaunchDispatched(long expectedRevision, string nonce, string executor, long now)
+        {
+            Update(expectedRevision, state =>
+            {
+                var ticket = state.Ticket;
+                if (ticket == null || ticket.Nonce != nonce || ticket.Revoked || ticket.Consumer != null ||
+                    ticket.DispatchStartedUtcTicks != 0 || now <= 0 || now >= ticket.ExpiresUtcTicks ||
+                    now < state.Transaction.LastAttemptUtcTicks)
+                    throw new InvalidOperationException("IndependentLaunchDispatchNotAuthorized");
+                RequireLaunchAuthority(state, executor, ticket.Generation);
+                ticket.DispatchStartedUtcTicks = now;
+                return true;
+            });
+        }
+
         public IndependentRunIntent ConsumeLaunchTicket(long expectedRevision, string nonce,
             IndependentProcessIdentity consumer, string executableSha256, long now)
         {
@@ -342,6 +360,7 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 var ticket = state.Ticket;
                 if (ticket == null || ticket.Revoked || ticket.Consumer != null || ticket.Nonce != nonce ||
+                    ticket.DispatchStartedUtcTicks <= 0 || now < ticket.DispatchStartedUtcTicks ||
                     ticket.ExpiresUtcTicks <= now || now < state.Transaction.LastAttemptUtcTicks ||
                     ticket.IntentRevision != state.Intent.Revision ||
                     consumer.WindowsSessionId != ticket.WindowsSessionId ||

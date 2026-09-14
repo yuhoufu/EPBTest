@@ -337,7 +337,7 @@ namespace MTTFTest.Watchdog.Protocol
                     {
                         var ticket = fields["Ticket"] as System.Collections.Generic.Dictionary<string, object>;
                         RequireFields(ticket, "Nonce", "RequestId", "Generation", "IntentRevision",
-                            "ExecutableSha256", "WindowsSessionId", "ExpiresUtcTicks", "Revoked", "Consumer");
+                            "ExecutableSha256", "WindowsSessionId", "ExpiresUtcTicks", "DispatchStartedUtcTicks", "Revoked", "Consumer");
                         if (!(ticket["Revoked"] is bool)) throw new InvalidDataException("IndependentTicketFlagInvalid");
                     }
                 }

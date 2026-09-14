@@ -41,7 +41,7 @@ namespace AdaptiveControlTests
             store.ArmManualRun(1, Intent(root), old, now);
             return store;
         }
-        private static IndependentLaunchTicket Ready(IndependentProjectStateStore store, long now)
+        private static IndependentLaunchTicket Ready(IndependentProjectStateStore store, long now, bool dispatch = true)
         {
             var tx = store.BeginRecovery(store.Read().Revision, "executor", now);
             foreach (var phase in new[] { IndependentRecoveryPhase.CooperativeStop, IndependentRecoveryPhase.PowerOff,
@@ -50,8 +50,10 @@ namespace AdaptiveControlTests
                 store.CompleteSafetyStage(store.Read().Revision, "executor", tx.Generation, tx.RequestId,
                     phase, true, now, 30000, "SimulatedStageConfirmed");
             }
-            return store.IssueLaunchTicket(store.Read().Revision, "executor", tx.Generation, Hash,
+            var ticket = store.IssueLaunchTicket(store.Read().Revision, "executor", tx.Generation, Hash,
                 Process.GetCurrentProcess().SessionId, now);
+            if (dispatch) store.MarkLaunchDispatched(store.Read().Revision, ticket.Nonce, "executor", now);
+            return store.Read().Ticket;
         }
 
         internal static int ConsumeChild(string root, string nonce, long revision)
@@ -82,9 +84,22 @@ namespace AdaptiveControlTests
                     try { using (var runner = new IndependentProjectSafetyRunner(Path.Combine(root, "missing.json"), "executor")) { } }
                     catch (UnauthorizedAccessException) { accessDenied = true; }
                     Assert(accessDenied, "non-SYSTEM runner accessed installed hardware configuration");
+                    accessDenied = false;
+                    try { IndependentInteractiveLauncher.Dispatch(Path.Combine(root, "missing.json"), Guid.NewGuid().ToString("N")); }
+                    catch (UnauthorizedAccessException) { accessDenied = true; }
+                    Assert(accessDenied, "non-SYSTEM launcher reached task scheduler");
                 }
             }
             var now = DateTime.UtcNow.Ticks;
+            var dispatchStore = Fixture(Path.Combine(root, "dispatch-once"), now);
+            var unlaunched = Ready(dispatchStore, now, false);
+            Reject(() => dispatchStore.ConsumeLaunchTicket(dispatchStore.Read().Revision, unlaunched.Nonce, Identity(), Hash, now),
+                "undispatched ticket was consumed");
+            dispatchStore.MarkLaunchDispatched(dispatchStore.Read().Revision, unlaunched.Nonce, "executor", now);
+            Reject(() => dispatchStore.MarkLaunchDispatched(dispatchStore.Read().Revision, unlaunched.Nonce, "executor", now),
+                "crashed launcher dispatched the same nonce twice");
+            Assert(dispatchStore.Read().Ticket.DispatchStartedUtcTicks == now && dispatchStore.Read().Ticket.Consumer == null,
+                "dispatch reported main process consumption");
             var manualStore = Fixture(Path.Combine(root, "controller-manual-stop"), now);
             var manualState = manualStore.Read();
             var manualCommand = Guid.NewGuid().ToString("N");
@@ -299,6 +314,7 @@ namespace AdaptiveControlTests
             var registration = new IndependentExecutorRegistration
             {
                 InstallationId = Guid.NewGuid().ToString("N"), ProjectDirectory = root,
+                InteractiveUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User.Value,
                 DatabasePath = safetyIntent.DatabasePath, DatabaseCreationUtcTicks = 1,
                 StateDirectory = root, ExecutablePath = Exe, ExecutableSha256 = Hash,
                 SafetyExecutablePath = Exe, SafetyExecutableSha256 = Hash,
@@ -306,6 +322,38 @@ namespace AdaptiveControlTests
                 Files = command.Files, Runtime = command.Runtime
             };
             registration.RequireBoundIntent(safetyIntent);
+            var registrationPath = Path.Combine(root, "executor.json");
+            var launchTask = new IndependentLaunchTaskDefinition
+            {
+                Path = registration.LaunchTaskName, Executable = registration.ExecutablePath,
+                WorkingDirectory = Path.GetDirectoryName(registration.ExecutablePath),
+                Arguments = IndependentLaunchTaskDefinition.ExpectedArguments(registrationPath),
+                UserSid = registration.InteractiveUserSid, Enabled = true, AllowDemandStart = true,
+                ActionCount = 1, RunLevel = 1, LogonType = 3, MultipleInstances = 2, ExecutionTimeLimit = "PT0S",
+                SecurityDescriptor = "O:SYG:SYD:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)"
+            };
+            launchTask.Validate(registration, registrationPath);
+            IndependentLaunchTaskDefinition.ValidateSecurityDescriptor("O:SYG:SYD:(A;;FA;;;SY)(A;OICIIO;GA;;;CO)");
+            Assert(true, "inherit-only parent ACE should not grant parent mutation");
+            launchTask.Enabled = false;
+            var disabledRejected = false;
+            try { launchTask.Validate(registration, registrationPath); } catch (InvalidDataException) { disabledRejected = true; }
+            Assert(disabledRejected, "disabled task accepted despite possible successful RunEx return");
+            launchTask.Enabled = true;
+            launchTask.UserSid = "S-1-5-18";
+            var systemRejected = false;
+            try { launchTask.Validate(registration, registrationPath); } catch (InvalidDataException) { systemRejected = true; }
+            Assert(systemRejected, "SYSTEM main program principal accepted");
+            launchTask.UserSid = registration.InteractiveUserSid;
+            launchTask.SecurityDescriptor = "O:SYG:SYD:(A;;FA;;;SY)(A;;FA;;;BU)";
+            var taskAclRejected = false;
+            try { launchTask.Validate(registration, registrationPath); } catch (UnauthorizedAccessException) { taskAclRejected = true; }
+            Assert(taskAclRejected, "user-writable highest task accepted");
+            launchTask.SecurityDescriptor = "O:SYG:SYD:(A;;FA;;;SY)(A;;FA;;;BA)";
+            launchTask.Arguments = "--independent-ticket $(Arg0)";
+            var redirectedTask = false;
+            try { launchTask.Validate(registration, registrationPath); } catch (InvalidDataException) { redirectedTask = true; }
+            Assert(redirectedTask, "task without registered project binding accepted");
             Assert(registration.LaunchTaskName.EndsWith(registration.InstallationId), "task identity not installation-bound");
             safetyIntent.DatabaseCreationUtcTicks++;
             var wrongDatabase = false;

@@ -45,6 +45,9 @@ namespace MTEmbTest
         {
             if (Current != null) throw new InvalidOperationException("IndependentBootstrapAlreadyConsumed");
             Registration = IndependentExecutorRegistration.LoadTrusted(RegistrationPath);
+            using (var user = System.Security.Principal.WindowsIdentity.GetCurrent())
+                if (user.User.Value != Registration.InteractiveUserSid)
+                    throw new UnauthorizedAccessException("IndependentBootstrapInteractiveUserMismatch");
             _store = new IndependentProjectStateStore(Registration.StateDirectory);
             var state = _store.Read();
             Registration.RequireBoundIntent(state.Intent);

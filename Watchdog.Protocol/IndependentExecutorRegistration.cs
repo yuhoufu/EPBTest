@@ -10,6 +10,7 @@ namespace MTTFTest.Watchdog.Protocol
     {
         public int SchemaVersion { get; set; } = 1;
         public string InstallationId { get; set; }
+        public string InteractiveUserSid { get; set; }
         public string ProjectDirectory { get; set; }
         public string DatabasePath { get; set; }
         public long DatabaseCreationUtcTicks { get; set; }
@@ -43,6 +44,9 @@ namespace MTTFTest.Watchdog.Protocol
 
         public void Validate()
         {
+            if (string.IsNullOrWhiteSpace(InteractiveUserSid) ||
+                !new System.Security.Principal.SecurityIdentifier(InteractiveUserSid).IsAccountSid())
+                throw new InvalidDataException("IndependentRegistrationInteractiveUserInvalid");
             if (SchemaVersion != 1 || !Guid.TryParseExact(InstallationId, "N", out _) ||
                 DatabaseCreationUtcTicks <= 0 || !Hash(ExecutableSha256) ||
                 !Hash(SafetyExecutableSha256) || !Hash(ConfigurationSha256) || Runtime == null)

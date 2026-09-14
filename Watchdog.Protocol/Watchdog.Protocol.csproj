@@ -24,6 +24,7 @@
     <Compile Include="AssemblyInfo.cs" />
     <Reference Include="System" /><Reference Include="System.Core" />
     <Reference Include="System.Security" />
+    <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Web.Extensions" />
   </ItemGroup>
   <ItemGroup>
@@ -47,6 +48,7 @@
     <Compile Include="IndependentProjectSafetyRunner.cs" />
     <Compile Include="IndependentExecutionFence.cs" />
     <Compile Include="IndependentExecutorLease.cs" />
+    <Compile Include="IndependentInteractiveLauncher.cs" />
     <Compile Include="FallbackControlPipe.cs" />
     <Compile Include="FallbackProgressVerifier.cs" />
     <Compile Include="DeadlinePipeExchange.cs" />
