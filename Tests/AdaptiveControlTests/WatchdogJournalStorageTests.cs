@@ -934,7 +934,7 @@ namespace AdaptiveControlTests
                 {
                     store.PublishSnapshot("{\"SchemaVersion\":2,\"State\":\"TakeoverRequested\"}");
                     store.Record(first);
-                    Assert(store.Flush(TimeSpan.FromSeconds(10)), "故障盘写入未转入应急缓冲");
+                    Assert(store.Flush(TimeSpan.FromSeconds(10)), "故障盘写入未转入应急缓冲; Stage=" + store.CurrentWorkerStage);
                     var spool = WatchdogJournalPaths.LocalSpoolDirectory(project, session);
                     Assert(Directory.Exists(spool) && new DirectoryInfo(spool).GetFiles().Any(),
                         "项目盘异常时未建立本机应急缓冲");

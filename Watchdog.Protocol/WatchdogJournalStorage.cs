@@ -735,6 +735,13 @@ namespace MTTFTest.Watchdog.Protocol
         private readonly AutoResetEvent _wake = new AutoResetEvent(false);
         private readonly ManualResetEventSlim _idle = new ManualResetEventSlim(true);
         private readonly Thread _worker;
+        private string _workerStage = "Starting";
+        private static int _globalSpoolMaintenanceRunning;
+        private static long _globalSpoolDroppedEvents;
+
+        // Diagnostic only; this is not a durability or recovery-success receipt.
+        public string CurrentWorkerStage => Volatile.Read(ref _workerStage);
+        public static long GlobalSpoolDroppedEventCount => Interlocked.Read(ref _globalSpoolDroppedEvents);
         private readonly string _directory;
         private readonly string _sessionId;
         private readonly string _safeSession;
@@ -1050,9 +1057,12 @@ namespace MTTFTest.Watchdog.Protocol
                     stopping = _stopping;
                 }
 
+                Volatile.Write(ref _workerStage, "ReplaySpool");
                 TryReplaySpool();
+                Volatile.Write(ref _workerStage, "WriteLeaseAndSnapshot");
                 if (!IsClientAuditOnly && lease) TryWriteLease();
                 if (!IsClientAuditOnly && snapshot != null) TryWriteSnapshot(snapshot);
+                Volatile.Write(ref _workerStage, "WriteEvents");
                 foreach (var item in events)
                 {
                     if (item.Checkpoint && IsStopping())
@@ -1062,16 +1072,21 @@ namespace MTTFTest.Watchdog.Protocol
                     }
                     TryWriteEvent(item);
                 }
+                Volatile.Write(ref _workerStage, "WriteErrorsAndTerminal");
                 foreach (var error in errors) TryWriteError(error);
                 if (revocationReason != null) TryWriteProjectRevocation(revocationReason);
                 if (!IsClientAuditOnly && terminal != null) TryPublishTerminal(terminal);
+                Volatile.Write(ref _workerStage, "Retention");
                 if (!IsClientAuditOnly && retention && _source == "sidecar") TryEnforceRetention();
                 // Both authority and audit stores have an independent bounded
                 // emergency spool.  EnforceSpoolBudget selects the historical
                 // authority root for FullAuthority and this store's private
                 // client-audit directory for ClientAuditOnly.
+                Volatile.Write(ref _workerStage, "SpoolBudget");
                 if (Interlocked.Exchange(ref _spoolWritesSinceBudget, 0) > 0)
                     EnforceSpoolBudget();
+
+                Volatile.Write(ref _workerStage, "Idle");
 
                 lock (_gate)
                 {
@@ -1315,18 +1330,32 @@ namespace MTTFTest.Watchdog.Protocol
 
         private void EnforceSpoolBudget()
         {
+            // Flush must include this session's budget, not a traversal of all
+            // historical project directories on the machine. Audit-only stores
+            // remain confined to their own namespace.
+            EnforceSpoolBudgetCore(_spoolDirectory, SearchOption.TopDirectoryOnly,
+                _policy.EmergencySpoolMaxBytes, () => Interlocked.Increment(ref _droppedEvents));
+            if (IsClientAuditOnly || Interlocked.CompareExchange(ref _globalSpoolMaintenanceRunning, 1, 0) != 0)
+                return;
+            var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MTTFTest", "WatchdogSpoolV2");
+            var budget = _policy.EmergencySpoolMaxBytes;
+            var maintenance = new Thread(() =>
+            {
+                try { EnforceSpoolBudgetCore(root, SearchOption.AllDirectories, budget,
+                    () => Interlocked.Increment(ref _globalSpoolDroppedEvents)); }
+                finally { Volatile.Write(ref _globalSpoolMaintenanceRunning, 0); }
+            }) { IsBackground = true, Name = "WatchdogSpoolMaintenance", Priority = ThreadPriority.BelowNormal };
+            try { maintenance.Start(); }
+            catch { Volatile.Write(ref _globalSpoolMaintenanceRunning, 0); }
+        }
+
+        private static void EnforceSpoolBudgetCore(string root, SearchOption searchOption, long budget, Action dropped)
+        {
             try
             {
-                // Preserve FullAuthority's historical cross-session budget
-                // behavior.  AuditOnly must never enumerate the parent spool:
-                // it is allowed to see only its own client-audit directory.
-                var root = IsClientAuditOnly
-                    ? _spoolDirectory
-                    : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "MTTFTest", "WatchdogSpoolV2");
                 if (!Directory.Exists(root)) return;
                 var cutoff = DateTime.UtcNow.AddDays(-WatchdogJournalPolicy.EmergencySpoolRetentionDays);
-                var searchOption = IsClientAuditOnly ? SearchOption.TopDirectoryOnly : SearchOption.AllDirectories;
                 var files = new DirectoryInfo(root).EnumerateFiles("*.pending.*", searchOption)
                     .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
                     .OrderBy(file => file.LastWriteTimeUtc)
@@ -1339,11 +1368,12 @@ namespace MTTFTest.Watchdog.Protocol
                 var total = files.Sum(SafeLength);
                 foreach (var file in files)
                 {
-                    if (total <= _policy.EmergencySpoolMaxBytes) break;
+                    if (total <= budget) break;
                     var length = SafeLength(file);
                     TryDelete(file.FullName);
-                    total -= length;
-                    Interlocked.Increment(ref _droppedEvents);
+                    // An unsuccessful delete must not be counted as released
+                    // capacity. Concurrent replay/removal may already free it.
+                    if (!File.Exists(file.FullName)) { total -= length; dropped?.Invoke(); }
                 }
             }
             catch { }

@@ -592,6 +592,10 @@ namespace AdaptiveControlTests
             return name.Equals("mscorlib", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("netstandard", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("WindowsBase", StringComparison.OrdinalIgnoreCase) ||
+                   // The independent Task Scheduler COM launcher uses the
+                   // framework dynamic binder; this is not a controller/UI
+                   // project reference. Keep the allowance exact, not Microsoft.*.
+                   name.Equals("Microsoft.CSharp", StringComparison.OrdinalIgnoreCase) ||
                    name.StartsWith("System", StringComparison.OrdinalIgnoreCase) ||
                    name.StartsWith("Microsoft.Win32", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("MTTFTest.SafetyHardware", StringComparison.OrdinalIgnoreCase) ||
