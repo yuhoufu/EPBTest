@@ -78,10 +78,9 @@ namespace MTTFTest.Watchdog.Protocol
                 tx.RunId == state.Intent.RunId && tx.RunEpoch == state.Intent.RunEpoch;
             if (!authorized || now >= tx.PhaseDeadlineUtcTicks)
             {
-                _operations.CancelPendingLaunch(tx);
-                _operations.CancelStageWorkers();
                 Finish(state, authorized ? IndependentRecoveryPhase.NeedsAttention : IndependentRecoveryPhase.Cancelled,
                     authorized ? "ReplacementVerificationOrLaunchDeadlineExceeded" : "RestartAuthorityRevoked");
+                CancelReplacementWorkers(tx);
                 return;
             }
             if (tx.Phase == IndependentRecoveryPhase.Verifying &&
@@ -92,9 +91,8 @@ namespace MTTFTest.Watchdog.Protocol
             if (outcome == IndependentOperationResult.Pending) return;
             if (outcome == IndependentOperationResult.Failed)
             {
-                _operations.CancelPendingLaunch(tx);
-                _operations.CancelStageWorkers();
                 Finish(state, IndependentRecoveryPhase.NeedsAttention, "ReplacementFailed:" + tx.Phase);
+                CancelReplacementWorkers(tx);
                 return;
             }
             // A launcher observes a consumed durable ticket; it must not invent
@@ -115,6 +113,12 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        private void CancelReplacementWorkers(IndependentRecoveryTransaction transaction)
+        {
+            try { _operations.CancelPendingLaunch(transaction); }
+            finally { _operations.CancelStageWorkers(); }
+        }
+
         private void Finish(IndependentProjectState state, IndependentRecoveryPhase phase, string detail)
         {
             _store.Update(state.Revision, latest =>
@@ -123,6 +127,18 @@ namespace MTTFTest.Watchdog.Protocol
                 latest.Transaction.Revision = checked(latest.Transaction.Revision + 1);
                 latest.Transaction.Detail = detail;
                 if (latest.Ticket != null) latest.Ticket.Revoked = true;
+                if (latest.Ticket?.Consumer != null)
+                {
+                    // Task Scheduler starts the main process outside the launch
+                    // worker Job. Disposing that Job does not retire the main.
+                    // Preserve its exact identity and the cleanup obligation in
+                    // the same durable write that revokes restart authority.
+                    // This also covers consumption before bootstrap commits a run.
+                    latest.Controller = latest.Ticket.Consumer;
+                    latest.SafetyCleanupPending = true;
+                    latest.Transaction.Phase = IndependentRecoveryPhase.NeedsAttention;
+                    latest.Transaction.Detail = "ReplacementSafetyCleanupRequired:" + detail;
+                }
                 return true;
             });
         }

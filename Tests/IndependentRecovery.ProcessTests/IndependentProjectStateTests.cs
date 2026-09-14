@@ -460,6 +460,53 @@ namespace AdaptiveControlTests
             pump.Tick(now + 4);
             Assert(pumpStore.Read().Transaction.Phase == IndependentRecoveryPhase.Verified && operations.Verifications == 1,
                 "verified replacement could not complete transaction");
+            var abandonedStore = Fixture(Path.Combine(root, "consumed-before-bootstrap-stop"), now);
+            var abandonedTicket = Ready(abandonedStore, now);
+            var abandonedConsumer = Identity();
+            abandonedStore.ConsumeLaunchTicket(abandonedStore.Read().Revision, abandonedTicket.Nonce,
+                abandonedConsumer, Hash, now);
+            abandonedStore.UpdateOperatorIntent(abandonedStore.Read().Revision, "OperatorStop", "stop before bootstrap", now,
+                intent => { intent.ManualStopped = true; intent.Armed = false; });
+            var cancellation = new PumpOperations { FailCancellation = true };
+            var abandonedPump = new IndependentProjectRecoveryPump(abandonedStore, cancellation, "executor", 30000, 30000);
+            Reject(() => abandonedPump.Tick(now + 1), "fixture cancellation did not fail");
+            var abandoned = abandonedStore.Read();
+            Assert(abandoned.SafetyCleanupPending && abandoned.Ticket.Revoked &&
+                abandoned.Controller.Matches(abandonedConsumer) &&
+                abandoned.Transaction.Phase == IndependentRecoveryPhase.NeedsAttention,
+                "cancel failure lost consumed process safety cleanup");
+            Assert(cancellation.CancelWorkers > 0, "launch cancellation failure skipped bounded worker cleanup");
+            Reject(() => abandonedStore.CommitReplacementRun(abandoned.Revision, abandonedConsumer,
+                Guid.NewGuid().ToString("N"), 2, now + 2), "cancelled consumer bootstrapped");
+            cancellation.FailCancellation = false;
+            abandonedPump.Tick(now + TimeSpan.FromSeconds(60).Ticks);
+            var cleanup = abandonedStore.Read();
+            Assert(cleanup.SafetyCleanupPending && cleanup.Transaction.Phase == IndependentRecoveryPhase.CooperativeStop &&
+                cleanup.Controller.Matches(abandonedConsumer) && cleanup.Intent.ManualStopped,
+                "retry lost replacement identity or manual stop");
+            var cleanupNow = now + TimeSpan.FromSeconds(85).Ticks;
+            abandonedPump.Tick(cleanupNow);
+            abandonedPump.Tick(cleanupNow + 1);
+            abandonedPump.Tick(cleanupNow + 2);
+            abandonedPump.Tick(cleanupNow + 3);
+            Assert(!abandonedStore.Read().SafetyCleanupPending &&
+                abandonedStore.Read().Transaction.Phase == IndependentRecoveryPhase.Cancelled && cancellation.Launches == 0,
+                "replacement cleanup after manual stop relaunched the trial");
+            var failedStore = Fixture(Path.Combine(root, "committed-verification-failure"), now);
+            var failedTicket = Ready(failedStore, now);
+            var failedConsumer = Identity();
+            failedStore.ConsumeLaunchTicket(failedStore.Read().Revision, failedTicket.Nonce, failedConsumer, Hash, now);
+            failedStore.CommitReplacementRun(failedStore.Read().Revision, failedConsumer, Guid.NewGuid().ToString("N"), 2, now);
+            var failingOperations = new PumpOperations { FailVerification = true };
+            var failedPump = new IndependentProjectRecoveryPump(failedStore, failingOperations, "executor", 30000, 30000);
+            failedPump.Tick(now + 1);
+            failedPump.Tick(now + 2);
+            Assert(failedStore.Read().SafetyCleanupPending && failedStore.Read().Controller.Matches(failedConsumer) &&
+                failedStore.Read().Transaction.Phase == IndependentRecoveryPhase.NeedsAttention && failedStore.Read().Ticket.Revoked,
+                "verification failure forgot the live replacement");
+            failedPump.Tick(now + TimeSpan.FromSeconds(60).Ticks);
+            Assert(failedStore.Read().Transaction.AttemptsUtcTicks.Length == 2 && failedStore.Read().Intent.Armed,
+                "verification failure bypassed retry budget or erased run intent");
             Console.WriteLine("PASS independent project state " + _count + "/" + _count);
             return _count;
         }
@@ -467,14 +514,17 @@ namespace AdaptiveControlTests
         private sealed class PumpOperations : IIndependentProjectRuntimeOperations
         {
             internal int CancelWorkers, Launches, Verifications;
+            internal bool FailCancellation, FailVerification;
             public void CancelStageWorkers() { CancelWorkers++; }
-            public void CancelPendingLaunch(IndependentRecoveryTransaction tx) { }
+            public void CancelPendingLaunch(IndependentRecoveryTransaction tx)
+            { if (FailCancellation) throw new InvalidOperationException("InjectedCancelFailure"); }
             public IndependentOperationResult CooperativeStop(IndependentRecoveryTransaction tx) => IndependentOperationResult.Pending;
             public IndependentOperationResult ConfirmPowerOff(IndependentRecoveryTransaction tx) => IndependentOperationResult.Completed;
             public IndependentOperationResult RetireExactControls(IndependentRecoveryTransaction tx) => IndependentOperationResult.Completed;
             public IndependentOperationResult ConfirmOutputsAndPressure(IndependentRecoveryTransaction tx) => IndependentOperationResult.Completed;
             public IndependentOperationResult LaunchOnce(IndependentRecoveryTransaction tx) { Launches++; return IndependentOperationResult.Completed; }
-            public IndependentOperationResult VerifyActionsAndDatabase(IndependentRecoveryTransaction tx) { Verifications++; return IndependentOperationResult.Completed; }
+            public IndependentOperationResult VerifyActionsAndDatabase(IndependentRecoveryTransaction tx)
+            { Verifications++; return FailVerification ? IndependentOperationResult.Failed : IndependentOperationResult.Completed; }
         }
     }
 }
