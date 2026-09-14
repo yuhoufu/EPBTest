@@ -99,6 +99,24 @@ function Get-IndependentRepairFiles($Plan,$Receipt) {
            $file.Relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){$file}
     }
 }
+function Get-IndependentUpgradePlan($CurrentPlan,$NextPlan,$Receipt) {
+    if(-not [string]::Equals($CurrentPlan.Destination,$NextPlan.Destination,[StringComparison]::OrdinalIgnoreCase)){
+        throw '升级必须针对已核验的同一安装目录。'
+    }
+    if($CurrentPlan.Version -notmatch '^\d+\.\d+\.\d+\.\d+$' -or $NextPlan.Version -notmatch '^\d+\.\d+\.\d+\.\d+$' -or
+       [version]$NextPlan.Version -le [version]$CurrentPlan.Version){throw '升级版本必须高于原安装版本；回滚不能冒充升级。'}
+    $current=@(Get-IndependentRepairFiles $CurrentPlan $Receipt)
+    # Both plans must originate from verified bundles. A synthetic receipt for
+    # the next plan only reuses component/config selection, not old ownership.
+    $nextReceipt=[pscustomobject]@{schemaVersion=1;version=$NextPlan.Version;installRoot=$NextPlan.Destination;
+        files=@($NextPlan.Files|ForEach-Object{[pscustomobject]@{path=$_.Relative;sha256=$_.Sha256}})}
+    $next=@(Get-IndependentRepairFiles $NextPlan $nextReceipt)
+    $nextPaths=@{};foreach($file in $next){$nextPaths[$file.Relative]=$true}
+    $obsolete=@($current|Where-Object{-not $nextPaths.ContainsKey($_.Relative)})
+    $preserved=@($CurrentPlan.Files|Where-Object{$_.Relative -like 'Current/Config/*' -or $_.Relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'})
+    [pscustomobject]@{FromVersion=$CurrentPlan.Version;ToVersion=$NextPlan.Version;Destination=$CurrentPlan.Destination;
+        ReplacementFiles=$next;ObsoleteFiles=$obsolete;PreservedFiles=$preserved}
+}
 function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory) {
     # Caller must own installation maintenance and the executor lease. This
     # primitive is deliberately not exposed as an ungated installer mode.
