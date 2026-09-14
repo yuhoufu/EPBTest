@@ -269,6 +269,19 @@ namespace MTTFTest.Watchdog.Protocol
 
         public static IndependentExecutorRegistration LoadTrusted(string path)
         {
+            return LoadTrustedRegistration(path, true);
+        }
+
+        // Maintenance may need to replace a damaged control executable. This
+        // reads protected installation identity, never grants launch authority.
+        // Runtime and safety callers must continue using LoadTrusted.
+        public static IndependentExecutorRegistration LoadTrustedForMaintenance(string path)
+        {
+            return LoadTrustedRegistration(path, false);
+        }
+
+        private static IndependentExecutorRegistration LoadTrustedRegistration(string path, bool verifyExecutables)
+        {
             IndependentProtectedFiles.RequireTrustedFile(path);
             var originalHash = SupervisorProtocol.ComputeSha256(path);
             var registration = BoundedJson.Read<IndependentExecutorRegistration>(path);
@@ -276,8 +289,11 @@ namespace MTTFTest.Watchdog.Protocol
             registration.Validate();
             if (!SamePath(Path.GetDirectoryName(Path.GetFullPath(path)), registration.StateDirectory))
                 throw new InvalidDataException("IndependentRegistrationStateDirectoryMismatch");
-            registration.VerifyFile(registration.ExecutablePath, registration.ExecutableSha256);
-            registration.VerifyFile(registration.SafetyExecutablePath, registration.SafetyExecutableSha256);
+            if (verifyExecutables)
+            {
+                registration.VerifyFile(registration.ExecutablePath, registration.ExecutableSha256);
+                registration.VerifyFile(registration.SafetyExecutablePath, registration.SafetyExecutableSha256);
+            }
             foreach (var file in registration.Files)
                 registration.VerifyFile(Path.Combine(registration.ConfigDirectory, file.Name), file.Sha256);
             if (!string.Equals(originalHash, SupervisorProtocol.ComputeSha256(path), StringComparison.OrdinalIgnoreCase))

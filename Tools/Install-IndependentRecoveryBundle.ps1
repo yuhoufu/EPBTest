@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','ValidateRepair','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','Repair','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
@@ -206,6 +206,59 @@ $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
+if($Mode -eq 'Repair'){
+    Assert-IndependentInstallParent $plan.Destination
+    $receiptPath=Join-Path $plan.Destination 'installed-files.json'
+    $receiptFile=Get-Item -LiteralPath $receiptPath
+    if($receiptFile.Length -gt 4MB -or ($receiptFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '原安装文件记录无效。'}
+    $repairFiles=@(Get-IndependentRepairFiles $plan ([IO.File]::ReadAllText($receiptPath)|ConvertFrom-Json))
+    $protocol=@($plan.Files|Where-Object Relative -eq 'FallbackGuard/MTTFTest.Watchdog.Protocol.dll')[0]
+    $assembly=[Reflection.Assembly]::LoadFrom($protocol.Source)
+    if(-not [string]::Equals($assembly.Location,$protocol.Source,[StringComparison]::OrdinalIgnoreCase)){throw '当前进程已加载其他协议组件，请在新安装器进程中执行修复。'}
+    $registrationPath=Join-Path $plan.Destination 'IndependentState\registration.json'
+    $registration=[MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrustedForMaintenance($registrationPath)
+    $main=Join-Path $plan.Destination 'Current\MTTFTest.exe'
+    $executor=Join-Path $plan.Destination 'FallbackGuard\MTTFTest.FallbackGuard.exe'
+    if(-not [string]::Equals($registration.ExecutablePath,$main,[StringComparison]::OrdinalIgnoreCase) -or
+       -not [string]::Equals($registration.SafetyExecutablePath,(Join-Path $plan.Destination 'Current\MTTFTest.SafetyAgent.exe'),[StringComparison]::OrdinalIgnoreCase)){
+        throw '注册组件路径不属于本安装。'
+    }
+    $store=[MTTFTest.Watchdog.Protocol.IndependentProjectStateStore]::new($registration.StateDirectory)
+    $state=$store.Read()
+    if($state -and $state.Intent){$registration.RequireBoundIntent($state.Intent)}
+    [MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::RequireControllerAbsent($main)
+    $store.SetInstallationMaintenance($(if($state){$state.Revision}else{0L}),$true)
+    $serviceName='MTTFTestIndependent-'+$registration.InstallationId
+    $command='"{0}" --independent-service --registration "{1}"' -f $executor,$registrationPath
+    $service=Get-CimInstance Win32_Service -Filter ("Name='"+$serviceName+"'") -OperationTimeoutSec 10
+    if($service){
+        if($service.PathName -ne $command -or $service.StartName -notin @('LocalSystem','NT AUTHORITY\SYSTEM')){throw '独立服务归属不符，保留维护状态。'}
+        Stop-Service -Name $serviceName
+        $controller=Get-Service -Name $serviceName
+        try{$controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(15))}finally{$controller.Dispose()}
+    }
+    $lease=[MTTFTest.Watchdog.Protocol.IndependentExecutorLease]::new($registration.StateDirectory,$registration.InstallationId)
+    try{
+        [MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::RequireControllerAbsent($main)
+        $state=$store.Read()
+        if(-not $state.Maintenance -or $state.SafetyCleanupPending -or ($state.Intent -and $state.Intent.Armed -and -not $state.Intent.ManualStopped)){throw '维护状态变化，未替换文件。'}
+        foreach($child in @($state.SessionProcesses)){
+            $process=$null
+            try{
+                try{$process=[Diagnostics.Process]::GetProcessById($child.Process.Pid)}catch [ArgumentException]{continue}
+                if(-not $process.HasExited -and $process.StartTime.ToUniversalTime().Ticks -eq $child.Process.StartUtcTicks){
+                    throw '旧会话辅助进程尚未退出，未替换文件。'
+                }
+            }finally{if($process){$process.Dispose()}}
+        }
+        $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
+        [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)|Out-Null
+        & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+        & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor
+        Write-Output ('原构建组件已修复，服务保持维护停止状态；未启动试验。文件事务：'+$transaction)
+    }finally{$lease.Dispose()}
+    return
+}
 if([string]::IsNullOrWhiteSpace($ProjectDirectory) -or [string]::IsNullOrWhiteSpace($InteractiveUserSid)){throw '必须明确项目目录及实际交互用户 SID。'}
 if([IO.Directory]::Exists($plan.Destination) -or [IO.File]::Exists($plan.Destination)){throw '已有安装目录，拒绝覆盖；必须走维护升级流程。'}
 Assert-IndependentInstallParent ([IO.Path]::GetDirectoryName($plan.Destination))
