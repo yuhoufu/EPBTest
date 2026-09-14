@@ -49,6 +49,7 @@
     <Compile Include="IndependentExecutionFence.cs" />
     <Compile Include="IndependentExecutorLease.cs" />
     <Compile Include="IndependentInteractiveLauncher.cs" />
+    <Compile Include="IndependentLaunchWorkerOperation.cs" />
     <Compile Include="FallbackControlPipe.cs" />
     <Compile Include="FallbackProgressVerifier.cs" />
     <Compile Include="DeadlinePipeExchange.cs" />

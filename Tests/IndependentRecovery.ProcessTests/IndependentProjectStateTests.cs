@@ -88,6 +88,10 @@ namespace AdaptiveControlTests
                     try { IndependentInteractiveLauncher.Dispatch(Path.Combine(root, "missing.json"), Guid.NewGuid().ToString("N")); }
                     catch (UnauthorizedAccessException) { accessDenied = true; }
                     Assert(accessDenied, "non-SYSTEM launcher reached task scheduler");
+                    accessDenied = false;
+                    try { using (var operation = new IndependentLaunchWorkerOperation(Path.Combine(root, "missing.json"), Guid.NewGuid().ToString("N"))) { } }
+                    catch (UnauthorizedAccessException) { accessDenied = true; }
+                    Assert(accessDenied, "non-SYSTEM launch operation created a worker");
                 }
             }
             var now = DateTime.UtcNow.Ticks;
@@ -100,6 +104,25 @@ namespace AdaptiveControlTests
                 "crashed launcher dispatched the same nonce twice");
             Assert(dispatchStore.Read().Ticket.DispatchStartedUtcTicks == now && dispatchStore.Read().Ticket.Consumer == null,
                 "dispatch reported main process consumption");
+            var dispatched = dispatchStore.Read();
+            Assert(IndependentLaunchObservation.Evaluate(dispatched, dispatched.Transaction.RequestId,
+                dispatched.Transaction.Generation, unlaunched.Nonce, now) == IndependentOperationResult.Pending,
+                "dispatch without consumption completed launch phase");
+            Assert(IndependentLaunchObservation.Evaluate(dispatched, dispatched.Transaction.RequestId,
+                dispatched.Transaction.Generation, Guid.NewGuid().ToString("N"), now) == IndependentOperationResult.Failed,
+                "different ticket was observed as current launch");
+            Assert(IndependentLaunchObservation.Evaluate(dispatched, dispatched.Transaction.RequestId,
+                dispatched.Transaction.Generation, unlaunched.Nonce, dispatched.Transaction.PhaseDeadlineUtcTicks) == IndependentOperationResult.Failed,
+                "launch observation ignored deadline");
+            dispatchStore.ConsumeLaunchTicket(dispatched.Revision, unlaunched.Nonce, Identity(), Hash, now);
+            Assert(IndependentLaunchObservation.Evaluate(dispatchStore.Read(), dispatched.Transaction.RequestId,
+                dispatched.Transaction.Generation, unlaunched.Nonce, now) == IndependentOperationResult.Completed,
+                "durable consumption not accepted as launch completion");
+            dispatchStore.UpdateOperatorIntent(dispatchStore.Read().Revision, "OperatorStop", "stop", now,
+                intent => intent.ManualStopped = true);
+            Assert(IndependentLaunchObservation.Evaluate(dispatchStore.Read(), dispatched.Transaction.RequestId,
+                dispatched.Transaction.Generation, unlaunched.Nonce, now) == IndependentOperationResult.Failed,
+                "consumption concealed later operator stop");
             var manualStore = Fixture(Path.Combine(root, "controller-manual-stop"), now);
             var manualState = manualStore.Read();
             var manualCommand = Guid.NewGuid().ToString("N");
