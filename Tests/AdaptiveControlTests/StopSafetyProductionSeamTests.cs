@@ -59,6 +59,9 @@ namespace AdaptiveControlTests
         internal static int RunUnitTests()
         {
             var passed = 0;
+            Run("DO真实映射正反互斥与高优先级断电保留其他输出", DigitalOutputUsesRealControlPath, ref passed);
+            Run("DO初始化失败释放会话且可重新初始化", DigitalOutputFailureReleasesSession, ref passed);
+            Run("DO单设备全关失败仍尝试其他设备且不伪报成功", DigitalOutputAllOffContinuesAfterFailure, ref passed);
             Run("AO安全归零不受压力标定偏置和下限影响", AoSafetyZeroIsLiteralVoltage, ref passed);
             Run("AO单路失败仍对其余输出写零且失败初始化释放句柄", AoZeroFailurePreservesCleanup, ref passed);
             Run("AO不支持零电压的量程在创建设备前拒绝", AoRangeMustContainSafetyZero, ref passed);
@@ -331,6 +334,111 @@ namespace AdaptiveControlTests
             result.SafetyBoundaryGeneration = 11;
             result.RunId = Guid.Empty;
             Assert(!owner.Publish(result), "缺少RunId的停止结果错误获得退出授权");
+        }
+
+        private sealed class RecordedDigitalOutput : IDigitalOutputSession
+        {
+            internal readonly List<string> Lines = new List<string>();
+            internal readonly List<bool[]> Writes = new List<bool[]>();
+            internal bool FailVerify;
+            internal bool FailWrite;
+            internal int Disposals;
+            public bool IsReady { get; private set; }
+            public void AddLine(string physicalLine, string logicalName) { Lines.Add(physicalLine); }
+            public void Verify()
+            {
+                if (FailVerify) throw new InvalidOperationException("Injected DO verify failure");
+                IsReady = true;
+            }
+            public void Write(bool[] states)
+            {
+                if (!IsReady || Disposals != 0) throw new InvalidOperationException("DO session unavailable");
+                Writes.Add((bool[])states.Clone());
+                if (FailWrite) throw new InvalidOperationException("Injected DO write failure");
+            }
+            public void Dispose() { IsReady = false; Disposals++; }
+        }
+
+        private static DoConfig DigitalOutputConfig()
+        {
+            var config = new DoConfig();
+            for (var channel = 1; channel <= 2; channel++)
+                config.Epb.Add(new DoEpbRecord
+                {
+                    Enabled = true, Channel = channel, Default = "全关",
+                    Pos = "Dev1/port0/line" + ((channel - 1) * 2),
+                    Neg = "Dev1/port0/line" + ((channel - 1) * 2 + 1)
+                });
+            config.Pressure.Add(new DoPressureRecord
+                { Enabled = true, Id = 1, Physical = "Dev1/port0/line4", DefaultValue = 0 });
+            return config;
+        }
+
+        private static void DigitalOutputUsesRealControlPath()
+        {
+            var output = new RecordedDigitalOutput();
+            var controller = new DoController(DigitalOutputConfig(), null, name => output);
+            try
+            {
+                Assert(controller.Initialize(), "真实DO初始化失败");
+                Assert(output.Lines.Count == 5 && output.Writes.Single().All(value => !value),
+                    "DO映射或初始全关不正确");
+                Assert(controller.SetEpbForward(1) && controller.SetEpbReverse(2) && controller.PressureOn(1),
+                    "真实控制输出失败");
+                Assert(output.Writes.Last().SequenceEqual(new[] { true, false, false, true, true }),
+                    "输出未保留其他通道状态");
+                Assert(controller.SetEpbReverse(1), "反转失败");
+                Assert(controller.SetEpbOffHighPriority(1), "真实高优先级worker断电失败");
+                Assert(output.Writes.Last().SequenceEqual(new[] { false, false, false, true, true }),
+                    "单通道断电改变了其他输出");
+                Assert(output.Writes.All(state => !(state[0] && state[1]) && !(state[2] && state[3])),
+                    "正反方向同时上电");
+                Assert(controller.AllOff() && output.Writes.Last().All(value => !value), "全部断电失败");
+            }
+            finally { controller.Dispose(); }
+            controller.Dispose();
+            Assert(output.Disposals == 1 && !controller.SetEpbForward(1), "释放重复或释放后允许上电");
+        }
+
+        private static void DigitalOutputFailureReleasesSession()
+        {
+            var outputs = new List<RecordedDigitalOutput>();
+            using (var controller = new DoController(DigitalOutputConfig(), null, name =>
+            {
+                var output = new RecordedDigitalOutput { FailVerify = outputs.Count == 0 };
+                outputs.Add(output);
+                return output;
+            }))
+            {
+                Assert(!controller.Initialize() && outputs[0].Disposals == 1, "失败初始化未释放输出会话");
+                Assert(controller.Initialize() && outputs.Count == 2, "失败后无法建立新会话");
+                Assert(outputs[1].Writes.Single().All(value => !value), "重建后初始输出不是全关");
+            }
+            Assert(outputs.All(output => output.Disposals == 1), "会话释放次数不正确");
+        }
+
+        private static void DigitalOutputAllOffContinuesAfterFailure()
+        {
+            var config = DigitalOutputConfig();
+            config.Epb[1].Pos = "Dev2/port0/line0";
+            config.Epb[1].Neg = "Dev2/port0/line1";
+            var outputs = new List<RecordedDigitalOutput>();
+            using (var controller = new DoController(config, null, name =>
+            {
+                var output = new RecordedDigitalOutput();
+                outputs.Add(output);
+                return output;
+            }))
+            {
+                Assert(controller.Initialize() && outputs.Count == 2, "双设备初始化失败");
+                // Fail both devices: the assertion does not depend on dictionary enumeration order.
+                foreach (var output in outputs) { output.Writes.Clear(); output.FailWrite = true; }
+                Assert(!controller.AllOff(), "写入失败错误报告全关成功");
+                Assert(outputs.All(output => output.Writes.Count == 1 && output.Writes[0].All(value => !value)),
+                    "某设备失败后没有尝试其他设备断电");
+                foreach (var output in outputs) output.FailWrite = false;
+                Assert(controller.AllOff(), "写入恢复后不能完成全部断电");
+            }
         }
 
         private sealed class RecordedAoOutput : IAoVoltageOutput

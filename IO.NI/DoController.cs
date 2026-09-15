@@ -21,6 +21,50 @@ using NLogger = Config.NullLogger;
 
 namespace IO.NI
 {
+    internal interface IDigitalOutputSession : IDisposable
+    {
+        bool IsReady { get; }
+        void AddLine(string physicalLine, string logicalName);
+        void Verify();
+        void Write(bool[] states);
+    }
+
+    internal sealed class NiDigitalOutputSession : IDigitalOutputSession
+    {
+        private readonly NIDaqTask _task;
+        private DigitalMultiChannelWriter _writer;
+
+        internal NiDigitalOutputSession(string name)
+        {
+            _task = new NIDaqTask(name);
+        }
+
+        public bool IsReady => _writer != null;
+
+        public void AddLine(string physicalLine, string logicalName)
+        {
+            _task.DOChannels.CreateChannel(physicalLine, logicalName,
+                NIChannelLineGrouping.OneChannelForEachLine);
+        }
+
+        public void Verify()
+        {
+            _task.Control(NITaskAction.Verify);
+            _writer = new DigitalMultiChannelWriter(_task.Stream);
+        }
+
+        public void Write(bool[] states)
+        {
+            _writer.WriteSingleSampleSingleLine(true, states);
+        }
+
+        public void Dispose()
+        {
+            _writer = null;
+            _task.Dispose();
+        }
+    }
+
     public sealed class HighPriorityDoTelemetry
     {
         public Guid CommandId { get; internal set; }
@@ -881,8 +925,7 @@ namespace IO.NI
             }
 
             public string Name;
-            public NIDaqTask Task;
-            public DigitalMultiChannelWriter Writer;
+            public IDigitalOutputSession Output;
             public readonly object WriteGate = new object();
             public readonly HighPriorityDoWorker HighPriorityWorker;
 
@@ -923,6 +966,7 @@ namespace IO.NI
 
         // 新增：保存配置对象（来源于外部的 cfgDo）
         private readonly DoConfig _cfg;
+        private readonly Func<string, IDigitalOutputSession> _outputFactory;
 
         #endregion
 
@@ -934,9 +978,16 @@ namespace IO.NI
         /// <param name="cfgDo">数字输出配置（EPB 与 Pressure）。必填。</param>
         /// <param name="logger">可选日志器。</param>
         public DoController(DoConfig cfgDo, ILogger logger = null)
+            : this(cfgDo, logger, name => new NiDigitalOutputSession(name))
+        {
+        }
+
+        internal DoController(DoConfig cfgDo, ILogger logger,
+            Func<string, IDigitalOutputSession> outputFactory)
         {
             _cfg = cfgDo ?? throw new ArgumentNullException(nameof(cfgDo));
             _log = logger ?? NLogger.Instance;
+            _outputFactory = outputFactory ?? throw new ArgumentNullException(nameof(outputFactory));
         }
 
         public event Action<HighPriorityDoTelemetry> HighPriorityOffCompleted;
@@ -1047,13 +1098,13 @@ namespace IO.NI
                             string def = string.IsNullOrWhiteSpace(r.Default) ? "全关" : r.Default.Trim();
 
                             // 正
-                            dev.Task.DOChannels.CreateChannel(r.Pos, $"EPB{r.Channel}-正", NIChannelLineGrouping.OneChannelForEachLine);
+                            dev.Output.AddLine(r.Pos, $"EPB{r.Channel}-正");
                             dev.Lines.Add(r.Pos);
                             dev.DefaultStates.Add(def == "正");
                             int posIdx = dev.DefaultStates.Count - 1;
 
                             // 反
-                            dev.Task.DOChannels.CreateChannel(r.Neg, $"EPB{r.Channel}-反", NIChannelLineGrouping.OneChannelForEachLine);
+                            dev.Output.AddLine(r.Neg, $"EPB{r.Channel}-反");
                             dev.Lines.Add(r.Neg);
                             dev.DefaultStates.Add(def == "反");
                             int negIdx = dev.DefaultStates.Count - 1;
@@ -1082,7 +1133,7 @@ namespace IO.NI
 
                             bool defVal = p.DefaultValue == 1;
 
-                            dev.Task.DOChannels.CreateChannel(p.Physical, $"Pressure-{p.Id}", NIChannelLineGrouping.OneChannelForEachLine);
+                            dev.Output.AddLine(p.Physical, $"Pressure-{p.Id}");
                             dev.Lines.Add(p.Physical);
                             dev.DefaultStates.Add(defVal);
                             int idx = dev.DefaultStates.Count - 1;
@@ -1104,13 +1155,12 @@ namespace IO.NI
                     {
                         if (dev.Lines.Count == 0) continue;
 
-                        dev.Task.Control(NITaskAction.Verify);
-                        dev.Writer = new DigitalMultiChannelWriter(dev.Task.Stream);
+                        dev.Output.Verify();
                         dev.States = dev.DefaultStates.ToArray();
 
                         // 下发默认
                         if (dev.States.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
-                        dev.Writer.WriteSingleSampleSingleLine(true, dev.States);
+                        dev.Output.Write(dev.States);
                         totalLines += dev.Lines.Count;
                     }
 
@@ -1172,7 +1222,7 @@ namespace IO.NI
                         toWrite[map.negIdx] = !directionIsForward;
 
                         if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
-                        dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                        dev.Output.Write(toWrite);
                         dev.States = toWrite;
                     }
                     LogInfo($"EPB[{channelNo}]@{map.dev} => {(directionIsForward ? "正" : "反")}", "DO操作");
@@ -1237,7 +1287,7 @@ namespace IO.NI
                     toWrite[map.negIdx] = false;
                     niWriteStartedTicks = Stopwatch.GetTimestamp();
                     if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
-                    dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                    dev.Output.Write(toWrite);
                     niWriteCompletedTicks = Stopwatch.GetTimestamp();
                     dev.States = toWrite;
                 }
@@ -1419,7 +1469,7 @@ namespace IO.NI
                     else
                     {
                         if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
-                        targetDevice.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                        targetDevice.Output.Write(toWrite);
                     }
                     niWriteCompletedTicks = Stopwatch.GetTimestamp();
                     targetDevice.States = toWrite;
@@ -1533,7 +1583,7 @@ namespace IO.NI
                         toWrite[map.idx] = start;
 
                         if (toWrite.Any(value => value)) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
-                        dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                        dev.Output.Write(toWrite);
                         dev.States = toWrite;
                     }
                     LogInfo($"压力[{id}]@{map.dev} => {(start ? "启动" : "停止")}", "DO操作");
@@ -1570,18 +1620,27 @@ namespace IO.NI
                 {
                     if (!EnsureReady()) return false;
 
+                    bool succeeded = true;
                     foreach (var dev in _devices.Values)
                     {
-                        lock (dev.WriteGate)
+                        try
                         {
-                            var zeros = new bool[dev.States.Length];
-                            dev.Writer.WriteSingleSampleSingleLine(true, zeros);
-                            dev.States = zeros;
+                            lock (dev.WriteGate)
+                            {
+                                var zeros = new bool[dev.States.Length];
+                                dev.Output.Write(zeros);
+                                dev.States = zeros;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            succeeded = false;
+                            LogError($"设备 {dev.Name} 全部关闭失败：{ex.Message}", "DO操作", ex);
                         }
                     }
 
-                    LogInfo("DO 全部关闭（所有设备）", "DO操作");
-                    return true;
+                    if (succeeded) LogInfo("DO 全部关闭（所有设备）", "DO操作");
+                    return succeeded;
                 }
                 catch (Exception ex)
                 {
@@ -1638,9 +1697,11 @@ namespace IO.NI
         {
             if (!_devices.TryGetValue(deviceName, out var dev))
             {
+                var output = _outputFactory("DO_" + deviceName)
+                    ?? throw new InvalidOperationException("DO output factory returned null");
                 dev = new DoDevice(deviceName)
                 {
-                    Task = new NIDaqTask("DO_" + deviceName)
+                    Output = output
                 };
                 _devices[deviceName] = dev;
             }
@@ -1669,7 +1730,7 @@ namespace IO.NI
                 if (HighPriorityOffPhysicalWriter != null &&
                     dev.States != null && dev.Lines.Count > 0)
                     continue;
-                if (dev.Task == null || dev.Writer == null || dev.States == null)
+                if (dev.Output == null || !dev.Output.IsReady || dev.States == null)
                     return Initialize();
             }
             return true;
@@ -1682,9 +1743,8 @@ namespace IO.NI
             {
                 lock (dev.WriteGate)
                 {
-                    try { dev.Task?.Dispose(); } catch { /* ignore */ }
-                    dev.Task = null;
-                    dev.Writer = null;
+                    try { dev.Output?.Dispose(); } catch { /* ignore */ }
+                    dev.Output = null;
                     dev.Lines.Clear();
                     dev.DefaultStates.Clear();
                     dev.States = null;
