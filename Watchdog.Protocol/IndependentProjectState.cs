@@ -194,6 +194,29 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         public IndependentProjectState Read() => Locked(ReadUnsafe);
+        private T WithCurrentRevision<T>(Func<long, T> command)
+        {
+            return Locked(() =>
+            {
+                var current = ReadUnsafe() ?? throw new InvalidOperationException("IndependentProjectStateMissing");
+                // The named mutex is reentrant on this thread. Keep the read
+                // and existing validated command in one cross-process lease.
+                return command(current.Revision);
+            });
+        }
+
+        public IndependentRunIntent ConsumeCurrentLaunchTicket(string nonce, IndependentProcessIdentity consumer,
+            string executableHash, long now)
+            => WithCurrentRevision(revision => ConsumeLaunchTicket(revision, nonce, consumer, executableHash, now));
+
+        public void CommitCurrentReplacementRun(IndependentProcessIdentity consumer, string runId, long runEpoch, long now)
+        {
+            WithCurrentRevision(revision =>
+            {
+                CommitReplacementRun(revision, consumer, runId, runEpoch, now);
+                return true;
+            });
+        }
         private IndependentProjectState ReadUnsafe()
         {
             if (!File.Exists(_path)) return null;

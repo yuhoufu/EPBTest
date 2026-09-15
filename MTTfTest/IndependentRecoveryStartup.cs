@@ -145,14 +145,14 @@ namespace MTEmbTest
                 return;
             }
             Registration.RequireBoundIntent(state.Intent);
-            var intent = _store.ConsumeLaunchTicket(state.Revision, Nonce, Identity, executableHash, DateTime.UtcNow.Ticks);
+            var intent = _store.ConsumeCurrentLaunchTicket(Nonce, Identity, executableHash, DateTime.UtcNow.Ticks);
             ParentRunId = intent.RunId;
             RootRunId = state.RootRunId;
             RunEpoch = checked(intent.RunEpoch + 1);
             RunId = Guid.NewGuid().ToString("N");
             Generation = state.Transaction.Generation;
             IndependentExecutionFence.AttachCurrent(Registration.InstallationId, Identity);
-            _store.CommitReplacementRun(_store.Read().Revision, Identity, RunId, RunEpoch, DateTime.UtcNow.Ticks);
+            _store.CommitCurrentReplacementRun(Identity, RunId, RunEpoch, DateTime.UtcNow.Ticks);
             Current = this;
             ValidateCurrent();
         }

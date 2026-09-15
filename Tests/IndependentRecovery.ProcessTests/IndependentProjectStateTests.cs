@@ -883,13 +883,19 @@ namespace AdaptiveControlTests
             Reject(() => store.ConsumeLaunchTicket(revision, ticket.Nonce, Identity(), Hash,
                 now + TimeSpan.FromMinutes(1).Ticks), "expired ticket consumed");
             var consumer = Identity();
-            store.ConsumeLaunchTicket(revision, ticket.Nonce, consumer, Hash, now);
+            store.Update(revision, current => true); // Executor bookkeeping advanced the store revision.
+            Reject(() => store.ConsumeLaunchTicket(revision, ticket.Nonce, consumer, Hash, now),
+                "stale explicit revision was accepted");
+            store.ConsumeCurrentLaunchTicket(ticket.Nonce, consumer, Hash, now);
             var recovered = store.Read();
             Assert(recovered.Ticket.Consumer.Matches(consumer) && recovered.Transaction.ReplacementPid == consumer.Pid,
                 "ticket consumption and PID binding not atomic");
             Reject(() => store.ConsumeLaunchTicket(recovered.Revision, ticket.Nonce, Identity(), Hash, now), "ticket replay admitted");
             var run = Guid.NewGuid().ToString("N");
-            store.CommitReplacementRun(recovered.Revision, consumer, run, 2, now);
+            store.Update(recovered.Revision, current => true);
+            Reject(() => store.CommitReplacementRun(recovered.Revision, consumer, run, 2, now),
+                "stale explicit bootstrap revision was accepted");
+            store.CommitCurrentReplacementRun(consumer, run, 2, now);
             recovered = store.Read();
             Assert(recovered.Intent.RunId == run && recovered.Transaction.RunId == run &&
                 recovered.Intent.Revision == recovered.Transaction.IntentRevision && recovered.Controller.Matches(consumer),
@@ -920,6 +926,8 @@ namespace AdaptiveControlTests
                 intent => intent.ManualStopped = true);
             Reject(() => store.CommitReplacementRun(store.Read().Revision, consumer, Guid.NewGuid().ToString("N"), 2, now),
                 "stop between ticket consumption and startup was ignored");
+            Reject(() => store.CommitCurrentReplacementRun(consumer, Guid.NewGuid().ToString("N"), 2, now),
+                "atomic bootstrap ignored operator stop after consumption");
 
             store = Fixture(Path.Combine(root, "isolation"), now);
             store.UpdateOperatorIntent(store.Read().Revision, "PermanentFault", "isolated", now,
