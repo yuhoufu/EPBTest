@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','ValidateRepair','ValidateUpgrade','Upgrade','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','ValidateUpgrade','Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
@@ -416,6 +416,30 @@ function Invoke-IndependentUninstallSteps([string]$Root,[string]$Version,[string
         throw
     }
 }
+function Complete-IndependentUpgrade([string]$OutcomePath,[string]$Version,[string]$InstallationId,[scriptblock]$Register,[scriptblock]$Shortcut) {
+    if((Get-Item -LiteralPath $OutcomePath).Length -gt 4MB){throw 'Upgrade outcome too large.'}
+    $record=[IO.File]::ReadAllText($OutcomePath)|ConvertFrom-Json
+    if($record.toVersion -ne $Version -or $record.installationId -ne $InstallationId -or
+       $record.stage -notin @('FilesCommitted','Registering','UpdatingShortcut','FinalizationFailed','Completed') -or
+       $record.fromVersion -notmatch '^\d+\.\d+\.\d+\.\d+$' -or [version]$record.fromVersion -ge [version]$Version){throw 'Upgrade finalization identity mismatch.'}
+    function Save-UpgradeStage([string]$Stage,[string]$Failure){
+        $record.stage=$Stage;$record.finalizationRequired=$Stage -ne 'Completed'
+        $record|Add-Member -NotePropertyName failure -NotePropertyValue $Failure -Force
+        $temporary=$OutcomePath+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+        [IO.File]::WriteAllText($temporary,($record|ConvertTo-Json -Depth 3))
+        [IO.File]::Replace($temporary,$OutcomePath,$OutcomePath+'.previous')
+    }
+    try{
+        Save-UpgradeStage 'Registering' ''
+        & $Register|Out-Null
+        Save-UpgradeStage 'UpdatingShortcut' ''
+        & $Shortcut $record.fromVersion|Out-Null
+        Save-UpgradeStage 'Completed' ''
+    }catch{
+        Save-UpgradeStage 'FinalizationFailed' ([string]$_.Exception.Message)
+        throw
+    }
+}
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
 if($Mode -in @('ValidateRepair','ValidateUpgrade')){
@@ -436,7 +460,8 @@ try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
 Assert-IndependentComponentVersions $plan
-if($Mode -in @('Upgrade','Repair','RecoverFiles','Uninstall')){
+if($Mode -in @('Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall')){
+    if($Mode -eq 'FinalizeUpgrade' -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'FinalizeUpgrade requires an explicit upgrade ID.'}
     if($Mode -eq 'RecoverFiles' -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'RecoverFiles requires an explicit transaction ID.'}
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
@@ -513,6 +538,25 @@ if($Mode -in @('Upgrade','Repair','RecoverFiles','Uninstall')){
             Write-Output ('Interrupted file transaction rolled back; maintenance remains enabled and no trial was started: '+$restored)
             return
         }
+        if($Mode -eq 'FinalizeUpgrade'){
+            $outcome=Join-Path $plan.Destination ('Upgrade\'+$TransactionId+'\result.json')
+            [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($outcome)
+            foreach($file in $repairFiles){
+                $target=Join-Path $plan.Destination $file.Relative
+                [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($target)
+                if((Get-FileHash $target).Hash -ne $file.Sha256){throw 'Upgrade component changed before finalization.'}
+            }
+            [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)|Out-Null
+            $manager=Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1'
+            Complete-IndependentUpgrade $outcome $plan.Version $registration.InstallationId {
+                & $manager -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+            } {
+                param($oldVersion)
+                & $manager -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor -PreviousVersion $oldVersion
+            }
+            Write-Output 'Upgrade finalization completed; maintenance remains enabled and no trial was started.'
+            return
+        }
         if($Mode -eq 'Upgrade'){
             Add-Type -AssemblyName System.Web.Extensions
             $nextRegistration=Get-IndependentUpgradeRegistration $registration $state $plan
@@ -539,11 +583,22 @@ if($Mode -in @('Upgrade','Repair','RecoverFiles','Uninstall')){
             $outcome=Join-Path $upgradeDirectory 'result.json'
             try{
                 $transaction=Invoke-IndependentFileRepair -Files $repairFiles -InstallDirectory $plan.Destination -RetiredFiles $upgradePlan.ObsoleteFiles -VerifyReplacement $verify -MetadataFiles $metadata
-                [IO.File]::WriteAllText($outcome,([ordered]@{stage='FilesCommitted';fromVersion=$previousPlan.Version;toVersion=$plan.Version;
+                [IO.File]::WriteAllText($outcome,([ordered]@{stage='FilesCommitted';installationId=$registration.InstallationId;fromVersion=$previousPlan.Version;toVersion=$plan.Version;
                     transaction=$transaction;maintenance=$true;trialStarted=$false;finalizationRequired=$true}|ConvertTo-Json -Depth 3))
-                Write-Output ('Upgrade files and registration committed; maintenance remains enabled. Service/task and shortcut finalization is still required; upgrade is not complete. Record: '+$outcome)
+                $manager=Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1'
+                Complete-IndependentUpgrade $outcome $plan.Version $registration.InstallationId {
+                    & $manager -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+                } {
+                    param($oldVersion)
+                    & $manager -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor -PreviousVersion $oldVersion
+                }
+                Write-Output ('Upgrade completed; maintenance remains enabled and no trial was started. Record: '+$outcome)
             }catch{
-                [IO.File]::WriteAllText($outcome,([ordered]@{stage='Failed';failure=[string]$_.Exception.Message;maintenance=$true;trialStarted=$false}|ConvertTo-Json -Depth 3))
+                # Finalization persists its own retryable stage. Do not erase the
+                # installation identity or file transaction on a later failure.
+                if(-not [IO.File]::Exists($outcome)){
+                    [IO.File]::WriteAllText($outcome,([ordered]@{stage='Failed';failure=[string]$_.Exception.Message;maintenance=$true;trialStarted=$false}|ConvertTo-Json -Depth 3))
+                }
                 throw
             }
             return

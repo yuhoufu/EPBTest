@@ -10,7 +10,8 @@ param(
     [string]$InteractiveUserSid,
     [string]$InstallationId,
     [string]$ProtocolAssemblyPath,
-    [string]$InstalledVersion
+    [string]$InstalledVersion,
+    [string]$PreviousVersion
 )
 $ErrorActionPreference='Stop'
 function Set-IndependentShortcut([string]$Main,[string]$Version,[string]$Id,[string]$Directory,[bool]$Remove) {
@@ -252,7 +253,9 @@ try {
     switch($Mode){
         'Shortcut' {
             $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($registration.ExecutablePath).FileVersion
+            if($PreviousVersion -and ($PreviousVersion -notmatch '^\d+\.\d+\.\d+\.\d+$' -or [version]$PreviousVersion -ge [version]$version)){throw '旧快捷方式版本必须低于当前版本。'}
             Set-IndependentShortcut $registration.ExecutablePath $version $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $false
+            if($PreviousVersion){Set-IndependentShortcut $registration.ExecutablePath $PreviousVersion $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $true}
             Write-Output ('已创建与已安装程序一致的 V'+$version+' 快捷方式；未启动试验。')
         }
         {$_ -in @('Install','Repair')} {
