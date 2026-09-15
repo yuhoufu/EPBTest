@@ -9,6 +9,23 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
+# Standalone packaging must not depend on an interactive shell having prepared
+# the regression evidence environment. Resolve the primary repository so linked
+# worktrees keep generated test artifacts under its ignored Codex directory.
+if ([string]::IsNullOrWhiteSpace($env:EPB_TEST_ARTIFACT_ROOT)) {
+    $commonDirectory = [string](& git rev-parse --git-common-dir)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commonDirectory)) {
+        throw '无法定位 Git 公共目录，未启动构建测试。'
+    }
+    $commonDirectory = $commonDirectory.Trim()
+    if (-not [IO.Path]::IsPathRooted($commonDirectory)) { $commonDirectory = Join-Path $repo $commonDirectory }
+    $commonDirectory = [IO.Path]::GetFullPath($commonDirectory)
+    $env:EPB_TEST_ARTIFACT_ROOT = Join-Path ([IO.Path]::GetDirectoryName($commonDirectory)) 'Codex\release-tests'
+}
+$env:EPB_TEST_ARTIFACT_ROOT = [IO.Path]::GetFullPath($env:EPB_TEST_ARTIFACT_ROOT)
+[IO.Directory]::CreateDirectory($env:EPB_TEST_ARTIFACT_ROOT) | Out-Null
+Write-Host ('回归证据目录：' + $env:EPB_TEST_ARTIFACT_ROOT)
+
 $releaseProjectPath = Join-Path $repo 'ProductVersion.props'
 [xml]$releaseProjectXml = Get-Content -LiteralPath $releaseProjectPath -Raw
 $expectedProductVersion = ([string]$releaseProjectXml.Project.PropertyGroup.EpbProductVersion |
