@@ -1,12 +1,13 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','ValidateRepair','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','ValidateUpgrade','Upgrade','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
     [string]$InteractiveUserSid,
-    [string]$TransactionId
+    [string]$TransactionId,
+    [string]$PreviousBundleDirectory
 )
 $ErrorActionPreference='Stop'
 function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
@@ -417,13 +418,17 @@ function Invoke-IndependentUninstallSteps([string]$Root,[string]$Version,[string
 }
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
-if($Mode -eq 'ValidateRepair'){
+if($Mode -in @('ValidateRepair','ValidateUpgrade')){
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
     $receiptFile=Get-Item -LiteralPath $receiptPath
     if($receiptFile.Length -gt 4MB -or ($receiptFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '原安装记录大小或路径无效。'}
     $receipt=[IO.File]::ReadAllText($receiptPath)|ConvertFrom-Json
-    Get-IndependentRepairFiles $plan $receipt
+    if($Mode -eq 'ValidateUpgrade'){
+        if(-not $PreviousBundleDirectory){throw 'Upgrade requires the original verified bundle.'}
+        $previousPlan=Get-IndependentBundlePlan $PreviousBundleDirectory $InstallRoot
+        Get-IndependentUpgradePlan $previousPlan $plan $receipt
+    }else{Get-IndependentRepairFiles $plan $receipt}
     return
 }
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -431,13 +436,20 @@ try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
 Assert-IndependentComponentVersions $plan
-if($Mode -in @('Repair','RecoverFiles','Uninstall')){
+if($Mode -in @('Upgrade','Repair','RecoverFiles','Uninstall')){
     if($Mode -eq 'RecoverFiles' -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'RecoverFiles requires an explicit transaction ID.'}
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
     $receiptFile=Get-Item -LiteralPath $receiptPath
     if($receiptFile.Length -gt 4MB -or ($receiptFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '原安装文件记录无效。'}
-    $repairFiles=@(Get-IndependentRepairFiles $plan ([IO.File]::ReadAllText($receiptPath)|ConvertFrom-Json))
+    $receipt=[IO.File]::ReadAllText($receiptPath)|ConvertFrom-Json
+    if($Mode -eq 'Upgrade'){
+        if(-not $PreviousBundleDirectory){throw 'Upgrade requires the original verified bundle.'}
+        $previousPlan=Get-IndependentBundlePlan $PreviousBundleDirectory $InstallRoot
+        Assert-IndependentComponentVersions $previousPlan
+        $upgradePlan=Get-IndependentUpgradePlan $previousPlan $plan $receipt
+        $repairFiles=@($upgradePlan.ReplacementFiles)
+    }else{$repairFiles=@(Get-IndependentRepairFiles $plan $receipt)}
     $protocol=@($plan.Files|Where-Object Relative -eq 'FallbackGuard/MTTFTest.Watchdog.Protocol.dll')[0]
     $assembly=[Reflection.Assembly]::LoadFrom($protocol.Source)
     if(-not [string]::Equals($assembly.Location,$protocol.Source,[StringComparison]::OrdinalIgnoreCase)){throw '当前进程已加载其他协议组件，请在新安装器进程中执行修复。'}
@@ -499,6 +511,41 @@ if($Mode -in @('Repair','RecoverFiles','Uninstall')){
         if($Mode -eq 'RecoverFiles'){
             $restored=Restore-IndependentFileTransaction $plan.Destination $TransactionId
             Write-Output ('Interrupted file transaction rolled back; maintenance remains enabled and no trial was started: '+$restored)
+            return
+        }
+        if($Mode -eq 'Upgrade'){
+            Add-Type -AssemblyName System.Web.Extensions
+            $nextRegistration=Get-IndependentUpgradeRegistration $registration $state $plan
+            $upgradeId=[Guid]::NewGuid().ToString('N')
+            $upgradeDirectory=Join-Path $plan.Destination ('Upgrade\'+$upgradeId)
+            [IO.Directory]::CreateDirectory($upgradeDirectory)|Out-Null
+            [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedDirectory($upgradeDirectory)
+            $serializer=[System.Web.Script.Serialization.JavaScriptSerializer]::new()
+            $serializer.MaxJsonLength=4MB;$serializer.RecursionLimit=32
+            $registrationPayload=Join-Path $upgradeDirectory 'registration.next.json'
+            [IO.File]::WriteAllText($registrationPayload,$serializer.Serialize($nextRegistration))
+            $receiptPayload=Join-Path $upgradeDirectory 'installed-files.next.json'
+            $nextReceipt=[ordered]@{schemaVersion=1;version=$plan.Version;installRoot=$plan.Destination;
+                files=@($plan.Files|ForEach-Object{[ordered]@{path=$_.Relative;sha256=$_.Sha256}})}
+            [IO.File]::WriteAllText($receiptPayload,($nextReceipt|ConvertTo-Json -Depth 4))
+            $metadata=@(
+                [pscustomobject]@{Relative='IndependentState/registration.json';Source=$registrationPayload;Sha256=(Get-FileHash $registrationPayload).Hash},
+                [pscustomobject]@{Relative='installed-files.json';Source=$receiptPayload;Sha256=(Get-FileHash $receiptPayload).Hash})
+            $expectedState=$serializer.Serialize($store.Read())
+            $verify={
+                [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)|Out-Null
+                if($serializer.Serialize($store.Read()) -ne $expectedState){throw 'Persistent state changed during upgrade; rolling back files and metadata.'}
+            }.GetNewClosure()
+            $outcome=Join-Path $upgradeDirectory 'result.json'
+            try{
+                $transaction=Invoke-IndependentFileRepair -Files $repairFiles -InstallDirectory $plan.Destination -RetiredFiles $upgradePlan.ObsoleteFiles -VerifyReplacement $verify -MetadataFiles $metadata
+                [IO.File]::WriteAllText($outcome,([ordered]@{stage='FilesCommitted';fromVersion=$previousPlan.Version;toVersion=$plan.Version;
+                    transaction=$transaction;maintenance=$true;trialStarted=$false;finalizationRequired=$true}|ConvertTo-Json -Depth 3))
+                Write-Output ('Upgrade files and registration committed; maintenance remains enabled. Service/task and shortcut finalization is still required; upgrade is not complete. Record: '+$outcome)
+            }catch{
+                [IO.File]::WriteAllText($outcome,([ordered]@{stage='Failed';failure=[string]$_.Exception.Message;maintenance=$true;trialStarted=$false}|ConvertTo-Json -Depth 3))
+                throw
+            }
             return
         }
         $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
