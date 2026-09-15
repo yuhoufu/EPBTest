@@ -29,4 +29,21 @@ if(-not $failed){throw 'Unmaintained registration accepted'}
 $state.Maintenance=$true;$next.Files[0].Relative='Current/other.exe';$failed=$false
 try{Get-IndependentUpgradeRegistration $registration $state $next|Out-Null}catch{$failed=$true}
 if(-not $failed){throw 'Executable path migration accepted'}
-Write-Output 'PASS upgrade registration metadata clone, maintenance gate and path binding 3/3; no files modified'
+$next.Files[0].Relative='Current/app.exe'
+$intentFactory=$fixtureType.GetMethod('Intent',[Reflection.BindingFlags]'NonPublic,Static')
+$intent=$intentFactory.Invoke($null,@('D:\IsolatedUpgradeProject'))
+$intent.ExecutablePath=$registration.ExecutablePath
+$intent.SelectedChannels=[int[]]@(7,8,9);$intent.PausedChannels=[int[]]@(8);$intent.PermanentChannels=[int[]]@(9)
+$intent.CompletedChannels=[int[]]@(6);$intent.ManualStopped=$true;$intent.ManualPaused=$true
+$state.Intent=$intent;$state.RootRunId=$intent.RunId;$state.RunStartedUtcTicks=[DateTime]::UtcNow.Ticks
+$state.StartupDeadlineUtcTicks=$state.RunStartedUtcTicks+[TimeSpan]::FromMilliseconds($intent.StartupBudgetMs).Ticks
+$stateBefore=$json.Serialize($state)
+$copy=Get-IndependentUpgradeRegistration $registration $state $next
+if($json.Serialize($state) -ne $stateBefore -or $state.Intent.RecoveryChannels().Length -ne 0){throw 'Stopped/paused/isolated intent changed during upgrade preparation'}
+$intent.ManualStopped=$false;$failed=$false
+try{Get-IndependentUpgradeRegistration $registration $state $next|Out-Null}catch{$failed=$true}
+if(-not $failed){throw 'Pause was treated as installation stop permission'}
+$intent.ManualStopped=$true;$intent.ConfigurationSha256='f'*64;$failed=$false
+try{Get-IndependentUpgradeRegistration $registration $state $next|Out-Null}catch{$failed=$true}
+if(-not $failed){throw 'Foreign configuration intent migrated'}
+Write-Output 'PASS upgrade registration clone, maintenance/path binding and durable intent preservation 6/6; no files modified'
