@@ -209,6 +209,23 @@ namespace AdaptiveControlTests
                                     if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified &&
                                         startup.Identity.Matches(state.Controller))
                                     {
+                                        var faultPath = Path.Combine(root, "fault-injected.json");
+                                        if (File.Exists(Path.Combine(root, "INJECT-UI-AND-SAMPLING-HANG.txt")) &&
+                                            !File.Exists(faultPath))
+                                        {
+                                            hardware.FreezeSampling();
+                                            BoundedJson.Write(Path.Combine(root, "before-stall-verified.json"), state);
+                                            BoundedJson.Write(Path.Combine(root, "before-stall-database.json"),
+                                                RecoveryDatabaseEvidence.Read(startup.Registration.DatabasePath, targets));
+                                            BoundedJson.Write(faultPath, new { identity = startup.Identity,
+                                                utcTicks = DateTime.UtcNow.Ticks, targets,
+                                                fault = "UI thread blocked and simulated AI callbacks stalled" });
+                                            Console.WriteLine("INJECT_UI_AND_SAMPLING_HANG Pid=" + startup.Identity.Pid);
+                                            timer.Stop();
+                                            // Deliberately unresponsive simulated controller. Only the
+                                            // external executor may retire it; no test stop receipt.
+                                            Thread.Sleep(Timeout.Infinite);
+                                        }
                                         BoundedJson.Write(Path.Combine(root, "real-monitor-verified.json"), state);
                                         Console.WriteLine("RECOVERY_VERIFIED Targets=" + string.Join(",", targets));
                                         stopping = true;
@@ -437,6 +454,8 @@ namespace AdaptiveControlTests
             private readonly List<IDisposable> _resources = new List<IDisposable>();
             private readonly SimulatedEpbPlant _plant = new SimulatedEpbPlant();
             private int _samplesRead;
+            private int _freezeSampling;
+            internal void FreezeSampling() => Volatile.Write(ref _freezeSampling, 1);
             internal int SamplesRead => Volatile.Read(ref _samplesRead);
             private T Own<T>(T value) where T : IDisposable { _resources.Add(value); return value; }
             public DoController CreateDigitalOutput(DoConfig config, IAppLogger logger)
@@ -456,7 +475,11 @@ namespace AdaptiveControlTests
                     {
                         var records = channels.Select(channel => config.Records.Single(record =>
                             string.Equals(record.物理通道, channel, StringComparison.OrdinalIgnoreCase))).ToArray();
-                        return new AnalogInput(samples => _plant.Read(records, samples, settings.SampleRateHz),
+                        return new AnalogInput(samples =>
+                        {
+                            if (Volatile.Read(ref _freezeSampling) != 0) Thread.Sleep(Timeout.Infinite);
+                            return _plant.Read(records, samples, settings.SampleRateHz);
+                        },
                             settings.SampleRateHz, () => Interlocked.Increment(ref _samplesRead));
                     }));
             public IPowerSupplyCoordinator CreatePowerSupply(GlobalConfig config, IAppLogger logger) =>
