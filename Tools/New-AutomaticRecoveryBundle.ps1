@@ -68,6 +68,12 @@ $commands = [ordered]@{
     '一键安装正式版.cmd'='Install'; '一键故障采证.cmd'='Evidence'
     '一键停止全部相关进程.cmd'='Stop'; '一键卸载.cmd'='Uninstall'; '一键修复.cmd'='Repair'
 }
+if (-not $LegacyRecovery) {
+    $commands['检查升级条件.cmd']='ValidateUpgrade'
+    $commands['升级程序.cmd']='Upgrade'
+    $commands['继续升级收尾.cmd']='FinalizeUpgrade'
+    $commands['恢复中断文件事务.cmd']='RecoverFiles'
+}
 foreach ($entry in $commands.GetEnumerator()) {
     $command = "@echo off`r`nsetlocal`r`nset `"EPB_BUNDLE_SCRIPT=%~dp0Install-AutomaticRecoveryBundle.ps1`"`r`n"
     $command += '"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%EPB_BUNDLE_SCRIPT%" -Mode ' + $entry.Value + ' %*' + "`r`n"
@@ -113,7 +119,15 @@ if (-not $LegacyRecovery) {
 6. 卸载注销本安装服务、任务和快捷方式，并按原安装记录及摘要删除程序组件。配置、项目数据、诊断、注册和重复卸载所需的受保护维护协议保留；不会递归清空目录。重复卸载须使用同构建包，组件内容变化时保留并报告错误。此入口不等于旧版回滚。
 7. Evidence 导出有界独立状态、当前事务安全回执及只读正式记录摘要，缺失项写入清单；不包含完整数据库快照或全部波形，也不证明动作恢复。
 8. 停止入口先持久撤销续测许可，再由独立服务完成安全收尾；“已受理”不等于进程全部退出。检查 SafetyCleanupPending、事务阶段与错误详情。监督服务和启动任务保留；缺少可信批次身份时拒绝按名称强杀。
-9. 完整版本升级、整体回滚及真实硬件验收仍未完成，本包不得作为最终现场交付。文件修复不等于跨版本升级；未完成入口不转用旧恢复架构。
+9. 升级必须保留原构建完整包，在新包目录执行以下命令；先检查，再升级，成功后仍保持维护停止，不自动续测：
+
+```powershell
+.\Install-AutomaticRecoveryBundle.ps1 -Mode ValidateUpgrade -InstallRoot 'C:\Program Files (x86)\MTTFTest' -PreviousBundleDirectory 'D:\旧版完整包'
+.\Install-AutomaticRecoveryBundle.ps1 -Mode Upgrade -InstallRoot 'C:\Program Files (x86)\MTTFTest' -PreviousBundleDirectory 'D:\旧版完整包'
+```
+
+10. 若结果为 FinalizationFailed，使用新包的 FinalizeUpgrade，TransactionId 为安装目录 Upgrade 下的32位目录名。若文件事务中断且阶段为 Prepared/RollbackFailed，RecoverFiles 的 TransactionId 为 Repair 下的32位目录名。两种事务ID含义不同，不得猜测；先查看对应 result.json 或 transaction.json。文件恢复不等于版本降级，不启动试验。
+11. 这四个维护模式也提供同名 cmd，参数通过命令行传入；缺少旧包或事务ID会拒绝执行。整体降级回滚及真实硬件验收仍未完成，本包不得作为最终现场交付。未完成入口不转用旧恢复架构。
 
 真实台架和耐久验收未完成。RecoveryGuard-Acceptance 仅检查包/宿主，NOT_VERIFIED 不能视为通过。本轮不自动部署 WJ-EPB。
 '@

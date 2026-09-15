@@ -1,11 +1,13 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('ValidatePackage','Install','Repair','Restore','Launch','Status','Stop','Evidence','Uninstall')]
+    [ValidateSet('ValidatePackage','ValidateUpgrade','Upgrade','FinalizeUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Status','Stop','Evidence','Uninstall')]
     [string]$Mode = 'ValidatePackage',
     [string]$InstallRoot = '',
     [string]$ProjectDirectory = '',
     [string]$InteractiveUserSid = '',
     [string]$EvidenceDirectory = '',
+    [string]$PreviousBundleDirectory = '',
+    [string]$TransactionId = '',
     [switch]$ForceUninstall,
     [switch]$Elevated
 )
@@ -116,16 +118,26 @@ try {
     $manifest = Test-Bundle
     Write-Host ('候选版本：' + $manifest.version + '；现场耐久验收未完成。')
     if ($Mode -eq 'ValidatePackage') { Write-Output ('PASS BundleIntegrity ' + @($manifest.files).Count); exit 0 }
-    if ($Mode -in @('Install','Repair','Restore','Launch','Stop','Uninstall','Evidence')) {
+    if ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RecoverFiles')) {
+        if ($manifest.recoveryArchitecture -ne 'V4-Independent-SystemExecutor') { throw '该维护入口仅适用于独立执行器安装。' }
+        if ($Mode -in @('ValidateUpgrade','Upgrade')) {
+            if (-not $PreviousBundleDirectory -or $PreviousBundleDirectory.Contains('"')) { throw '升级必须明确指定不含引号的原版本完整包目录。' }
+            $PreviousBundleDirectory = [IO.Path]::GetFullPath($PreviousBundleDirectory).TrimEnd('\')
+        }
+        if ($Mode -in @('FinalizeUpgrade','RecoverFiles') -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$') { throw '必须明确指定32位事务ID。' }
+    }
+    if ($Mode -in @('Upgrade','FinalizeUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Stop','Uninstall','Evidence')) {
         $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             if ($Elevated) { throw '提权后仍无管理员权限。' }
             # Arguments are data, quoted for the Windows command line; reject quote injection.
-            foreach ($argument in @($PSScriptRoot,$InstallRoot,$ProjectDirectory,$InteractiveUserSid,$EvidenceDirectory)) { if ($argument.Contains('"')) { throw '参数不能含引号。' } }
+            foreach ($argument in @($PSScriptRoot,$InstallRoot,$ProjectDirectory,$InteractiveUserSid,$EvidenceDirectory,$PreviousBundleDirectory,$TransactionId)) { if ($argument.Contains('"')) { throw '参数不能含引号。' } }
             $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Mode ' + $Mode + ' -InstallRoot "' + $InstallRoot + '" -Elevated'
             if ($ProjectDirectory) { $arguments += ' -ProjectDirectory "' + $ProjectDirectory + '"' }
             if ($InteractiveUserSid) { $arguments += ' -InteractiveUserSid "' + $InteractiveUserSid + '"' }
             if ($EvidenceDirectory) { $arguments += ' -EvidenceDirectory "' + $EvidenceDirectory + '"' }
+            if ($PreviousBundleDirectory) { $arguments += ' -PreviousBundleDirectory "' + $PreviousBundleDirectory + '"' }
+            if ($TransactionId) { $arguments += ' -TransactionId "' + $TransactionId + '"' }
             if ($ForceUninstall) { $arguments += ' -ForceUninstall' }
             $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments -Verb RunAs -Wait -PassThru
             exit $child.ExitCode
@@ -135,6 +147,10 @@ try {
         if ($Mode -eq 'Install') {
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Install `
                 -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot -ProjectDirectory $ProjectDirectory -InteractiveUserSid $InteractiveUserSid
+        } elseif ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RecoverFiles')) {
+            & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode $Mode `
+                -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot `
+                -PreviousBundleDirectory $PreviousBundleDirectory -TransactionId $TransactionId
         } elseif ($Mode -in @('Repair','Uninstall')) {
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode $Mode -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot
         } elseif ($Mode -in @('Status','Restore','Stop')) {
