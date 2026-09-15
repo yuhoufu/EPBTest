@@ -42,7 +42,8 @@ namespace MtEmbTest
                     {
                         var startup = IndependentRecoveryStartup.Current;
                         startup.ValidateConfiguration(Cfg);
-                        var monitor = new FrmEpbMainMonitor(Guid.Parse(startup.ParentRunId), _daqRuntimeSettings) { Name = "实时监视" };
+                        var monitor = CreateMonitor(_daqRuntimeSettings, Guid.Parse(startup.ParentRunId));
+                        monitor.Name = "实时监视";
                         OpenChildForm(monitor);
                         await monitor.ResumeFromIndependentRecoveryAsync(startup);
                     }

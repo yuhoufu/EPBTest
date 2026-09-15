@@ -712,7 +712,14 @@ namespace MTEmbTest
 
         internal FrmEpbMainMonitor(
             Guid protectedLearningRootId,
-            DaqRuntimeSettings daqRuntimeSettings) : this(daqRuntimeSettings)
+            DaqRuntimeSettings daqRuntimeSettings) : this(protectedLearningRootId, daqRuntimeSettings, null)
+        {
+        }
+
+        internal FrmEpbMainMonitor(
+            Guid protectedLearningRootId,
+            DaqRuntimeSettings daqRuntimeSettings,
+            IMonitorHardwareFactory hardwareFactory) : this(daqRuntimeSettings, hardwareFactory)
         {
             _protectedLearningRootId = protectedLearningRootId;
         }

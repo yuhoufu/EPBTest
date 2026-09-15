@@ -13,12 +13,223 @@ using Controller;
 using Controller.Alarm;
 using IO.NI;
 using MTEmbTest;
+using MTTFTest.Watchdog.Protocol;
+using MTTFTest.FallbackGuard;
 using IAppLogger = Config.IAppLogger;
 
 namespace AdaptiveControlTests
 {
     internal static class MonitorHardwareSmokeTests
     {
+        internal static int PrepareIndependentRecovery(string userSid)
+        {
+            var root = RequireIndependentFixture();
+            IndependentProtectedFiles.RequireTrustedDirectory(root);
+            var project = Path.Combine(root, "D", "P");
+            var stateDirectory = Path.Combine(root, "S");
+            Directory.CreateDirectory(stateDirectory);
+            var registrationPath = Path.Combine(stateDirectory, "registration.json");
+            IndependentRegistrationExport.Export(project, stateDirectory, userSid,
+                Guid.NewGuid().ToString("N"), registrationPath);
+            var registration = BoundedJson.Read<IndependentExecutorRegistration>(registrationPath);
+            registration.ExecutablePath = Path.Combine(root, "AdaptiveControlTests.exe");
+            registration.ExecutableSha256 = SupervisorProtocol.ComputeSha256(registration.ExecutablePath);
+            registration.SafetyExecutablePath = Path.Combine(root, "IndependentRecovery.ProcessTests.exe");
+            registration.SafetyExecutableSha256 = SupervisorProtocol.ComputeSha256(registration.SafetyExecutablePath);
+            File.WriteAllText(Path.Combine(registration.ConfigDirectory, "SIMULATED-HARDWARE-ONLY.txt"), "success");
+            registration.Validate();
+            BoundedJson.Write(registrationPath, registration);
+            new IndependentProjectStateStore(stateDirectory).Update(0, state => true);
+            BoundedJson.Write(Path.Combine(root, "before-recovery-database.json"),
+                RecoveryDatabaseEvidence.Read(registration.DatabasePath, new[] { 4, 7 }));
+            Console.WriteLine("PREPARED real monitor simulation; no run armed; hardware stages simulated");
+            return 0;
+        }
+
+        internal static int ArmIndependentRecovery()
+        {
+            var root = RequireIndependentFixture();
+            var registration = IndependentExecutorRegistration.LoadTrusted(Path.Combine(root, "S", "registration.json"));
+            using (var user = System.Security.Principal.WindowsIdentity.GetCurrent())
+                if (user.User.Value != registration.InteractiveUserSid)
+                    throw new InvalidOperationException("Fixture must be armed by registered interactive user");
+            var config = ConfigLoader.LoadTest(Path.Combine(registration.ProjectDirectory, "Config", "TestConfig.xml"), null);
+            var store = new IndependentProjectStateStore(registration.StateDirectory);
+            using (var process = Process.GetCurrentProcess())
+            {
+                var identity = new IndependentProcessIdentity
+                {
+                    Pid = process.Id, StartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                    WindowsSessionId = process.SessionId, ExecutablePath = process.MainModule.FileName,
+                    SessionToken = Guid.NewGuid().ToString("N")
+                };
+                var intent = new IndependentRunIntent
+                {
+                    Revision = 1, RunId = Guid.NewGuid().ToString("N"), RunEpoch = 1, Armed = true,
+                    ProjectDirectory = registration.ProjectDirectory, DatabasePath = registration.DatabasePath,
+                    DatabaseCreationUtcTicks = registration.DatabaseCreationUtcTicks,
+                    ExecutablePath = registration.ExecutablePath, ConfigurationSha256 = registration.ConfigurationSha256,
+                    SelectedChannels = config.EpbRecords.Where(record => record.Enabled).Select(record => record.Id).ToArray(),
+                    PeriodMs = config.PeriodMs,
+                    StartupBudgetMs = registration.StartupPositioningBudgetMs + (config.LearnCycles + 2L) * config.PeriodMs,
+                    MechanicalTargets = config.EpbRecords.Select(record => new IndependentMechanicalTarget
+                    { Channel = record.Id, TotalCount = record.TotalCount > 0 ? record.TotalCount : config.TestTarget }).ToArray()
+                };
+                if (!intent.SelectedChannels.OrderBy(channel => channel).SequenceEqual(new[] { 4, 7 }))
+                    throw new InvalidOperationException("Fixture must preserve selected channels 4 and 7");
+                store.ArmManualRun(store.Read().Revision, intent, identity, DateTime.UtcNow.Ticks);
+                BoundedJson.Write(Path.Combine(root, "arming-process.json"), identity);
+            }
+            Console.WriteLine("ARMED simulation exits; production executor must detect the exited process and launch recovery");
+            return 0;
+        }
+
+        private static string RequireIndependentFixture()
+        {
+            var root = AppDomain.CurrentDomain.BaseDirectory;
+            var marker = Path.Combine(root, "REAL-MONITOR-SIMULATION-ONLY.txt");
+            if (!File.Exists(marker) || new FileInfo(marker).Length > 128 ||
+                File.ReadAllText(marker).Trim() != "SIMULATED_NO_HARDWARE")
+                throw new InvalidOperationException("Independent monitor simulation marker required");
+            return root;
+        }
+
+        internal static int RunIndependentRecovery(string[] arguments)
+        {
+            var root = RequireIndependentFixture();
+            var pid = Process.GetCurrentProcess().Id;
+            var originalOut = Console.Out;
+            var originalError = Console.Error;
+            using (var output = new StreamWriter(Path.Combine(root, "recovery-" + pid + ".stdout.log")) { AutoFlush = true })
+            using (var errors = new StreamWriter(Path.Combine(root, "recovery-" + pid + ".stderr.log")) { AutoFlush = true })
+            {
+                Console.SetOut(output);
+                Console.SetError(errors);
+                try
+                {
+                    var code = RunIndependentRecoveryCore(arguments);
+                    BoundedJson.Write(Path.Combine(root, "real-monitor-result.json"), new { pid, exitCode = code });
+                    return code;
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine(error);
+                    BoundedJson.Write(Path.Combine(root, "real-monitor-error-" + pid + ".json"),
+                        new { pid, error = error.ToString() });
+                    throw;
+                }
+                finally
+                {
+                    Console.SetOut(originalOut);
+                    Console.SetError(originalError);
+                }
+            }
+        }
+
+        private static int RunIndependentRecoveryCore(string[] arguments)
+        {
+            var root = RequireIndependentFixture();
+            var startup = IndependentRecoveryStartup.Parse(arguments);
+            if (startup == null || !startup.IsRecoveryLaunch)
+                throw new InvalidOperationException("One-time independent recovery ticket required");
+            startup.ConsumeAndBind();
+            if (!startup.Registration.ProjectDirectory.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Simulation project escaped isolated executable directory");
+            UnattendedRecoveryCoordinator.SetRecoveryProcessMode(true);
+            var targets = startup.ValidateCurrent().RecoveryChannels();
+            var store = new IndependentProjectStateStore(startup.Registration.StateDirectory);
+            Exception failure = null;
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    using (var hardware = new SmokeHardware())
+                    using (var main = new MtEmbTest.Main_Frm(hardware))
+                    using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
+                    {
+                        FrmEpbMainMonitor monitor = null;
+                        var formal = new ConcurrentDictionary<int, int>();
+                        var attached = false;
+                        var stopping = false;
+                        var closing = false;
+                        var clock = Stopwatch.StartNew();
+                        timer.Tick += (sender, args) =>
+                        {
+                            try
+                            {
+                                if (closing) return;
+                                monitor = monitor ?? main.MdiChildren.OfType<FrmEpbMainMonitor>().SingleOrDefault();
+                                if (monitor != null && !attached)
+                                {
+                                    var manager = (EpbManager)typeof(FrmEpbMainMonitor).GetField("_epb",
+                                        BindingFlags.Instance | BindingFlags.NonPublic).GetValue(monitor);
+                                    if (manager != null)
+                                    {
+                                        attached = true;
+                                        manager.ChannelCycleCompleted += (channel, count) =>
+                                        {
+                                            if (!targets.Contains(channel))
+                                                failure = new InvalidOperationException("Excluded channel completed a recovery cycle");
+                                            formal.AddOrUpdate(channel, 1, (_, value) => value + 1);
+                                            Console.WriteLine("RECOVERY_FORMAL Channel=" + channel + " Count=" + count);
+                                        };
+                                        EventHandler disposed = null;
+                                        disposed = (_, __) =>
+                                        {
+                                            monitor.Disposed -= disposed;
+                                            main.BeginInvoke(new Action(main.Close));
+                                        };
+                                        monitor.Disposed += disposed;
+                                    }
+                                }
+                                if (attached && !stopping &&
+                                    targets.All(channel => formal.TryGetValue(channel, out var count) && count >= 3))
+                                {
+                                    var state = store.Read();
+                                    if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified &&
+                                        startup.Identity.Matches(state.Controller))
+                                    {
+                                        BoundedJson.Write(Path.Combine(root, "real-monitor-verified.json"), state);
+                                        Console.WriteLine("RECOVERY_VERIFIED Targets=" + string.Join(",", targets));
+                                        stopping = true;
+                                        Click(monitor, "BtnStop");
+                                    }
+                                }
+                                if (stopping && monitor.MonitorLifecycle == EpbMonitorLifecycle.Idle)
+                                {
+                                    closing = true;
+                                    monitor.Close();
+                                }
+                                if (clock.Elapsed.TotalSeconds > 300)
+                                    throw new TimeoutException("Real recovery did not reach verified formal progress and stop within 300 seconds");
+                            }
+                            catch (Exception error)
+                            {
+                                failure = error;
+                                timer.Stop();
+                                Console.Error.WriteLine(error);
+                                // The external test owner retires this isolated process.
+                                // Do not fabricate manual stop or safety authorization.
+                            }
+                        };
+                        timer.Start();
+                        Application.Run(main); // Production OnShown owns opening and resuming the monitor.
+                        if (!closing || failure != null)
+                            throw failure ?? new InvalidOperationException("Main window exited before verified recovery");
+                    }
+                }
+                catch (Exception error) { failure = error; }
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.IsBackground = true;
+            thread.Start();
+            if (!thread.Join(315000)) throw new TimeoutException("Independent recovery monitor did not exit");
+            WatchdogRuntime.ShutdownRuntimeWithReceipt();
+            if (failure != null) throw failure;
+            Console.WriteLine("PASS independent ticket, real monitor continuation, executor verification and normal exit");
+            return 0;
+        }
+
         internal static int RunPlantUnit()
         {
             long tick = Stopwatch.Frequency;
@@ -67,11 +278,18 @@ namespace AdaptiveControlTests
             {
                 try
                 {
+                    Guid? protectedRoot = mdi ? Guid.NewGuid() : (Guid?)null;
                     using (var hardware = new SmokeHardware())
-                    using (var main = trial || mdi ? new MtEmbTest.Main_Frm() : null)
-                    using (var monitor = new FrmEpbMainMonitor(new DaqRuntimeSettings(2000, 20), hardware))
+                    using (var main = trial || mdi ? new MtEmbTest.Main_Frm(hardware) : null)
+                    using (var monitor = main == null
+                        ? new FrmEpbMainMonitor(new DaqRuntimeSettings(2000, 20), hardware)
+                        : main.CreateMonitor(new DaqRuntimeSettings(2000, 20), protectedRoot))
                     using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
                     {
+                        if (protectedRoot.HasValue &&
+                            (Guid)typeof(FrmEpbMainMonitor).GetField("_protectedLearningRootId",
+                                BindingFlags.Instance | BindingFlags.NonPublic).GetValue(monitor) != protectedRoot.Value)
+                            throw new InvalidOperationException("Recovery monitor lost its protected learning root");
                         var start = DateTime.UtcNow;
                         var closing = false;
                         var started = false;

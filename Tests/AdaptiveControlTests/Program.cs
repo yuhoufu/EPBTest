@@ -25,6 +25,12 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 2 && args[0] == "--prepare-independent-monitor")
+                    return MonitorHardwareSmokeTests.PrepareIndependentRecovery(args[1]);
+                if (args.Length == 1 && args[0] == "--arm-independent-monitor")
+                    return MonitorHardwareSmokeTests.ArmIndependentRecovery();
+                if (args.Contains("--independent-registration") || args.Contains("--independent-ticket"))
+                    return MonitorHardwareSmokeTests.RunIndependentRecovery(args);
                 if (args.Length == 2 && args[0] == "--monitor-hardware-smoke")
                     return MonitorHardwareSmokeTests.Run(args[1]);
                 if (args.Length == 2 && args[0] == "--monitor-mdi-smoke")

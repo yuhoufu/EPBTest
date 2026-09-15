@@ -29,6 +29,7 @@ namespace MtEmbTest
         private const int MaxWarns = 2000;
         public GlobalConfig Cfg;
         private DaqRuntimeSettings _daqRuntimeSettings;
+        private readonly IMonitorHardwareFactory _monitorHardwareFactory;
 
         #endregion
         
@@ -47,6 +48,20 @@ namespace MtEmbTest
             _watchdogUiAdapter = new MainWatchdogUiLifecycleAdapter(this);
             Shown += ShowPreviousForcedExitNoticeOnce;
 
+        }
+
+        internal Main_Frm(IMonitorHardwareFactory monitorHardwareFactory) : this()
+        {
+            _monitorHardwareFactory = monitorHardwareFactory ??
+                throw new ArgumentNullException(nameof(monitorHardwareFactory));
+        }
+
+        internal FrmEpbMainMonitor CreateMonitor(
+            DaqRuntimeSettings settings, Guid? protectedLearningRootId = null)
+        {
+            return protectedLearningRootId.HasValue
+                ? new FrmEpbMainMonitor(protectedLearningRootId.Value, settings, _monitorHardwareFactory)
+                : new FrmEpbMainMonitor(settings, _monitorHardwareFactory);
         }
 
         private void ShowPreviousForcedExitNoticeOnce(object sender, EventArgs e)
@@ -535,7 +550,7 @@ namespace MtEmbTest
 
 
             //FrmMainMonitor frmRealMonitor = new FrmMainMonitor();
-            var frmRealMonitor = new FrmEpbMainMonitor(_daqRuntimeSettings);
+            var frmRealMonitor = CreateMonitor(_daqRuntimeSettings);
             frmRealMonitor.Name = "实时监视";
             OpenChildForm(frmRealMonitor);
         }
