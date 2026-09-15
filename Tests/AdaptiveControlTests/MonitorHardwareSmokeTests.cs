@@ -54,7 +54,7 @@ namespace AdaptiveControlTests
             return 0;
         }
 
-        internal static int Run(string isolatedRoot, bool trial = false)
+        internal static int Run(string isolatedRoot, bool trial = false, bool mdi = false)
         {
             var root = Path.GetFullPath(isolatedRoot).TrimEnd('\\') + "\\";
             if (!string.Equals(root, Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory), StringComparison.OrdinalIgnoreCase))
@@ -68,7 +68,7 @@ namespace AdaptiveControlTests
                 try
                 {
                     using (var hardware = new SmokeHardware())
-                    using (var main = trial ? new MtEmbTest.Main_Frm() : null)
+                    using (var main = trial || mdi ? new MtEmbTest.Main_Frm() : null)
                     using (var monitor = new FrmEpbMainMonitor(new DaqRuntimeSettings(2000, 20), hardware))
                     using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
                     {
@@ -88,6 +88,7 @@ namespace AdaptiveControlTests
                                 {
                                     lastCloseReport = second;
                                     Console.WriteLine("CLOSE_WAIT MonitorDisposed=" + monitor.IsDisposed +
+                                        " Handle=" + monitor.IsHandleCreated +
                                         " Lifecycle=" + monitor.MonitorLifecycle +
                                         " Reentry=" + DescribeField(monitor, "_closingReentry") +
                                         " MainDisposed=" + main?.IsDisposed +
@@ -145,8 +146,17 @@ namespace AdaptiveControlTests
                         else
                         {
                             main.Shown += (sender, args) => main.OpenChildForm(monitor);
-                            // MDI removes the child after FormClosed returns. Match a subsequent operator click.
-                            monitor.FormClosed += (sender, args) => main.BeginInvoke(new Action(main.Close));
+                            // A hidden MDI child loses its HWND, so Close disposes
+                            // it without FormClosed. Observe actual disposal and
+                            // then simulate the subsequent main-window close.
+                            EventHandler disposed = null;
+                            disposed = (sender, args) =>
+                            {
+                                monitor.Disposed -= disposed;
+                                Console.WriteLine("MONITOR_DISPOSED MainHandle=" + main.IsHandleCreated);
+                                main.BeginInvoke(new Action(main.Close));
+                            };
+                            monitor.Disposed += disposed;
                             Application.Run(main);
                         }
                         if (!closing || hardware.SamplesRead < 20)
@@ -159,7 +169,7 @@ namespace AdaptiveControlTests
             thread.IsBackground = true;
             thread.Start();
             if (!thread.Join(trial ? 235000 : 45000)) throw new TimeoutException("Monitor UI thread did not terminate");
-            if (trial) WatchdogRuntime.ShutdownRuntimeWithReceipt();
+            if (trial || mdi) WatchdogRuntime.ShutdownRuntimeWithReceipt();
             if (failure != null) throw failure;
             Console.WriteLine(trial ? "PASS three formal completion events; database evidence requires separate verification; restart NOT tested"
                 : "PASS monitor initialization and idle close; trial recovery NOT tested");

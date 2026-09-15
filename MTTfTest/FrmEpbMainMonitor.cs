@@ -3200,6 +3200,10 @@ namespace MTEmbTest
         {
             Interlocked.Exchange(ref _closingReentry, 3);
             if (!IsDisposed && !Disposing) Close();
+            // Hidden MDI children have no HWND. Form.Close then disposes the
+            // child directly without raising FormClosed. Safety and resource
+            // draining have already completed before this authorized entry.
+            if (IsDisposed) SetMonitorLifecycle(EpbMonitorLifecycle.Closed);
         }
 
         internal static StopSource ResolveMonitorCloseStopSource(bool watchdogOwnsExit)
@@ -3678,8 +3682,13 @@ namespace MTEmbTest
                 }
                 (MdiParent as Main_Frm)?.CacheApplicationCloseReceipt(closeReceipt);
                 Interlocked.Exchange(ref _closingReentry, 3);
-                if (!IsDisposed && !Disposing && IsHandleCreated)
-                    BeginInvoke((Action)Close);
+                if (!IsDisposed && !Disposing)
+                {
+                    if (IsHandleCreated)
+                        BeginInvoke((Action)CloseAfterMainExitAuthorized);
+                    else
+                        CloseAfterMainExitAuthorized();
+                }
             }
             return true;
         }

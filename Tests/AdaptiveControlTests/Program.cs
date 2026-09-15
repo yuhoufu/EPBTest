@@ -27,6 +27,8 @@ namespace AdaptiveControlTests
             {
                 if (args.Length == 2 && args[0] == "--monitor-hardware-smoke")
                     return MonitorHardwareSmokeTests.Run(args[1]);
+                if (args.Length == 2 && args[0] == "--monitor-mdi-smoke")
+                    return MonitorHardwareSmokeTests.Run(args[1], mdi: true);
                 if (args.Length == 1 && args[0] == "--monitor-plant-unit")
                     return MonitorHardwareSmokeTests.RunPlantUnit();
                 if (args.Length == 2 && args[0] == "--monitor-trial-simulation")
