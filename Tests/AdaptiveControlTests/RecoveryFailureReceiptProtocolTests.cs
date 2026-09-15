@@ -314,7 +314,8 @@ namespace AdaptiveControlTests
 
         private static void BootstrapAndCapability()
         {
-            var dir = TempDirectory();
+            var root = TempDirectory();
+            var dir = Path.Combine(root, "Program Files", "试验项目");
             try
             {
                 var session = Guid.NewGuid().ToString("N");
@@ -338,7 +339,7 @@ namespace AdaptiveControlTests
                 Assert(File.Exists(relaunchPath) && !string.Equals(created.BootstrapReceipt.Path, relaunchPath, StringComparison.Ordinal), "authority overwrote primary snapshot");
                 Assert(File.ReadAllText(created.BootstrapReceipt.Path).IndexOf("RelaunchState", StringComparison.Ordinal) >= 0, "primary bootstrap missing legacy-visible state");
             }
-            finally { TryDelete(dir); }
+            finally { TryDelete(root); }
         }
 
         private static void MissingCorruptUnreadable()

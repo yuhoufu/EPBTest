@@ -484,12 +484,12 @@ namespace MTTFTest.Watchdog.Protocol
 
         private static bool HasProof(DurableRelaunchAuthorityRecord record)
         {
-            return record != null && HasToken(record.BootstrapProofPath) &&
+            return record != null && HasPathToken(record.BootstrapProofPath) &&
                    RecoveryFailureReceipt.IsSha256(record.BootstrapProofSha256) &&
                    string.Equals(record.BootstrapProofMarker, "schema4-authority-bootstrap-proof-v1", StringComparison.Ordinal) &&
                    record.BootstrapMaximumProcessRelaunches > 0 &&
                    record.BootstrapMaximumProcessRelaunches == record.MaximumProcessRelaunches &&
-                   HasToken(record.BootstrapPrimaryPath) && RecoveryFailureReceipt.IsSha256(record.BootstrapPrimarySha256);
+                   HasPathToken(record.BootstrapPrimaryPath) && RecoveryFailureReceipt.IsSha256(record.BootstrapPrimarySha256);
         }
 
         private static bool HasAnyFailureEvidence(DurableRelaunchAuthorityRecord record)
