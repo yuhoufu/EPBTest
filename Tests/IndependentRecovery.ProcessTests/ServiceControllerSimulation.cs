@@ -86,7 +86,8 @@ namespace AdaptiveControlTests
         internal static int RunStalledController(string registrationPath, string scenario)
         {
             var healthy = scenario == "single" ? new[] { 7, 8 } : scenario == "partial" ? new[] { 7 } :
-                scenario == "all" ? Array.Empty<int>() : throw new ArgumentException("Unknown stall scenario");
+                scenario == "all" ? Array.Empty<int>() : scenario == "channel-pause" ? new[] { 8 } :
+                throw new ArgumentException("Unknown stall scenario");
             var registration = IndependentExecutorRegistration.LoadTrusted(registrationPath);
             var root = registration.ProjectDirectory;
             if (!Path.GetFileName(root).StartsWith("service-controller-simulation-", StringComparison.Ordinal))
@@ -120,6 +121,12 @@ namespace AdaptiveControlTests
             };
             store.ArmManualRun(store.Read().Revision, intent, identity, DateTime.UtcNow.Ticks);
             IndependentExecutionFence.AttachCurrent(registration.InstallationId, identity);
+            if (scenario == "channel-pause")
+            {
+                store.SetControllerChannelPause(identity, intent.RunId, intent.RunEpoch, 7, true,
+                    Guid.NewGuid().ToString("N"), DateTime.UtcNow.Ticks);
+                BoundedJson.Write(Path.Combine(root, "channel-pause-state.json"), store.Read());
+            }
             var elapsed = Stopwatch.StartNew(); var cycle = 100; var fenced = false;
             try
             {

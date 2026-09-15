@@ -251,6 +251,15 @@ namespace MTEmbTest
                 _store.SetControllerSelection(Identity, runId, epoch, channel, selected, command, DateTime.UtcNow.Ticks));
         }
 
+        internal System.Threading.Tasks.Task PersistChannelPauseAsync(int channel, bool paused)
+        {
+            var runId = RunId; var epoch = RunEpoch;
+            if (runId == null) throw new InvalidOperationException("IndependentPauseRunMissing");
+            var command = Guid.NewGuid().ToString("N");
+            return System.Threading.Tasks.Task.Run(() =>
+                _store.SetControllerChannelPause(Identity, runId, epoch, channel, paused, command, DateTime.UtcNow.Ticks));
+        }
+
         internal System.Threading.Tasks.Task PersistManualPauseAsync(bool paused, string commandId)
         {
             if (RunId == null) throw new InvalidOperationException("IndependentPauseRunMissing");

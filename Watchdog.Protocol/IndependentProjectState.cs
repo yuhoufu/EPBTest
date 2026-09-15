@@ -586,6 +586,47 @@ namespace MTTFTest.Watchdog.Protocol
             });
         }
 
+        public void SetControllerChannelPause(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int channel, bool paused, string commandId, long now)
+        {
+            controller.Validate();
+            if (channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentChannelPauseCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentChannelPauseStaleController");
+                var intent = state.Intent;
+                if (!paused && (state.Maintenance || state.SafetyCleanupPending ||
+                    state.Transaction?.IsTerminal == false || intent.ManualStopped || intent.ManualPaused ||
+                    !intent.Armed || !intent.SelectedChannels.Contains(channel) ||
+                    intent.PermanentChannels.Contains(channel) || intent.CompletedChannels.Contains(channel)))
+                    throw new InvalidOperationException("IndependentChannelResumeNotAuthorized");
+                if (intent.PausedChannels.Contains(channel) == paused) return true;
+                var before = intent.SelectedChannels.ToArray();
+                intent.PausedChannels = paused
+                    ? intent.PausedChannels.Union(new[] { channel }).OrderBy(c => c).ToArray()
+                    : intent.PausedChannels.Where(c => c != channel).ToArray();
+                intent.Revision = checked(intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                // A single-channel continue must not extend the observation
+                // deadline for other stalled channels in this batch.
+                AppendAudit(state, paused ? "OperatorChannelPause" : "OperatorChannelContinue",
+                    "Channel=" + channel + ";CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
         public void SetControllerManualPause(IndependentProcessIdentity controller, string runId, long runEpoch,
             bool paused, string commandId, long now)
         {

@@ -56,6 +56,85 @@ namespace AdaptiveControlTests
             return store.Read().Ticket;
         }
 
+        private static void VerifyControllerChannelPause(string root, long now)
+        {
+            var directory = Path.Combine(root, "durable-channel-pause");
+            var store = Fixture(directory, now);
+            var original = store.Read();
+            var command = Guid.NewGuid().ToString("N");
+            store.SetControllerChannelPause(original.Controller, original.Intent.RunId, original.Intent.RunEpoch,
+                7, true, command, now + 1);
+            var paused = new IndependentProjectStateStore(directory).Read();
+            Assert(paused.Intent.SelectedChannels.SequenceEqual(original.Intent.SelectedChannels) &&
+                paused.Intent.RecoveryChannels().SequenceEqual(new[] { 4, 5, 8, 9, 12 }) &&
+                paused.Intent.PausedChannels.SequenceEqual(new[] { 7 }),
+                "single pause was not durable or changed other channel selections");
+            store.SetControllerChannelPause(original.Controller, original.Intent.RunId, original.Intent.RunEpoch,
+                7, true, command, now + 2);
+            Assert(store.Read().Revision == paused.Revision, "duplicate channel pause changed authority");
+            store.SetControllerManualPause(original.Controller, original.Intent.RunId, original.Intent.RunEpoch,
+                true, Guid.NewGuid().ToString("N"), now + 2);
+            store.SetControllerManualPause(original.Controller, original.Intent.RunId, original.Intent.RunEpoch,
+                false, Guid.NewGuid().ToString("N"), now + 3);
+            Assert(!store.Read().Intent.RecoveryChannels().Contains(7),
+                "whole-batch continue cleared an independent channel pause");
+            var deadlineBeforeChannelContinue = store.Read().StartupDeadlineUtcTicks;
+            Reject(() => store.SetControllerChannelPause(Identity(), original.Intent.RunId, original.Intent.RunEpoch,
+                7, false, Guid.NewGuid().ToString("N"), now + 3), "foreign controller resumed paused channel");
+            Reject(() => store.SetControllerChannelPause(original.Controller, original.Intent.RunId, original.Intent.RunEpoch + 1,
+                7, false, Guid.NewGuid().ToString("N"), now + 3), "wrong epoch resumed paused channel");
+            store.SetControllerChannelPause(original.Controller, original.Intent.RunId, original.Intent.RunEpoch,
+                7, false, Guid.NewGuid().ToString("N"), now + 4);
+            Assert(store.Read().Intent.RecoveryChannels().SequenceEqual(original.Intent.RecoveryChannels()) &&
+                store.Read().StartupDeadlineUtcTicks == deadlineBeforeChannelContinue,
+                "channel continue lost targets or postponed other stalled channels");
+            foreach (var kind in new[] { "stopped", "batch-paused", "unselected", "permanent", "completed", "maintenance" })
+            {
+                var denied = Fixture(Path.Combine(root, "channel-continue-" + kind), now);
+                denied.Update(denied.Read().Revision, state =>
+                {
+                    state.Intent.PausedChannels = new[] { 7 };
+                    if (kind == "stopped") { state.Intent.ManualStopped = true; state.Intent.Armed = false; }
+                    if (kind == "batch-paused") state.Intent.ManualPaused = true;
+                    if (kind == "unselected") state.Intent.SelectedChannels = new[] { 8, 9 };
+                    if (kind == "permanent") state.Intent.PermanentChannels = new[] { 7 };
+                    if (kind == "completed") state.Intent.CompletedChannels = new[] { 7 };
+                    if (kind == "maintenance") state.Maintenance = true;
+                    return true;
+                });
+                var before = denied.Read();
+                Reject(() => denied.SetControllerChannelPause(before.Controller, before.Intent.RunId, before.Intent.RunEpoch,
+                    7, false, Guid.NewGuid().ToString("N"), now + 5), "channel continue bypassed " + kind);
+                Assert(denied.Read().Revision == before.Revision, "rejected continue mutated " + kind);
+            }
+            var pending = Fixture(Path.Combine(root, "channel-pause-launch-race"), now);
+            var ticket = Ready(pending, now);
+            var parent = pending.Read();
+            pending.SetControllerChannelPause(parent.Controller, parent.Intent.RunId, parent.Intent.RunEpoch,
+                7, true, Guid.NewGuid().ToString("N"), now + 1);
+            Assert(pending.Read().Ticket.Revoked && !pending.Read().Intent.RecoveryChannels().Contains(7),
+                "operator pause left pending launch permission active");
+            Reject(() => pending.ConsumeLaunchTicket(pending.Read().Revision, ticket.Nonce, Identity(), Hash, now + 2),
+                "old ticket restored a manually paused channel");
+            using (var child = Process.Start(new ProcessStartInfo(Exe,
+                "--state-consume \"" + Path.Combine(root, "channel-pause-launch-race") + "\" " +
+                ticket.Nonce + " " + pending.Read().Revision) { UseShellExecute = false, CreateNoWindow = true }))
+            {
+                try
+                {
+                    if (!child.WaitForExit(10000)) throw new Exception("paused ticket consumer deadline exceeded");
+                    Assert(child.ExitCode == 23 && pending.Read().Ticket.Consumer == null,
+                        "replacement process consumed a ticket revoked by single-channel pause");
+                }
+                finally
+                {
+                    if (!child.HasExited) { child.Kill(); child.WaitForExit(3000); }
+                }
+            }
+            Reject(() => pending.SetControllerChannelPause(parent.Controller, parent.Intent.RunId, parent.Intent.RunEpoch,
+                7, false, Guid.NewGuid().ToString("N"), now + 2), "channel continue raced active takeover");
+        }
+
         internal static int ConsumeChild(string root, string nonce, long revision)
         {
             try
@@ -609,6 +688,7 @@ namespace AdaptiveControlTests
                 selectionStore.Read().Intent.RecoveryChannels().Length == 5, "checking box silently restarted a stopped lane");
             Reject(() => selectionStore.SetControllerSelection(Identity(), selectionState.Intent.RunId,
                 selectionState.Intent.RunEpoch, 5, false, Guid.NewGuid().ToString("N"), now), "foreign process changed selection");
+            VerifyControllerChannelPause(root, now);
             var pauseStore = Fixture(Path.Combine(root, "durable-controller-pause"), now);
             var pauseState = pauseStore.Read();
             var pauseCommand = Guid.NewGuid().ToString("N");
@@ -1053,6 +1133,16 @@ namespace AdaptiveControlTests
                 "verified replacement could not complete transaction");
             Assert(pumpStore.Read().NearZeroRetries.Length == 0, "verified recovery did not close near zero incident");
             var verifiedRun = pumpStore.Read();
+            pumpStore.SetControllerChannelPause(consumer, verifiedRun.Intent.RunId, verifiedRun.Intent.RunEpoch,
+                7, true, Guid.NewGuid().ToString("N"), now + 5);
+            Assert(pumpStore.Read().Intent.RecoveryChannels().Length == 5 && !pumpStore.Read().Ticket.Revoked &&
+                pumpStore.Read().Transaction.IntentRevision == pumpStore.Read().Intent.Revision,
+                "single pause invalidated verified healthy controller binding");
+            pumpStore.SetControllerChannelPause(consumer, verifiedRun.Intent.RunId, verifiedRun.Intent.RunEpoch,
+                7, false, Guid.NewGuid().ToString("N"), now + 6);
+            Assert(pumpStore.Read().Intent.RecoveryChannels().Length == 6 &&
+                pumpStore.Read().Transaction.IntentRevision == pumpStore.Read().Intent.Revision &&
+                pumpStore.Read().Controller.Matches(consumer), "channel continue failed to preserve verified binding");
             pumpStore.SetControllerManualPause(consumer, verifiedRun.Intent.RunId, verifiedRun.Intent.RunEpoch,
                 true, Guid.NewGuid().ToString("N"), now + 5);
             Assert(pumpStore.Read().Intent.RecoveryChannels().Length == 0 && !pumpStore.Read().Ticket.Revoked &&
