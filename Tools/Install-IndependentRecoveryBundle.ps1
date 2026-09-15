@@ -474,6 +474,12 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall'))
         Assert-IndependentComponentVersions $previousPlan
         $upgradePlan=Get-IndependentUpgradePlan $previousPlan $plan $receipt
         $repairFiles=@($upgradePlan.ReplacementFiles)
+    }elseif($Mode -eq 'RecoverFiles'){
+        # During interrupted upgrade the receipt can describe either build.
+        # Recovery restores only the explicit protected transaction's backups;
+        # it does not install payloads from this package or infer file ownership
+        # from the potentially mixed receipt. All other modes keep exact matching.
+        $repairFiles=@()
     }else{$repairFiles=@(Get-IndependentRepairFiles $plan $receipt)}
     $protocol=@($plan.Files|Where-Object Relative -eq 'FallbackGuard/MTTFTest.Watchdog.Protocol.dll')[0]
     $assembly=[Reflection.Assembly]::LoadFrom($protocol.Source)
@@ -535,6 +541,13 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall'))
         }
         if($Mode -eq 'RecoverFiles'){
             $restored=Restore-IndependentFileTransaction $plan.Destination $TransactionId
+            # Report file restoration separately from strict registration health:
+            # repairing a pre-existing damaged original may still be necessary.
+            $restoredRegistration=[MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrustedForMaintenance($registrationPath)
+            if($restoredRegistration.InstallationId -ne $registration.InstallationId -or
+               $restoredRegistration.ProjectDirectory -ne $registration.ProjectDirectory -or
+               $restoredRegistration.DatabasePath -ne $registration.DatabasePath -or
+               $restoredRegistration.ConfigurationSha256 -ne $registration.ConfigurationSha256){throw 'Restored registration identity mismatch; maintenance remains enabled.'}
             Write-Output ('Interrupted file transaction rolled back; maintenance remains enabled and no trial was started: '+$restored)
             return
         }
