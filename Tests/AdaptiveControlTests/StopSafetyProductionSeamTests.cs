@@ -60,6 +60,7 @@ namespace AdaptiveControlTests
         {
             var passed = 0;
             Run("DO真实映射正反互斥与高优先级断电保留其他输出", DigitalOutputUsesRealControlPath, ref passed);
+            Run("AI注入样本经过真实回调与控制快照且旧代回调不能污染新代", AnalogInputUsesRealCallbackGeneration, ref passed);
             Run("DO初始化失败释放会话且可重新初始化", DigitalOutputFailureReleasesSession, ref passed);
             Run("DO单设备全关失败仍尝试其他设备且不伪报成功", DigitalOutputAllOffContinuesAfterFailure, ref passed);
             Run("AO安全归零不受压力标定偏置和下限影响", AoSafetyZeroIsLiteralVoltage, ref passed);
@@ -334,6 +335,100 @@ namespace AdaptiveControlTests
             result.SafetyBoundaryGeneration = 11;
             result.RunId = Guid.Empty;
             Assert(!owner.Publish(result), "缺少RunId的停止结果错误获得退出授权");
+        }
+
+        private sealed class ManualAnalogInput : IAiInputSession
+        {
+            private AsyncCallback _callback;
+            private TaskCompletionSource<double[,]> _pending;
+            internal int Disposals;
+            internal int Reads;
+            internal int Ends;
+            public double SampleClockRate => 2000;
+            public void Start() { }
+            public void Stop() { }
+            public void Dispose() { Disposals++; }
+            public void BeginReadMultiSample(int samples, AsyncCallback callback, object state)
+            {
+                Assert(_pending == null, "模拟源出现重叠读取");
+                _pending = new TaskCompletionSource<double[,]>(state);
+                _callback = callback;
+                Reads++;
+            }
+            public double[,] EndReadMultiSample(IAsyncResult result)
+            {
+                Ends++;
+                return ((Task<double[,]>)result).GetAwaiter().GetResult();
+            }
+            internal void Feed(double value)
+            {
+                var pending = _pending;
+                var callback = _callback;
+                Assert(pending != null, "采集未请求下一批样本");
+                _pending = null;
+                _callback = null;
+                var data = new double[1, 20];
+                for (var index = 0; index < 20; index++) data[0, index] = value;
+                pending.SetResult(data);
+                callback(pending.Task);
+            }
+        }
+
+        private static void AnalogInputUsesRealCallbackGeneration()
+        {
+            var config = new AiConfigDetail
+            {
+                Records = new List<AiConfigDetailRecord>
+                {
+                    new AiConfigDetailRecord
+                    {
+                        序号 = 1, 物理通道 = "Dev1/ai0", 参数名 = "EPB4_current",
+                        单位 = "A", 变换斜率 = 1, 是否启用 = 1
+                    },
+                    new AiConfigDetailRecord
+                    {
+                        序号 = 2, 物理通道 = "Dev2/ai0", 参数名 = "EPB10_current",
+                        单位 = "A", 变换斜率 = 1, 是否启用 = 1
+                    }
+                }
+            };
+            var inputs = new List<ManualAnalogInput>();
+            using (var acquirer = new TwoDeviceAiAcquirer(config, 2000, 20, 1, null,
+                (name, channels, min, max, terminal) =>
+                {
+                    Assert(channels.Length == 1 && channels[0] ==
+                        (name.StartsWith("Dev1", StringComparison.Ordinal) ? "Dev1/ai0" : "Dev2/ai0"),
+                        "AI物理通道映射错误");
+                    var input = new ManualAnalogInput();
+                    inputs.Add(input);
+                    return input;
+                }))
+            {
+                acquirer.Start();
+                Assert(!acquirer.GetDaqFreshnessSnapshot("Dev1").IsFresh,
+                    "尚无回调时错误将初始零值判为新鲜采样");
+                inputs[0].Feed(2);
+                inputs[1].Feed(4);
+                Assert(SpinWait.SpinUntil(() => Math.Abs(acquirer.ReadCurrentFast(4) - 2) < 0.001, 3000),
+                    "真实回调未更新控制电流快照");
+                Assert(inputs[0].Reads == 2 && inputs[0].Ends == 1, "回调没有完成读取并重新挂接");
+                Assert(SpinWait.SpinUntil(() => acquirer.GetDaqFreshnessSnapshot("Dev1").AgeMs > 100, 3000) &&
+                    !acquirer.GetDaqFreshnessSnapshot("Dev1").IsFresh,
+                    "回调中断后陈旧电流仍被判定为有效采样");
+                acquirer.Start();
+                Assert(inputs.Count == 4 && inputs[0].Disposals == 1 && inputs[1].Disposals == 1,
+                    "重启未替换两个采集会话");
+                var boundary = acquirer.GetLastAcceptedSequence("Dev1");
+                inputs[0].Feed(9);
+                Assert(inputs[0].Ends == 2 && inputs[0].Reads == 2 &&
+                    acquirer.GetLastAcceptedSequence("Dev1") == boundary,
+                    "旧代回调未释放读取、错误重挂或污染新代序号");
+                inputs[2].Feed(3);
+                inputs[3].Feed(5);
+                Assert(SpinWait.SpinUntil(() => Math.Abs(acquirer.ReadCurrentFast(4) - 3) < 0.001, 3000),
+                    "新代真实采集不能恢复控制快照");
+            }
+            Assert(inputs.All(input => input.Disposals == 1), "AI会话未恰好释放一次");
         }
 
         private sealed class RecordedDigitalOutput : IDigitalOutputSession

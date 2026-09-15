@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.CodeDom;
 using System.Collections.Concurrent;
@@ -21,6 +21,54 @@ using System.Threading.Tasks;
 
 namespace IO.NI
 {
+    internal interface IAiInputSession : IDisposable
+    {
+        double SampleClockRate { get; }
+        void Start();
+        void Stop();
+        void BeginReadMultiSample(int samples, AsyncCallback callback, object state);
+        double[,] EndReadMultiSample(IAsyncResult result);
+    }
+
+    internal sealed class NiAiInputSession : IAiInputSession
+    {
+        private readonly NIDaqTask _task;
+        private AnalogMultiChannelReader _reader;
+
+        internal NiAiInputSession(string name, string[] channels, double min, double max,
+            AITerminalConfiguration terminal, double sampleRate, int samples, int bufferSamples)
+        {
+            _task = new NIDaqTask(name);
+            try
+            {
+                foreach (var channel in channels)
+                    _task.AIChannels.CreateVoltageChannel(channel, "", terminal, min, max, AIVoltageUnits.Volts);
+                _task.Timing.ConfigureSampleClock("", sampleRate, SampleClockActiveEdge.Rising,
+                    SampleQuantityMode.ContinuousSamples, samples);
+                // Preserve the configured driver buffer before Verify; this does not change callback batch size.
+                _task.Stream.ConfigureInputBuffer(bufferSamples);
+                _task.Control(TaskAction.Verify);
+            }
+            catch
+            {
+                try { _task.Dispose(); } catch { }
+                throw;
+            }
+        }
+
+        public double SampleClockRate => _task.Timing.SampleClockRate;
+        public void Start() { _task.Start(); }
+        public void Stop() { _task.Stop(); }
+        public void BeginReadMultiSample(int samples, AsyncCallback callback, object state)
+        {
+            if (_reader == null)
+                _reader = new AnalogMultiChannelReader(_task.Stream) { SynchronizeCallbacks = false };
+            _reader.BeginReadMultiSample(samples, callback, state);
+        }
+        public double[,] EndReadMultiSample(IAsyncResult result) => _reader.EndReadMultiSample(result);
+        public void Dispose() { _task.Dispose(); }
+    }
+
     /// <summary>
     ///     分离“回调已经分配的序号”和“后台 Raw/SQLite 流水线已经接收的序号”。
     ///     队列拒绝最后一批时，已分配序号不能作为停止耐久边界，否则进程会永久等待一个
@@ -906,13 +954,14 @@ namespace IO.NI
         private readonly Thread _controlThreadDev1;
         private readonly Thread _controlThreadDev2;
         private DateTime _lastTs = DateTime.Now;
-        private AnalogMultiChannelReader _reader1, _reader2;
+        private IAiInputSession _reader1, _reader2;
         private DeviceReadState _readState1, _readState2;
         private DateTime _t0 = DateTime.Now;
 
 
         // NI 任务
-        private NIDaqTask _task1, _task2;
+        private IAiInputSession _task1, _task2;
+        private readonly Func<string, string[], double, double, AITerminalConfiguration, IAiInputSession> _inputFactory;
         private readonly object _taskGateDev1 = new();
         private readonly object _taskGateDev2 = new();
         // StopAll 与恢复重建必须对每台设备共享同一个生命周期门。仅依赖 taskGate
@@ -957,8 +1006,8 @@ namespace IO.NI
 
             public string Device { get; set; }
             public long Generation { get; set; }
-            public NIDaqTask Task { get; set; }
-            public AnalogMultiChannelReader Reader { get; set; }
+            public IAiInputSession Task { get; set; }
+            public IAiInputSession Reader { get; set; }
             public ManualResetEventSlim Quiesced { get; } = new(false);
             public ClockDisciplinedSampleTimeline Timeline { get; }
             public double NominalSampleRateHz { get; set; }
@@ -1754,6 +1803,13 @@ namespace IO.NI
             int samplesPerChannel,
             int medianLens, // 走 ClsDataFilter 的中值窗长（用你全局配置传入）
             ILogger log = null)
+            : this(cfg, sampleRate, samplesPerChannel, medianLens, log, null)
+        {
+        }
+
+        internal TwoDeviceAiAcquirer(AiConfigDetail cfg, double sampleRate, int samplesPerChannel,
+            int medianLens, ILogger log,
+            Func<string, string[], double, double, AITerminalConfiguration, IAiInputSession> inputFactory)
         {
             if (cfg == null)
                 throw new DaqRuntimeConfigException("AI configuration is null.", nameof(cfg));
@@ -1774,6 +1830,9 @@ namespace IO.NI
             _enabled = cfg.Enabled();
             _sampleRate = sampleRate;
             _samplesPerChannel = samplesPerChannel;
+            _inputFactory = inputFactory ?? ((name, channels, min, max, terminal) =>
+                new NiAiInputSession(name, channels, min, max, terminal, _sampleRate,
+                    _samplesPerChannel, _inputBufferSamplesPerChannel));
             _inputBufferSamplesPerChannel = SelectInputBufferSamplesPerChannel(
                 sampleRate,
                 samplesPerChannel,
@@ -5079,21 +5138,11 @@ namespace IO.NI
         }
 
         // —— 工具 —— //
-        private NIDaqTask CreateAiTask(string name, string[] channels, double aiMin, double aiMax,
+        private IAiInputSession CreateAiTask(string name, string[] channels, double aiMin, double aiMax,
             AITerminalConfiguration term)
         {
-            var task = new NIDaqTask(name);
-            foreach (var ch in channels)
-                task.AIChannels.CreateVoltageChannel(ch, "", term, aiMin, aiMax, AIVoltageUnits.Volts);
-
-            task.Timing.ConfigureSampleClock("", _sampleRate, SampleClockActiveEdge.Rising,
-                SampleQuantityMode.ContinuousSamples, _samplesPerChannel);
-            // 输入缓冲只扩大驱动侧的抗调度抖动窗口，不改变每次读取点数和10ms控制节拍。
-            // 必须在 Verify 前配置；现场 -200279 即为应用线程约3秒未及时取数后覆盖旧样本。
-            task.Stream.ConfigureInputBuffer(_inputBufferSamplesPerChannel);
-
-            task.Control(TaskAction.Verify);
-            return task;
+            return _inputFactory(name, channels, aiMin, aiMax, term)
+                ?? throw new InvalidOperationException("AI input factory returned null");
         }
 
         internal static int SelectInputBufferSamplesPerChannel(
@@ -5472,7 +5521,7 @@ namespace IO.NI
                 (isDev1 ? _controlRingDev1 : _controlRingDev2).Reset();
                 ResetFreshness(device);
                 var taskName = $"{device}_AI_g{generation}";
-                NIDaqTask task = null;
+                IAiInputSession task = null;
                 try
                 {
                     task = CreateAiTask(
@@ -5485,7 +5534,7 @@ namespace IO.NI
                     var nominalSampleRate = _sampleRate;
                     try
                     {
-                        var coercedRate = task.Timing.SampleClockRate;
+                        var coercedRate = task.SampleClockRate;
                         if (coercedRate > 0 && !double.IsNaN(coercedRate) && !double.IsInfinity(coercedRate))
                             nominalSampleRate = coercedRate;
                     }
@@ -5493,10 +5542,7 @@ namespace IO.NI
                     {
                         _log.Warn($"{device} 无法读取DAQ强制采样率，使用配置值 {_sampleRate:F6}Hz：{ex.Message}", "AI");
                     }
-                    var reader = new AnalogMultiChannelReader(task.Stream)
-                    {
-                        SynchronizeCallbacks = false
-                    };
+                    var reader = task;
                     var state = new DeviceReadState(_clockDisciplineOptions)
                     {
                         Device = device,
@@ -5548,7 +5594,7 @@ namespace IO.NI
         {
             var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
             var gate = isDev1 ? _taskGateDev1 : _taskGateDev2;
-            NIDaqTask task;
+            IAiInputSession task;
             DeviceReadState state;
             lock (gate)
             {
