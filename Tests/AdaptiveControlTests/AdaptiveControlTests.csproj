@@ -32,6 +32,7 @@
     </Reference>
     <Reference Include="System" />
     <Compile Include="IndependentBootstrapTests.cs" />
+    <Compile Include="MonitorHardwareSmokeTests.cs" />
     <Reference Include="System.Core" />
     <Reference Include="System.Data" />
     <Reference Include="System.Web.Extensions" />

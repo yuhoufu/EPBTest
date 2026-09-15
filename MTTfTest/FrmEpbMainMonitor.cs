@@ -356,7 +356,14 @@ namespace MTEmbTest
                 }
 
                 _alarmCfg = AlarmConfigLoader.Load(alarmCfgPath, logger);
-                _alarmManager = new AlarmManager(_alarmCfg, logger);
+                _alarmManager = _hardwareFactory == null
+                    ? new AlarmManager(_alarmCfg, logger)
+                    : _hardwareFactory.CreateAlarm(_alarmCfg, logger);
+                if (_alarmManager == null)
+                {
+                    logger?.Info("监控测试硬件组合未提供物理报警输出。", "报警");
+                    return;
+                }
 
                 _epb.Alarm = _alarmManager;
                 _epb.AlarmConfig = _alarmCfg;
@@ -451,6 +458,7 @@ namespace MTEmbTest
 
         private DataOperation.TestConfig testConfig;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
+        private readonly IMonitorHardwareFactory _hardwareFactory;
 
 
         public FrmEpbMainMonitor()
@@ -460,7 +468,13 @@ namespace MTEmbTest
         }
 
         internal FrmEpbMainMonitor(DaqRuntimeSettings daqRuntimeSettings)
+            : this(daqRuntimeSettings, null)
         {
+        }
+
+        internal FrmEpbMainMonitor(DaqRuntimeSettings daqRuntimeSettings, IMonitorHardwareFactory hardwareFactory)
+        {
+            _hardwareFactory = hardwareFactory;
             _daqRuntimeSettings = daqRuntimeSettings ??
                 throw new ArgumentNullException(nameof(daqRuntimeSettings));
             InitializeComponent();
@@ -1114,19 +1128,26 @@ namespace MTEmbTest
 
 
                 // 2) 初始化 DO 控制器
-                _do = new DoController(_cfg.DO, logger);
+                _do = _hardwareFactory == null
+                    ? new DoController(_cfg.DO, logger)
+                    : _hardwareFactory.CreateDigitalOutput(_cfg.DO, logger)
+                        ?? throw new InvalidOperationException("Monitor digital output factory returned null");
 
                 // 3) 初始化 AO 控制器
-                _ao = new AoController(_cfg.AO, logger);
+                _ao = _hardwareFactory == null
+                    ? new AoController(_cfg.AO, logger)
+                    : _hardwareFactory.CreateAnalogOutput(_cfg.AO, logger)
+                        ?? throw new InvalidOperationException("Monitor analog output factory returned null");
 
                 aiConfigDetail =
                     AiConfigLoader.Load(RuntimeConfigPaths.GetPath("AIConfig.xml"));
 
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(
+                twoDeviceAiAcquirer = _hardwareFactory == null ? new TwoDeviceAiAcquirer(
                     aiConfigDetail,
                     _daqRuntimeSettings.SampleRateHz,
                     _daqRuntimeSettings.SamplesPerChannel,
-                    10, logger);
+                    10, logger) : _hardwareFactory.CreateAcquirer(aiConfigDetail, _daqRuntimeSettings, logger)
+                        ?? throw new InvalidOperationException("Monitor acquisition factory returned null");
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
 
@@ -1150,6 +1171,12 @@ namespace MTEmbTest
                     twoDeviceAiAcquirer,
                     logger,
                     safetyMarginMode,
+                    powerSupply: _hardwareFactory == null ? null :
+                        _hardwareFactory.CreatePowerSupply(_cfg, logger)
+                            ?? throw new InvalidOperationException("Monitor power supply factory returned null"),
+                    daqHardwareProbe: _hardwareFactory == null ? null :
+                        _hardwareFactory.CreateDaqProbe()
+                            ?? throw new InvalidOperationException("Monitor DAQ probe factory returned null"),
                     protectedLearningRootIds: _protectedLearningRootId == Guid.Empty
                         ? null
                         : new[] { _protectedLearningRootId });

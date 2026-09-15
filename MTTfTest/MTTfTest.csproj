@@ -131,6 +131,7 @@
     <Compile Include="ConfigOperation.cs" />
     <Compile Include="FirstRunBootstrap.cs" />
     <Compile Include="FormLoggerAdapter.cs" />
+    <Compile Include="MonitorHardwareFactory.cs" />
     <Compile Include="FrmAlarmPanelTest.cs">
       <SubType>Form</SubType>
     </Compile>

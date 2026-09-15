@@ -25,6 +25,8 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 2 && args[0] == "--monitor-hardware-smoke")
+                    return MonitorHardwareSmokeTests.Run(args[1]);
                 if (args.Length == 3 && args[0] == "--independent-worker-child")
                     return IndependentBoundedWorkerTests.Child(args[1], args[2]);
                 if (args.Length == 1 && args[0] == "--independent-workers")
