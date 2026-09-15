@@ -48,6 +48,17 @@ namespace AdaptiveControlTests
             File.WriteAllText(selectionConfig, xml);
             var legacyConfig = UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig);
             var independentConfig = UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true);
+            var progressXml = xml.Replace("</Record>", "<MechanicalCycleCount>8</MechanicalCycleCount></Record>");
+            File.WriteAllText(selectionConfig, progressXml);
+            if (!legacyConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig)) ||
+                !independentConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true)) ||
+                File.ReadAllText(selectionConfig) != progressXml)
+                throw new Exception("Mechanical progress changed configuration identity or was rewritten on disk");
+            count++;
+            File.WriteAllText(selectionConfig, progressXml.Replace(">8<", ">0<"));
+            if (!independentConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true)))
+                throw new Exception("Default configuration progress normalization invalidated independent recovery");
+            count++;
             File.WriteAllText(selectionConfig, xml.Replace("true", "false"));
             if (legacyConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig)) ||
                 !independentConfig.SequenceEqual(UnattendedRunCheckpointStore.ReadStableConfiguration(selectionConfig, true)))

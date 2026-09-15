@@ -1144,6 +1144,7 @@ namespace MTEmbTest
                     "//EpbRecords/Record/LatestStartTime | " +
                     "//EpbRecords/Record/RunTime | " +
                     "//EpbRecords/Record/RunCount | " +
+                    "//EpbRecords/Record/MechanicalCycleCount | " +
                     "//EpbRecords/Record/Status");
                 if (runtimeFields != null)
                     foreach (XmlNode node in runtimeFields.Cast<XmlNode>().ToArray())
