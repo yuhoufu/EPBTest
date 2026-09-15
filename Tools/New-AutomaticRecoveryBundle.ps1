@@ -150,6 +150,15 @@ if (-not $LegacyRecovery) {
 '@
 }
 [IO.File]::WriteAllText((Join-Path $output '自动恢复安装说明.md'), $instructions, $utf8)
+if (-not $LegacyRecovery) {
+    foreach ($document in @(
+        '2026-09-15_V4.1候选包安装升级回退与验收说明.md',
+        '2026-09-15_V4恢复初始化边界修复与停止意图升级验证.md',
+        '2026-09-15_V4单通道人工暂停与独立恢复目标同步修复.md',
+        '2026-09-15_V4主程序AO安全归零与压力标定分离修复.md')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot ('..\docs\' + $document)) -Destination $output
+    }
+}
 $files = @(Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object FullName | ForEach-Object {
     [ordered]@{path=$_.FullName.Substring($output.Length).TrimStart('\').Replace('\','/');sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
 })
