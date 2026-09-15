@@ -147,7 +147,7 @@ function Get-IndependentUpgradeRegistration($Registration,$State,$NextPlan) {
     if($State.Intent){$copy.RequireBoundIntent($State.Intent)}
     return $copy
 }
-function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory,[object[]]$RetiredFiles=@(),[scriptblock]$VerifyReplacement=$null) {
+function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory,[object[]]$RetiredFiles=@(),[scriptblock]$VerifyReplacement=$null,[object[]]$MetadataFiles=@()) {
     # Caller must own installation maintenance and the executor lease. This
     # primitive is deliberately not exposed as an ungated installer mode.
     $root=[IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
@@ -179,7 +179,7 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
             Assert-RepairPath $record
             if((Get-Item -LiteralPath $record).Length -gt 4MB){throw '修复历史记录超限。'}
             $previous=[IO.File]::ReadAllText($record)|ConvertFrom-Json
-            if($previous.schemaVersion -ne 1 -or $previous.phase -notin @('Replaced','RolledBack')){
+            if($previous.schemaVersion -notin @(1,2) -or $previous.phase -notin @('Replaced','RolledBack')){
                 throw ('存在未收尾修复事务，必须先恢复该事务：'+$directory)
             }
         }
@@ -187,16 +187,19 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
     [IO.Directory]::CreateDirectory($transaction)|Out-Null
     $journal=Join-Path $transaction 'transaction.json'
     function Save-RepairJournal([string]$Phase,[string]$Failure){
-        $text=[ordered]@{schemaVersion=1;phase=$Phase;failure=$Failure;entries=$entries;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 4
+        $text=[ordered]@{schemaVersion=$(if($MetadataFiles.Count){2}else{1});phase=$Phase;failure=$Failure;entries=$entries;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 4
         $temp=$journal+'.tmp';[IO.File]::WriteAllText($temp,$text)
         if([IO.File]::Exists($journal)){[IO.File]::Replace($temp,$journal,$journal+'.previous')}else{[IO.File]::Move($temp,$journal)}
     }
     try{
         $seen=@{};[long]$bytes=0
-        foreach($file in $Files){
-            $target=[IO.Path]::GetFullPath((Join-Path $root $file.Relative))
-            if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or
-               $file.Relative -like 'Current/Config/*' -or $file.Relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){
+        $payloads=@($Files|ForEach-Object{[pscustomobject]@{File=$_;Metadata=$false}})+@($MetadataFiles|ForEach-Object{[pscustomobject]@{File=$_;Metadata=$true}})
+        foreach($payload in $payloads){
+            $file=$payload.File;$relative=([string]$file.Relative).Replace('\','/')
+            $target=[IO.Path]::GetFullPath((Join-Path $root $relative))
+            $allowed=if($payload.Metadata){$relative -cin @('IndependentState/registration.json','installed-files.json')}
+                else{$relative -match '^(Current|FallbackGuard|Tools)/' -and $relative -notlike 'Current/Config/*' -and $relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'}
+            if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or -not $allowed){
                 throw '修复目标不在程序组件范围内。'
             }
             $seen[$target]=$true;Assert-RepairPath $target
@@ -208,8 +211,9 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
             [IO.File]::Copy($file.Source,$staged,$false)
             if((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -ne $file.Sha256){throw '修复载荷暂存摘要不符。'}
             $exists=[IO.File]::Exists($target)
+            if($payload.Metadata -and -not $exists){throw 'Upgrade metadata must replace an existing installation record.'}
             $entries+=,[ordered]@{target=$target;staged=$staged;backup=(Join-Path $transaction ($index.ToString()+'.old'));
-                retired=$false;existed=$exists;sha256=[string]$file.Sha256;originalSha256=if($exists){[string](Get-FileHash -LiteralPath $target).Hash}else{''}}
+                metadata=$payload.Metadata;retired=$false;existed=$exists;sha256=[string]$file.Sha256;originalSha256=if($exists){[string](Get-FileHash -LiteralPath $target).Hash}else{''}}
         }
         foreach($file in $RetiredFiles){
             $relative=([string]$file.Relative).Replace('\','/')
@@ -293,7 +297,7 @@ function Restore-IndependentFileTransaction([string]$InstallDirectory,[string]$T
         $journal=Join-Path $directory 'transaction.json';Assert-ReplayPath $journal
         if(-not [IO.File]::Exists($journal) -or (Get-Item -LiteralPath $journal).Length -gt 4MB){throw 'Missing or oversized transaction journal.'}
         $record=[IO.File]::ReadAllText($journal)|ConvertFrom-Json
-        if($record.schemaVersion -ne 1 -or $record.phase -notin @('Prepared','RollbackFailed','RolledBack')){throw 'Transaction is not eligible for interrupted rollback.'}
+        if($record.schemaVersion -notin @(1,2) -or $record.phase -notin @('Prepared','RollbackFailed','RolledBack')){throw 'Transaction is not eligible for interrupted rollback.'}
         $entries=@($record.entries)
         if($entries.Count -eq 0 -or $entries.Count -gt 10000){throw 'Invalid replay entry count.'}
         $seen=@{};[long]$bytes=0
@@ -304,8 +308,10 @@ function Restore-IndependentFileTransaction([string]$InstallDirectory,[string]$T
                [IO.Path]::GetDirectoryName($backup) -ne $directory -or [IO.Path]::GetFileName($backup) -notmatch '^\d+\.old$' -or
                $seen.ContainsKey($target) -or $seen.ContainsKey($backup) -or $entry.existed -isnot [bool]){throw 'Invalid replay file identity.'}
             $relative=$target.Substring($root.Length+1).Replace('\','/')
-            if($relative -notmatch '^(Current|FallbackGuard|Tools)/' -or $relative -like 'Current/Config/*' -or
-               $relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){throw 'Replay target outside component scope.'}
+            $metadata=$record.schemaVersion -eq 2 -and $entry.metadata -is [bool] -and $entry.metadata
+            $allowed=if($metadata){$relative -cin @('IndependentState/registration.json','installed-files.json') -and $entry.existed}
+                else{$relative -match '^(Current|FallbackGuard|Tools)/' -and $relative -notlike 'Current/Config/*' -and $relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'}
+            if(-not $allowed){throw 'Replay target outside component scope.'}
             $seen[$target]=$true;$seen[$backup]=$true
             Assert-ReplayPath $target;Assert-ReplayPath $backup
             $currentHash='';$backupHash=''
