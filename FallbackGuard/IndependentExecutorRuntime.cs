@@ -137,7 +137,7 @@ namespace MTTFTest.FallbackGuard
                 };
                 var stalled = _monitor.Observe(intent, snapshot, now / TimeSpan.TicksPerMillisecond);
                 if (now < state.RunStartedUtcTicks) throw new InvalidDataException("IndependentRunClockRegressed");
-                if (now < state.StartupDeadlineUtcTicks)
+                if (IsStartupBudgetActive(state, now))
                 { Detail = "ObservingStartupWithinDurableBudget"; return; }
                 if (stalled)
                 {
@@ -161,6 +161,20 @@ namespace MTTFTest.FallbackGuard
                 }
                 Detail = "DatabaseObservationOrAdmissionFailed:" + error.GetType().Name + ":" + Clip(error.Message);
             }
+        }
+
+        internal static bool IsStartupBudgetActive(IndependentProjectState state, long now)
+        {
+            if (now >= state.StartupDeadlineUtcTicks) return false;
+            var tx = state.Transaction;
+            // Verified means real actions, counts and three committed formal
+            // cycles were proved for this replacement. Do not hide a later
+            // stall behind the unused portion of its learning budget.
+            var currentRunVerified = tx != null && tx.Phase == IndependentRecoveryPhase.Verified &&
+                tx.RunId == state.Intent.RunId && tx.RunEpoch == state.Intent.RunEpoch &&
+                state.Controller != null && tx.ReplacementPid == state.Controller.Pid &&
+                tx.ReplacementStartUtcTicks == state.Controller.StartUtcTicks;
+            return !currentRunVerified;
         }
 
         public IndependentOperationResult CooperativeStop(IndependentRecoveryTransaction tx)

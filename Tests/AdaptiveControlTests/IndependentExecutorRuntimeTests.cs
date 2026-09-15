@@ -72,6 +72,31 @@ namespace AdaptiveControlTests
             Reject(() => IndependentExecutorObservation.Capture("invalid", null, DateTime.UtcNow.Ticks, ""));
             passed++;
             Console.WriteLine("PASS 独立观察无运行意图时不伪造绑定或恢复成功");
+            var startup = new IndependentProjectState
+            {
+                StartupDeadlineUtcTicks = 1000,
+                Intent = new IndependentRunIntent { RunId = "current", RunEpoch = 2 },
+                Controller = new IndependentProcessIdentity { Pid = 10, StartUtcTicks = 20 },
+                Transaction = new IndependentRecoveryTransaction
+                {
+                    Phase = IndependentRecoveryPhase.Verifying, RunId = "current", RunEpoch = 2,
+                    ReplacementPid = 10, ReplacementStartUtcTicks = 20
+                }
+            };
+            Assert(IndependentExecutorRuntime.IsStartupBudgetActive(startup, 100), "unverified learning lost startup budget");
+            startup.Transaction.Phase = IndependentRecoveryPhase.Verified;
+            Assert(!IndependentExecutorRuntime.IsStartupBudgetActive(startup, 100), "verified formal run retained learning grace");
+            startup.Transaction.RunId = "old";
+            Assert(IndependentExecutorRuntime.IsStartupBudgetActive(startup, 100), "old run proof ended new learning budget");
+            startup.Transaction.RunId = "current";
+            startup.Transaction.RunEpoch = 1;
+            Assert(IndependentExecutorRuntime.IsStartupBudgetActive(startup, 100), "old epoch proof reused");
+            startup.Transaction.RunEpoch = 2;
+            startup.Transaction.ReplacementStartUtcTicks = 19;
+            Assert(IndependentExecutorRuntime.IsStartupBudgetActive(startup, 100), "reused PID proof ended learning");
+            Assert(!IndependentExecutorRuntime.IsStartupBudgetActive(startup, 1000), "startup grace extended past deadline");
+            passed += 6;
+            Console.WriteLine("PASS verified current run exits learning budget; old run, epoch and process proofs rejected");
             return passed;
         }
         private static void Assert(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
