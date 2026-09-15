@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$ReleaseDirectory,
     [Parameter(Mandatory=$true)][string]$OutputRoot,
-    [switch]$LegacyRecovery
+    [switch]$LegacyRecovery,
+    [string]$CandidateTag = ''
 )
 $ErrorActionPreference = 'Stop'
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\')
@@ -11,6 +12,15 @@ $identity = Get-Content -LiteralPath (Join-Path $release 'build-identity.json') 
 $version = (Get-Item -LiteralPath (Join-Path $release 'MTTFTest.exe')).VersionInfo.FileVersion
 $commit = [string]$identity.gitCommit
 if ($commit -notmatch '^[a-fA-F0-9]{40}$') { throw '构建提交身份无效。' }
+if ([string]::IsNullOrWhiteSpace($CandidateTag)) {
+    $CandidateTag = 'v' + $version + $(if ($LegacyRecovery) { '' } else { '-rc.1' })
+}
+if ($CandidateTag -notmatch ('^v' + [regex]::Escape($version) + '(-rc\.[1-9][0-9]*)?$')) {
+    throw '候选标签必须与程序版本一致。'
+}
+$tagCommit = [string](& git -C (Join-Path $PSScriptRoot '..') rev-parse --verify --quiet ('refs/tags/' + $CandidateTag + '^{commit}'))
+$tagExists = $LASTEXITCODE -eq 0
+if ($tagExists -and $tagCommit.Trim() -ne $commit) { throw '已有候选标签指向其他源码提交，拒绝误标安装包。' }
 $output = Join-Path ([IO.Path]::GetFullPath($OutputRoot)) ('V' + $version + '_' + $commit.Substring(0,12) + '_AUTO_RECOVERY_ONECLICK')
 if (Test-Path -LiteralPath $output) { throw "拒绝覆盖已存在的候选包：$output" }
 [void](New-Item -ItemType Directory -Path $output)
@@ -148,7 +158,8 @@ $manifest = [ordered]@{
     packagingGitCommit=([string](& git -C (Join-Path $PSScriptRoot '..') rev-parse HEAD)).Trim()
     fieldDeploymentApproved=$false; recoveryArchitecture=$(if ($LegacyRecovery) {'V2-Supervisor-SessionAgent-SafetyAgent'} else {'V4-Independent-SystemExecutor'})
     fallbackGuard=$(if ($LegacyRecovery) {'Independent-Database-v2'} else {'Independent-SystemExecutor'})
-    fallbackDefault=$(if ($LegacyRecovery) {'ObservationOnly'} else {'RequiresDurableRunIntent'}); candidateTag=('v'+[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $fallbackOutput 'MTTFTest.FallbackGuard.exe')).ProductVersion)
+    fallbackDefault=$(if ($LegacyRecovery) {'ObservationOnly'} else {'RequiresDurableRunIntent'}); candidateTag=$CandidateTag
+    candidateTagExistsAtPackaging=$tagExists
     createdUtc=[DateTime]::UtcNow.ToString('O'); files=$files
 }
 [IO.File]::WriteAllText((Join-Path $output 'automatic-bundle.json'), ($manifest | ConvertTo-Json -Depth 6), $utf8)
