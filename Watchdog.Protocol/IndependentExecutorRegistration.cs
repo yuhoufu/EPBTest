@@ -62,6 +62,24 @@ namespace MTTFTest.Watchdog.Protocol
                     throw new InvalidOperationException("IndependentSessionParentIdentityMismatch");
         }
 
+        public static string ProjectDirectoryFromSessionJournal(string journalDirectory)
+        {
+            if (!Path.IsPathRooted(journalDirectory ?? string.Empty))
+                throw new InvalidDataException("IndependentSessionJournalPathInvalid");
+            var path = Path.GetFullPath(journalDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!string.Equals(Path.GetFileName(path), "WatchdogSessions", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("IndependentSessionJournalPathInvalid");
+            return Path.GetDirectoryName(path);
+        }
+
+        public static void RequireCurrentSessionHostFromJournal(string mainExecutable, string journalDirectory,
+            int parentPid, long parentStartTicks)
+        {
+            if (Resolve(mainExecutable) == null) return;
+            RequireCurrentSessionHost(mainExecutable, ProjectDirectoryFromSessionJournal(journalDirectory),
+                parentPid, parentStartTicks);
+        }
+
         public static void RequireSessionHostState(IndependentProjectState state, string registeredProject,
             string requestedProject, int parentPid, long parentStartTicks)
         {

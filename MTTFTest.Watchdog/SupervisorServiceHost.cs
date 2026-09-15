@@ -974,7 +974,7 @@ namespace MTTFTest.Watchdog
                 string stateDirectory)
             {
                 _independentLifetime?.Dispose(); _independentLifetime = null;
-                IndependentInstallationBinding.RequireCurrentSessionHost(record.MainExecutablePath,
+                IndependentInstallationBinding.RequireCurrentSessionHostFromJournal(record.MainExecutablePath,
                     record.ProjectDirectory, record.ParentProcessId, record.ParentProcessStartUtcTicks);
                 var process = StartRegisteredSessionProcess(record, "Watchdog", new ProcessStartInfo
                 {

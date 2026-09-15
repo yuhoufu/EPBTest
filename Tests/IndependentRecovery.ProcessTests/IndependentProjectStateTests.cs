@@ -518,6 +518,19 @@ namespace AdaptiveControlTests
             var selectionStore = Fixture(Path.Combine(root, "controller-selection"), now);
             var verificationDone = Fixture(Path.Combine(root, "verification-target-completion"), now);
             var sessionState = verificationDone.Read();
+            var journalProject = IndependentInstallationBinding.ProjectDirectoryFromSessionJournal(
+                Path.Combine(root, "WatchdogSessions"));
+            IndependentInstallationBinding.RequireSessionHostState(sessionState, root, journalProject,
+                sessionState.Controller.Pid, sessionState.Controller.StartUtcTicks);
+            Assert(journalProject == Path.GetFullPath(root), "journal directory was treated as project identity");
+            var journalRejected = false;
+            try { IndependentInstallationBinding.ProjectDirectoryFromSessionJournal(root); }
+            catch (InvalidDataException) { journalRejected = true; }
+            Assert(journalRejected, "arbitrary directory accepted as session journal");
+            Reject(() => IndependentInstallationBinding.RequireSessionHostState(sessionState, root,
+                IndependentInstallationBinding.ProjectDirectoryFromSessionJournal(
+                    Path.Combine(root, "other-project", "WatchdogSessions")),
+                sessionState.Controller.Pid, sessionState.Controller.StartUtcTicks), "different project journal accepted");
             IndependentInstallationBinding.RequireSessionHostState(sessionState, root, root,
                 sessionState.Controller.Pid, sessionState.Controller.StartUtcTicks);
             Assert(true, "current session host rejected");
