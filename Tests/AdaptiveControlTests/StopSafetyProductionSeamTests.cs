@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -59,6 +59,9 @@ namespace AdaptiveControlTests
         internal static int RunUnitTests()
         {
             var passed = 0;
+            Run("AO安全归零不受压力标定偏置和下限影响", AoSafetyZeroIsLiteralVoltage, ref passed);
+            Run("AO单路失败仍对其余输出写零且失败初始化释放句柄", AoZeroFailurePreservesCleanup, ref passed);
+            Run("AO不支持零电压的量程在创建设备前拒绝", AoRangeMustContainSafetyZero, ref passed);
             Run("人工关闭运行态拒绝且安全停止才放行", OperatorCloseAdmissionIsExplicit, ref passed);
             Run("人工关闭采样必须新鲜有效且在断能之后", ManualCloseSamplesAreExact, ref passed);
             Run("人工关闭收尾任务重复请求保持同一所有者", ManualCloseDrainIsSingleFlight, ref passed);
@@ -328,6 +331,72 @@ namespace AdaptiveControlTests
             result.SafetyBoundaryGeneration = 11;
             result.RunId = Guid.Empty;
             Assert(!owner.Publish(result), "缺少RunId的停止结果错误获得退出授权");
+        }
+
+        private sealed class RecordedAoOutput : IAoVoltageOutput
+        {
+            internal readonly List<double> Writes = new List<double>();
+            internal bool FailWrite;
+            internal int Disposals;
+            public void Write(double voltage)
+            {
+                if (Disposals != 0) throw new ObjectDisposedException(nameof(RecordedAoOutput));
+                Writes.Add(voltage);
+                if (FailWrite) throw new InvalidOperationException("Injected AO write failure");
+            }
+            public void Dispose() { Disposals++; }
+        }
+
+        private static AoConfig OffsetAoConfig()
+        {
+            var config = new AoConfig { MinPressure = 10, MaxPressure = 100 };
+            foreach (var name in new[] { "Dev1", "Dev2" })
+                config.Devices.Add(name, new AoDevice
+                { Name = name, PhysicalChannel = name + "/ao0", ScaleK = 10, Offset = -2 });
+            return config;
+        }
+
+        private static void AoSafetyZeroIsLiteralVoltage()
+        {
+            var outputs = new Dictionary<string, RecordedAoOutput>();
+            using (var ao = new AoController(OffsetAoConfig(), null, device =>
+                outputs[device.Name] = new RecordedAoOutput()))
+            {
+                Assert(outputs.Values.All(output => output.Writes.SequenceEqual(new[] { 0.0 })),
+                    "AO初始化使用压力标定或压力下限，未写入0V");
+                var normal = ao.WritePressureDetailed("Dev1", 20);
+                Assert(normal.Success && Math.Abs(normal.Voltage - 2.2) < 1e-9,
+                    "正常压力控制的标定换算被安全写零修改");
+                Assert(ao.TryResetAll() && outputs.Values.All(output => output.Writes.Last() == 0),
+                    "安全归零受非零偏置或最小压力影响");
+            }
+            Assert(outputs.Values.All(output => output.Disposals == 1), "AO输出未随控制器释放一次");
+        }
+
+        private static void AoZeroFailurePreservesCleanup()
+        {
+            var failed = new RecordedAoOutput { FailWrite = true };
+            var healthy = new RecordedAoOutput();
+            using (var ao = new AoController(OffsetAoConfig(), null, device => device.Name == "Dev1" ? failed : healthy))
+            {
+                Assert(failed.Disposals == 1, "AO初始化写零失败泄漏输出资源");
+                Assert(!ao.TryResetAll() && healthy.Writes.Count == 2 && healthy.Writes.Last() == 0,
+                    "缺失输出被报告安全或阻止其他输出写零");
+                healthy.FailWrite = true;
+                Assert(!ao.TryResetAll(), "AO写入异常被报告为成功");
+            }
+            Assert(failed.Disposals == 1 && healthy.Disposals == 1, "部分初始化资源释放次数不正确");
+        }
+
+        private static void AoRangeMustContainSafetyZero()
+        {
+            var config = OffsetAoConfig();
+            config.MinVoltage = 1;
+            var opened = false;
+            var rejected = false;
+            try { using (new AoController(config, null, device => { opened = true; return new RecordedAoOutput(); })) { } }
+            catch (ArgumentException) { rejected = true; }
+            Assert(rejected && !opened, "AO不能输出0V的量程仍打开设备");
         }
 
         private static void AoDisposedOperationsDoNotReportColdStartFailure()
