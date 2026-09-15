@@ -10,6 +10,7 @@ param(
     [string]$PreviousBundleDirectory
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'Service-Lifecycle.ps1')
 function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
     $bundlePath=[IO.Path]::GetFullPath($Bundle).TrimEnd('\')
     $destinationPath=[IO.Path]::GetFullPath($Destination).TrimEnd('\')
@@ -42,7 +43,7 @@ function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
         if($digest -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $digest){throw ('包摘要不符：'+$relative)}
         $target=if($relative.StartsWith('Base/')){'Current/'+$relative.Substring(5)}
             elseif($relative.StartsWith('FallbackGuard/')){$relative}
-            elseif($relative -in @('Tools/Manage-IndependentRecovery.ps1','Tools/Manage-SessionHost.ps1')){$relative}else{$null}
+            elseif($relative -in @('Tools/Manage-IndependentRecovery.ps1','Tools/Manage-SessionHost.ps1','Tools/Service-Lifecycle.ps1')){$relative}else{$null}
         if($target){$plan+=,[pscustomobject]@{Source=$source;Relative=$target;Sha256=$digest}}
     }
     foreach($required in @('Base/MTTFTest.exe','Base/MTTFTest.SafetyAgent.exe','Base/MTTFTest.Watchdog.Protocol.dll',
@@ -548,7 +549,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
     if($service){
         if($service.PathName -ne $command -or $service.StartName -notin @('LocalSystem','NT AUTHORITY\SYSTEM')){throw '独立服务归属不符，保留维护状态。'}
         $controller=Get-Service -Name $serviceName
-        try{$controller.Stop();$controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(15))}finally{$controller.Dispose()}
+        try{Set-ServiceControllerStateBounded -Controller $controller -Target Stopped}finally{$controller.Dispose()}
     }
     $lease=[MTTFTest.Watchdog.Protocol.IndependentExecutorLease]::new($registration.StateDirectory,$registration.InstallationId)
     try{

@@ -6,6 +6,7 @@ param(
     [string]$InteractiveUserSid
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'Service-Lifecycle.ps1')
 $root=[IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
 if($root.StartsWith('\\') -or $root.Contains('"') -or $root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\')){throw '监督组件安装目录无效。'}
 $main=Join-Path $root 'Current\MTTFTest.exe'
@@ -68,7 +69,7 @@ foreach($remaining in @(Get-CimInstance Win32_Process -Filter "Name='MTTFTest.Se
 }
 if($service -and $service.State -ne 'Stopped'){
     $controller=Get-Service $serviceName
-    try{$controller.Stop();$controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(15))}finally{$controller.Dispose()}
+    try{Set-ServiceControllerStateBounded -Controller $controller -Target Stopped}finally{$controller.Dispose()}
 }
 if($Mode -eq 'Stop'){Write-Output '本安装 Supervisor/SessionAgent 已停止，未启动试验。';return}
 if($Mode -eq 'Uninstall'){
@@ -94,6 +95,6 @@ $taskPrincipal=New-ScheduledTaskPrincipal -UserId $InteractiveUserSid -LogonType
 $settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 255 -RestartInterval ([TimeSpan]::FromMinutes(1)) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskPath '\' -TaskName $taskName -Action $action -Trigger $trigger -Principal $taskPrincipal -Settings $settings -Force|Out-Null
 $controller=Get-Service $serviceName
-try{$controller.Start();$controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running,[TimeSpan]::FromSeconds(15))}finally{$controller.Dispose()}
+try{Set-ServiceControllerStateBounded -Controller $controller -Target Running}finally{$controller.Dispose()}
 Start-ScheduledTask -TaskPath '\' -TaskName $taskName
 Write-Output '本安装 Supervisor 与交互登录代理已配置；未启动试验。'
