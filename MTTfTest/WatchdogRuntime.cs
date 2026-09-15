@@ -1210,7 +1210,8 @@ namespace MTEmbTest
             if (context == null)
                 return new WatchdogAttachResult
                 {
-                    Warning = "独立看门狗Journal初始化失败；已拒绝启动不可审计的Sidecar。"
+                    Warning = "独立看门狗Journal初始化失败；已拒绝启动不可审计的Sidecar。" +
+                              string.Join(" | ", warnings)
                 };
 
             InstallContext(context);
@@ -1599,11 +1600,12 @@ namespace MTEmbTest
                     throw new FileNotFoundException("未找到独立看门狗程序。", sidecar);
                 return context;
             }
-            catch
+            catch (Exception error)
             {
                 try { ingressGate?.Dispose(); } catch { }
                 try { journal?.Flush(TimeSpan.FromSeconds(1)); } catch { }
                 try { journal?.Dispose(); } catch { }
+                warnings?.Add("JournalContextCreationFailed: " + error.ToString());
                 return null;
             }
         }

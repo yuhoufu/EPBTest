@@ -34,7 +34,10 @@ namespace AdaptiveControlTests
             var registration = BoundedJson.Read<IndependentExecutorRegistration>(registrationPath);
             registration.ExecutablePath = Path.Combine(root, "AdaptiveControlTests.exe");
             registration.ExecutableSha256 = SupervisorProtocol.ComputeSha256(registration.ExecutablePath);
-            registration.SafetyExecutablePath = Path.Combine(root, "IndependentRecovery.ProcessTests.exe");
+            // This worker loads production protocol classes from SafetyAgent.exe.
+            // Keep that assembly separate from the fail-closed legacy SafetyAgent
+            // stub used by the simulated main window in the executable directory.
+            registration.SafetyExecutablePath = Path.Combine(root, "SafetyWorker", "IndependentRecovery.ProcessTests.exe");
             registration.SafetyExecutableSha256 = SupervisorProtocol.ComputeSha256(registration.SafetyExecutablePath);
             File.WriteAllText(Path.Combine(registration.ConfigDirectory, "SIMULATED-HARDWARE-ONLY.txt"), "success");
             registration.Validate();
@@ -153,12 +156,29 @@ namespace AdaptiveControlTests
                         var stopping = false;
                         var closing = false;
                         var clock = Stopwatch.StartNew();
+                        var lastReport = -1;
                         timer.Tick += (sender, args) =>
                         {
                             try
                             {
                                 if (closing) return;
+                                if (main.IndependentRecoveryStartupFailure != null)
+                                    throw new InvalidOperationException("Independent main startup failed",
+                                        main.IndependentRecoveryStartupFailure);
                                 monitor = monitor ?? main.MdiChildren.OfType<FrmEpbMainMonitor>().SingleOrDefault();
+                                var report = (int)(clock.Elapsed.TotalSeconds / 10);
+                                if (report != lastReport)
+                                {
+                                    lastReport = report;
+                                    Console.WriteLine("RECOVERY_WAIT Seconds=" + clock.Elapsed.TotalSeconds.ToString("F0") +
+                                        " Monitor=" + (monitor?.MonitorLifecycle.ToString() ?? "Absent") +
+                                        " Samples=" + hardware.SamplesRead);
+                                    if (main.Cfg != null)
+                                    {
+                                        try { startup.ValidateConfiguration(main.Cfg); }
+                                        catch (Exception error) { Console.Error.WriteLine("RECOVERY_CONFIGURATION " + error.Message); }
+                                    }
+                                }
                                 if (monitor != null && !attached)
                                 {
                                     var manager = (EpbManager)typeof(FrmEpbMainMonitor).GetField("_epb",
@@ -208,6 +228,9 @@ namespace AdaptiveControlTests
                                 failure = error;
                                 timer.Stop();
                                 Console.Error.WriteLine(error);
+                                BoundedJson.Write(Path.Combine(root, "real-monitor-error-" +
+                                    Process.GetCurrentProcess().Id + ".json"),
+                                    new { error = error.ToString() });
                                 // The external test owner retires this isolated process.
                                 // Do not fabricate manual stop or safety authorization.
                             }

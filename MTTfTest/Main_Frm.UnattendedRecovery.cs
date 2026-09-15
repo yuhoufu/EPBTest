@@ -18,6 +18,7 @@ namespace MtEmbTest
 
         private RecoveryStartupIntent _recoveryStartupIntent;
         private WatchdogRecoveryIntent _watchdogRecoveryIntent;
+        internal Exception IndependentRecoveryStartupFailure { get; private set; }
 
         internal Main_Frm(RecoveryStartupIntent recoveryStartupIntent) : this()
         {
@@ -49,6 +50,7 @@ namespace MtEmbTest
                     }
                     catch (Exception error)
                     {
+                        IndependentRecoveryStartupFailure = error;
                         ProjectLogHub.Write(ProjectLogLevel.Error,
                             "独立恢复启动未完成，交由独立执行器按持久事务验证和处理：" + error.Message,
                             "独立恢复", error);

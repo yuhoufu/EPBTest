@@ -848,10 +848,24 @@ namespace MTEmbTest
 
         internal async Task ResumeFromIndependentRecoveryAsync(IndependentRecoveryStartup startup)
         {
+            if (startup == null) throw new ArgumentNullException(nameof(startup));
+            startup.ValidateCurrent();
             if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("IndependentRecoveryControllerInitializationTimeout");
             var checkpoint = UnattendedRunCheckpointStore.PrepareIndependentCheckpoint(_cfg, startup);
             startup.ValidateCurrent();
+            // 独立执行器已结束旧控制进程；它的启动凭证并不包含旧 Sidecar 的
+            // AttachRecoverySession 握手。为新控制进程建立自己的精确会话，随后
+            // 仍由批次入口执行 Attached、UI Ready 和恢复授权检查。
+            WatchdogRuntime.ConfigureJournalExportPath(
+                System.IO.Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName, "WatchdogSessions"));
+            var watchdog = await WatchdogRuntime.StartSessionAsync(checkpoint.SelectedChannels)
+                .ConfigureAwait(true);
+            // 等待握手期间人工停止或撤销选择必须使本次启动失效。
+            startup.ValidateCurrent();
+            if (watchdog == null || !watchdog.Attached || !WatchdogRuntime.IsAttached)
+                throw new InvalidOperationException(
+                    "IndependentRecoveryWatchdogAttachFailed: " + (watchdog?.Warning ?? "Unknown"));
             await ResumeFromUnattendedCheckpointAsync(checkpoint);
         }
 
