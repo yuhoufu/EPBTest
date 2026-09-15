@@ -9,7 +9,7 @@ namespace AdaptiveControlTests
     {
         internal static int RunAll()
         {
-            var count = 0;
+            var count = VerifyInitializationBoundary();
             var nonce = Guid.NewGuid().ToString("N");
             var path = @"D:\registered\executor.json";
             void Reject(string[] args)
@@ -70,6 +70,41 @@ namespace AdaptiveControlTests
             count++;
             Console.WriteLine($"PASS independent bootstrap {count}/{count}");
             return count;
+        }
+
+        private static int VerifyInitializationBoundary()
+        {
+            var partial = new MonitorInitializationGate();
+            partial.CompleteLoad();
+            if (partial.WaitAsync(5).GetAwaiter().GetResult())
+                throw new Exception("Load without Shown admitted recovery");
+            partial.CompleteShown();
+            if (!partial.WaitAsync(100).GetAwaiter().GetResult())
+                throw new Exception("completed initialization was blocked after an earlier wait timed out");
+            partial.Fail();
+            if (partial.WaitAsync(100).GetAwaiter().GetResult())
+                throw new Exception("closed initialized monitor remained ready");
+
+            var failed = new MonitorInitializationGate();
+            failed.CompleteLoad();
+            var waiting = failed.WaitAsync(30000);
+            failed.Fail();
+            if (!waiting.Wait(1000) || waiting.Result)
+                throw new Exception("initialization failure did not release the recovery waiter");
+            failed.CompleteShown();
+            failed.CompleteLoad();
+            if (failed.IsReady || failed.WaitAsync(100).GetAwaiter().GetResult())
+                throw new Exception("late completion resurrected failed initialization");
+
+            var reverse = new MonitorInitializationGate();
+            reverse.CompleteShown();
+            reverse.CompleteShown();
+            if (reverse.WaitAsync(5).GetAwaiter().GetResult())
+                throw new Exception("duplicate Shown substituted for Load completion");
+            reverse.CompleteLoad();
+            if (!reverse.WaitAsync(100).GetAwaiter().GetResult())
+                throw new Exception("both initialization stages did not release recovery");
+            return 7;
         }
     }
 }

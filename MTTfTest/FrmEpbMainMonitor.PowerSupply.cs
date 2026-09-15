@@ -83,24 +83,32 @@ namespace MTEmbTest
 
         protected override void OnShown(EventArgs e)
         {
-            base.OnShown(e);
-            AttachSafetyUiEvents();
-            AttachPauseResumeUi();
-            MarkWatchdogControllerReadyIfInitialized();
-            if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
-            InitializeChannelRuntimeStatusUi();
-            AttachOwnedRawPipeline();
-            AttachUnattendedRecovery();
-            _powerSupplyToolTip = new ToolTip();
-            var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
-            for (var index = 0; index < boxes.Length; index++)
+            try
             {
-                var groupId = index + 1;
-                _powerSupplyToolTip.SetToolTip(
-                    boxes[index],
-                    $"电源组{groupId}：双击可在输出关闭、保护解除后人工复位故障锁存");
-                boxes[index].DoubleClick += async (sender, args) =>
-                    await ResetPowerSupplyFaultFromUiAsync(groupId);
+                base.OnShown(e);
+                AttachSafetyUiEvents();
+                AttachPauseResumeUi();
+                if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
+                InitializeChannelRuntimeStatusUi();
+                AttachOwnedRawPipeline();
+                AttachUnattendedRecovery();
+                _powerSupplyToolTip = new ToolTip();
+                var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
+                for (var index = 0; index < boxes.Length; index++)
+                {
+                    var groupId = index + 1;
+                    _powerSupplyToolTip.SetToolTip(
+                        boxes[index],
+                        $"电源组{groupId}：双击可在输出关闭、保护解除后人工复位故障锁存");
+                    boxes[index].DoubleClick += async (sender, args) =>
+                        await ResetPowerSupplyFaultFromUiAsync(groupId);
+                }
+                _monitorInitialization.CompleteShown();
+            }
+            catch
+            {
+                _monitorInitialization.Fail();
+                throw;
             }
         }
 

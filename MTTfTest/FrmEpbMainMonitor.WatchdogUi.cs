@@ -58,8 +58,7 @@ namespace MTEmbTest
             Hide();
         }
 
-        private readonly TaskCompletionSource<bool> _watchdogControllerReady =
-            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly MonitorInitializationGate _monitorInitialization = new MonitorInitializationGate();
         private readonly object _watchdogUiHandlerGate = new object();
         private WatchdogRuntime.RuntimeStopAllHandlerLease _watchdogUiHandlerLease;
         private RuntimeTransportSessionContext _watchdogUiContext;
@@ -75,23 +74,11 @@ namespace MTEmbTest
             bool operatorStopRequested) =>
             !unattendedRecovery && operatorStopRequested;
 
-        internal void MarkWatchdogControllerReadyIfInitialized()
-        {
-            if (_epb != null && _cfg?.Test != null && IsHandleCreated)
-                _watchdogControllerReady.TrySetResult(true);
-        }
-
         internal async Task<bool> WaitUntilWatchdogControllerReadyAsync(
             int timeoutMilliseconds = 30000)
         {
-            if (_epb != null && _cfg?.Test != null && IsHandleCreated)
-                return true;
-            var completed = await Task.WhenAny(
-                    _watchdogControllerReady.Task,
-                    Task.Delay(Math.Max(1, timeoutMilliseconds)))
-                .ConfigureAwait(true);
-            return completed == _watchdogControllerReady.Task &&
-                   _epb != null && _cfg?.Test != null && IsHandleCreated;
+            return await _monitorInitialization.WaitAsync(timeoutMilliseconds).ConfigureAwait(true) &&
+                   _epb != null && _cfg?.Test != null && IsHandleCreated && !IsDisposed && !Disposing;
         }
 
         internal Func<WatchdogStopAllOfferEnvelope, Task> WatchdogSafetyHandler =>

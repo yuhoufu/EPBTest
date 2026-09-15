@@ -750,9 +750,7 @@ namespace MTEmbTest
             UnattendedRunCheckpoint checkpoint,
             WatchdogRecoveryIntent intent)
         {
-            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
-                await Task.Delay(100).ConfigureAwait(true);
-            if (_epb == null || _cfg?.Test == null)
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("安全接管硬件与控制对象初始化超时。");
 
             // 主进程完成硬件初始化后先由控制主站显式写入全断能。Watchdog 本身不持有 NI。
@@ -820,9 +818,7 @@ namespace MTEmbTest
         {
             UnattendedRecoveryCoordinator.Disarm("ManualStopWatchdogIdleRestart");
             UnattendedRunCheckpointStore.ClearGracefulPause("ManualStopWatchdogIdleRestart");
-            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
-                await Task.Delay(100).ConfigureAwait(true);
-            if (_epb == null || _cfg?.Test == null)
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("空闲重启硬件与控制对象初始化超时。");
             if (_do == null || !_do.AllOff())
                 throw new InvalidOperationException("空闲重启无法写入全部 DO OFF。");
@@ -852,9 +848,7 @@ namespace MTEmbTest
 
         internal async Task ResumeFromIndependentRecoveryAsync(IndependentRecoveryStartup startup)
         {
-            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
-                await Task.Delay(100);
-            if (_epb == null || _cfg?.Test == null)
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("IndependentRecoveryControllerInitializationTimeout");
             var checkpoint = UnattendedRunCheckpointStore.PrepareIndependentCheckpoint(_cfg, startup);
             startup.ValidateCurrent();
@@ -864,9 +858,7 @@ namespace MTEmbTest
         internal async Task ResumeFromUnattendedCheckpointAsync(UnattendedRunCheckpoint checkpoint)
         {
             if (checkpoint == null) throw new ArgumentNullException(nameof(checkpoint));
-            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
-                await Task.Delay(100);
-            if (_epb == null || _cfg?.Test == null)
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("实时监视硬件与控制对象初始化超时。所有输出保持关闭。");
 
             var authorized = (checkpoint.SelectedChannels ?? Array.Empty<int>())

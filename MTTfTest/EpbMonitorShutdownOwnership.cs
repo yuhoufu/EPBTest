@@ -5,6 +5,46 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
+    // Object allocation is not readiness: both Load and Shown install resources
+    // needed by recovery. Failure/closure permanently invalidates this form.
+    internal sealed class MonitorInitializationGate
+    {
+        private readonly object _gate = new object();
+        private readonly TaskCompletionSource<bool> _completion =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _stages;
+        internal bool IsReady { get { lock (_gate) return _stages == 3; } }
+        internal void CompleteLoad() => Complete(1);
+        internal void CompleteShown() => Complete(2);
+        private void Complete(int stage)
+        {
+            lock (_gate)
+            {
+                if ((_stages & 4) != 0) return;
+                _stages |= stage;
+                if (_stages == 3) _completion.TrySetResult(true);
+            }
+        }
+        internal void Fail()
+        {
+            lock (_gate)
+            {
+                _stages = 4;
+                _completion.TrySetResult(false);
+            }
+        }
+        internal async Task<bool> WaitAsync(int timeoutMilliseconds)
+        {
+            using (var timeout = new System.Threading.CancellationTokenSource())
+            {
+                var elapsed = Task.Delay(Math.Max(1, timeoutMilliseconds), timeout.Token);
+                var completed = await Task.WhenAny(_completion.Task, elapsed).ConfigureAwait(false);
+                timeout.Cancel();
+                return completed == _completion.Task && await _completion.Task.ConfigureAwait(false) && IsReady;
+            }
+        }
+    }
+
     internal sealed class ManualCloseDrainOwner
     {
         private readonly object _gate = new object();

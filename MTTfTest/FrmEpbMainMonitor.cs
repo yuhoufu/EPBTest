@@ -1262,6 +1262,7 @@ namespace MTEmbTest
                     });
                     FormClosed += (sender, args) => observer.Dispose();
                 }
+                _monitorInitialization.CompleteLoad();
             }
 
             catch (Exception ex)
@@ -1273,6 +1274,11 @@ namespace MTEmbTest
                 if (!IsDisposed && !Disposing && IsHandleCreated)
                     BeginInvoke((Action)Close);
             }
+            finally
+            {
+                if (MonitorLifecycle == EpbMonitorLifecycle.Initializing)
+                    SetMonitorLifecycle(EpbMonitorLifecycle.InitializationFailed);
+            }
         }
 
         internal EpbMonitorLifecycle MonitorLifecycle =>
@@ -1281,6 +1287,8 @@ namespace MTEmbTest
         private void SetMonitorLifecycle(EpbMonitorLifecycle lifecycle)
         {
             Interlocked.Exchange(ref _monitorLifecycle, (int)lifecycle);
+            if (lifecycle == EpbMonitorLifecycle.InitializationFailed || lifecycle == EpbMonitorLifecycle.Closed)
+                _monitorInitialization.Fail();
         }
 
         private bool CanUseIdleFastClose()
