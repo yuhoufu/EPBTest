@@ -118,6 +118,35 @@ function Get-IndependentUpgradePlan($CurrentPlan,$NextPlan,$Receipt) {
     [pscustomobject]@{FromVersion=$CurrentPlan.Version;ToVersion=$NextPlan.Version;Destination=$CurrentPlan.Destination;
         ReplacementFiles=$next;ObsoleteFiles=$obsolete;PreservedFiles=$preserved}
 }
+function Get-IndependentUpgradeRegistration($Registration,$State,$NextPlan) {
+    # Pure metadata preparation. Caller persists the result only in the same
+    # maintenance transaction as component hashes and the installation receipt.
+    $Registration.Validate();$State.Validate()
+    if(-not $State.Maintenance -or $State.SafetyCleanupPending -or
+       ($State.Transaction -and -not $State.Transaction.IsTerminal) -or
+       ($State.Intent -and $State.Intent.Armed -and -not $State.Intent.ManualStopped) -or
+       ($State.Ticket -and -not $State.Ticket.Revoked)){
+        throw 'Upgrade registration requires quiescent maintenance with revoked launch authority.'
+    }
+    if($State.Intent){$Registration.RequireBoundIntent($State.Intent)}
+    $hashes=@()
+    foreach($path in @($Registration.ExecutablePath,$Registration.SafetyExecutablePath)){
+        $components=@($NextPlan.Files|Where-Object{
+            [IO.Path]::GetFullPath((Join-Path $NextPlan.Destination $_.Relative)) -eq $path
+        })
+        if($components.Count -ne 1 -or $components[0].Sha256 -notmatch '^[a-fA-F0-9]{64}$'){
+            throw 'Upgrade must preserve exact registered executable paths with verified hashes.'
+        }
+        $hashes+=,[string]$components[0].Sha256
+    }
+    $serializer=[System.Web.Script.Serialization.JavaScriptSerializer]::new()
+    $serializer.MaxJsonLength=4MB;$serializer.RecursionLimit=32
+    $copy=$serializer.Deserialize($serializer.Serialize($Registration),$Registration.GetType())
+    $copy.ExecutableSha256=$hashes[0];$copy.SafetyExecutableSha256=$hashes[1]
+    $copy.Validate()
+    if($State.Intent){$copy.RequireBoundIntent($State.Intent)}
+    return $copy
+}
 function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory,[object[]]$RetiredFiles=@(),[scriptblock]$VerifyReplacement=$null) {
     # Caller must own installation maintenance and the executor lease. This
     # primitive is deliberately not exposed as an ungated installer mode.
