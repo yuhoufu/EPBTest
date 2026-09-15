@@ -1,11 +1,12 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','ValidateRepair','Repair','Uninstall','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
-    [string]$InteractiveUserSid
+    [string]$InteractiveUserSid,
+    [string]$TransactionId
 )
 $ErrorActionPreference='Stop'
 function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
@@ -241,6 +242,88 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
     }
     } finally {$repairLease.Dispose()}
 }
+function Restore-IndependentFileTransaction([string]$InstallDirectory,[string]$TransactionId) {
+    # Caller owns trusted installation maintenance and the executor lease.
+    # Preserve backups during replay, so replay itself can be interrupted.
+    if($TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'Invalid transaction ID.'}
+    $root=[IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
+    $directory=Join-Path $root ('Repair\'+$TransactionId)
+    function Assert-ReplayPath([string]$Path){
+        $cursor=$Path
+        while($cursor){
+            if(Test-Path -LiteralPath $cursor){
+                if(((Get-Item -LiteralPath $cursor).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Replay path contains a reparse point.'}
+            }
+            $cursor=[IO.Path]::GetDirectoryName($cursor)
+        }
+    }
+    Assert-ReplayPath $directory
+    $lockPath=Join-Path $root 'file-repair.lock';Assert-ReplayPath $lockPath
+    $lease=[IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    try{
+        $journal=Join-Path $directory 'transaction.json';Assert-ReplayPath $journal
+        if(-not [IO.File]::Exists($journal) -or (Get-Item -LiteralPath $journal).Length -gt 4MB){throw 'Missing or oversized transaction journal.'}
+        $record=[IO.File]::ReadAllText($journal)|ConvertFrom-Json
+        if($record.schemaVersion -ne 1 -or $record.phase -notin @('Prepared','RollbackFailed','RolledBack')){throw 'Transaction is not eligible for interrupted rollback.'}
+        $entries=@($record.entries)
+        if($entries.Count -eq 0 -or $entries.Count -gt 10000){throw 'Invalid replay entry count.'}
+        $seen=@{};[long]$bytes=0
+        foreach($entry in $entries){
+            $target=[IO.Path]::GetFullPath([string]$entry.target)
+            $backup=[IO.Path]::GetFullPath([string]$entry.backup)
+            if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or
+               [IO.Path]::GetDirectoryName($backup) -ne $directory -or [IO.Path]::GetFileName($backup) -notmatch '^\d+\.old$' -or
+               $seen.ContainsKey($target) -or $seen.ContainsKey($backup) -or $entry.existed -isnot [bool]){throw 'Invalid replay file identity.'}
+            $relative=$target.Substring($root.Length+1).Replace('\','/')
+            if($relative -notmatch '^(Current|FallbackGuard|Tools)/' -or $relative -like 'Current/Config/*' -or
+               $relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){throw 'Replay target outside component scope.'}
+            $seen[$target]=$true;$seen[$backup]=$true
+            Assert-ReplayPath $target;Assert-ReplayPath $backup
+            $currentHash='';$backupHash=''
+            foreach($path in @($target,$backup)){
+                if([IO.Directory]::Exists($path)){throw 'Replay component is a directory.'}
+                if([IO.File]::Exists($path)){
+                    $length=(Get-Item -LiteralPath $path).Length;$bytes+=$length
+                    if($length -gt 256MB -or $bytes -gt 2GB){throw 'Replay file budget exceeded.'}
+                    $hash=(Get-FileHash -LiteralPath $path).Hash
+                    if($path -eq $target){$currentHash=$hash}else{$backupHash=$hash}
+                }
+            }
+            if($entry.existed){
+                if($entry.originalSha256 -notmatch '^[a-fA-F0-9]{64}$' -or
+                   ($backupHash -and $backupHash -ne $entry.originalSha256) -or
+                   (-not $backupHash -and $currentHash -ne $entry.originalSha256) -or
+                   ($currentHash -and $currentHash -ne $entry.originalSha256 -and $currentHash -ne $entry.sha256)){throw 'Original component cannot be safely recovered.'}
+            }elseif($entry.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or $backupHash -or ($currentHash -and $currentHash -ne $entry.sha256)){
+                throw 'New component ownership changed.'
+            }
+        }
+        for($index=$entries.Count-1;$index -ge 0;$index--){
+            $entry=$entries[$index]
+            Assert-ReplayPath $entry.target
+            if($entry.existed){
+                if([IO.File]::Exists($entry.target) -and (Get-FileHash -LiteralPath $entry.target).Hash -eq $entry.originalSha256){continue}
+                Assert-ReplayPath $entry.backup
+                if((Get-FileHash -LiteralPath $entry.backup).Hash -ne $entry.originalSha256){throw 'Replay backup changed.'}
+                $temp=Join-Path $directory ([Guid]::NewGuid().ToString('N')+'.restore')
+                [IO.File]::Copy($entry.backup,$temp,$false)
+                if([IO.File]::Exists($entry.target)){
+                    if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.sha256){throw 'Replay target changed.'}
+                    [IO.File]::Replace($temp,$entry.target,$temp+'.displaced')
+                }else{[IO.File]::Move($temp,$entry.target)}
+                if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.originalSha256){throw 'Restored hash mismatch.'}
+            }elseif([IO.File]::Exists($entry.target)){
+                if((Get-FileHash -LiteralPath $entry.target).Hash -ne $entry.sha256){throw 'New component changed during replay.'}
+                Remove-Item -LiteralPath $entry.target
+            }
+        }
+        $record.phase='RolledBack';$record.failure='';$record.utc=[DateTime]::UtcNow.ToString('O')
+        $tempJournal=$journal+'.replay-'+[Guid]::NewGuid().ToString('N')
+        [IO.File]::WriteAllText($tempJournal,($record|ConvertTo-Json -Depth 4))
+        [IO.File]::Replace($tempJournal,$journal,$journal+'.before-replay')
+        return $directory
+    }finally{$lease.Dispose()}
+}
 function Remove-IndependentOwnedComponents([object[]]$Files,[string]$InstallDirectory) {
     # Component/task teardown and executor maintenance lease are caller gates.
     # Never enumerate the install directory to infer ownership.
@@ -313,7 +396,8 @@ try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
 Assert-IndependentComponentVersions $plan
-if($Mode -in @('Repair','Uninstall')){
+if($Mode -in @('Repair','RecoverFiles','Uninstall')){
+    if($Mode -eq 'RecoverFiles' -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'RecoverFiles requires an explicit transaction ID.'}
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
     $receiptFile=Get-Item -LiteralPath $receiptPath
@@ -375,6 +459,11 @@ if($Mode -in @('Repair','Uninstall')){
                 }
                 Write-Output '本安装服务、任务、快捷方式及原程序组件已移除。项目配置、数据、诊断和重复卸载所需的受保护维护协议保留。'
             }finally{$fileLease.Dispose()}
+            return
+        }
+        if($Mode -eq 'RecoverFiles'){
+            $restored=Restore-IndependentFileTransaction $plan.Destination $TransactionId
+            Write-Output ('Interrupted file transaction rolled back; maintenance remains enabled and no trial was started: '+$restored)
             return
         }
         $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
