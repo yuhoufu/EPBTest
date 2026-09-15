@@ -29,8 +29,6 @@ using System.Runtime.InteropServices;
 //      生成号
 //      修订号
 //
-[assembly: AssemblyVersion("4.0.0.3")]
-[assembly: AssemblyFileVersion("4.0.0.3")]
-[assembly: AssemblyInformationalVersion("4.0.0.3")]
+// Version attributes are generated from ProductVersion.props.
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]
 [assembly: InternalsVisibleTo("MTTFTest")]

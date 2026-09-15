@@ -9,13 +9,13 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$releaseProjectPath = Join-Path $repo 'MTTfTest\MTTfTest.csproj'
+$releaseProjectPath = Join-Path $repo 'ProductVersion.props'
 [xml]$releaseProjectXml = Get-Content -LiteralPath $releaseProjectPath -Raw
-$expectedProductVersion = ([string]$releaseProjectXml.Project.PropertyGroup.ApplicationVersion |
+$expectedProductVersion = ([string]$releaseProjectXml.Project.PropertyGroup.EpbProductVersion |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Select-Object -First 1).Trim()
 if ([string]::IsNullOrWhiteSpace($expectedProductVersion)) {
-    throw 'MTTfTest.csproj 未声明 ApplicationVersion。'
+    throw 'ProductVersion.props 未声明 EpbProductVersion。'
 }
 $expectedProductLabel = 'V' + $expectedProductVersion
 $expectedAssemblyName = 'MTTFTest'
