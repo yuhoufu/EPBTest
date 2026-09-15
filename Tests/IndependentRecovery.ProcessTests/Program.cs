@@ -6,6 +6,26 @@ namespace AdaptiveControlTests
     {
         private static int Main(string[] args)
         {
+            var root = AppDomain.CurrentDomain.BaseDirectory;
+            if (args.Length == 2 && args[0] == "--independent-stage" &&
+                System.IO.File.Exists(System.IO.Path.Combine(root, "REAL-MONITOR-SIMULATION-ONLY.txt")))
+            {
+                var directory = System.IO.Path.Combine(root, "SafetyWorker");
+                var domain = AppDomain.CreateDomain("SimulatedSafetyWorker", null,
+                    new AppDomainSetup { ApplicationBase = directory });
+                try
+                {
+                    return domain.ExecuteAssembly(System.IO.Path.Combine(directory,
+                        "IndependentRecovery.ProcessTests.exe"), args);
+                }
+                finally { AppDomain.Unload(domain); }
+            }
+            return RunMain(args);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static int RunMain(string[] args)
+        {
             try
             {
                 if (args.Length == 3 && args[0] == "--live-service-simulation")
@@ -27,7 +47,9 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 2 && args[0] == "--independent-stage")
+                {
                     return SimulatedSafetyWorker.Run(args[1]);
+                }
                 if (args.Length == 3 && args[0] == "--simulation-resume")
                     return TicketDatabaseSimulationTests.Resume(args[1], args[2]);
                 if ((args.Length == 1 || args.Length == 2) && args[0] == "--ticket-database-simulation")

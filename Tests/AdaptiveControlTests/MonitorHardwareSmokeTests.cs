@@ -34,10 +34,10 @@ namespace AdaptiveControlTests
             var registration = BoundedJson.Read<IndependentExecutorRegistration>(registrationPath);
             registration.ExecutablePath = Path.Combine(root, "AdaptiveControlTests.exe");
             registration.ExecutableSha256 = SupervisorProtocol.ComputeSha256(registration.ExecutablePath);
-            // This worker loads production protocol classes from SafetyAgent.exe.
-            // Keep that assembly separate from the fail-closed legacy SafetyAgent
-            // stub used by the simulated main window in the executable directory.
-            registration.SafetyExecutablePath = Path.Combine(root, "SafetyWorker", "IndependentRecovery.ProcessTests.exe");
+            // Keep all registered executable roles in the installation directory.
+            // The separate worker uses an isolated AppDomain rooted in
+            // SafetyWorker, preserving the main's fail-closed legacy stub.
+            registration.SafetyExecutablePath = Path.Combine(root, "IndependentRecovery.ProcessTests.exe");
             registration.SafetyExecutableSha256 = SupervisorProtocol.ComputeSha256(registration.SafetyExecutablePath);
             File.WriteAllText(Path.Combine(registration.ConfigDirectory, "SIMULATED-HARDWARE-ONLY.txt"), "success");
             registration.Validate();
