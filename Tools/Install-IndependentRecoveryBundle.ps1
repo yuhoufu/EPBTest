@@ -574,7 +574,10 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             if((Get-FileHash -LiteralPath $cachedProtocol).Hash -ne $protocol.Sha256){throw '卸载维护协议摘要不符。'}
             $fileLease=[IO.File]::Open((Join-Path $plan.Destination 'file-repair.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
             try{
-                $manager=@($plan.Files|Where-Object Relative -eq 'Tools/Manage-IndependentRecovery.ps1')[0].Source
+                # The old package supplies the files/protocol being removed.
+                # Use this installer's dispatcher for cached-protocol and version
+                # arguments; legacy managers do not implement those parameters.
+                $manager=Join-Path $PSScriptRoot 'Manage-IndependentRecovery.ps1'
                 Invoke-IndependentUninstallSteps $plan.Destination $plan.Version $registration.InstallationId {
                     & $manager -Mode Uninstall -RegistrationPath $registrationPath -ExecutorPath $executor -ProtocolAssemblyPath $cachedProtocol -InstalledVersion $plan.Version
                     & $sessionHost -Mode Uninstall -InstallRoot $plan.Destination
