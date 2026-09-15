@@ -42,7 +42,7 @@ function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
         if($digest -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $digest){throw ('包摘要不符：'+$relative)}
         $target=if($relative.StartsWith('Base/')){'Current/'+$relative.Substring(5)}
             elseif($relative.StartsWith('FallbackGuard/')){$relative}
-            elseif($relative -eq 'Tools/Manage-IndependentRecovery.ps1'){$relative}else{$null}
+            elseif($relative -in @('Tools/Manage-IndependentRecovery.ps1','Tools/Manage-SessionHost.ps1')){$relative}else{$null}
         if($target){$plan+=,[pscustomobject]@{Source=$source;Relative=$target;Sha256=$digest}}
     }
     foreach($required in @('Base/MTTFTest.exe','Base/MTTFTest.SafetyAgent.exe','Base/MTTFTest.Watchdog.Protocol.dll',
@@ -477,6 +477,9 @@ function Complete-IndependentUpgrade([string]$OutcomePath,[string]$Version,[stri
 }
 $plan=Get-IndependentBundlePlan $BundleDirectory $InstallRoot
 if($Mode -eq 'Validate'){$plan;return}
+$sessionHost=Join-Path $PSScriptRoot 'Manage-SessionHost.ps1'
+if(-not [IO.File]::Exists($sessionHost)){throw '完整安装缺少会话监督组件管理脚本。'}
+& $sessionHost -Mode ValidateOwnership -InstallRoot $plan.Destination|Out-Null
 if($Mode -in @('ValidateRepair','ValidateUpgrade')){
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
@@ -544,9 +547,8 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
     $service=Get-CimInstance Win32_Service -Filter ("Name='"+$serviceName+"'") -OperationTimeoutSec 10
     if($service){
         if($service.PathName -ne $command -or $service.StartName -notin @('LocalSystem','NT AUTHORITY\SYSTEM')){throw '独立服务归属不符，保留维护状态。'}
-        Stop-Service -Name $serviceName
         $controller=Get-Service -Name $serviceName
-        try{$controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(15))}finally{$controller.Dispose()}
+        try{$controller.Stop();$controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(15))}finally{$controller.Dispose()}
     }
     $lease=[MTTFTest.Watchdog.Protocol.IndependentExecutorLease]::new($registration.StateDirectory,$registration.InstallationId)
     try{
@@ -574,6 +576,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
                 $manager=@($plan.Files|Where-Object Relative -eq 'Tools/Manage-IndependentRecovery.ps1')[0].Source
                 Invoke-IndependentUninstallSteps $plan.Destination $plan.Version $registration.InstallationId {
                     & $manager -Mode Uninstall -RegistrationPath $registrationPath -ExecutorPath $executor -ProtocolAssemblyPath $cachedProtocol -InstalledVersion $plan.Version
+                    & $sessionHost -Mode Uninstall -InstallRoot $plan.Destination
                 } {
                     Remove-IndependentOwnedComponents $repairFiles $plan.Destination
                 }
@@ -582,6 +585,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             return
         }
         if($Mode -eq 'RecoverFiles'){
+            & $sessionHost -Mode Stop -InstallRoot $plan.Destination
             $restored=Restore-IndependentFileTransaction $plan.Destination $TransactionId
             # Report file restoration separately from strict registration health:
             # repairing a pre-existing damaged original may still be necessary.
@@ -594,6 +598,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             return
         }
         if($Mode -eq 'RollbackUpgrade'){
+            & $sessionHost -Mode Stop -InstallRoot $plan.Destination
             $outcomePath=Join-Path $plan.Destination ('Upgrade\'+$TransactionId+'\result.json')
             [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($outcomePath)
             if((Get-Item $outcomePath).Length -gt 4MB){throw 'Rollback outcome too large.'}
@@ -629,6 +634,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
                 foreach($file in $rollback.PreviousFiles){if((Get-FileHash (Join-Path $plan.Destination $file.Relative)).Hash -ne $file.Sha256){throw 'Rollback component does not match previous package.'}}
                 $manager=@($plan.Files|Where-Object Relative -eq 'Tools/Manage-IndependentRecovery.ps1')[0].Source
                 & $manager -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+                & $sessionHost -Mode Install -InstallRoot $plan.Destination -InteractiveUserSid $restored.InteractiveUserSid
                 & $manager -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor -PreviousVersion $plan.Version
                 Save-RollbackStage 'RolledBack' ''
                 Write-Output 'Previous version restored; maintenance remains enabled and no trial was started.'
@@ -647,6 +653,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             $manager=Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1'
             Complete-IndependentUpgrade $outcome $plan.Version $registration.InstallationId {
                 & $manager -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+                & $sessionHost -Mode Install -InstallRoot $plan.Destination -InteractiveUserSid $registration.InteractiveUserSid
             } {
                 param($oldVersion)
                 & $manager -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor -PreviousVersion $oldVersion
@@ -655,6 +662,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             return
         }
         if($Mode -eq 'Upgrade'){
+            & $sessionHost -Mode Stop -InstallRoot $plan.Destination
             Add-Type -AssemblyName System.Web.Extensions
             $nextRegistration=Get-IndependentUpgradeRegistration $registration $state $plan
             $upgradeId=[Guid]::NewGuid().ToString('N')
@@ -685,6 +693,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
                 $manager=Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1'
                 Complete-IndependentUpgrade $outcome $plan.Version $registration.InstallationId {
                     & $manager -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+                    & $sessionHost -Mode Install -InstallRoot $plan.Destination -InteractiveUserSid $registration.InteractiveUserSid
                 } {
                     param($oldVersion)
                     & $manager -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor -PreviousVersion $oldVersion
@@ -700,9 +709,11 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             }
             return
         }
+        & $sessionHost -Mode Stop -InstallRoot $plan.Destination
         $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
         [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)|Out-Null
         & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+        & $sessionHost -Mode Install -InstallRoot $plan.Destination -InteractiveUserSid $registration.InteractiveUserSid
         & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor
         Write-Output ('原构建组件已修复，服务保持维护停止状态；未启动试验。文件事务：'+$transaction)
     }finally{$lease.Dispose()}
@@ -744,6 +755,7 @@ try{
     $registration=Join-Path $plan.Destination 'IndependentState\registration.json'
     & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Provision -RegistrationPath $registration `
         -ExecutorPath $executor -MainExecutablePath $main -ProjectDirectory $ProjectDirectory -InteractiveUserSid $InteractiveUserSid
+    & $sessionHost -Mode Install -InstallRoot $plan.Destination -InteractiveUserSid $InteractiveUserSid
     & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Shortcut -RegistrationPath $registration -ExecutorPath $executor
     [IO.File]::WriteAllText($journal,([ordered]@{version=$plan.Version;stage='Provisioned';registration=$registration;trialStarted=$false;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 3))
 }catch{

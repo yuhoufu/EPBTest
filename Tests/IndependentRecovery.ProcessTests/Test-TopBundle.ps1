@@ -6,7 +6,7 @@ foreach($name in @('Base/MTTFTest.exe','Base/MTTFTest.SafetyAgent.exe','Base/MTT
  'FallbackGuard/MTTFTest.FallbackGuard.exe','FallbackGuard/MTTFTest.Watchdog.Protocol.dll','FallbackGuard/System.Data.SQLite.dll','FallbackGuard/x86/SQLite.Interop.dll')){
  $p=Join-Path $root $name;[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($p))|Out-Null;[IO.File]::WriteAllText($p,'VALIDATION-ONLY-NOT-EXECUTABLE')
 }
-foreach($name in @('Install-AutomaticRecoveryBundle.ps1','RecoveryGuard-Acceptance.ps1','Tools/Install-IndependentRecoveryBundle.ps1','Tools/Manage-IndependentRecovery.ps1','Tools/Export-IndependentRecoveryEvidence.ps1')){
+foreach($name in @('Install-AutomaticRecoveryBundle.ps1','RecoveryGuard-Acceptance.ps1','Tools/Install-IndependentRecoveryBundle.ps1','Tools/Manage-IndependentRecovery.ps1','Tools/Manage-SessionHost.ps1','Tools/Export-IndependentRecoveryEvidence.ps1')){
  $p=Join-Path $root $name;[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($p))|Out-Null
  [IO.File]::Copy((Join-Path $work ('Tools/'+[IO.Path]::GetFileName($name))),$p,$false)
 }

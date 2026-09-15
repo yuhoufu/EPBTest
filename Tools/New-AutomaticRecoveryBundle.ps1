@@ -49,7 +49,7 @@ foreach ($relative in @('System.Data.SQLite.dll', 'x86\SQLite.Interop.dll')) {
 }
 $toolsOutput = Join-Path $output 'Tools'
 [IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
-$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Export-IndependentRecoveryEvidence.ps1')
+$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Manage-SessionHost.ps1','Export-IndependentRecoveryEvidence.ps1')
 if ($LegacyRecovery) { $toolNames += @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
     'Resolve-FallbackBinding.ps1','Persistent-Fallback.ps1','Manage-PersistentFallback.ps1',
     'Watch-ActiveFallback.ps1','Test-FallbackBinding.ps1','Test-PersistentFallback.ps1','Test-PersistentTask.ps1') }
