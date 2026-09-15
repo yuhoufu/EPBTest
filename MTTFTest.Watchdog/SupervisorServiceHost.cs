@@ -686,8 +686,8 @@ namespace MTTFTest.Watchdog
             var binding = IndependentInstallationBinding.Resolve(parent.MainExecutablePath);
             if (binding == null) return Process.Start(startInfo);
             var registration = IndependentExecutorRegistration.LoadTrusted(binding.RegistrationPath);
-            if (!string.Equals(Path.GetFullPath(parent.ProjectDirectory), registration.ProjectDirectory, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("IndependentSessionProjectMismatch");
+            IndependentInstallationBinding.RequireCurrentSessionHostFromJournal(parent.MainExecutablePath,
+                parent.ProjectDirectory, parent.ParentProcessId, parent.ParentProcessStartUtcTicks);
             var store = new IndependentProjectStateStore(registration.StateDirectory);
             lifetime = IndependentBoundedWorker.StartSession(startInfo.FileName, startInfo.Arguments, startInfo.WorkingDirectory,
                 (pid, ticks) =>
