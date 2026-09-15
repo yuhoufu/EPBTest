@@ -253,7 +253,7 @@ try {
     switch($Mode){
         'Shortcut' {
             $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($registration.ExecutablePath).FileVersion
-            if($PreviousVersion -and ($PreviousVersion -notmatch '^\d+\.\d+\.\d+\.\d+$' -or [version]$PreviousVersion -ge [version]$version)){throw '旧快捷方式版本必须低于当前版本。'}
+            if($PreviousVersion -and ($PreviousVersion -notmatch '^\d+\.\d+\.\d+\.\d+$' -or [version]$PreviousVersion -eq [version]$version)){throw '被替换的快捷方式版本必须与当前版本不同。'}
             Set-IndependentShortcut $registration.ExecutablePath $version $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $false
             if($PreviousVersion){Set-IndependentShortcut $registration.ExecutablePath $PreviousVersion $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $true}
             Write-Output ('已创建与已安装程序一致的 V'+$version+' 快捷方式；未启动试验。')

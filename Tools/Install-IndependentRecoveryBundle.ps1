@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','ValidateRepair','ValidateUpgrade','Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
@@ -276,7 +276,7 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
     }
     } finally {$repairLease.Dispose()}
 }
-function Restore-IndependentFileTransaction([string]$InstallDirectory,[string]$TransactionId) {
+function Restore-IndependentFileTransaction([string]$InstallDirectory,[string]$TransactionId,[switch]$AllowCommitted) {
     # Caller owns trusted installation maintenance and the executor lease.
     # Preserve backups during replay, so replay itself can be interrupted.
     if($TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'Invalid transaction ID.'}
@@ -298,7 +298,9 @@ function Restore-IndependentFileTransaction([string]$InstallDirectory,[string]$T
         $journal=Join-Path $directory 'transaction.json';Assert-ReplayPath $journal
         if(-not [IO.File]::Exists($journal) -or (Get-Item -LiteralPath $journal).Length -gt 4MB){throw 'Missing or oversized transaction journal.'}
         $record=[IO.File]::ReadAllText($journal)|ConvertFrom-Json
-        if($record.schemaVersion -notin @(1,2) -or $record.phase -notin @('Prepared','RollbackFailed','RolledBack')){throw 'Transaction is not eligible for interrupted rollback.'}
+        $allowedPhases=@('Prepared','RollbackFailed','RolledBack')
+        if($AllowCommitted){$allowedPhases+='Replaced'}
+        if($record.schemaVersion -notin @(1,2) -or $record.phase -notin $allowedPhases){throw 'Transaction is not eligible for interrupted rollback.'}
         $entries=@($record.entries)
         if($entries.Count -eq 0 -or $entries.Count -gt 10000){throw 'Invalid replay entry count.'}
         $seen=@{};[long]$bytes=0
@@ -416,6 +418,39 @@ function Invoke-IndependentUninstallSteps([string]$Root,[string]$Version,[string
         throw
     }
 }
+function Get-IndependentRollbackPlan($CurrentPlan,$PreviousPlan,$Outcome,$Journal,$SavedReceipt,[string]$InstallationId) {
+    $upgrade=Get-IndependentUpgradePlan $PreviousPlan $CurrentPlan $SavedReceipt
+    if($Outcome.installationId -ne $InstallationId -or $Outcome.fromVersion -ne $PreviousPlan.Version -or
+       $Outcome.toVersion -ne $CurrentPlan.Version -or $Outcome.stage -notin @('Completed','FilesCommitted','Registering','UpdatingShortcut','FinalizationFailed','RollingBack','RollbackFailed','RolledBack')){
+        throw 'Rollback outcome does not identify this upgrade.'
+    }
+    $transaction=[IO.Path]::GetFullPath([string]$Outcome.transaction)
+    $parent=Join-Path ([IO.Path]::GetFullPath($CurrentPlan.Destination).TrimEnd('\')) 'Repair'
+    $id=[IO.Path]::GetFileName($transaction)
+    if([IO.Path]::GetDirectoryName($transaction) -ne $parent -or $id -notmatch '^[a-fA-F0-9]{32}$' -or
+       $Journal.schemaVersion -ne 2 -or $Journal.phase -notin @('Replaced','Prepared','RolledBack','RollbackFailed')){
+        throw 'Rollback file transaction identity invalid.'
+    }
+    $expected=@{};$seen=@{};$replacementTargets=@{}
+    foreach($file in $upgrade.ReplacementFiles){$replacementTargets[[IO.Path]::GetFullPath((Join-Path $CurrentPlan.Destination $file.Relative))]=[string]$file.Sha256}
+    foreach($file in @(Get-IndependentRepairFiles $PreviousPlan $SavedReceipt)){
+        $expected[[IO.Path]::GetFullPath((Join-Path $PreviousPlan.Destination $file.Relative))]=[string]$file.Sha256
+    }
+    foreach($entry in @($Journal.entries)){
+        if($entry.metadata){continue}
+        $target=[IO.Path]::GetFullPath([string]$entry.target)
+        if($seen.ContainsKey($target)){throw 'Duplicate rollback component'}
+        if(-not $expected.ContainsKey($target) -and -not $replacementTargets.ContainsKey($target)){throw 'Rollback component belongs to neither verified package.'}
+        if(-not $entry.retired -and (-not $replacementTargets.ContainsKey($target) -or $entry.sha256 -ne $replacementTargets[$target])){throw 'Rollback replacement identity differs from new package.'}
+        $seen[$target]=$true
+        if($entry.existed -and (-not $expected.ContainsKey($target) -or $expected[$target] -ne $entry.originalSha256)){
+            throw 'Rollback original bytes do not match the verified previous package.'
+        }
+        if($expected.ContainsKey($target) -and -not $entry.existed){throw 'Previous component has no original backup identity.'}
+    }
+    foreach($target in $expected.Keys){if(-not $seen.ContainsKey($target)){throw 'Previous component missing from rollback transaction.'}}
+    [pscustomobject]@{TransactionId=$id;PreviousFiles=@(Get-IndependentRepairFiles $PreviousPlan $SavedReceipt);Upgrade=$upgrade}
+}
 function Complete-IndependentUpgrade([string]$OutcomePath,[string]$Version,[string]$InstallationId,[scriptblock]$Register,[scriptblock]$Shortcut) {
     if((Get-Item -LiteralPath $OutcomePath).Length -gt 4MB){throw 'Upgrade outcome too large.'}
     $record=[IO.File]::ReadAllText($OutcomePath)|ConvertFrom-Json
@@ -460,8 +495,8 @@ try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
 Assert-IndependentComponentVersions $plan
-if($Mode -in @('Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall')){
-    if($Mode -eq 'FinalizeUpgrade' -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'FinalizeUpgrade requires an explicit upgrade ID.'}
+if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFiles','Uninstall')){
+    if($Mode -in @('FinalizeUpgrade','RollbackUpgrade') -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'An explicit upgrade ID is required.'}
     if($Mode -eq 'RecoverFiles' -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'RecoverFiles requires an explicit transaction ID.'}
     Assert-IndependentInstallParent $plan.Destination
     $receiptPath=Join-Path $plan.Destination 'installed-files.json'
@@ -474,6 +509,13 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall'))
         Assert-IndependentComponentVersions $previousPlan
         $upgradePlan=Get-IndependentUpgradePlan $previousPlan $plan $receipt
         $repairFiles=@($upgradePlan.ReplacementFiles)
+    }elseif($Mode -eq 'RollbackUpgrade'){
+        if(-not $PreviousBundleDirectory){throw 'Rollback requires the original verified bundle.'}
+        $previousPlan=Get-IndependentBundlePlan $PreviousBundleDirectory $InstallRoot
+        Assert-IndependentComponentVersions $previousPlan
+        if($receipt.version -eq $plan.Version){$repairFiles=@(Get-IndependentRepairFiles $plan $receipt)}
+        elseif($receipt.version -eq $previousPlan.Version){$repairFiles=@(Get-IndependentRepairFiles $previousPlan $receipt)}
+        else{throw 'Rollback receipt matches neither upgrade version.'}
     }elseif($Mode -eq 'RecoverFiles'){
         # During interrupted upgrade the receipt can describe either build.
         # Recovery restores only the explicit protected transaction's backups;
@@ -549,6 +591,48 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','Repair','RecoverFiles','Uninstall'))
                $restoredRegistration.DatabasePath -ne $registration.DatabasePath -or
                $restoredRegistration.ConfigurationSha256 -ne $registration.ConfigurationSha256){throw 'Restored registration identity mismatch; maintenance remains enabled.'}
             Write-Output ('Interrupted file transaction rolled back; maintenance remains enabled and no trial was started: '+$restored)
+            return
+        }
+        if($Mode -eq 'RollbackUpgrade'){
+            $outcomePath=Join-Path $plan.Destination ('Upgrade\'+$TransactionId+'\result.json')
+            [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($outcomePath)
+            if((Get-Item $outcomePath).Length -gt 4MB){throw 'Rollback outcome too large.'}
+            $outcome=[IO.File]::ReadAllText($outcomePath)|ConvertFrom-Json
+            $transactionPath=[IO.Path]::GetFullPath([string]$outcome.transaction)
+            if([IO.Path]::GetDirectoryName($transactionPath) -ne (Join-Path $plan.Destination 'Repair') -or
+               [IO.Path]::GetFileName($transactionPath) -notmatch '^[a-fA-F0-9]{32}$'){throw 'Rollback transaction outside this installation.'}
+            $recordPath=Join-Path $transactionPath 'transaction.json'
+            [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($recordPath)
+            if((Get-Item $recordPath).Length -gt 4MB){throw 'Rollback journal too large.'}
+            $record=[IO.File]::ReadAllText($recordPath)|ConvertFrom-Json
+            $receiptEntries=@($record.entries|Where-Object{$_.metadata -and $_.target -eq $receiptPath})
+            if($receiptEntries.Count -ne 1){throw 'Original receipt backup not unique.'}
+            $savedReceiptPath=[IO.Path]::GetFullPath([string]$receiptEntries[0].backup)
+            if([IO.Path]::GetDirectoryName($savedReceiptPath) -ne $transactionPath -or [IO.Path]::GetFileName($savedReceiptPath) -notmatch '^\d+\.old$'){throw 'Receipt backup outside transaction.'}
+            [MTTFTest.Watchdog.Protocol.IndependentProtectedFiles]::RequireTrustedFile($savedReceiptPath)
+            if((Get-Item $savedReceiptPath).Length -gt 4MB -or (Get-FileHash $savedReceiptPath).Hash -ne $receiptEntries[0].originalSha256){throw 'Original receipt backup invalid.'}
+            $savedReceipt=[IO.File]::ReadAllText($savedReceiptPath)|ConvertFrom-Json
+            $rollback=Get-IndependentRollbackPlan $plan $previousPlan $outcome $record $savedReceipt $registration.InstallationId
+            function Save-RollbackStage([string]$Stage,[string]$Failure){
+                $outcome.stage=$Stage;$outcome.finalizationRequired=$Stage -ne 'RolledBack'
+                $outcome|Add-Member -NotePropertyName failure -NotePropertyValue $Failure -Force
+                $temp=$outcomePath+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+                [IO.File]::WriteAllText($temp,($outcome|ConvertTo-Json -Depth 3))
+                [IO.File]::Replace($temp,$outcomePath,$outcomePath+'.previous')
+            }
+            Save-RollbackStage 'RollingBack' ''
+            try{
+                Restore-IndependentFileTransaction $plan.Destination $rollback.TransactionId -AllowCommitted|Out-Null
+                $restored=[MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)
+                if($restored.InstallationId -ne $registration.InstallationId){throw 'Restored installation identity changed.'}
+                if($state.Intent){$restored.RequireBoundIntent($state.Intent)}
+                foreach($file in $rollback.PreviousFiles){if((Get-FileHash (Join-Path $plan.Destination $file.Relative)).Hash -ne $file.Sha256){throw 'Rollback component does not match previous package.'}}
+                $manager=@($plan.Files|Where-Object Relative -eq 'Tools/Manage-IndependentRecovery.ps1')[0].Source
+                & $manager -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
+                & $manager -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor -PreviousVersion $plan.Version
+                Save-RollbackStage 'RolledBack' ''
+                Write-Output 'Previous version restored; maintenance remains enabled and no trial was started.'
+            }catch{Save-RollbackStage 'RollbackFailed' ([string]$_.Exception.Message);throw}
             return
         }
         if($Mode -eq 'FinalizeUpgrade'){

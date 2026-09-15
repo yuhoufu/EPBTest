@@ -73,6 +73,7 @@ if (-not $LegacyRecovery) {
     $commands['升级程序.cmd']='Upgrade'
     $commands['继续升级收尾.cmd']='FinalizeUpgrade'
     $commands['恢复中断文件事务.cmd']='RecoverFiles'
+    $commands['回退版本.cmd']='RollbackUpgrade'
 }
 foreach ($entry in $commands.GetEnumerator()) {
     $command = "@echo off`r`nsetlocal`r`nset `"EPB_BUNDLE_SCRIPT=%~dp0Install-AutomaticRecoveryBundle.ps1`"`r`n"
@@ -127,7 +128,13 @@ if (-not $LegacyRecovery) {
 ```
 
 10. 若结果为 FinalizationFailed，使用新包的 FinalizeUpgrade，TransactionId 为安装目录 Upgrade 下的32位目录名。若文件事务中断且阶段为 Prepared/RollbackFailed，RecoverFiles 的 TransactionId 为 Repair 下的32位目录名。两种事务ID含义不同，不得猜测；先查看对应 result.json 或 transaction.json。文件恢复不等于版本降级，不启动试验。
-11. 这四个维护模式也提供同名 cmd，参数通过命令行传入；缺少旧包或事务ID会拒绝执行。整体降级回滚及真实硬件验收仍未完成，本包不得作为最终现场交付。未完成入口不转用旧恢复架构。
+11. 版本回退从本次新版包运行 RollbackUpgrade，必须同时提供原构建完整包与 Upgrade 目录事务ID。入口核验原包和备份，恢复程序及注册后重新核验原组件摘要、服务/任务和旧版快捷方式。保持维护停止，不自动启动试验。示例：
+
+```powershell
+.\Install-AutomaticRecoveryBundle.ps1 -Mode RollbackUpgrade -InstallRoot 'C:\Program Files (x86)\MTTFTest' -PreviousBundleDirectory 'D:\旧版完整包' -TransactionId '升级记录中的32位目录ID'
+```
+
+12. 上述维护模式提供对应 cmd，参数通过命令行传入；缺少旧包或事务ID会拒绝执行。不得通过普通 RecoverFiles 撤销已成功提交的升级；回退后需要继续处理的错误保留在升级结果中。降级回滚的完整现场验收及真实硬件验收仍未完成，本包不得作为最终现场交付。未完成入口不转用旧恢复架构。
 
 真实台架和耐久验收未完成。RecoveryGuard-Acceptance 仅检查包/宿主，NOT_VERIFIED 不能视为通过。本轮不自动部署 WJ-EPB。
 '@

@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('ValidatePackage','ValidateUpgrade','Upgrade','FinalizeUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Status','Stop','Evidence','Uninstall')]
+    [ValidateSet('ValidatePackage','ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Status','Stop','Evidence','Uninstall')]
     [string]$Mode = 'ValidatePackage',
     [string]$InstallRoot = '',
     [string]$ProjectDirectory = '',
@@ -118,15 +118,15 @@ try {
     $manifest = Test-Bundle
     Write-Host ('候选版本：' + $manifest.version + '；现场耐久验收未完成。')
     if ($Mode -eq 'ValidatePackage') { Write-Output ('PASS BundleIntegrity ' + @($manifest.files).Count); exit 0 }
-    if ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RecoverFiles')) {
+    if ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles')) {
         if ($manifest.recoveryArchitecture -ne 'V4-Independent-SystemExecutor') { throw '该维护入口仅适用于独立执行器安装。' }
-        if ($Mode -in @('ValidateUpgrade','Upgrade')) {
+        if ($Mode -in @('ValidateUpgrade','Upgrade','RollbackUpgrade')) {
             if (-not $PreviousBundleDirectory -or $PreviousBundleDirectory.Contains('"')) { throw '升级必须明确指定不含引号的原版本完整包目录。' }
             $PreviousBundleDirectory = [IO.Path]::GetFullPath($PreviousBundleDirectory).TrimEnd('\')
         }
-        if ($Mode -in @('FinalizeUpgrade','RecoverFiles') -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$') { throw '必须明确指定32位事务ID。' }
+        if ($Mode -in @('FinalizeUpgrade','RollbackUpgrade','RecoverFiles') -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$') { throw '必须明确指定32位事务ID。' }
     }
-    if ($Mode -in @('Upgrade','FinalizeUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Stop','Uninstall','Evidence')) {
+    if ($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Stop','Uninstall','Evidence')) {
         $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             if ($Elevated) { throw '提权后仍无管理员权限。' }
@@ -147,7 +147,7 @@ try {
         if ($Mode -eq 'Install') {
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Install `
                 -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot -ProjectDirectory $ProjectDirectory -InteractiveUserSid $InteractiveUserSid
-        } elseif ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RecoverFiles')) {
+        } elseif ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles')) {
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode $Mode `
                 -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot `
                 -PreviousBundleDirectory $PreviousBundleDirectory -TransactionId $TransactionId
