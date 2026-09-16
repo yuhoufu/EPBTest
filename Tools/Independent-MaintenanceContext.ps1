@@ -29,13 +29,30 @@ function Get-IndependentMaintenanceTransaction([string]$Root,[string]$Mode,[stri
 function Find-IndependentPreviousBundle([string]$Root,[string]$Version) {
     $cache=Join-Path $Root 'BundleCache'
     if(-not [IO.Directory]::Exists($cache)){return ''}
+    $receipt=$null;$receiptPath=Join-Path $Root 'installed-files.json'
+    if([IO.File]::Exists($receiptPath)){
+        $candidateReceipt=Read-IndependentMaintenanceJson $receiptPath
+        if($candidateReceipt.version -eq $Version){$receipt=$candidateReceipt}
+    }
     $found=@();$count=0
     foreach($directory in [IO.Directory]::EnumerateDirectories($cache)){
         if(++$count -gt 64){throw '安装包缓存超过自动检查上限。'}
         if(([IO.Path]::GetFileName($directory)).StartsWith('.')){continue}
         $path=Join-Path $directory 'automatic-bundle.json'
         $manifest=Read-IndependentMaintenanceJson $path
-        if($manifest.version -eq $Version){$found+=,$directory}
+        if($manifest.version -eq $Version){
+            if($receipt){
+                $digests=@{};foreach($entry in $manifest.files){$digests[[string]$entry.path]=[string]$entry.sha256}
+                $matches=@($receipt.files).Count -gt 0
+                foreach($owned in $receipt.files){
+                    $relative=[string]$owned.path
+                    $source=if($relative.StartsWith('Current/')){'Base/'+$relative.Substring(8)}else{$relative}
+                    if(-not $digests.ContainsKey($source) -or $digests[$source] -ne $owned.sha256){$matches=$false;break}
+                }
+                if(-not $matches){continue}
+            }
+            $found+=,$directory
+        }
     }
     if($found.Count -gt 1){throw '同版本存在多个构建缓存，不能猜测原安装包。'}
     if($found.Count -eq 1){return $found[0]}

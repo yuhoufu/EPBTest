@@ -51,6 +51,16 @@ Check ((Find-IndependentPreviousBundle $root '4.1.0.3') -eq $cached) 'Incomplete
 $manifest.files[0].path='../escape.ps1'
 [IO.File]::WriteAllText((Join-Path $source 'automatic-bundle.json'),($manifest|ConvertTo-Json -Depth 4))
 Reject {Save-IndependentBundleCache $source $root} 'Cache path traversal rejected'
+$other=Join-Path $root 'BundleCache\same-version-other-build';[IO.Directory]::CreateDirectory($other)|Out-Null
+$otherManifest=@{version='4.1.0.3';files=@(@{path='Tools/probe.ps1';sha256=('c'*64)})}
+[IO.File]::WriteAllText((Join-Path $other 'automatic-bundle.json'),($otherManifest|ConvertTo-Json -Depth 4))
+Reject {Find-IndependentPreviousBundle $root '4.1.0.3'} 'Without an installed receipt different builds are ambiguous'
+$receipt=@{version='4.1.0.3';files=@(@{path='Tools/probe.ps1';sha256=(Get-FileHash (Join-Path $cached 'Tools\probe.ps1')).Hash})}
+[IO.File]::WriteAllText((Join-Path $root 'installed-files.json'),($receipt|ConvertTo-Json -Depth 4))
+Check ((Find-IndependentPreviousBundle $root '4.1.0.3') -eq $cached) 'Installed receipt selects the exact build among same-version caches'
+$receipt.files[0].sha256='d'*64
+[IO.File]::WriteAllText((Join-Path $root 'installed-files.json'),($receipt|ConvertTo-Json -Depth 4))
+Check ((Find-IndependentPreviousBundle $root '4.1.0.3') -eq '') 'Unknown installed build does not use another build cache'
 $nearby=Join-Path $root 'nearby';$current=Join-Path $nearby 'new';$old=Join-Path $nearby 'old'
 [IO.Directory]::CreateDirectory($current)|Out-Null;[IO.Directory]::CreateDirectory($old)|Out-Null
 $nearManifest=@{version='4.1.0.3';files=@(@{path='Base/MTTFTest.exe';sha256=('a'*64)})}

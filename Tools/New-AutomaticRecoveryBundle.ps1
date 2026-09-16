@@ -86,7 +86,7 @@ if (-not $LegacyRecovery) {
     $commands['回退版本.cmd']='RollbackUpgrade'
 }
 foreach ($entry in $commands.GetEnumerator()) {
-    $command = "@echo off`r`nsetlocal`r`nset `"EPB_BUNDLE_SCRIPT=%~dp0Install-AutomaticRecoveryBundle.ps1`"`r`n"
+    $command = "@echo off`r`nsetlocal`r`nset `"PSModulePath=%SystemRoot%\System32\WindowsPowerShell\v1.0\Modules`"`r`nset `"EPB_BUNDLE_SCRIPT=%~dp0Install-AutomaticRecoveryBundle.ps1`"`r`n"
     $command += '"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%EPB_BUNDLE_SCRIPT%" -Mode ' + $entry.Value + ' %*' + "`r`n"
     $command += "set EPB_EXIT=%ERRORLEVEL%`r`necho ExitCode=%EPB_EXIT%`r`nif not defined EPB_BUNDLE_NONINTERACTIVE pause`r`nexit /b %EPB_EXIT%`r`n"
     [IO.File]::WriteAllText((Join-Path $output $entry.Key), $command, [Text.Encoding]::ASCII)

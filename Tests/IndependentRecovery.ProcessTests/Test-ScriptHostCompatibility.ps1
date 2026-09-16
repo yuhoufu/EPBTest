@@ -20,6 +20,7 @@ $fixture=Join-Path $root '宿主 参数验证.ps1'
 $body=@'
 param([string]$OutputPath,[string]$Value,[switch]$Enabled,[int]$ResultCode=0)
 __BRIDGE__
+Get-FileHash -LiteralPath $PSCommandPath -ErrorAction Stop | Out-Null
 [IO.File]::WriteAllText($OutputPath,(@{edition=$PSVersionTable.PSEdition;value=$Value;enabled=[bool]$Enabled;host64=[Environment]::Is64BitProcess}|ConvertTo-Json))
 exit $ResultCode
 '@
@@ -34,8 +35,13 @@ foreach($hostPath in $hosts){
         $payload=@{script=$fixture;output=$output;value=$value;enabled=$enabled}|ConvertTo-Json -Compress
         $data=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
         $code='$ProgressPreference="SilentlyContinue";$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("'+$data+'"))|ConvertFrom-Json;& $d.script -OutputPath $d.output -Value $d.value -Enabled:([bool]$d.enabled) -ResultCode 17;exit $LASTEXITCODE'
-        & $hostPath -NoProfile -ExecutionPolicy Bypass -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code)))
-        if($LASTEXITCODE -ne 17){throw 'Child exit code was lost'}
+        $savedModulePath=$env:PSModulePath
+        try{
+            $env:PSModulePath=if($hostPath.EndsWith('pwsh.exe')){Join-Path $env:ProgramFiles 'PowerShell\7\Modules'}else{"$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules"}
+            & $hostPath -NoProfile -ExecutionPolicy Bypass -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code)))
+            $hostExitCode=$LASTEXITCODE
+        }finally{$env:PSModulePath=$savedModulePath}
+        if($hostExitCode -ne 17){throw 'Child exit code was lost'}
         $actual=[IO.File]::ReadAllText($output)|ConvertFrom-Json
         if($actual.edition -ne 'Desktop' -or $actual.value -cne $value -or $actual.enabled -ne $enabled){throw 'Typed arguments were corrupted'}
         $passed++
