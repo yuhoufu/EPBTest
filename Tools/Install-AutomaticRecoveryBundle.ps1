@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [ValidateSet('ValidatePackage','ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Status','Stop','Evidence','Uninstall')]
-    [string]$Mode = 'ValidatePackage',
+    [string]$Mode = 'Install',
     [string]$InstallRoot = '',
     [string]$ProjectDirectory = '',
     [string]$InteractiveUserSid = '',
@@ -11,6 +11,22 @@ param(
     [switch]$ForceUninstall,
     [switch]$Elevated
 )
+# Public entry points accept PowerShell 7; .NET Framework deployment work is
+# executed by the Windows PowerShell host with typed, data-only arguments.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $epbBridgeParameters = @{}
+    foreach ($epbBridgeKey in $PSBoundParameters.Keys) {
+        $epbBridgeValue = $PSBoundParameters[$epbBridgeKey]
+        if ($epbBridgeValue -is [Management.Automation.SwitchParameter]) { $epbBridgeValue = [bool]$epbBridgeValue }
+        $epbBridgeParameters[$epbBridgeKey] = $epbBridgeValue
+    }
+    $epbBridgeData = @{ Script = $PSCommandPath; Parameters = $epbBridgeParameters } | ConvertTo-Json -Depth 5 -Compress
+    $epbBridgePayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($epbBridgeData))
+    $epbBridgeCode = '$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $epbBridgePayload + '"))|ConvertFrom-Json;$p=@{};foreach($v in $d.Parameters.PSObject.Properties){$p[$v.Name]=$v.Value};$global:LASTEXITCODE=0;& ([string]$d.Script) @p;exit $LASTEXITCODE'
+    $epbBridgeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($epbBridgeCode))
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -EncodedCommand $epbBridgeEncoded
+    exit $LASTEXITCODE
+}
 $ErrorActionPreference = 'Stop'
 if (-not $InstallRoot) { $InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'MTTFTest' }
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
@@ -115,6 +131,7 @@ function Assert-ClosedProcessSafety([int]$ProcessId, [long]$StartUtcTicks) {
     throw '未找到与刚退出进程 PID/启动时间完全匹配的安全关闭回执；后台保护保留，不能把进程退出当作安全完成。'
 }
 try {
+    if ($TransactionId -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$') { throw '维护事务身份无效。' }
     $manifest = Test-Bundle
     Write-Host ('候选版本：' + $manifest.version + '；现场耐久验收未完成。')
     if ($Mode -eq 'ValidatePackage') { Write-Output ('PASS BundleIntegrity ' + @($manifest.files).Count); exit 0 }
@@ -126,15 +143,13 @@ try {
         $ProjectDirectory = $context.ProjectDirectory
         $InteractiveUserSid = $context.InteractiveUserSid
     }
-    if ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles')) {
-        if ($manifest.recoveryArchitecture -ne 'V4-Independent-SystemExecutor') { throw '该维护入口仅适用于独立执行器安装。' }
-        if ($Mode -in @('ValidateUpgrade','Upgrade','RollbackUpgrade')) {
-            if (-not $PreviousBundleDirectory -or $PreviousBundleDirectory.Contains('"')) { throw '升级必须明确指定不含引号的原版本完整包目录。' }
-            $PreviousBundleDirectory = [IO.Path]::GetFullPath($PreviousBundleDirectory).TrimEnd('\')
-        }
-        if ($Mode -in @('FinalizeUpgrade','RollbackUpgrade','RecoverFiles') -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$') { throw '必须明确指定32位事务ID。' }
+    $needsReadElevation = $false
+    if ($Mode -eq 'ValidateUpgrade' -and [IO.Directory]::Exists($InstallRoot)) {
+        try { $readProbe = [IO.File]::OpenRead((Join-Path $InstallRoot 'installed-files.json')); $readProbe.Dispose() }
+        catch [UnauthorizedAccessException] { $needsReadElevation = $true }
+        catch [IO.FileNotFoundException] { }
     }
-    if ($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Stop','Uninstall','Evidence')) {
+    if ($needsReadElevation -or $Mode -in @('Status','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles','Install','Repair','Restore','Launch','Stop','Uninstall','Evidence')) {
         $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             if ($Elevated) { throw '提权后仍无管理员权限。' }
@@ -152,10 +167,62 @@ try {
         }
     }
     if ($manifest.recoveryArchitecture -eq 'V4-Independent-SystemExecutor') {
+        . (Join-Path $PSScriptRoot 'Tools\Independent-MaintenanceContext.ps1')
+        if ($Mode -eq 'Install' -and [IO.File]::Exists((Join-Path $InstallRoot 'installed-files.json'))) {
+            $installed = Read-IndependentMaintenanceJson (Join-Path $InstallRoot 'installed-files.json')
+            $setupPath = Join-Path $InstallRoot 'install-setup.json'
+            if ($installed.version -eq '4.1.0.3' -and [IO.File]::Exists($setupPath)) {
+                $existingSetup = Read-IndependentMaintenanceJson $setupPath
+                if ($existingSetup.stage -eq 'Binding' -and -not [IO.Directory]::Exists((Join-Path $InstallRoot 'IndependentState'))) {
+                    & (Join-Path $PSScriptRoot 'Tools\Repair-IndependentInstallerArchitecture.ps1') -InstallRoot $InstallRoot
+                }
+            }
+            if ([version]$installed.version -lt [version]$manifest.version) { $Mode = 'Upgrade' }
+            elseif ([version]$installed.version -gt [version]$manifest.version) { throw '已安装版本更高；降级请使用新版包的回退入口。' }
+        }
+        if ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles')) {
+            if ($Mode -in @('FinalizeUpgrade','RollbackUpgrade','RecoverFiles') -and -not $TransactionId) {
+                $pending = Get-IndependentMaintenanceTransaction $InstallRoot $Mode $manifest.version
+                if (-not $pending) { Write-Output '没有适用的待处理事务，未修改安装或试验状态。'; exit 0 }
+                $TransactionId = $pending.Id
+            }
+            if ($Mode -in @('ValidateUpgrade','Upgrade','RollbackUpgrade') -and -not $PreviousBundleDirectory) {
+                $receipt = Read-IndependentMaintenanceJson (Join-Path $InstallRoot 'installed-files.json')
+                $previousVersion = [string]$receipt.version
+                if ($Mode -eq 'RollbackUpgrade') {
+                    $record = Read-IndependentMaintenanceJson (Join-Path $InstallRoot ('Upgrade\'+$TransactionId+'\result.json'))
+                    $previousVersion = [string]$record.fromVersion
+                }
+                $PreviousBundleDirectory = Find-IndependentPreviousBundle $InstallRoot $previousVersion
+                if (-not $PreviousBundleDirectory) {
+                    $mainHash = ''
+                    if ($Mode -ne 'RollbackUpgrade') { $mainHash = [string](@($receipt.files | Where-Object path -eq 'Current/MTTFTest.exe')[0].sha256) }
+                    $PreviousBundleDirectory = Find-IndependentNearbyBundle $PSScriptRoot $previousVersion $mainHash
+                }
+                if (-not $PreviousBundleDirectory) { $PreviousBundleDirectory = Select-IndependentPreviousBundle $previousVersion }
+            }
+            if ($PreviousBundleDirectory) {
+                if ($PreviousBundleDirectory.Contains('"')) { throw '原安装包路径包含无效字符。' }
+                $PreviousBundleDirectory = [IO.Path]::GetFullPath($PreviousBundleDirectory).TrimEnd('\')
+                if ($Mode -in @('Upgrade','ValidateUpgrade') -and [IO.File]::Exists((Join-Path $InstallRoot 'InstallerArchitectureRepair\result.json'))) {
+                    & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Validate `
+                        -BundleDirectory $PreviousBundleDirectory -InstallRoot $InstallRoot | Out-Null
+                    $PreviousBundleDirectory = Save-IndependentBundleCache $PreviousBundleDirectory $InstallRoot -ArchitectureRepair
+                }
+            }
+            if ($Mode -in @('FinalizeUpgrade','RollbackUpgrade','RecoverFiles') -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$') { throw '维护事务身份无效。' }
+        }
         if ($Mode -eq 'Install') {
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Install `
                 -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot -ProjectDirectory $ProjectDirectory -InteractiveUserSid $InteractiveUserSid
+            Save-IndependentBundleCache $PSScriptRoot $InstallRoot | Out-Null
         } elseif ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles')) {
+            if ($Mode -eq 'Upgrade') {
+                & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode ValidateUpgrade `
+                    -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot -PreviousBundleDirectory $PreviousBundleDirectory | Out-Null
+                Save-IndependentBundleCache $PreviousBundleDirectory $InstallRoot | Out-Null
+                Save-IndependentBundleCache $PSScriptRoot $InstallRoot | Out-Null
+            }
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode $Mode `
                 -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot `
                 -PreviousBundleDirectory $PreviousBundleDirectory -TransactionId $TransactionId
@@ -176,6 +243,19 @@ try {
             Write-Host '组件状态不代表续测成功；动作、计数和三周期落盘须单独核验。'
         } elseif ($Mode -eq 'Evidence') {
             if (-not $EvidenceDirectory) { $EvidenceDirectory = Join-Path $PSScriptRoot ('Evidence\' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')) }
+            if (-not [IO.File]::Exists((Join-Path $InstallRoot 'IndependentState\registration.json'))) {
+                [IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
+                foreach ($name in @('install-setup.json','installation-result.json','installed-files.json')) {
+                    $source = Join-Path $InstallRoot $name
+                    if ([IO.File]::Exists($source)) {
+                        Read-IndependentMaintenanceJson $source | Out-Null
+                        [IO.File]::Copy($source,(Join-Path $EvidenceDirectory $name),$false)
+                    }
+                }
+                [IO.File]::WriteAllText((Join-Path $EvidenceDirectory 'scope.txt'),'仅安装准备状态；恢复尚未注册；未读取项目数据库，不能证明恢复就绪或试验运行。',[Text.UTF8Encoding]::new($true))
+                Write-Output ('安装准备状态已导出：'+$EvidenceDirectory)
+                exit 0
+            }
             & (Join-Path $PSScriptRoot 'Tools\Export-IndependentRecoveryEvidence.ps1') `
                 -RegistrationPath (Join-Path $InstallRoot 'IndependentState\registration.json') `
                 -ExecutorPath (Join-Path $InstallRoot 'FallbackGuard\MTTFTest.FallbackGuard.exe') -OutputDirectory $EvidenceDirectory

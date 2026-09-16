@@ -12,9 +12,10 @@ if($Mode -ne 'ValidateUpgrade'){throw 'Unexpected mutating mode in routing fixtu
 [IO.File]::WriteAllText($env:EPB_ROUTE_LOG,([ordered]@{mode=$Mode;bundle=$BundleDirectory;install=$InstallRoot;previous=$PreviousBundleDirectory;transaction=$TransactionId}|ConvertTo-Json -Depth 2))
 '@
 $entries=@()
-foreach($relative in @('Base/MTTFTest.exe','Base/Deployment/Install-MTTFTest-Unattended.ps1','RecoveryGuard-Acceptance.ps1','Tools/Export-IndependentRecoveryEvidence.ps1','Tools/Install-IndependentRecoveryBundle.ps1','Install-AutomaticRecoveryBundle.ps1')){
+foreach($relative in @('Base/MTTFTest.exe','Base/Deployment/Install-MTTFTest-Unattended.ps1','RecoveryGuard-Acceptance.ps1','Tools/Export-IndependentRecoveryEvidence.ps1','Tools/Install-IndependentRecoveryBundle.ps1','Tools/Independent-MaintenanceContext.ps1','Install-AutomaticRecoveryBundle.ps1')){
     $path=Join-Path $bundle $relative;[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))|Out-Null
     if($relative -eq 'Install-AutomaticRecoveryBundle.ps1'){[IO.File]::Copy((Join-Path $repo 'Tools\Install-AutomaticRecoveryBundle.ps1'),$path,$false)}
+    elseif($relative -eq 'Tools/Independent-MaintenanceContext.ps1'){[IO.File]::Copy((Join-Path $repo $relative),$path,$false)}
     elseif($relative -eq 'Tools/Install-IndependentRecoveryBundle.ps1'){[IO.File]::WriteAllText($path,$stub)}
     else{[IO.File]::WriteAllText($path,'NONEXECUTABLE_ROUTING_FIXTURE')}
     $entries+=,[ordered]@{path=$relative;sha256=(Get-FileHash $path).Hash}

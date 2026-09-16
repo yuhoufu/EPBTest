@@ -604,6 +604,18 @@ if ($LASTEXITCODE -ne 0) { throw ('无参数安装准备回归失败：' + ($one
 foreach ($line in $oneClickSetupOutput) { Write-Host ([string]$line) }
 $oneClickSetupSummary = @($oneClickSetupOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS one-click setup \d+ checks;' })
 if ($oneClickSetupSummary.Count -ne 1) { throw '无参数安装准备回归缺少通过摘要。' }
+$scriptHostOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-ScriptHostCompatibility.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('安装脚本跨宿主回归失败：' + ($scriptHostOutput -join "`n")) }
+foreach ($line in $scriptHostOutput) { Write-Host ([string]$line) }
+$scriptHostSummary = ($scriptHostOutput -join "`n") | ConvertFrom-Json
+if ($scriptHostSummary.passed -ne 18 -or $scriptHostSummary.hostCount -ne 3) { throw '安装脚本跨宿主回归未完整通过。' }
+$maintenanceOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-MaintenanceContext.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('无参数维护回归失败：' + ($maintenanceOutput -join "`n")) }
+foreach ($line in $maintenanceOutput) { Write-Host ([string]$line) }
+$maintenanceSummary = @($maintenanceOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS maintenance context 22 checks;' })
+if ($maintenanceSummary.Count -ne 1) { throw '无参数维护回归缺少通过摘要。' }
 
 $deploymentContractOutput = @(& (Join-Path `
     $PSScriptRoot 'Test-MTTFTest-UnattendedDeployment.ps1') 2>&1)
@@ -643,6 +655,8 @@ $verification = [ordered]@{
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
     oneClickSetupTests = $oneClickSetupSummary[0].Trim()
+    scriptHostCompatibilityTests = ('PASS {0} checks; {1} hosts; {2} scripts' -f $scriptHostSummary.passed,$scriptHostSummary.hostCount,$scriptHostSummary.scriptCount)
+    maintenanceContextTests = $maintenanceSummary[0].Trim()
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
     quickDeployCommandParse = $quickDeployParseSummary[0].Trim()
     releaseBuildNoMandatorySoak = $noMandatorySoakSummary[0].Trim()

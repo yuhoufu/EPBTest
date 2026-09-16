@@ -49,7 +49,7 @@ foreach ($relative in @('System.Data.SQLite.dll', 'x86\SQLite.Interop.dll')) {
 }
 $toolsOutput = Join-Path $output 'Tools'
 [IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
-$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Manage-SessionHost.ps1','Service-Lifecycle.ps1','Export-IndependentRecoveryEvidence.ps1','Independent-InstallSetup.ps1','Complete-IndependentSetup.ps1')
+$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Manage-SessionHost.ps1','Service-Lifecycle.ps1','Export-IndependentRecoveryEvidence.ps1','Independent-InstallSetup.ps1','Complete-IndependentSetup.ps1','Independent-MaintenanceContext.ps1','Repair-IndependentInstallerArchitecture.ps1')
 if ($LegacyRecovery) { $toolNames += @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
     'Resolve-FallbackBinding.ps1','Persistent-Fallback.ps1','Manage-PersistentFallback.ps1',
     'Watch-ActiveFallback.ps1','Test-FallbackBinding.ps1','Test-PersistentFallback.ps1','Test-PersistentTask.ps1') }
@@ -90,6 +90,8 @@ foreach ($entry in $commands.GetEnumerator()) {
     $command += '"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%EPB_BUNDLE_SCRIPT%" -Mode ' + $entry.Value + ' %*' + "`r`n"
     $command += "set EPB_EXIT=%ERRORLEVEL%`r`necho ExitCode=%EPB_EXIT%`r`nif not defined EPB_BUNDLE_NONINTERACTIVE pause`r`nexit /b %EPB_EXIT%`r`n"
     [IO.File]::WriteAllText((Join-Path $output $entry.Key), $command, [Text.Encoding]::ASCII)
+    $psEntry = "#requires -Version 5.1`r`n" + '& (Join-Path $PSScriptRoot ''Install-AutomaticRecoveryBundle.ps1'') -Mode ' + $entry.Value + "`r`nexit `$LASTEXITCODE`r`n"
+    [IO.File]::WriteAllText((Join-Path $output ([IO.Path]::ChangeExtension($entry.Key,'.ps1'))), $psEntry, $utf8)
 }
 $instructions = @'
 # 自动恢复候选安装说明
@@ -131,22 +133,11 @@ if (-not $LegacyRecovery) {
 6. 卸载注销本安装服务、任务和快捷方式，并按原安装记录及摘要删除程序组件。配置、项目数据、诊断、注册和重复卸载所需的受保护维护协议保留；不会递归清空目录。重复卸载须使用同构建包，组件内容变化时保留并报告错误。此入口不等于旧版回滚。
 7. Evidence 导出有界独立状态、当前事务安全回执及只读正式记录摘要，缺失项写入清单；不包含完整数据库快照或全部波形，也不证明动作恢复。
 8. 停止入口先持久撤销续测许可，再由独立服务完成安全收尾；“已受理”不等于进程全部退出。检查 SafetyCleanupPending、事务阶段与错误详情。监督服务和启动任务保留；缺少可信批次身份时拒绝按名称强杀。
-9. 升级必须保留原构建完整包，在新包目录执行以下命令；先检查，再升级，成功后仍保持维护停止，不自动续测：
-
-```powershell
-.\Install-AutomaticRecoveryBundle.ps1 -Mode ValidateUpgrade -InstallRoot 'C:\Program Files (x86)\MTTFTest' -PreviousBundleDirectory 'D:\旧版完整包'
-.\Install-AutomaticRecoveryBundle.ps1 -Mode Upgrade -InstallRoot 'C:\Program Files (x86)\MTTFTest' -PreviousBundleDirectory 'D:\旧版完整包'
-```
-
-10. 若结果为 FinalizationFailed，使用新包的 FinalizeUpgrade，TransactionId 为安装目录 Upgrade 下的32位目录名。若文件事务中断且阶段为 Prepared/RollbackFailed，RecoverFiles 的 TransactionId 为 Repair 下的32位目录名。两种事务ID含义不同，不得猜测；先查看对应 result.json 或 transaction.json。文件恢复不等于版本降级，不启动试验。
-11. 版本回退从本次新版包运行 RollbackUpgrade，必须同时提供原构建完整包与 Upgrade 目录事务ID。入口核验原包和备份，恢复程序及注册后重新核验原组件摘要、服务/任务和旧版快捷方式。保持维护停止，不自动启动试验。示例：
-
-```powershell
-.\Install-AutomaticRecoveryBundle.ps1 -Mode RollbackUpgrade -InstallRoot 'C:\Program Files (x86)\MTTFTest' -PreviousBundleDirectory 'D:\旧版完整包' -TransactionId '升级记录中的32位目录ID'
-```
-
-12. 上述维护模式提供对应 cmd，参数通过命令行传入；缺少旧包或事务ID会拒绝执行。不得通过普通 RecoverFiles 撤销已成功提交的升级；回退后需要继续处理的错误保留在升级结果中。降级回滚的完整现场验收及真实硬件验收仍未完成，本包不得作为最终现场交付。未完成入口不转用旧恢复架构。
-
+9. 所有根目录一键入口均同时提供 `.cmd` 和 `.ps1`，不需要输入路径、SID 或事务参数。PowerShell 5.1 和 PowerShell 7 都可以直接执行 `.\一键安装正式版.ps1`；PowerShell 7 会将 .NET Framework 安装工作交给本机 Windows PowerShell 5.1，保留参数和退出码。Windows 管理员授权仍由系统处理。
+10. 安装入口自动区分首次安装、同构建重复安装和升版。每次成功安装保留经过摘要校验的原包缓存；升级、版本回退自动使用缓存。维护入口自动选择唯一适用的待处理事务，没有适用事务时说明无需处理；存在多个待处理事务时不猜测。
+11. 对没有缓存的旧安装，先在新包附近有界查找匹配原构建的完整包；找不到唯一原包时，通过文件夹选择窗口选择一次，无需填写命令行参数。后续使用缓存。原包缺失时不能假造或跳过完整性验证。
+12. 本次 4.1.0.3 安装器位数错误可原地修复：精确核验失败构建和安装记录，只替换元数据能力探测语句，保留原程序和项目数据。新安装入口遇到该已知未绑定失败状态时先完成修复，再走受控升级。旧构建修复记录会同步到本地维护缓存，保证后续升级和回退能校验实际文件。
+13. 升级、修复和回退保留原安全约束；成功后仍保持维护停止，不自动续测。只有用户明确开始试验才建立运行意图。“恢复后台服务”仅启用监督，组件运行不代表试验已经续测。
 真实台架和耐久验收未完成。RecoveryGuard-Acceptance 仅检查包/宿主，NOT_VERIFIED 不能视为通过。本轮不自动部署 WJ-EPB。
 '@
 }

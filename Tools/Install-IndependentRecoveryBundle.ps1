@@ -9,6 +9,22 @@ param(
     [string]$TransactionId,
     [string]$PreviousBundleDirectory
 )
+# Public entry points accept PowerShell 7; .NET Framework deployment work is
+# executed by the Windows PowerShell host with typed, data-only arguments.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $epbBridgeParameters = @{}
+    foreach ($epbBridgeKey in $PSBoundParameters.Keys) {
+        $epbBridgeValue = $PSBoundParameters[$epbBridgeKey]
+        if ($epbBridgeValue -is [Management.Automation.SwitchParameter]) { $epbBridgeValue = [bool]$epbBridgeValue }
+        $epbBridgeParameters[$epbBridgeKey] = $epbBridgeValue
+    }
+    $epbBridgeData = @{ Script = $PSCommandPath; Parameters = $epbBridgeParameters } | ConvertTo-Json -Depth 5 -Compress
+    $epbBridgePayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($epbBridgeData))
+    $epbBridgeCode = '$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $epbBridgePayload + '"))|ConvertFrom-Json;$p=@{};foreach($v in $d.Parameters.PSObject.Properties){$p[$v.Name]=$v.Value};$global:LASTEXITCODE=0;& ([string]$d.Script) @p;exit $LASTEXITCODE'
+    $epbBridgeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($epbBridgeCode))
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -EncodedCommand $epbBridgeEncoded
+    exit $LASTEXITCODE
+}
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Service-Lifecycle.ps1')
 function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
@@ -55,6 +71,11 @@ function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
     if([version]$manifest.version -ge [version]'4.1.0.3'){
         foreach($required in @('Tools/Independent-InstallSetup.ps1','Tools/Complete-IndependentSetup.ps1')){
             if(-not $seen.ContainsKey($required)){throw ('缺少首次项目设置组件：'+$required)}
+        }
+    }
+    if([version]$manifest.version -ge [version]'4.1.0.4'){
+        foreach($required in @('Tools/Independent-MaintenanceContext.ps1','Tools/Repair-IndependentInstallerArchitecture.ps1')){
+            if(-not $seen.ContainsKey($required)){throw ('缺少无参数维护组件：'+$required)}
         }
     }
     [pscustomobject]@{Version=[string]$manifest.version;Destination=$destinationPath;Files=$plan}
@@ -105,7 +126,7 @@ function Get-IndependentRepairFiles($Plan,$Receipt) {
     # reset from package defaults by binary repair.
     foreach($file in $Plan.Files){
         if($file.Relative -notlike 'Current/Config/*' -and
-           $file.Relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'){$file}
+           $file.Relative -match '(?i)(\.(exe|dll|pdb|ps1|exe\.config)$|^Current/(build-identity\.json|SHA256SUMS\.txt)$)'){$file}
     }
 }
 function Get-IndependentUpgradePlan($CurrentPlan,$NextPlan,$Receipt) {
@@ -122,7 +143,7 @@ function Get-IndependentUpgradePlan($CurrentPlan,$NextPlan,$Receipt) {
     $next=@(Get-IndependentRepairFiles $NextPlan $nextReceipt)
     $nextPaths=@{};foreach($file in $next){$nextPaths[$file.Relative]=$true}
     $obsolete=@($current|Where-Object{-not $nextPaths.ContainsKey($_.Relative)})
-    $preserved=@($CurrentPlan.Files|Where-Object{$_.Relative -like 'Current/Config/*' -or $_.Relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'})
+    $preserved=@($CurrentPlan.Files|Where-Object{$_.Relative -like 'Current/Config/*' -or $_.Relative -notmatch '(?i)(\.(exe|dll|pdb|ps1|exe\.config)$|^Current/(build-identity\.json|SHA256SUMS\.txt)$)'})
     [pscustomobject]@{FromVersion=$CurrentPlan.Version;ToVersion=$NextPlan.Version;Destination=$CurrentPlan.Destination;
         ReplacementFiles=$next;ObsoleteFiles=$obsolete;PreservedFiles=$preserved}
 }
@@ -205,8 +226,8 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
         foreach($payload in $payloads){
             $file=$payload.File;$relative=([string]$file.Relative).Replace('\','/')
             $target=[IO.Path]::GetFullPath((Join-Path $root $relative))
-            $allowed=if($payload.Metadata){$relative -cin @('IndependentState/registration.json','installed-files.json')}
-                else{$relative -match '^(Current|FallbackGuard|Tools)/' -and $relative -notlike 'Current/Config/*' -and $relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'}
+            $allowed=if($payload.Metadata){$relative -cin @('IndependentState/registration.json','installed-files.json','install-setup.json')}
+                else{$relative -match '^(Current|FallbackGuard|Tools)/' -and $relative -notlike 'Current/Config/*' -and $relative -match '(?i)(\.(exe|dll|pdb|ps1|exe\.config)$|^Current/(build-identity\.json|SHA256SUMS\.txt)$)'}
             if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or -not $allowed){
                 throw '修复目标不在程序组件范围内。'
             }
@@ -228,7 +249,7 @@ function Invoke-IndependentFileRepair([object[]]$Files,[string]$InstallDirectory
             $target=[IO.Path]::GetFullPath((Join-Path $root $relative))
             if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or
                $relative -notmatch '^(Current|FallbackGuard|Tools)/' -or $relative -like 'Current/Config/*' -or
-               $relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$' -or $file.Sha256 -notmatch '^[a-fA-F0-9]{64}$'){
+               $relative -notmatch '(?i)(\.(exe|dll|pdb|ps1|exe\.config)$|^Current/(build-identity\.json|SHA256SUMS\.txt)$)' -or $file.Sha256 -notmatch '^[a-fA-F0-9]{64}$'){
                 throw 'Retired component identity is invalid.'
             }
             $seen[$target]=$true;Assert-RepairPath $target
@@ -319,8 +340,8 @@ function Restore-IndependentFileTransaction([string]$InstallDirectory,[string]$T
                $seen.ContainsKey($target) -or $seen.ContainsKey($backup) -or $entry.existed -isnot [bool]){throw 'Invalid replay file identity.'}
             $relative=$target.Substring($root.Length+1).Replace('\','/')
             $metadata=$record.schemaVersion -eq 2 -and $entry.metadata -is [bool] -and $entry.metadata
-            $allowed=if($metadata){$relative -cin @('IndependentState/registration.json','installed-files.json') -and $entry.existed}
-                else{$relative -match '^(Current|FallbackGuard|Tools)/' -and $relative -notlike 'Current/Config/*' -and $relative -match '(?i)\.(exe|dll|pdb|ps1|exe\.config)$'}
+            $allowed=if($metadata){$relative -cin @('IndependentState/registration.json','installed-files.json','install-setup.json') -and $entry.existed}
+                else{$relative -match '^(Current|FallbackGuard|Tools)/' -and $relative -notlike 'Current/Config/*' -and $relative -match '(?i)(\.(exe|dll|pdb|ps1|exe\.config)$|^Current/(build-identity\.json|SHA256SUMS\.txt)$)'}
             if(-not $allowed){throw 'Replay target outside component scope.'}
             $seen[$target]=$true;$seen[$backup]=$true
             Assert-ReplayPath $target;Assert-ReplayPath $backup
@@ -380,7 +401,7 @@ function Remove-IndependentOwnedComponents([object[]]$Files,[string]$InstallDire
         $target=[IO.Path]::GetFullPath((Join-Path $root $relative))
         if(-not $target.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($target) -or
            $relative -notmatch '^(Current|FallbackGuard|Tools)/' -or $relative -like 'Current/Config/*' -or
-           $relative -notmatch '(?i)\.(exe|dll|pdb|ps1|exe\.config)$' -or $file.Sha256 -notmatch '^[a-fA-F0-9]{64}$'){
+           $relative -notmatch '(?i)(\.(exe|dll|pdb|ps1|exe\.config)$|^Current/(build-identity\.json|SHA256SUMS\.txt)$)' -or $file.Sha256 -notmatch '^[a-fA-F0-9]{64}$'){
             throw '卸载目标不属于可删除的原安装组件。'
         }
         $seen[$target]=$true
@@ -717,6 +738,17 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             $metadata=@(
                 [pscustomobject]@{Relative='IndependentState/registration.json';Source=$registrationPayload;Sha256=(Get-FileHash $registrationPayload).Hash},
                 [pscustomobject]@{Relative='installed-files.json';Source=$receiptPayload;Sha256=(Get-FileHash $receiptPayload).Hash})
+            $setupPath=Join-Path $plan.Destination 'install-setup.json'
+            if([IO.File]::Exists($setupPath)){
+                . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
+                $setup=Read-IndependentSetupJson $setupPath
+                if($setup.stage -ne 'Ready' -or $setup.projectDirectory -ne $registration.ProjectDirectory -or
+                    $setup.interactiveUserSid -ne $registration.InteractiveUserSid){throw '首次安装绑定状态与注册不一致，未开始升级。'}
+                $setup.version=$plan.Version
+                $setupPayload=Join-Path $upgradeDirectory 'install-setup.next.json'
+                [IO.File]::WriteAllText($setupPayload,($setup|ConvertTo-Json -Depth 3))
+                $metadata+=,[pscustomobject]@{Relative='install-setup.json';Source=$setupPayload;Sha256=(Get-FileHash $setupPayload).Hash}
+            }
             $expectedState=$serializer.Serialize($store.Read())
             $verify={
                 [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)|Out-Null

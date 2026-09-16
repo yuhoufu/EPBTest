@@ -3,6 +3,22 @@
 param([ValidateSet('Complete','Launch')][string]$Mode='Complete',
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [int]$ParentProcessId=0,[long]$ParentStartUtcTicks=0)
+# Public entry points accept PowerShell 7; .NET Framework deployment work is
+# executed by the Windows PowerShell host with typed, data-only arguments.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $epbBridgeParameters = @{}
+    foreach ($epbBridgeKey in $PSBoundParameters.Keys) {
+        $epbBridgeValue = $PSBoundParameters[$epbBridgeKey]
+        if ($epbBridgeValue -is [Management.Automation.SwitchParameter]) { $epbBridgeValue = [bool]$epbBridgeValue }
+        $epbBridgeParameters[$epbBridgeKey] = $epbBridgeValue
+    }
+    $epbBridgeData = @{ Script = $PSCommandPath; Parameters = $epbBridgeParameters } | ConvertTo-Json -Depth 5 -Compress
+    $epbBridgePayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($epbBridgeData))
+    $epbBridgeCode = '$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $epbBridgePayload + '"))|ConvertFrom-Json;$p=@{};foreach($v in $d.Parameters.PSObject.Properties){$p[$v.Name]=$v.Value};$global:LASTEXITCODE=0;& ([string]$d.Script) @p;exit $LASTEXITCODE'
+    $epbBridgeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($epbBridgeCode))
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -EncodedCommand $epbBridgeEncoded
+    exit $LASTEXITCODE
+}
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
 $root=[IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')

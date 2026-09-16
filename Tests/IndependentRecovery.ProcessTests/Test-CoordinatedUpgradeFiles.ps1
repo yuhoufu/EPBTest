@@ -13,7 +13,7 @@ foreach($scenario in @('success-and-replay','metadata-locked','state-excluded'))
     $root=Join-Path $suite $scenario
     foreach($folder in @('Current','IndependentState','payloads')){[IO.Directory]::CreateDirectory((Join-Path $root $folder))|Out-Null}
     $files=@();$metadata=@();$index=0
-    foreach($relative in @('Current/main.dll','IndependentState/registration.json','installed-files.json')){
+    foreach($relative in @('Current/main.dll','IndependentState/registration.json','installed-files.json','install-setup.json')){
         $target=Join-Path $root $relative
         $source=Join-Path $root ('payloads\'+$index)
         [IO.File]::WriteAllText($target,'original-'+$relative)
@@ -35,7 +35,7 @@ foreach($scenario in @('success-and-replay','metadata-locked','state-excluded'))
         $record.phase='Prepared';[IO.File]::WriteAllText($journal,($record|ConvertTo-Json -Depth 4))
         Restore-IndependentFileTransaction $root ([IO.Path]::GetFileName($transaction))|Out-Null
     }elseif(-not $failure){throw 'Expected metadata rejection'}
-    foreach($relative in @('Current/main.dll','IndependentState/registration.json','installed-files.json')){
+    foreach($relative in @('Current/main.dll','IndependentState/registration.json','installed-files.json','install-setup.json')){
         if([IO.File]::ReadAllText((Join-Path $root $relative)) -ne ('original-'+$relative)){throw 'Component or metadata not restored'}
     }
     if($scenario -eq 'metadata-locked'){
