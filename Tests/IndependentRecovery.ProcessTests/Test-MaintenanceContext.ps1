@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 param([string]$EvidenceRoot=$env:EPB_TEST_ARTIFACT_ROOT)
 $ErrorActionPreference='Stop'
 if(-not $EvidenceRoot){throw 'EPB_TEST_ARTIFACT_ROOT required'}
