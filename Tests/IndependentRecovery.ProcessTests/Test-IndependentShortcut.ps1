@@ -9,7 +9,9 @@ if($errors.Count){throw ($errors|Out-String)}
 $definition=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-IndependentShortcut'},$true)
 . ([scriptblock]::Create($definition.Extent.Text))
 $main=Join-Path $root 'MTTFTest.exe';[IO.File]::WriteAllText($main,'NOT_EXECUTABLE')
-$id=[Guid]::NewGuid().ToString('N');$version='4.1.0.0'
+$id=[Guid]::NewGuid().ToString('N')
+[xml]$versionDocument=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\ProductVersion.props'))
+$version=[string]$versionDocument.Project.PropertyGroup.EpbProductVersion
 $path=Join-Path $root ('MT EPB V'+$version+' ['+$id+'].lnk')
 Set-IndependentShortcut $main $version $id $root $false
 if(-not [IO.File]::Exists($path)){throw 'Versioned shortcut absent'}

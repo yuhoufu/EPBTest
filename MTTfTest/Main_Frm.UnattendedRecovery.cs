@@ -489,7 +489,7 @@ namespace MtEmbTest
                 var monitor = new FrmEpbMainMonitor(
                     ProtectedRoot(checkpoint), _daqRuntimeSettings) { Name = "实时监视" };
                 OpenChildForm(monitor);
-                await monitor.ResumeFromUnattendedCheckpointAsync(checkpoint);
+                await monitor.ResumeFromUnattendedCheckpointAsync(checkpoint, RecoveryStartupSource.SoftwareCheckpoint);
             }
             catch (Exception ex)
             {

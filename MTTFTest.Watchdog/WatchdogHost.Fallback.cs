@@ -10,6 +10,160 @@ namespace MTTFTest.Watchdog
 {
     internal sealed partial class WatchdogHost
     {
+        private long _nextIndependentCommitProofTimestamp;
+
+        internal static bool MatchesIndependentRecoveryMarker(
+            WatchdogRecoveryCommitEvidence marker, WatchdogHeartbeat heartbeat)
+        {
+            // rc.2 wrote an empty raw stage even though Formal/RunActive resolved
+            // to FormalBatchStarted. Identity-less format1 markers remain unproven.
+            return marker != null && !marker.Legacy && heartbeat != null &&
+                marker.Generation > 0 && marker.Generation == heartbeat.RecoveryBatchCommitGeneration &&
+                marker.GeneratedUtcTicks >= heartbeat.ProcessStartUtcTicks &&
+                marker.RunId == heartbeat.RunId && marker.RunEpoch == heartbeat.RunEpoch &&
+                (string.IsNullOrEmpty(marker.Stage) || marker.Stage == ResolveRecoveryCommitStage(heartbeat) ||
+                 marker.Stage == heartbeat.RecoveryStage);
+        }
+
+        private bool TryFinishIndependentRecoveryMarker(
+            WatchdogRecoveryCommitEvidence marker, WatchdogHeartbeat heartbeat)
+        {
+            // Retain the original marker as evidence; the persisted scoped receipt
+            // terminates it. No delete/move race can remove a subsequent generation.
+            if (marker != null && !marker.Legacy &&
+                marker.GeneratedUtcTicks >= _journal.CurrentProcessStartUtcTicks &&
+                IsUnusedLegacyPermit(_relaunchCoordinator?.Snapshot))
+            {
+                var identity = new WatchdogHeartbeat
+                {
+                    SessionId = _args.SessionId, ProcessId = _journal.CurrentPid,
+                    ProcessStartUtcTicks = _journal.CurrentProcessStartUtcTicks,
+                    RunId = marker.RunId, RunEpoch = marker.RunEpoch
+                };
+                lock (_journalGate)
+                    if ((_journal.NotApplicableRecoveryCommits ?? Array.Empty<string>())
+                        .Contains(RecoveryCommitObservationKey(identity, marker.Generation))) return true;
+            }
+            return MatchesIndependentRecoveryMarker(marker, heartbeat) &&
+                TryFinishIndependentRecoveryCommit(marker.Generation, heartbeat, ResolveRecoveryCommitStage(heartbeat));
+        }
+
+        internal static bool IsUnusedLegacyPermit(DurableRelaunchPermitRecord permit)
+        {
+            return permit != null && permit.State == DurableRelaunchPermitState.None &&
+                permit.Generation == 0 && permit.RecoveryCommitGeneration == 0 &&
+                string.IsNullOrEmpty(permit.PermitId) && string.IsNullOrEmpty(permit.PermitNonce);
+        }
+
+        internal static bool MatchesCurrentRecoveryCommitContext(WatchdogHeartbeat candidate,
+            WatchdogHeartbeat current, long generation)
+        {
+            return candidate != null && current != null && generation > 0 &&
+                candidate.SessionId == current.SessionId && candidate.ProcessId == current.ProcessId &&
+                candidate.ProcessStartUtcTicks == current.ProcessStartUtcTicks &&
+                candidate.RunId == current.RunId && candidate.RunEpoch == current.RunEpoch &&
+                current.RecoveryBatchCommitGeneration == generation;
+        }
+
+        // This receipt terminates a wrong-protocol observation only. It grants no
+        // launch authority, does not advance accepted generations and never verifies
+        // the independent transaction. Keep its identity narrower than a run.
+        internal static string RecoveryCommitObservationKey(WatchdogHeartbeat heartbeat, long generation)
+        {
+            return string.Join("|", heartbeat.SessionId, heartbeat.ProcessId,
+                heartbeat.ProcessStartUtcTicks, heartbeat.RunId, heartbeat.RunEpoch, generation);
+        }
+
+        internal static bool ProvesIndependentRecoveryOrigin(
+            IndependentProjectState state, WatchdogHeartbeat heartbeat, string executablePath,
+            string sessionId, int sidecarPid, long sidecarStart)
+        {
+            var controller = state?.Controller;
+            var ticket = state?.Ticket;
+            var transaction = state?.Transaction;
+            return heartbeat != null && heartbeat.SessionId == sessionId &&
+                controller != null && ticket?.Consumer != null && transaction != null &&
+                controller.Matches(ticket.Consumer) && controller.Pid == heartbeat.ProcessId &&
+                controller.StartUtcTicks == heartbeat.ProcessStartUtcTicks &&
+                string.Equals(controller.ExecutablePath, executablePath, StringComparison.OrdinalIgnoreCase) &&
+                ticket.RequestId == transaction.RequestId && ticket.Generation == transaction.Generation &&
+                ticket.DispatchStartedUtcTicks > 0 && !transaction.OperatorStopOnly &&
+                transaction.ReplacementPid == controller.Pid &&
+                transaction.ReplacementStartUtcTicks == controller.StartUtcTicks &&
+                transaction.RunId == state.Intent?.RunId && transaction.RunEpoch == state.Intent?.RunEpoch &&
+                state.SessionProcesses.Any(child => child.Role == "Watchdog" &&
+                    child.ParentPid == controller.Pid && child.ParentStartUtcTicks == controller.StartUtcTicks &&
+                    child.Process?.SessionToken == sessionId && child.Process.Pid == sidecarPid &&
+                    child.Process.StartUtcTicks == sidecarStart);
+        }
+
+        private bool TryFinishIndependentRecoveryCommit(long generation, WatchdogHeartbeat heartbeat, string stage)
+        {
+            var permit = _relaunchCoordinator?.Snapshot;
+            if (!IsUnusedLegacyPermit(permit) ||
+                generation <= 0 || heartbeat == null || heartbeat.SessionId != _args.SessionId ||
+                heartbeat.ProcessId != _journal.CurrentPid ||
+                heartbeat.ProcessStartUtcTicks != _journal.CurrentProcessStartUtcTicks ||
+                !Guid.TryParseExact(heartbeat.RunId, "N", out _) || heartbeat.RunEpoch <= 0 ||
+                string.IsNullOrEmpty(stage)) return false;
+            var key = RecoveryCommitObservationKey(heartbeat, generation);
+            lock (_journalGate)
+                if ((_journal.NotApplicableRecoveryCommits ?? Array.Empty<string>()).Contains(key))
+                    return true;
+            if (!MatchesCurrentRecoveryCommitContext(heartbeat, _journal.LastHeartbeat, generation)) return false;
+            // Bound expensive installation/hash/state reads, including failures and
+            // concurrent pipe/marker observations. This is not a terminal decision.
+            var now = Stopwatch.GetTimestamp();
+            var next = Interlocked.Read(ref _nextIndependentCommitProofTimestamp);
+            if (now < next || Interlocked.CompareExchange(ref _nextIndependentCommitProofTimestamp,
+                now + 5 * Stopwatch.Frequency, next) != next) return false;
+            try
+            {
+                var binding = IndependentInstallationBinding.Resolve(_args.ExecutablePath);
+                if (binding == null) return false;
+                var registration = IndependentExecutorRegistration.LoadTrusted(binding.RegistrationPath);
+                if (!string.Equals(registration.ProjectDirectory,
+                    IndependentInstallationBinding.ProjectDirectoryFromSessionJournal(_args.JournalDirectory),
+                    StringComparison.OrdinalIgnoreCase)) return false;
+                var state = new IndependentProjectStateStore(registration.StateDirectory).Read();
+                registration.RequireBoundIntent(state?.Intent);
+                if (!ProvesIndependentRecoveryOrigin(state, heartbeat, _args.ExecutablePath,
+                    _args.SessionId, _sidecarProcessId, _sidecarProcessStartUtcTicks)) return false;
+                // Recheck after I/O. A newly issued legacy permit is never swallowed.
+                var current = _relaunchCoordinator.Snapshot;
+                if (!IsUnusedLegacyPermit(current)) return false;
+                lock (_journalGate)
+                {
+                    _journal.NotApplicableRecoveryCommits = (_journal.NotApplicableRecoveryCommits ??
+                        Array.Empty<string>()).Where(value => value != key).Concat(new[] { key })
+                        .Reverse().Take(32).Reverse().ToArray();
+                }
+                RecordRecoveryCommitDiagnostic("NotApplicableIndependentRecovery",
+                    $"Source=IndependentExecutor;PermitState=None;Stage={stage};Identity={key};" +
+                    $"Transaction={state.Transaction.RequestId};IndependentVerifiedUnchanged=true");
+                return true;
+            }
+            catch (Exception error)
+            {
+                // Missing/unreadable evidence is not proof. The normal rejection
+                // remains fail-closed, with the diagnostic separated from business state.
+                RecordRecoveryCommitDeferred(generation, "IndependentOriginProof",
+                    "Source=Unproven;Reason=" + error.GetType().Name);
+                return false;
+            }
+        }
+
+        private void RecordRecoveryCommitDiagnostic(string disposition, string detail)
+        {
+            lock (_journalGate)
+            {
+                _journal.RecoveryCommitDisposition = disposition;
+                _journal.RecoveryCommitDiagnostic = detail;
+            }
+            SaveJournal();
+            RecordEvent(disposition, detail);
+        }
+
         private readonly object _fallbackGate = new object();
         private FallbackLedgerStore _fallbackStore;
         private long _fallbackSnapshotTimestamp;

@@ -20,6 +20,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
+            passed += RecoveryCommitRoutingTests.RunAll();
             Run("Host schema4 bootstrap先于Sidecar且只允许一次", BootstrapIsSchema4AndSingleUse, ref passed);
             Run("Host bootstrap非法身份故障闭锁", InvalidBootstrapFailsClosed, ref passed);
             Run("Host生产编排注入端口仍由durable permit唯一授权", ProductionOrchestratorUsesInjectedPorts, ref passed);

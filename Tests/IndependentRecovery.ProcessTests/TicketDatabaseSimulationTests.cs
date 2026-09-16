@@ -23,6 +23,7 @@ namespace AdaptiveControlTests
             internal string DatabasePath;
             internal RecoveryDatabaseSnapshot Baseline;
             internal Func<bool> ReplacementAlive;
+            internal bool VerificationFailed;
             internal int[] Stages = new int[4];
             public IndependentOperationResult CooperativeStop(IndependentRecoveryTransaction tx)
             { Stages[0]++; return IndependentOperationResult.Completed; }
@@ -40,6 +41,7 @@ namespace AdaptiveControlTests
             }
             public IndependentOperationResult VerifyActionsAndDatabase(IndependentRecoveryTransaction tx)
             {
+                if (VerificationFailed) return IndependentOperationResult.Failed;
                 if (ReplacementAlive?.Invoke() != true) return IndependentOperationResult.Failed;
                 var pending = RecoveryDatabaseEvidence.UnverifiedChannels(Baseline,
                     RecoveryDatabaseEvidence.Read(DatabasePath, All));
@@ -173,6 +175,29 @@ namespace AdaptiveControlTests
                 pump.Tick(DateTime.UtcNow.Ticks);
                 check(store.Read().Transaction.Phase == IndependentRecoveryPhase.Verifying,
                     "Production pump reported success before three formal records");
+                var missingDatabase = Path.Combine(root, "missing-verification.db");
+                operations.DatabasePath = missingDatabase;
+                var unreadable = false;
+                try { pump.Tick(DateTime.UtcNow.Ticks); }
+                catch (Exception error) when (error is IOException || error is SQLiteException)
+                { unreadable = true; }
+                finally { operations.DatabasePath = dbPath; }
+                check(unreadable && !File.Exists(missingDatabase) &&
+                    store.Read().Transaction.Phase == IndependentRecoveryPhase.Verifying,
+                    "Unreadable verification database created a database or reported recovery success");
+                // A separate durable snapshot exercises explicit verifier failure
+                // without changing the still-running child's production state.
+                var failedRoot = Path.Combine(root, "failed-verification");
+                Directory.CreateDirectory(failedRoot);
+                BoundedJson.Write(Path.Combine(failedRoot, "independent-project-state.json"), store.Read());
+                var failedStore = new IndependentProjectStateStore(failedRoot);
+                var failedOperations = new PumpOperations { VerificationFailed = true };
+                var failedPump = new IndependentProjectRecoveryPump(failedStore, failedOperations,
+                    "simulation", 30000, 30000);
+                failedPump.Tick(DateTime.UtcNow.Ticks);
+                check(failedStore.Read().Transaction.Phase == IndependentRecoveryPhase.NeedsAttention &&
+                    failedStore.Read().Transaction.AttemptsUtcTicks.Length == store.Read().Transaction.AttemptsUtcTicks.Length,
+                    "Failed verification reported success or reset the attempt budget");
                 File.WriteAllText(Path.Combine(root, "continue"), "continue");
                 Wait(Path.Combine(root, "three-records"), () => worker.Poll() == IndependentWorkerState.Running);
                 var three = RecoveryDatabaseEvidence.Read(dbPath, All);

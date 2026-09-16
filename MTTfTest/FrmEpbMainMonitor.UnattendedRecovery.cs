@@ -11,6 +11,24 @@ using MtEmbTest;
 
 namespace MTEmbTest
 {
+    internal enum RecoveryStartupSource
+    {
+        SoftwareCheckpoint,
+        LegacyWatchdog,
+        IndependentExecutor
+    }
+
+    internal static class RecoveryStartupCommitPolicy
+    {
+        internal static void PublishLegacyCommit(RecoveryStartupSource source, Action publish)
+        {
+            if (source == RecoveryStartupSource.LegacyWatchdog) publish();
+            else if (source != RecoveryStartupSource.IndependentExecutor &&
+                     source != RecoveryStartupSource.SoftwareCheckpoint)
+                throw new ArgumentOutOfRangeException(nameof(source));
+        }
+    }
+
     internal sealed class WatchdogHardwareUnavailableException : InvalidOperationException
     {
         internal WatchdogHardwareUnavailableException(string fingerprint, string detail)
@@ -811,7 +829,7 @@ namespace MTEmbTest
                 $"PreviousPid={intent.PreviousPid};Persistence={safety.PersistenceBoundaryConfirmed};" +
                 $"Logical={safety.LogicalQuiescenceConfirmed};AbortedOrphanCycles={abortedOrphanCycles}",
                 "独立看门狗");
-            await ResumeFromUnattendedCheckpointAsync(checkpoint).ConfigureAwait(true);
+            await ResumeFromUnattendedCheckpointAsync(checkpoint, RecoveryStartupSource.LegacyWatchdog).ConfigureAwait(true);
         }
 
         internal async Task PrepareSafeIdleAfterWatchdogAsync(string sessionId, int previousPid)
@@ -866,12 +884,15 @@ namespace MTEmbTest
             if (watchdog == null || !watchdog.Attached || !WatchdogRuntime.IsAttached)
                 throw new InvalidOperationException(
                     "IndependentRecoveryWatchdogAttachFailed: " + (watchdog?.Warning ?? "Unknown"));
-            await ResumeFromUnattendedCheckpointAsync(checkpoint);
+            await ResumeFromUnattendedCheckpointAsync(checkpoint, RecoveryStartupSource.IndependentExecutor);
         }
 
-        internal async Task ResumeFromUnattendedCheckpointAsync(UnattendedRunCheckpoint checkpoint)
+        internal async Task ResumeFromUnattendedCheckpointAsync(
+            UnattendedRunCheckpoint checkpoint, RecoveryStartupSource source)
         {
             if (checkpoint == null) throw new ArgumentNullException(nameof(checkpoint));
+            if (!Enum.IsDefined(typeof(RecoveryStartupSource), source))
+                throw new ArgumentOutOfRangeException(nameof(source));
             if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("实时监视硬件与控制对象初始化超时。所有输出保持关闭。");
 
@@ -970,20 +991,29 @@ namespace MTEmbTest
                 startResult.StartedChannels,
                 startResult.TestRunId,
                 _epb.WatchdogRunEpoch);
-            var commitGeneration = Math.Max(
-                checkpoint.Revision,
-                Interlocked.Read(ref _watchdogRecoveryBatchCommitGeneration) + 1);
-            Interlocked.Exchange(
-                ref _watchdogRecoveryBatchCommitGeneration,
-                commitGeneration);
-            WatchdogRuntime.NotifyRecoveryBatchCommitted(
-                $"RunId={startResult.TestRunId:N};RunEpoch={_epb.WatchdogRunEpoch};" +
-                $"Channels=[{string.Join(",", startResult.StartedChannels.OrderBy(x => x))}]",
-                commitGeneration);
+            // 业务检查点共享，但只有旧 Watchdog 恢复持有旧提交协议的许可。
+            // 独立恢复仍由执行器核验机械计数和正式数据库记录，不能在此提前 Verified。
+            RecoveryStartupCommitPolicy.PublishLegacyCommit(source, () =>
+            {
+                var commitGeneration = Math.Max(
+                    checkpoint.Revision,
+                    Interlocked.Read(ref _watchdogRecoveryBatchCommitGeneration) + 1);
+                Interlocked.Exchange(
+                    ref _watchdogRecoveryBatchCommitGeneration,
+                    commitGeneration);
+                WatchdogRuntime.NotifyRecoveryBatchCommitted(
+                    $"Source={source};RunId={startResult.TestRunId:N};RunEpoch={_epb.WatchdogRunEpoch};" +
+                    $"Channels=[{string.Join(",", startResult.StartedChannels.OrderBy(x => x))}]",
+                    commitGeneration);
+            });
             try
             {
                 // 新 Run 身份已原子提交；从这里开始只允许观察性动作。日志或 UI
                 // 状态提示失败不能向外冒泡并触发对健康新批次的再次进程回收。
+                ProjectLogHub.Write(ProjectLogLevel.Info,
+                    $"RecoveryBatchStarted Source={source};RunId={startResult.TestRunId:N};" +
+                    $"RunEpoch={_epb.WatchdogRunEpoch};LegacyCommit={source == RecoveryStartupSource.LegacyWatchdog}",
+                    "无人值守恢复");
                 UnattendedRecoveryCoordinator.LogRecoveryStartupRecovered(
                     startResult.TestRunId,
                     startResult.StartedChannels);

@@ -137,6 +137,9 @@ namespace MTTFTest.Watchdog
         public long RecoveryBlockedUtcTicks { get; set; }
         public long LastRecoveryBatchCommitGeneration { get; set; }
         public string LastRecoveryCommitRunId { get; set; }
+        public string RecoveryCommitDisposition { get; set; }
+        public string RecoveryCommitDiagnostic { get; set; }
+        public string[] NotApplicableRecoveryCommits { get; set; } = Array.Empty<string>();
         public bool ManualStopRequested { get; set; }
         public string State { get; set; }
         public string LastReason { get; set; }
@@ -810,6 +813,11 @@ namespace MTTFTest.Watchdog
                 RecoveryLastFailureUtcTicks = previous?.RecoveryLastFailureUtcTicks ?? 0,
                 RecoveryBlockedUtcTicks = previous?.RecoveryBlockedUtcTicks ?? 0,
                 LastRecoveryCommitRunId = previous?.LastRecoveryCommitRunId,
+                NotApplicableRecoveryCommits = previous?.NotApplicableRecoveryCommits?
+                    .Where(value => value != null && value.Length <= 256).Take(32).ToArray()
+                    ?? Array.Empty<string>(),
+                RecoveryCommitDisposition = previous?.RecoveryCommitDisposition,
+                RecoveryCommitDiagnostic = previous?.RecoveryCommitDiagnostic,
                 LastReason = previous?.LastReason,
                 ManualStopRequested = previous?.ManualStopRequested == true,
                 State = previous?.RecoveryBlocked == true
@@ -2356,6 +2364,7 @@ namespace MTTFTest.Watchdog
                             _args.SessionId,
                             out WatchdogRecoveryCommitEvidence marker) &&
                         marker != null &&
+                        !TryFinishIndependentRecoveryMarker(marker, _journal.LastHeartbeat) &&
                         (marker.Legacy ||
                          marker.RunEpoch > 0 &&
                          !string.IsNullOrWhiteSpace(marker.RunId) &&
@@ -5244,6 +5253,8 @@ namespace MTTFTest.Watchdog
                 heartbeat != null && accepted.RunId == heartbeat.RunId && accepted.RunEpoch == heartbeat.RunEpoch)
                 return true;
             var commitStage = ResolveRecoveryCommitStage(heartbeat);
+            if (TryFinishIndependentRecoveryCommit(commitGeneration, heartbeat, commitStage))
+                return false; // Terminal observation, never a successful legacy commit.
             if (heartbeat == null ||
                 string.IsNullOrWhiteSpace(heartbeat.RunId) ||
                 heartbeat.RunEpoch <= 0 ||
@@ -5269,7 +5280,8 @@ namespace MTTFTest.Watchdog
                     commitGeneration,
                     evidence,
                     $"Rejected;RunId={heartbeat.RunId};RunEpoch={heartbeat.RunEpoch};" +
-                    $"Stage={heartbeat.RecoveryStage}");
+                    $"Stage={commitStage};PermitState={_relaunchCoordinator?.Snapshot?.State};" +
+                    "Source=LegacyOrUnproven;Reason=PermitNotAttachedOrIdentityRejected");
                 return false;
             }
             ClearRecoveryCommitRetry(commitGeneration, evidence);
@@ -5322,7 +5334,7 @@ namespace MTTFTest.Watchdog
                 }
             }
             if (shouldLog)
-                Record(
+                RecordRecoveryCommitDiagnostic(
                     "RecoveryBatchCommitDeferred",
                     $"Evidence={evidence};Generation={generation};Reason={reason};" +
                     $"DeferredCount={count};NextSummarySeconds=60");
