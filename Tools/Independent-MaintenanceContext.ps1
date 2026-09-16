@@ -1,6 +1,17 @@
 ﻿#requires -Version 5.1
 # Data-only discovery. The installer still validates the complete selected bundle
 # and protected transaction before any maintenance operation is allowed.
+function Invoke-IndependentArchitectureRepair([string]$Script,[string]$Root) {
+    # Legacy repair loads the installed protocol; upgrade needs the candidate
+    # protocol. Separate processes prevent .NET Framework assembly unification.
+    $modulePath=$env:PSModulePath
+    try {
+        $env:PSModulePath="$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules"
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $Script -InstallRoot $Root
+        $repairExitCode=$LASTEXITCODE
+    } finally { $env:PSModulePath=$modulePath }
+    if($repairExitCode -ne 0){throw ('旧版安装器修复失败，退出码：'+$repairExitCode+'；未开始升级。')}
+}
 function Read-IndependentMaintenanceJson([string]$Path) {
     $file=Get-Item -LiteralPath $Path -ErrorAction Stop
     if($file -isnot [IO.FileInfo] -or $file.Length -gt 4MB -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw '维护记录类型或大小无效。'}

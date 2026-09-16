@@ -71,4 +71,23 @@ Check ((Find-IndependentNearbyBundle $current '4.1.0.2' '') -eq '') 'Different v
 $duplicate=Join-Path $nearby 'duplicate';[IO.Directory]::CreateDirectory($duplicate)|Out-Null
 [IO.File]::Copy((Join-Path $old 'automatic-bundle.json'),(Join-Path $duplicate 'automatic-bundle.json'),$false)
 Check ((Find-IndependentNearbyBundle $current '4.1.0.3' ('a'*64)) -eq '') 'Multiple original packages require selection'
+$probe=Join-Path $root '独立修复进程.ps1'
+$probeText=@'
+param([string]$InstallRoot)
+Get-FileHash -LiteralPath $PSCommandPath -ErrorAction Stop | Out-Null
+[IO.File]::WriteAllText((Join-Path $InstallRoot 'child.json'),(@{pid=$PID;root=$InstallRoot}|ConvertTo-Json))
+exit ([int]$env:EPB_REPAIR_TEST_EXIT)
+'@
+[IO.File]::WriteAllText($probe,$probeText,[Text.UTF8Encoding]::new($true))
+$savedExit=$env:EPB_REPAIR_TEST_EXIT;$savedModules=$env:PSModulePath
+try{
+    $env:EPB_REPAIR_TEST_EXIT='0'
+    Invoke-IndependentArchitectureRepair $probe $root
+    $child=[IO.File]::ReadAllText((Join-Path $root 'child.json'))|ConvertFrom-Json
+    Check ($child.pid -ne $PID) 'Legacy protocol repair executes in another process'
+    Check ($child.root -eq $root) 'Repair installation path preserved'
+    $env:EPB_REPAIR_TEST_EXIT='17'
+    Reject {Invoke-IndependentArchitectureRepair $probe $root} 'Failed legacy repair prevents upgrade'
+    Check ($env:PSModulePath -eq $savedModules) 'Repair restores parent module environment after failure'
+}finally{$env:EPB_REPAIR_TEST_EXIT=$savedExit;$env:PSModulePath=$savedModules}
 Write-Output ('PASS maintenance context '+$script:passed+' checks; '+$root)

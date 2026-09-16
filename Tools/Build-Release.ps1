@@ -614,7 +614,7 @@ $maintenanceOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powers
     -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-MaintenanceContext.ps1') 2>&1)
 if ($LASTEXITCODE -ne 0) { throw ('无参数维护回归失败：' + ($maintenanceOutput -join "`n")) }
 foreach ($line in $maintenanceOutput) { Write-Host ([string]$line) }
-$maintenanceSummary = @($maintenanceOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS maintenance context 25 checks;' })
+$maintenanceSummary = @($maintenanceOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS maintenance context 29 checks;' })
 if ($maintenanceSummary.Count -ne 1) { throw '无参数维护回归缺少通过摘要。' }
 $commandResolutionOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
     -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-OneClickCommandResolution.ps1') 2>&1)

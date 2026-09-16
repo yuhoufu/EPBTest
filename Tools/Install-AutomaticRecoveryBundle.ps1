@@ -179,7 +179,7 @@ try {
             if ($installed.version -eq '4.1.0.3' -and [IO.File]::Exists($setupPath)) {
                 $existingSetup = Read-IndependentMaintenanceJson $setupPath
                 if ($existingSetup.stage -eq 'Binding' -and -not [IO.Directory]::Exists((Join-Path $InstallRoot 'IndependentState'))) {
-                    & (Join-Path $PSScriptRoot 'Tools\Repair-IndependentInstallerArchitecture.ps1') -InstallRoot $InstallRoot
+                    Invoke-IndependentArchitectureRepair (Join-Path $PSScriptRoot 'Tools\Repair-IndependentInstallerArchitecture.ps1') $InstallRoot
                 }
             }
             if ([version]$installed.version -lt [version]$manifest.version) { $Mode = 'Upgrade' }
