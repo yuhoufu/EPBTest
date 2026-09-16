@@ -598,6 +598,11 @@ finally {
     }
 }
 
+$shortcutOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-IndependentShortcut.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('桌面快捷方式回归失败：' + ($shortcutOutput -join "`n")) }
+foreach ($line in $shortcutOutput) { Write-Host ([string]$line) }
+if (@($shortcutOutput | Where-Object { [string]$_ -like 'PASS shortcut *' }).Count -ne 1) { throw '桌面快捷方式回归缺少通过摘要。' }
 $oneClickSetupOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
     -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-OneClickSetup.ps1') 2>&1)
 if ($LASTEXITCODE -ne 0) { throw ('无参数安装准备回归失败：' + ($oneClickSetupOutput -join "`n")) }

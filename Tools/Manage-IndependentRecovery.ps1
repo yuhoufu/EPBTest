@@ -39,30 +39,41 @@ function Set-IndependentShortcut([string]$Main,[string]$Version,[string]$Id,[str
     if($Version -notmatch '^\d+\.\d+\.\d+\.\d+$' -or $Id -notmatch '^[a-f0-9]{32}$'){throw '快捷方式版本或安装身份无效。'}
     $mainPath=[IO.Path]::GetFullPath($Main)
     $directoryPath=[IO.Path]::GetFullPath($Directory)
-    $path=Join-Path $directoryPath ('MT EPB V'+$Version+' ['+$Id+'].lnk')
+    $path=Join-Path $directoryPath ('MT EPB 试验系统 V'+$Version+'.lnk')
+    $legacy=Join-Path $directoryPath ('MT EPB V'+$Version+' ['+$Id+'].lnk')
     $description='EPB Independent Installation '+$Id
-    $shell=$null;$link=$null;$temporary=$null
+    $shell=$null;$link=$null;$temporary=$null;$currentIcon=''
     try{
         $shell=New-Object -ComObject WScript.Shell
-        if([IO.File]::Exists($path)){
-            if(((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '快捷方式是重解析点。'}
-            $link=$shell.CreateShortcut($path)
+        # Validate both names before changing anything; Description retains ownership.
+        foreach($candidate in @($path,$legacy)){
+            if(-not [IO.File]::Exists($candidate)){continue}
+            if(((Get-Item -LiteralPath $candidate).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw '快捷方式是重解析点。'}
+            $link=$shell.CreateShortcut($candidate)
             if(-not [string]::Equals([string]$link.TargetPath,$mainPath,[StringComparison]::OrdinalIgnoreCase) -or
                [string]$link.Arguments -ne '' -or [string]$link.Description -cne $description -or
                -not [string]::Equals([string]$link.WorkingDirectory,[IO.Path]::GetDirectoryName($mainPath),[StringComparison]::OrdinalIgnoreCase)){
                 throw '快捷方式身份不匹配，保留原文件。'
             }
+            if($candidate -eq $path){$currentIcon=[string]$link.IconLocation}
             [Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)|Out-Null;$link=$null
-            if($Remove){Remove-Item -LiteralPath $path -ErrorAction Stop}
+        }
+        if($Remove){
+            foreach($candidate in @($path,$legacy)){if([IO.File]::Exists($candidate)){[IO.File]::Delete($candidate)}}
             return
         }
-        if($Remove){return}
+        if([IO.File]::Exists($path) -and $currentIcon -eq $mainPath+',0'){
+            if([IO.File]::Exists($legacy)){[IO.File]::Delete($legacy)}
+            return
+        }
         $temporary=Join-Path $directoryPath ([Guid]::NewGuid().ToString('N')+'.tmp.lnk')
         $link=$shell.CreateShortcut($temporary)
         $link.TargetPath=$mainPath;$link.WorkingDirectory=[IO.Path]::GetDirectoryName($mainPath)
         $link.Arguments='';$link.Description=$description;$link.IconLocation=$mainPath+',0';$link.Save()
         [Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)|Out-Null;$link=$null
-        [IO.File]::Move($temporary,$path);$temporary=$null
+        if([IO.File]::Exists($path)){[IO.File]::Replace($temporary,$path,[System.Management.Automation.Language.NullString]::Value)}else{[IO.File]::Move($temporary,$path)}
+        $temporary=$null
+        if([IO.File]::Exists($legacy)){[IO.File]::Delete($legacy)}
     }finally{
         foreach($com in @($link,$shell)){if($com){[Runtime.InteropServices.Marshal]::FinalReleaseComObject($com)|Out-Null}}
         if($temporary -and [IO.File]::Exists($temporary)){Remove-Item -LiteralPath $temporary}
@@ -273,6 +284,8 @@ try {
     $service=Get-OwnedService
     switch($Mode){
         'Shortcut' {
+            . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
+            Set-IndependentDesktopAccess ([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($registration.ExecutablePath)))
             $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($registration.ExecutablePath).FileVersion
             if($PreviousVersion -and ($PreviousVersion -notmatch '^\d+\.\d+\.\d+\.\d+$' -or [version]$PreviousVersion -eq [version]$version)){throw '被替换的快捷方式版本必须与当前版本不同。'}
             Set-IndependentShortcut $registration.ExecutablePath $version $registration.InstallationId ([Environment]::GetFolderPath('CommonDesktopDirectory')) $false

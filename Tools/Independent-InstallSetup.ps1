@@ -74,7 +74,28 @@ function Initialize-IndependentSetupConfig([string]$Root) {
     # Prevent the legacy first-run installer from configuring a second architecture.
     [IO.File]::WriteAllText((Join-Path $Root 'Current\MTTFTest.FirstRun.configured'),'Independent setup; see install-setup.json')
 }
+function Set-IndependentDesktopAccess([string]$Root) {
+    # Explorer reads the executable/icon before UAC. Do not expose recovery state.
+    $rootPath=[IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $current=Join-Path $rootPath 'Current'
+    $trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    foreach($path in @($rootPath,$current)){
+        $item=Get-Item -LiteralPath $path -ErrorAction Stop
+        if($item -isnot [IO.DirectoryInfo] -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw '桌面访问目录身份无效。'}
+        $acl=Get-Acl -LiteralPath $path
+        if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted){throw '桌面访问目录所有者不可信。'}
+    }
+    foreach($path in @($rootPath,$current)){
+        $acl=Get-Acl -LiteralPath $path
+        $inherit=if($path -eq $current){[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'}else{[Security.AccessControl.InheritanceFlags]::None}
+        $rule=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'),
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
+        $acl.AddAccessRule($rule)
+        Set-Acl -LiteralPath $path -AclObject $acl
+    }
+}
 function Set-IndependentSetupShortcut([string]$Root,[string]$Version,[bool]$Remove=$false) {
+    if(-not $Remove){Set-IndependentDesktopAccess $Root}
     $path=Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) ('MT EPB V'+$Version+' 项目设置.lnk')
     $shell=New-Object -ComObject WScript.Shell
     try{
@@ -91,7 +112,7 @@ function Set-IndependentSetupShortcut([string]$Root,[string]$Version,[bool]$Remo
                 return
             }
             $link=$shell.CreateShortcut($path);$link.TargetPath=Join-Path $Root 'Current\MTTFTest.exe'
-            $link.WorkingDirectory=Join-Path $Root 'Current';$link.Description='程序已安装；首次创建或打开项目后完成恢复绑定。';$link.Save()
+            $link.WorkingDirectory=Join-Path $Root 'Current';$link.Description='程序已安装；首次创建或打开项目后完成恢复绑定。';$link.IconLocation=(Join-Path $Root 'Current\MTTFTest.exe')+',0';$link.Save()
         }
     }finally{if($link){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)};[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
 }
