@@ -49,7 +49,7 @@ foreach ($relative in @('System.Data.SQLite.dll', 'x86\SQLite.Interop.dll')) {
 }
 $toolsOutput = Join-Path $output 'Tools'
 [IO.Directory]::CreateDirectory($toolsOutput) | Out-Null
-$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Manage-SessionHost.ps1','Service-Lifecycle.ps1','Export-IndependentRecoveryEvidence.ps1')
+$toolNames = @('Install-IndependentRecoveryBundle.ps1','Manage-IndependentRecovery.ps1','Manage-SessionHost.ps1','Service-Lifecycle.ps1','Export-IndependentRecoveryEvidence.ps1','Independent-InstallSetup.ps1','Complete-IndependentSetup.ps1')
 if ($LegacyRecovery) { $toolNames += @('Manage-FallbackGuard.ps1','Test-FallbackGuard.ps1',
     'Resolve-FallbackBinding.ps1','Persistent-Fallback.ps1','Manage-PersistentFallback.ps1',
     'Watch-ActiveFallback.ps1','Test-FallbackBinding.ps1','Test-PersistentFallback.ps1','Test-PersistentTask.ps1') }
@@ -118,13 +118,14 @@ if (-not $LegacyRecovery) {
 本包使用独立 SYSTEM 执行服务及专属交互启动任务。主程序明确开始试验后建立持久运行意图；没有运行意图时服务等待，不自动启动卡钳。不是仅观察模式，仍须通过真实动作、计数推进及至少三周期正式落盘验证恢复。
 
 1. 完整解压到本机，先安全停止并退出原控制程序。不得覆盖运行中的安装。
-2. 首次安装须明确项目路径和实际交互账户 SID。管理员 PowerShell 中执行：
+2. 首次安装直接双击“一键安装正式版.cmd”，无需输入参数；Windows 仍可能请求管理员授权。安装器在提权前识别当前桌面账户，优先沿用该账户上次选择的完整项目；没有项目时先安装程序并创建“项目设置”桌面入口。
 
 ```powershell
-.\Install-AutomaticRecoveryBundle.ps1 -Mode Install -InstallRoot 'C:\Program Files (x86)\MTTFTest' -ProjectDirectory 'D:\实际项目' -InteractiveUserSid '实际账户SID'
+.\一键安装正式版.cmd
 ```
 
-3. InstallRoot 必须不存在，父目录必须受保护。已有安装的版本升级/回滚不能使用首次安装覆盖。
+3. 新机器首次打开桌面入口时，创建新项目或打开已有项目，然后点击“完成设置并打开程序”，自动绑定恢复组件。该页面不连接硬件，不启动试验；关闭或取消后可以再次打开。新项目卡钳均未启用、计数为零；不会重建已有项目缺失的历史数据库。等待项目绑定不等于恢复已经就绪。必须使用安装时的试验账户，不能用另一个管理员账户替代。
+   同版本重复安装只校验并保留现有安装；其他版本仍走下方升级流程，不覆盖正在运行的安装。安装参数仍保留给维护脚本使用。
 4. 安装成功表示文件校验、服务和任务注册完成，不代表试验已运行。启动入口只打开主程序，试验仍经过原安全预检。
 5. 检查入口显示组件与恢复事务状态。修复入口要求原安装文件记录与同构建安装包，恢复程序组件、缺失服务/任务及快捷方式，保留项目配置和数据库；成功后仍保持维护停止状态。修复后用“恢复后台服务”显式启用监督，组件运行不代表试验已续测。
 6. 卸载注销本安装服务、任务和快捷方式，并按原安装记录及摘要删除程序组件。配置、项目数据、诊断、注册和重复卸载所需的受保护维护协议保留；不会递归清空目录。重复卸载须使用同构建包，组件内容变化时保留并报告错误。此入口不等于旧版回滚。

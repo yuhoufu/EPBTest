@@ -38,6 +38,7 @@ namespace MtEmbTest
         static void Main(string[] args)
         {
             if (IndependentRegistrationExport.TryRun(args)) return;
+            if (!IndependentInstallSetup.PrepareOrExit(args)) return;
             if (FirstRunBootstrap.TryRunElevatedWorker(args)) return;
             if (!FirstRunBootstrap.PrepareOrExit(args)) return;
             IndependentRecoveryStartup independentStartup;

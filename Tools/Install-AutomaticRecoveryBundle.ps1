@@ -118,6 +118,14 @@ try {
     $manifest = Test-Bundle
     Write-Host ('候选版本：' + $manifest.version + '；现场耐久验收未完成。')
     if ($Mode -eq 'ValidatePackage') { Write-Output ('PASS BundleIntegrity ' + @($manifest.files).Count); exit 0 }
+    if ($Mode -eq 'Install' -and $manifest.recoveryArchitecture -eq 'V4-Independent-SystemExecutor') {
+        . (Join-Path $PSScriptRoot 'Tools\Independent-InstallSetup.ps1')
+        # Capture the desktop account before UAC; an alternate administrator is
+        # not the account whose session will run the trial.
+        $context = Resolve-IndependentInstallContext $ProjectDirectory $InteractiveUserSid
+        $ProjectDirectory = $context.ProjectDirectory
+        $InteractiveUserSid = $context.InteractiveUserSid
+    }
     if ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles')) {
         if ($manifest.recoveryArchitecture -ne 'V4-Independent-SystemExecutor') { throw '该维护入口仅适用于独立执行器安装。' }
         if ($Mode -in @('ValidateUpgrade','Upgrade','RollbackUpgrade')) {
@@ -154,6 +162,13 @@ try {
         } elseif ($Mode -in @('Repair','Uninstall')) {
             & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode $Mode -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot
         } elseif ($Mode -in @('Status','Restore','Stop')) {
+            $setupPath = Join-Path $InstallRoot 'install-setup.json'
+            if (-not [IO.File]::Exists((Join-Path $InstallRoot 'IndependentState\registration.json')) -and [IO.File]::Exists($setupPath)) {
+                . (Join-Path $PSScriptRoot 'Tools\Independent-InstallSetup.ps1')
+                $setup = Read-IndependentSetupJson $setupPath
+                Write-Output ('安装状态：' + $setup.stage + '；恢复尚未绑定，未启动试验。请使用桌面入口完成项目设置。')
+                exit 0
+            }
             $manager = Join-Path $PSScriptRoot 'Tools\Manage-IndependentRecovery.ps1'
             $managerMode = if ($Mode -eq 'Restore') { 'Enable' } else { $Mode }
             & $manager -Mode $managerMode -RegistrationPath (Join-Path $InstallRoot 'IndependentState\registration.json') `
@@ -166,6 +181,14 @@ try {
                 -ExecutorPath (Join-Path $InstallRoot 'FallbackGuard\MTTFTest.FallbackGuard.exe') -OutputDirectory $EvidenceDirectory
         } elseif ($Mode -eq 'Launch') {
             $registrationPath = Join-Path $InstallRoot 'IndependentState\registration.json'
+            if ([IO.File]::Exists((Join-Path $InstallRoot 'install-setup.json'))) {
+                . (Join-Path $PSScriptRoot 'Tools\Independent-InstallSetup.ps1')
+                $setup = Read-IndependentSetupJson (Join-Path $InstallRoot 'install-setup.json')
+                if ($setup.stage -ne 'Ready') {
+                    & (Join-Path $InstallRoot 'Tools\Complete-IndependentSetup.ps1') -Mode Launch -InstallRoot $InstallRoot
+                    exit 0
+                }
+            }
             & (Join-Path $PSScriptRoot 'Tools\Manage-IndependentRecovery.ps1') -Mode Status -RegistrationPath $registrationPath `
                 -ExecutorPath (Join-Path $InstallRoot 'FallbackGuard\MTTFTest.FallbackGuard.exe') | Out-Null
             $registration = [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)

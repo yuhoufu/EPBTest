@@ -51,7 +51,7 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(4, 1, 0, 2);
+            var expected = new Version(4, 1, 0, 3);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
                 "Protocol assembly version does not match product version");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,

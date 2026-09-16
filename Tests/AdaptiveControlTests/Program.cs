@@ -25,6 +25,11 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--install-setup")
+                {
+                    IndependentInstallSetupTests.RunAll();
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--summary-selection")
                 {
                     EpbSummarySelectionTests.RunAll();
@@ -763,6 +768,7 @@ namespace AdaptiveControlTests
                 _passed += EpbRecordNormalizationTests.RunAll();
                 Run("进度摘要默认选择最小已启动通道", InitialSummarySelectsFirstStarted);
                 _passed += EpbSummarySelectionTests.RunAll();
+                _passed += IndependentInstallSetupTests.RunAll();
                 Run("进度摘要完成后切换且全完成保持", SummaryAdvancesAfterCompletion);
                 Run("EPB勾选仅按设置到电源到曲线单向传播", EpbSelectionPropagatesOneWay);
                 Run("DHMS运行时间格式", DhmsFormatting);

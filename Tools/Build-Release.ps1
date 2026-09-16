@@ -598,6 +598,13 @@ finally {
     }
 }
 
+$oneClickSetupOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-OneClickSetup.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('无参数安装准备回归失败：' + ($oneClickSetupOutput -join "`n")) }
+foreach ($line in $oneClickSetupOutput) { Write-Host ([string]$line) }
+$oneClickSetupSummary = @($oneClickSetupOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS one-click setup \d+ checks;' })
+if ($oneClickSetupSummary.Count -ne 1) { throw '无参数安装准备回归缺少通过摘要。' }
+
 $deploymentContractOutput = @(& (Join-Path `
     $PSScriptRoot 'Test-MTTFTest-UnattendedDeployment.ps1') 2>&1)
 foreach ($line in $deploymentContractOutput) { Write-Host ([string]$line) }
@@ -635,6 +642,7 @@ $verification = [ordered]@{
     epbDiskWriterTests = $diskWriterSummary
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
+    oneClickSetupTests = $oneClickSetupSummary[0].Trim()
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
     quickDeployCommandParse = $quickDeployParseSummary[0].Trim()
     releaseBuildNoMandatorySoak = $noMandatorySoakSummary[0].Trim()

@@ -130,6 +130,7 @@
     <Compile Include="ClsGlobe.cs" />
     <Compile Include="ConfigOperation.cs" />
     <Compile Include="FirstRunBootstrap.cs" />
+    <Compile Include="IndependentInstallSetup.cs" />
     <Compile Include="FormLoggerAdapter.cs" />
     <Compile Include="MonitorHardwareFactory.cs" />
     <Compile Include="FrmAlarmPanelTest.cs">

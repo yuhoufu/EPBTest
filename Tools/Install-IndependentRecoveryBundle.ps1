@@ -43,13 +43,19 @@ function Get-IndependentBundlePlan([string]$Bundle,[string]$Destination) {
         if($digest -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $digest){throw ('包摘要不符：'+$relative)}
         $target=if($relative.StartsWith('Base/')){'Current/'+$relative.Substring(5)}
             elseif($relative.StartsWith('FallbackGuard/')){$relative}
-            elseif($relative -in @('Tools/Manage-IndependentRecovery.ps1','Tools/Manage-SessionHost.ps1','Tools/Service-Lifecycle.ps1')){$relative}else{$null}
+            elseif($relative -in @('Tools/Manage-IndependentRecovery.ps1','Tools/Manage-SessionHost.ps1','Tools/Service-Lifecycle.ps1',
+                'Tools/Independent-InstallSetup.ps1','Tools/Complete-IndependentSetup.ps1')){$relative}else{$null}
         if($target){$plan+=,[pscustomobject]@{Source=$source;Relative=$target;Sha256=$digest}}
     }
     foreach($required in @('Base/MTTFTest.exe','Base/MTTFTest.SafetyAgent.exe','Base/MTTFTest.Watchdog.Protocol.dll',
         'FallbackGuard/MTTFTest.FallbackGuard.exe','FallbackGuard/MTTFTest.Watchdog.Protocol.dll',
         'FallbackGuard/System.Data.SQLite.dll','FallbackGuard/x86/SQLite.Interop.dll','Tools/Manage-IndependentRecovery.ps1')){
         if(-not $seen.ContainsKey($required)){throw ('缺少必要文件：'+$required)}
+    }
+    if([version]$manifest.version -ge [version]'4.1.0.3'){
+        foreach($required in @('Tools/Independent-InstallSetup.ps1','Tools/Complete-IndependentSetup.ps1')){
+            if(-not $seen.ContainsKey($required)){throw ('缺少首次项目设置组件：'+$required)}
+        }
     }
     [pscustomobject]@{Version=[string]$manifest.version;Destination=$destinationPath;Files=$plan}
 }
@@ -531,6 +537,33 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
     $assembly=[Reflection.Assembly]::LoadFrom($protocol.Source)
     if(-not [string]::Equals($assembly.Location,$protocol.Source,[StringComparison]::OrdinalIgnoreCase)){throw '当前进程已加载其他协议组件，请在新安装器进程中执行修复。'}
     $registrationPath=Join-Path $plan.Destination 'IndependentState\registration.json'
+    $setupPath=Join-Path $plan.Destination 'install-setup.json'
+    if(-not [IO.File]::Exists($registrationPath) -and [IO.File]::Exists($setupPath) -and $Mode -in @('Repair','Uninstall')){
+        . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
+        $setup=Read-IndependentSetupJson $setupPath
+        if($setup.stage -notin @('Installing','AwaitingProject','Uninstalled') -or [IO.Directory]::Exists((Join-Path $plan.Destination 'IndependentState'))){throw '项目绑定已经开始，必须保留注册证据，不能按未绑定安装维护。'}
+        [MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::RequireControllerAbsent((Join-Path $plan.Destination 'Current\MTTFTest.exe'))
+        if($Mode -eq 'Repair'){
+            if($setup.stage -eq 'Uninstalled'){throw '安装已卸载，不能通过修复重新启用。'}
+            $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
+            foreach($file in $plan.Files){$path=Join-Path $plan.Destination $file.Relative
+                if(-not [IO.File]::Exists($path)){[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))|Out-Null;[IO.File]::Copy($file.Source,$path,$false)}}
+            Initialize-IndependentSetupConfig $plan.Destination
+            Set-IndependentSetupShortcut $plan.Destination $plan.Version
+            $setup.stage='AwaitingProject';Write-IndependentSetupState $plan.Destination $setup
+            Write-Output ('程序文件修复完成；仍等待创建或打开项目，未注册服务。事务：'+$transaction)
+        }else{
+            # No recovery registration was ever created. Remove only receipt-owned,
+            # unchanged payloads; retain project data and the uninstall receipt.
+            foreach($file in $plan.Files){$path=Join-Path $plan.Destination $file.Relative
+                if([IO.File]::Exists($path) -and (Get-FileHash -LiteralPath $path).Hash -ne $file.Sha256){throw '待卸载文件已变化，保留文件。'}}
+            Set-IndependentSetupShortcut $plan.Destination $plan.Version $true
+            foreach($file in $plan.Files){$path=Join-Path $plan.Destination $file.Relative;if([IO.File]::Exists($path)){[IO.File]::Delete($path)}}
+            $setup.stage='Uninstalled';Write-IndependentSetupState $plan.Destination $setup
+            Write-Output '未绑定安装已卸载；项目和运行配置保留。'
+        }
+        return
+    }
     $registration=[MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrustedForMaintenance($registrationPath)
     $main=Join-Path $plan.Destination 'Current\MTTFTest.exe'
     $executor=Join-Path $plan.Destination 'FallbackGuard\MTTFTest.FallbackGuard.exe'
@@ -723,8 +756,17 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
     }finally{$lease.Dispose()}
     return
 }
-if([string]::IsNullOrWhiteSpace($ProjectDirectory) -or [string]::IsNullOrWhiteSpace($InteractiveUserSid)){throw '必须明确项目目录及实际交互用户 SID。'}
-if([IO.Directory]::Exists($plan.Destination) -or [IO.File]::Exists($plan.Destination)){throw '已有安装目录，拒绝覆盖；必须走维护升级流程。'}
+. (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
+$context=Resolve-IndependentInstallContext $ProjectDirectory $InteractiveUserSid
+$ProjectDirectory=$context.ProjectDirectory;$InteractiveUserSid=$context.InteractiveUserSid
+if([IO.Directory]::Exists($plan.Destination) -or [IO.File]::Exists($plan.Destination)){
+    Assert-IndependentInstallParent $plan.Destination
+    $receipt=Read-IndependentSetupJson (Join-Path $plan.Destination 'installed-files.json')
+    Get-IndependentRepairFiles $plan $receipt|Out-Null
+    foreach($file in $plan.Files){if((Get-FileHash -LiteralPath (Join-Path $plan.Destination $file.Relative)).Hash -ne $file.Sha256){throw '已有安装文件变化，请使用原构建修复入口。'}}
+    Write-Output '本版本已安装，未覆盖文件或修改服务；请使用桌面入口打开程序或完成项目设置。'
+    return
+}
 Assert-IndependentInstallParent ([IO.Path]::GetDirectoryName($plan.Destination))
 # Create with its final ACL; do not leave an inherited writable interval.
 $security=[Security.AccessControl.DirectorySecurity]::new()
@@ -745,6 +787,8 @@ try{
     $receipt=[ordered]@{schemaVersion=1;version=$plan.Version;installRoot=$plan.Destination;
         files=@($plan.Files|ForEach-Object{[ordered]@{path=[string]$_.Relative;sha256=[string]$_.Sha256}})}
     [IO.File]::WriteAllText((Join-Path $plan.Destination 'installed-files.json'),($receipt|ConvertTo-Json -Depth 4))
+    $setup=[ordered]@{schemaVersion=1;version=$plan.Version;stage='Installing';interactiveUserSid=$InteractiveUserSid;projectDirectory=$ProjectDirectory}
+    Write-IndependentSetupState $plan.Destination $setup
     foreach($file in $plan.Files){
         $target=Join-Path $plan.Destination $file.Relative
         [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))|Out-Null
@@ -756,12 +800,12 @@ try{
     foreach($component in @($main,$executor,(Join-Path $plan.Destination 'Current\MTTFTest.SafetyAgent.exe'))){
         if([Diagnostics.FileVersionInfo]::GetVersionInfo($component).FileVersion -ne $plan.Version){throw '组件版本与安装清单不一致。'}
     }
-    $registration=Join-Path $plan.Destination 'IndependentState\registration.json'
-    & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Provision -RegistrationPath $registration `
-        -ExecutorPath $executor -MainExecutablePath $main -ProjectDirectory $ProjectDirectory -InteractiveUserSid $InteractiveUserSid
-    & $sessionHost -Mode Install -InstallRoot $plan.Destination -InteractiveUserSid $InteractiveUserSid
-    & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Shortcut -RegistrationPath $registration -ExecutorPath $executor
-    [IO.File]::WriteAllText($journal,([ordered]@{version=$plan.Version;stage='Provisioned';registration=$registration;trialStarted=$false;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 3))
+    Initialize-IndependentSetupConfig $plan.Destination
+    Set-IndependentSetupShortcut $plan.Destination $plan.Version
+    $setup.stage='AwaitingProject';Write-IndependentSetupState $plan.Destination $setup
+    & (Join-Path $plan.Destination 'Tools\Complete-IndependentSetup.ps1') -InstallRoot $plan.Destination
+    $setup=Read-IndependentSetupJson (Join-Path $plan.Destination 'install-setup.json')
+    [IO.File]::WriteAllText($journal,([ordered]@{version=$plan.Version;stage=$setup.stage;trialStarted=$false;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 3))
 }catch{
     [IO.File]::WriteAllText($journal,([ordered]@{version=$plan.Version;stage='Failed';error=[string]$_.Exception.Message;trialStarted=$false;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json -Depth 3))
     throw
