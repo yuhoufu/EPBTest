@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate','ValidateRepair','ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
+    [ValidateSet('Validate','ValidateRepair','ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','Reinstall','RecoverFiles','Uninstall','Install')][string]$Mode='Validate',
     [Parameter(Mandatory=$true)][string]$BundleDirectory,
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [string]$ProjectDirectory,
@@ -133,6 +133,42 @@ function Get-IndependentRepairFiles($Plan,$Receipt) {
         if($file.Relative -notlike 'Current/Config/*' -and
            $file.Relative -match '(?i)(\.(exe|dll|pdb|ps1|exe\.config)$|^Current/(build-identity\.json|SHA256SUMS\.txt)$)'){$file}
     }
+}
+function Get-IndependentInstallResumePlan($Plan,$Receipt,$Setup) {
+    $repairFiles=@(Get-IndependentRepairFiles $Plan $Receipt)
+    if($Setup.version -ne $Plan.Version -or $Setup.stage -notin @('Installing','AwaitingProject','Binding','Ready','Uninstalled')){throw '安装设置记录无效，未猜测重装状态。'}
+    $repairPaths=@{};foreach($file in $repairFiles){$repairPaths[$file.Relative]=$true}
+    $missing=@();$changed=@()
+    foreach($file in $Plan.Files){
+        $path=Join-Path $Plan.Destination $file.Relative
+        if(-not [IO.File]::Exists($path)){$missing+=,[string]$file.Relative;continue}
+        if((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint){throw '已有安装文件是重解析点。'}
+        if((Get-FileHash -LiteralPath $path).Hash -ne $file.Sha256){
+            if(-not $repairPaths.ContainsKey($file.Relative)){throw '已有配置或非程序文件变化，保留文件，未用默认值覆盖。'}
+            $changed+=,[string]$file.Relative
+        }
+    }
+    [pscustomobject]@{NeedsRepair=($missing.Count -gt 0 -or $changed.Count -gt 0 -or $Setup.stage -notin @('Ready','AwaitingProject'));Missing=$missing;Changed=$changed}
+}
+function Restore-IndependentMissingPayloads($Plan) {
+    foreach($file in $Plan.Files){
+        $target=Join-Path $Plan.Destination $file.Relative
+        if([IO.File]::Exists($target)){continue}
+        $cursor=$target
+        while($cursor){if(Test-Path -LiteralPath $cursor){if((Get-Item -LiteralPath $cursor).Attributes -band [IO.FileAttributes]::ReparsePoint){throw '补齐路径含重解析点。'}};$cursor=[IO.Path]::GetDirectoryName($cursor)}
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))|Out-Null
+        [IO.File]::Copy($file.Source,$target,$false)
+        if((Get-FileHash -LiteralPath $target).Hash -ne $file.Sha256){throw '补齐安装文件摘要不符。'}
+    }
+}
+function Invoke-IndependentReinstallChild([string]$Installer,[string]$Bundle,[string]$Root) {
+    $modules=$env:PSModulePath
+    try{
+        $env:PSModulePath="$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules"
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $Installer -Mode Reinstall -BundleDirectory $Bundle -InstallRoot $Root
+        $code=$LASTEXITCODE
+    }finally{$env:PSModulePath=$modules}
+    if($code -ne 0){throw ('原地重装未完成，退出码：'+$code)}
 }
 function Get-IndependentUpgradePlan($CurrentPlan,$NextPlan,$Receipt) {
     if(-not [string]::Equals($CurrentPlan.Destination,$NextPlan.Destination,[StringComparison]::OrdinalIgnoreCase)){
@@ -531,6 +567,8 @@ try{
     if(-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装需要管理员权限。'}
 }finally{$identity.Dispose()}
 Assert-IndependentComponentVersions $plan
+$resumeInstall=$Mode -eq 'Reinstall'
+if($resumeInstall){$Mode='Repair'}
 if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFiles','Uninstall')){
     if($Mode -in @('FinalizeUpgrade','RollbackUpgrade') -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'An explicit upgrade ID is required.'}
     if($Mode -eq 'RecoverFiles' -and $TransactionId -notmatch '^[a-fA-F0-9]{32}$'){throw 'RecoverFiles requires an explicit transaction ID.'}
@@ -570,14 +608,18 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
         if($setup.stage -notin @('Installing','AwaitingProject','Uninstalled') -or [IO.Directory]::Exists((Join-Path $plan.Destination 'IndependentState'))){throw '项目绑定已经开始，必须保留注册证据，不能按未绑定安装维护。'}
         [MTTFTest.Watchdog.Protocol.IndependentInstallationBinding]::RequireControllerAbsent((Join-Path $plan.Destination 'Current\MTTFTest.exe'))
         if($Mode -eq 'Repair'){
-            if($setup.stage -eq 'Uninstalled'){throw '安装已卸载，不能通过修复重新启用。'}
+            if($setup.stage -eq 'Uninstalled' -and -not $resumeInstall){throw '安装已卸载，请使用一键安装入口原地重装。'}
             $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
-            foreach($file in $plan.Files){$path=Join-Path $plan.Destination $file.Relative
-                if(-not [IO.File]::Exists($path)){[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))|Out-Null;[IO.File]::Copy($file.Source,$path,$false)}}
+            Restore-IndependentMissingPayloads $plan
             Initialize-IndependentSetupConfig $plan.Destination
             Set-IndependentSetupShortcut $plan.Destination $plan.Version
             $setup.stage='AwaitingProject';Write-IndependentSetupState $plan.Destination $setup
-            Write-Output ('程序文件修复完成；仍等待创建或打开项目，未注册服务。事务：'+$transaction)
+            if($resumeInstall){
+                & (Join-Path $plan.Destination 'Tools\Complete-IndependentSetup.ps1') -InstallRoot $plan.Destination
+                $completed=Read-IndependentSetupJson $setupPath
+                [IO.File]::WriteAllText((Join-Path $plan.Destination 'installation-result.json'),(@{version=$plan.Version;stage=$completed.stage;trialStarted=$false;reinstalled=$true;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json))
+            }
+            Write-Output ('程序文件修复完成；未启动试验。事务：'+$transaction)
         }else{
             # No recovery registration was ever created. Remove only receipt-owned,
             # unchanged payloads; retain project data and the uninstall receipt.
@@ -586,6 +628,7 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             Set-IndependentSetupShortcut $plan.Destination $plan.Version $true
             foreach($file in $plan.Files){$path=Join-Path $plan.Destination $file.Relative;if([IO.File]::Exists($path)){[IO.File]::Delete($path)}}
             $setup.stage='Uninstalled';Write-IndependentSetupState $plan.Destination $setup
+            [IO.File]::WriteAllText((Join-Path $plan.Destination 'installation-result.json'),(@{version=$plan.Version;stage='Uninstalled';trialStarted=$false;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json))
             Write-Output '未绑定安装已卸载；项目和运行配置保留。'
         }
         return
@@ -642,6 +685,11 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
                     & $sessionHost -Mode Uninstall -InstallRoot $plan.Destination
                 } {
                     Remove-IndependentOwnedComponents $repairFiles $plan.Destination
+                }
+                if([IO.File]::Exists($setupPath)){
+                    . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
+                    $setup=Read-IndependentSetupJson $setupPath;$setup.stage='Uninstalled';Write-IndependentSetupState $plan.Destination $setup
+                    [IO.File]::WriteAllText((Join-Path $plan.Destination 'installation-result.json'),(@{version=$plan.Version;stage='Uninstalled';trialStarted=$false;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json))
                 }
                 Write-Output '本安装服务、任务、快捷方式及原程序组件已移除。项目配置、数据、诊断和重复卸载所需的受保护维护协议保留。'
             }finally{$fileLease.Dispose()}
@@ -783,14 +831,34 @@ if($Mode -in @('Upgrade','FinalizeUpgrade','RollbackUpgrade','Repair','RecoverFi
             }
             return
         }
+        if($resumeInstall){
+            . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
+            $setup=Read-IndependentSetupJson $setupPath
+            if($setup.version -ne $plan.Version -or $setup.projectDirectory -ne $registration.ProjectDirectory -or $setup.interactiveUserSid -ne $registration.InteractiveUserSid){throw '重装设置与原注册不一致。'}
+            $setup.stage='Binding';Write-IndependentSetupState $plan.Destination $setup
+        }
         & $sessionHost -Mode Stop -InstallRoot $plan.Destination
         $transaction=Invoke-IndependentFileRepair $repairFiles $plan.Destination
+        if($resumeInstall){Restore-IndependentMissingPayloads $plan}
         [MTTFTest.Watchdog.Protocol.IndependentExecutorRegistration]::LoadTrusted($registrationPath)|Out-Null
         & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Repair -RegistrationPath $registrationPath -ExecutorPath $executor
         & $sessionHost -Mode Install -InstallRoot $plan.Destination -InteractiveUserSid $registration.InteractiveUserSid
         & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Shortcut -RegistrationPath $registrationPath -ExecutorPath $executor
-        Write-Output ('原构建组件已修复，服务保持维护停止状态；未启动试验。文件事务：'+$transaction)
+        if($resumeInstall){
+            . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
+            Initialize-IndependentSetupConfig $plan.Destination
+            Set-IndependentSetupShortcut $plan.Destination $plan.Version $true
+        }
+        if(-not $resumeInstall){Write-Output ('原构建组件已修复，服务保持维护停止状态；未启动试验。文件事务：'+$transaction)}
     }finally{$lease.Dispose()}
+    if($resumeInstall){
+        # Release the executor lease before starting its service. Keep Binding
+        # durable until enable succeeds, so an interrupted retry resumes here.
+        & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Enable -RegistrationPath $registrationPath -ExecutorPath $executor
+        $setup=Read-IndependentSetupJson $setupPath;$setup.stage='Ready';Write-IndependentSetupState $plan.Destination $setup
+        [IO.File]::WriteAllText((Join-Path $plan.Destination 'installation-result.json'),(@{version=$plan.Version;stage='Ready';trialStarted=$false;reinstalled=$true;utc=[DateTime]::UtcNow.ToString('O')}|ConvertTo-Json))
+        Write-Output '原地重装完成，程序文件、服务及快捷方式已恢复；未启动试验。'
+    }
     return
 }
 . (Join-Path $PSScriptRoot 'Independent-InstallSetup.ps1')
@@ -799,9 +867,17 @@ $ProjectDirectory=$context.ProjectDirectory;$InteractiveUserSid=$context.Interac
 if([IO.Directory]::Exists($plan.Destination) -or [IO.File]::Exists($plan.Destination)){
     Assert-IndependentInstallParent $plan.Destination
     $receipt=Read-IndependentSetupJson (Join-Path $plan.Destination 'installed-files.json')
-    Get-IndependentRepairFiles $plan $receipt|Out-Null
-    foreach($file in $plan.Files){if((Get-FileHash -LiteralPath (Join-Path $plan.Destination $file.Relative)).Hash -ne $file.Sha256){throw '已有安装文件变化，请使用原构建修复入口。'}}
-    Write-Output '本版本已安装，未覆盖文件或修改服务；请使用桌面入口打开程序或完成项目设置。'
+    $setup=Read-IndependentSetupJson (Join-Path $plan.Destination 'install-setup.json')
+    $resume=Get-IndependentInstallResumePlan $plan $receipt $setup
+    if($resume.NeedsRepair){
+        Invoke-IndependentReinstallChild $PSCommandPath $BundleDirectory $plan.Destination
+    }elseif($setup.stage -eq 'Ready'){
+        & (Join-Path $plan.Destination 'Tools\Manage-IndependentRecovery.ps1') -Mode Shortcut -RegistrationPath (Join-Path $plan.Destination 'IndependentState\registration.json') -ExecutorPath (Join-Path $plan.Destination 'FallbackGuard\MTTFTest.FallbackGuard.exe')
+        Write-Output '本版本文件完整，已核对并补齐桌面快捷方式；未启动试验。'
+    }else{
+        Set-IndependentSetupShortcut $plan.Destination $plan.Version
+        Write-Output '程序文件完整，项目设置快捷方式已恢复；等待首次项目设置。'
+    }
     return
 }
 Assert-IndependentInstallParent ([IO.Path]::GetDirectoryName($plan.Destination))

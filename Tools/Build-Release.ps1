@@ -616,6 +616,12 @@ if ($LASTEXITCODE -ne 0) { throw ('无参数维护回归失败：' + ($maintenan
 foreach ($line in $maintenanceOutput) { Write-Host ([string]$line) }
 $maintenanceSummary = @($maintenanceOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS maintenance context 29 checks;' })
 if ($maintenanceSummary.Count -ne 1) { throw '无参数维护回归缺少通过摘要。' }
+$reinstallOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-ReinstallResume.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('原地重装回归失败：' + ($reinstallOutput -join "`n")) }
+foreach ($line in $reinstallOutput) { Write-Host ([string]$line) }
+$reinstallSummary = @($reinstallOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS reinstall resume 19 checks;' })
+if ($reinstallSummary.Count -ne 1) { throw '原地重装回归缺少通过摘要。' }
 $commandResolutionOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
     -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-OneClickCommandResolution.ps1') 2>&1)
 if ($LASTEXITCODE -ne 0) { throw ('一键命令解析回归失败：' + ($commandResolutionOutput -join "`n")) }
@@ -663,6 +669,7 @@ $verification = [ordered]@{
     oneClickSetupTests = $oneClickSetupSummary[0].Trim()
     scriptHostCompatibilityTests = ('PASS {0} checks; {1} hosts; {2} scripts' -f $scriptHostSummary.passed,$scriptHostSummary.hostCount,$scriptHostSummary.scriptCount)
     maintenanceContextTests = $maintenanceSummary[0].Trim()
+    reinstallResumeTests = $reinstallSummary[0].Trim()
     oneClickCommandResolutionTests = $commandResolutionSummary[0].Trim()
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
     quickDeployCommandParse = $quickDeployParseSummary[0].Trim()

@@ -173,6 +173,7 @@ try {
     }
     if ($manifest.recoveryArchitecture -eq 'V4-Independent-SystemExecutor') {
         . (Join-Path $PSScriptRoot 'Tools\Independent-MaintenanceContext.ps1')
+        $wasInstallRequest = $Mode -eq 'Install'
         if ($Mode -eq 'Install' -and [IO.File]::Exists((Join-Path $InstallRoot 'installed-files.json'))) {
             $installed = Read-IndependentMaintenanceJson (Join-Path $InstallRoot 'installed-files.json')
             $setupPath = Join-Path $InstallRoot 'install-setup.json'
@@ -223,6 +224,13 @@ try {
             Save-IndependentBundleCache $PSScriptRoot $InstallRoot | Out-Null
         } elseif ($Mode -in @('ValidateUpgrade','Upgrade','FinalizeUpgrade','RollbackUpgrade','RecoverFiles')) {
             if ($Mode -eq 'Upgrade') {
+                if ($wasInstallRequest) {
+                    # Restore an incomplete/uninstalled original build first so
+                    # the upgrade has verified original bytes for rollback.
+                    # Isolate the old protocol from this candidate's process.
+                    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode Install -BundleDirectory $PreviousBundleDirectory -InstallRoot $InstallRoot
+                    if ($LASTEXITCODE -ne 0) { throw '旧安装尚未完整恢复，未开始升级。' }
+                }
                 & (Join-Path $PSScriptRoot 'Tools\Install-IndependentRecoveryBundle.ps1') -Mode ValidateUpgrade `
                     -BundleDirectory $PSScriptRoot -InstallRoot $InstallRoot -PreviousBundleDirectory $PreviousBundleDirectory | Out-Null
                 Save-IndependentBundleCache $PreviousBundleDirectory $InstallRoot | Out-Null
