@@ -344,13 +344,31 @@ namespace AdaptiveControlTests
                     try
                     {
                         start.SignalAndWait(5000);
+                        var replacementBudget = System.Diagnostics.Stopwatch.StartNew();
+                        var transientReplacements = 0;
                         for (var index = 0; index < 100; index++)
                         {
                             var temporary = Path.Combine(root, "replace-" + index + ".tmp");
                             File.WriteAllText(temporary, (index & 1) == 0 ? oldJson : newJson,
                                 new UTF8Encoding(false));
-                            File.Replace(temporary, path, null);
+                            // Windows can temporarily retain a replaced destination
+                            // while the previous generation's readers close. This
+                            // is the fixture writer, not the reader under test: all
+                            // 100 replacements must still succeed within a bound.
+                            while (true)
+                            {
+                                try { File.Replace(temporary, path, null); break; }
+                                catch (IOException exception) when (
+                                    (exception.HResult & 0xffff) == 1175 &&
+                                    replacementBudget.ElapsedMilliseconds < 2000 && File.Exists(temporary))
+                                {
+                                    transientReplacements++;
+                                    Thread.Sleep(1);
+                                }
+                            }
                         }
+                        if (transientReplacements > 0)
+                            Console.WriteLine("INFO snapshot fixture writer retried ERROR_UNABLE_TO_REMOVE_REPLACED: " + transientReplacements);
                     }
                     catch (Exception exception) { failures.Enqueue(exception); }
                 }) { IsBackground = true, Name = "WatchdogSnapshotReplacer" };
