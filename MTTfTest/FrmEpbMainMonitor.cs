@@ -1544,23 +1544,7 @@ namespace MTEmbTest
             EpbGroup[channel - 1].CtrlCycles.Text =
                 Math.Max(record.MechanicalCycleCount, record.RunCount).ToString();
 
-            if (_currentEpbSummaryChannel == channel && record.Status == EpbTestStatus.Completed)
-            {
-                int nextChannel;
-                lock (_epbRecordsLock)
-                    nextChannel = EpbProjectPolicies.FindSummaryChannelAfterCompletion(
-                        _uiEpbRecords,
-                        channel);
-
-                if (nextChannel != channel)
-                    SelectEpbSummaryChannel(nextChannel);
-                else
-                    RefreshCurrentEpbSummary(channel);
-            }
-            else
-            {
-                RefreshCurrentEpbSummary(channel);
-            }
+            RefreshCurrentEpbSummary(channel);
 
             // —— 4) 下拉框右侧面板选中时刷新 —— //
             // —— ?? 取消实时保存，改为“定时自动保存” —— //
@@ -3916,7 +3900,7 @@ namespace MTEmbTest
         /// <summary>
         /// 初始化 EPB 概览区域：
         /// 1. 用 _uiEpbRecords 填充下拉框；
-        /// 2. 默认选中第一个通道并刷新 Led / 进度条 / 状态灯。
+        /// 2. 由实时启动状态选择通道；尚无启动通道时显示一个已启用通道作为初始占位。
         /// </summary>
         private void InitEpbSummaryPanel()
         {
@@ -3941,8 +3925,10 @@ namespace MTEmbTest
             // 如果有项目，默认选中第一项
             if (comboBoxEditCurrentRecord.Properties.Items.Count > 0)
             {
-                var initialChannel = EpbProjectPolicies.FindInitialSummaryChannel(_uiEpbRecords);
-                comboBoxEditCurrentRecord.SelectedIndex = Math.Max(0, initialChannel - 1);
+                // With no live channel yet this is a placeholder, never proof of a running trial.
+                var initialChannel = _uiEpbRecords.OrderBy(record => record.Id)
+                    .FirstOrDefault(record => record.Enabled)?.Id ?? _uiEpbRecords.Min(record => record.Id);
+                comboBoxEditCurrentRecord.SelectedIndex = comboBoxEditCurrentRecord.Properties.Items.IndexOf($"EPB-{initialChannel}");
             }
 
             // 重新绑定事件
@@ -4029,13 +4015,14 @@ namespace MTEmbTest
 
             // —— 3) 更新当前选中通道并刷新显示 —— //
             _currentEpbSummaryChannel = channelId;
-            var curRecord = EnsureEpbRecord(channelId);
+            SynchronizeEpbSummarySelection();
+            var curRecord = EnsureEpbRecord(_currentEpbSummaryChannel);
 
             UpdateEpbSummaryPanel(curRecord);
         }
 
         /// <summary>
-        /// Refreshes the summary only when the changed channel is the channel selected in the summary combo box.
+        /// Reconciles display selection, then refreshes values when the changed channel is selected.
         /// </summary>
         private void RefreshCurrentEpbSummary(int channel)
         {
@@ -4053,6 +4040,7 @@ namespace MTEmbTest
                 return;
             }
 
+            SynchronizeEpbSummarySelection();
             if (_currentEpbSummaryChannel != channel)
                 return;
 
@@ -4072,8 +4060,8 @@ namespace MTEmbTest
         private void SelectEpbSummaryChannel(int channel)
         {
             if (channel < 1 || channel > 12 || comboBoxEditCurrentRecord == null) return;
-            var selectedIndex = channel - 1;
-            if (selectedIndex >= comboBoxEditCurrentRecord.Properties.Items.Count) return;
+            var selectedIndex = comboBoxEditCurrentRecord.Properties.Items.IndexOf($"EPB-{channel}");
+            if (selectedIndex < 0) return;
 
             comboBoxEditCurrentRecord.SelectedIndex = selectedIndex;
             RefreshSummaryByComboSelection();
@@ -4929,6 +4917,8 @@ namespace MTEmbTest
             _uiTimer.Tick += (_, __) =>
             {
                 if (Volatile.Read(ref _formClosedFlag) == 1) return;
+                // Also reconcile after batch UI guards settle, even when the graph has no new data.
+                SynchronizeEpbSummarySelection();
                 if (zedGraphRealChart == null || zedGraphRealChart.IsDisposed) return;
 
                 if (!_dirtyForRedraw || zedGraphRealChart == null) return;

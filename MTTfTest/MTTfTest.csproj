@@ -217,6 +217,7 @@
     <Compile Include="IndependentRecoveryStartup.cs" />
     <Compile Include="IndependentRegistrationExport.cs" />
     <Compile Include="FrmEpbMainMonitor.IndependentFallback.cs" />
+    <Compile Include="FrmEpbMainMonitor.SummarySelection.cs" />
     <Compile Include="UnattendedRecovery.cs" />
     <Compile Include="WatchdogRuntime.cs" />
     <Compile Include="WatchdogRuntime.CallbackPipeline.cs" />

@@ -33,6 +33,7 @@
     <Reference Include="System" />
     <Compile Include="IndependentBootstrapTests.cs" />
     <Compile Include="RecoveryCommitRoutingTests.cs" />
+    <Compile Include="EpbSummarySelectionTests.cs" />
     <Compile Include="MonitorHardwareSmokeTests.cs" />
     <Compile Include="SimulatedEpbPlant.cs" />
     <Reference Include="System.Core" />
