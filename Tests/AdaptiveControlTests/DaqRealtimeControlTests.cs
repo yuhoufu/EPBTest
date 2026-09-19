@@ -2703,23 +2703,27 @@ namespace AdaptiveControlTests
             };
 
             var first = Task.Run(() => worker.InvokeHi(4, batchWork, 30000, null));
-            Assert(batchEntered.Wait(2000), "首个OFF未进入专用设备Worker");
             var duplicateFalse = 0;
-            var duplicates = Enumerable.Range(0, 16)
-                .Select(_ => Task.Run(() =>
-                {
-                    duplicateReady.Signal();
-                    duplicateStart.Wait();
-                    var result = worker.InvokeHi(4, batchWork, 30000, null);
-                    if (!result) Interlocked.Increment(ref duplicateFalse);
-                    return result;
-                }))
-                .ToArray();
-            Assert(duplicateReady.Wait(2000), "重复OFF并发调用未准备完成");
-            duplicateStart.Set();
-
+            var duplicates = new Task<bool>[16];
             try
             {
+                Assert(batchEntered.Wait(2000), "首个OFF未进入专用设备Worker");
+                // Every caller blocks at the start barrier, so dedicated
+                // threads avoid depending on thread-pool growth for readiness.
+                for (var index = 0; index < duplicates.Length; index++)
+                {
+                    duplicates[index] = Task.Factory.StartNew(() =>
+                    {
+                        duplicateReady.Signal();
+                        duplicateStart.Wait();
+                        var result = worker.InvokeHi(4, batchWork, 30000, null);
+                        if (!result) Interlocked.Increment(ref duplicateFalse);
+                        return result;
+                    }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                }
+                Assert(duplicateReady.Wait(2000), "重复OFF并发调用未准备完成");
+                duplicateStart.Set();
+
                 // A duplicate is either registered on the blocked first item
                 // (CoalescedRequests) or is rejected within the bounded
                 // admission window (the caller has already completed false).
@@ -2760,11 +2764,19 @@ namespace AdaptiveControlTests
             }
             finally
             {
+                duplicateStart.Set();
                 releaseBatch.Set();
                 // Ensure the first and all duplicate callers cannot outlive
-                // this fixture when an assertion fails.
-                try { first.Wait(5000); } catch { }
-                try { Task.WaitAll(duplicates, 5000); } catch { }
+                // this fixture, including failures while preparing callers.
+                var callers = duplicates.Where(task => task != null).Cast<Task>().Append(first).ToArray();
+                try
+                {
+                    Assert(Task.WaitAll(callers, 5000), "重复OFF测试调用者清理超时");
+                }
+                catch (AggregateException)
+                {
+                    // WaitAll has joined every caller before reporting faults.
+                }
             }
 
             var workItemType = typeof(DoController.HighPriorityDoWorker).GetNestedType(
