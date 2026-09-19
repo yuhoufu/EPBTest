@@ -25,6 +25,15 @@ namespace AdaptiveControlTests
         {
             try
             {
+                if (args.Length == 1 && args[0] == "--sample-recovery-current")
+                {
+                    Run("陈旧电流两秒后恢复仍可完成断电确认", StaleOffCurrentRecoversAfterTwoSeconds);
+                    Run("新鲜高电流仍在原一秒窗口失败", FreshOffCurrentKeepsOriginalTimeout);
+                    Run("陈旧电流恢复等待可取消", StaleOffCurrentWaitIsCancelable);
+                    Run("DAQ陈旧时不得把冻结电流判为未清零", StaleOffCurrentIsUnverifiable);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--install-setup")
                 {
                     IndependentInstallSetupTests.RunAll();
@@ -633,6 +642,9 @@ namespace AdaptiveControlTests
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
                 Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
                 Run("DAQ陈旧时不得把冻结电流判为未清零", StaleOffCurrentIsUnverifiable);
+                Run("陈旧电流两秒后恢复仍可完成断电确认", StaleOffCurrentRecoversAfterTwoSeconds);
+                Run("新鲜高电流仍在原一秒窗口失败", FreshOffCurrentKeepsOriginalTimeout);
+                Run("陈旧电流恢复等待可取消", StaleOffCurrentWaitIsCancelable);
                 Run("反向残余负电流不能误判为断电清零", NegativeOffCurrentDoesNotClear);
                 Run("断电清零阈值适配现场零偏且保持安全上限", OffCurrentThresholdTracksTrustedBaseline);
                 Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
@@ -2618,8 +2630,59 @@ namespace AdaptiveControlTests
                     CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
-            Assert(!result.Cleared && !result.SampleFresh && result.ElapsedMs >= 40,
+            Assert(!result.Cleared && !result.SampleFresh &&
+                   result.ElapsedMs >= 3000 && result.ElapsedMs < 4000,
                 "DAQ持续陈旧时未等待到有界超时，或被误分类为真实电流未清零");
+        }
+
+        private static void StaleOffCurrentRecoversAfterTwoSeconds()
+        {
+            var clock = new Stopwatch();
+            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () =>
+                    {
+                        if (!clock.IsRunning) clock.Start();
+                        return clock.ElapsedMilliseconds < 2200
+                            ? new EpbCycleRunner.OffCurrentSample(0.05, false, 2500)
+                            : new EpbCycleRunner.OffCurrentSample(0.05, true, 5);
+                    },
+                    0.1, 1000, 10, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(result.Cleared && result.SampleFresh &&
+                   result.ElapsedMs >= 2200 && result.ElapsedMs < 3000,
+                $"未等待三秒内的新鲜电流，或将陈旧低电流提前判为清零：" +
+                $"Cleared={result.Cleared} Fresh={result.SampleFresh} " +
+                $"PollElapsed={result.ElapsedMs} SourceElapsed={clock.ElapsedMilliseconds}");
+        }
+
+        private static void FreshOffCurrentKeepsOriginalTimeout()
+        {
+            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => new EpbCycleRunner.OffCurrentSample(0.35, true, 5),
+                    0.1, 1000, 10, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(!result.Cleared && result.SampleFresh &&
+                   result.ElapsedMs >= 1000 && result.ElapsedMs < 2000,
+                "新鲜电流持续未清零被错误延长到采样恢复窗口");
+        }
+
+        private static void StaleOffCurrentWaitIsCancelable()
+        {
+            using var cancellation = new CancellationTokenSource();
+            cancellation.CancelAfter(50);
+            var clock = Stopwatch.StartNew();
+            try
+            {
+                EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                        () => new EpbCycleRunner.OffCurrentSample(0.05, false, 2500),
+                        0.1, 1000, 10, cancellation.Token)
+                    .GetAwaiter().GetResult();
+                throw new InvalidOperationException("取消未终止陈旧电流等待");
+            }
+            catch (OperationCanceledException)
+            {
+                Assert(clock.ElapsedMilliseconds < 1000, "取消被采样恢复窗口阻塞");
+            }
         }
 
         private static void OffCurrentThresholdTracksTrustedBaseline()

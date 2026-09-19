@@ -1189,7 +1189,11 @@ namespace Controller
                     if (!valid)
                     {
                         if (!lowSince.HasValue) lowSince = clock.ElapsedMilliseconds;
-                        if (clock.ElapsedMilliseconds - lowSince.Value >= confirmMs)
+                        // 仅延长陈旧样本的恢复等待；真实低压、无样本和无效值沿用原确认时间。
+                        var effectiveConfirmMs = failureReason == HydraulicPressureFailureReason.StaleSample
+                            ? Math.Max(3000, confirmMs)
+                            : confirmMs;
+                        if (clock.ElapsedMilliseconds - lowSince.Value >= effectiveConfirmMs)
                         {
                             if (failureReason != HydraulicPressureFailureReason.BelowMinimum)
                                 _holdFailureStreaks.TryRemove(state.Key.HydraulicId, out _);
