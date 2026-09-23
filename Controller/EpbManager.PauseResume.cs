@@ -2396,6 +2396,8 @@ namespace Controller
                 .OrderBy(channel => channel)
                 .ToArray();
             if (selected.Length == 0) return;
+            var rejoinRunId = _activeBatchId;
+            var rejoinRunEpoch = Interlocked.Read(ref _runEpoch);
             var rejoinPermits = selected.ToDictionary(
                 channel => channel,
                 channel => _channelExecutionFence.Capture(channel));
@@ -2429,80 +2431,103 @@ namespace Controller
             else if (recoveryEpoch <= 0)
                 throw new InvalidOperationException("DAQ恢复所有者重入缺少有效 RecoveryEpoch。");
 
-            var nowUtc = DateTime.UtcNow;
-            foreach (var group in selected.GroupBy(channel => channel <= 6 ? 1 : 2))
+            // 预约逻辑槽、公布跨组成员和启动必须与回调的成员快照/建槽共用同一把锁。
+            // 否则健康组可能先冻结未来槽，再由恢复组把新成员登记到同一个槽。
+            lock (_formalScheduleMembershipGate)
             {
-                var members = group.ToArray();
-                lock (_formalRejoinGates[group.Key])
+                if (_activeBatchId != rejoinRunId ||
+                    Interlocked.Read(ref _runEpoch) != rejoinRunEpoch ||
+                    !CanRunStandaloneAlarmRecovery(IsBatchSessionActive, IsFormalPhaseCommitted) ||
+                    selected.Any(channel => !IsChannelExecutionPermitCurrent(
+                        channel, rejoinPermits[channel])))
+                    throw new InvalidOperationException(
+                        $"FormalRejoinRejected RunOrExecutionPermitChanged Run={rejoinRunId:N}/{rejoinRunEpoch}");
+
+                var restartMembers = selected
+                    .Where(channel => GetRemainingMechanicalTargetCycles(channel) > 0)
+                    .ToArray();
+                var restartGroups = restartMembers
+                    .GroupBy(channel => channel <= 6 ? 1 : 2)
+                    .ToDictionary(group => group.Key, group => group.ToList());
+                var t0ByGroup = new Dictionary<int, DateTime>();
+                foreach (var group in restartGroups.Keys)
                 {
-                    if (!_activeFormalT0ByPressureGroup.TryGetValue(group.Key, out var t0))
-                        t0 = CeilToBoundary(nowUtc.AddMilliseconds(AnchorWarmupMs), PeriodMs);
-                    _activeFormalT0ByPressureGroup[group.Key] = t0;
-                    var sharedFirstSlot = SelectSharedFormalRejoinSlot(t0, nowUtc, PeriodMs);
-                    var remainingByChannel = members.ToDictionary(
-                        channel => channel,
-                        GetRemainingMechanicalTargetCycles);
-                    var restartMembers = members
-                        .Where(channel => remainingByChannel[channel] > 0)
-                        .ToArray();
+                    if (!_activeFormalT0ByPressureGroup.TryGetValue(group, out var t0))
+                        throw new InvalidOperationException(
+                            $"FormalRejoinRejected FormalAnchorMissing Hydraulic={group} Run={rejoinRunId:N}");
+                    t0ByGroup[group] = t0;
+                }
 
-                    foreach (var channel in members)
-                        RemoveTimerRuntime(channel, "FormalSharedSlotRejoin");
+                foreach (var channel in selected)
+                    RemoveTimerRuntime(channel, "FormalSharedSlotRejoin");
+                if (restartMembers.Length == 0) return;
 
-                    // 先把本组全部成员登记到同一个未来槽，再启动任何一个 Timer。
-                    // 因此首个 Timer 即使立刻拍摄成员快照，也不可能只看到部分成员。
+                // 一次恢复两个压力组也只预约一次。预约不前移逻辑槽号，取消重入
+                // 不会留下空洞；单调时钟只为该槽设定未来放行下限，不重置健康组锚点。
+                var sharedFirstSlot = _formalBatchSlots.ReserveNextLogicalSlot(
+                    rejoinRunId, rejoinRunEpoch);
+                var participantVersions = new Dictionary<int, long>();
+                try
+                {
                     foreach (var channel in restartMembers)
-                        MarkHydraulicParticipantFromFormalSlot(channel, sharedFirstSlot);
-
-                    try
                     {
-                        if (restartMembers.Any(channel =>
+                        lock (GetHydraulicParticipantGate(channel))
+                        {
+                            var previousVersion = CaptureHydraulicParticipantVersion(channel);
+                            try
+                            {
+                                MarkHydraulicParticipantFromFormalSlot(channel, sharedFirstSlot);
+                            }
+                            finally
+                            {
+                                var version = CaptureHydraulicParticipantVersion(channel);
+                                if (version != 0 && version != previousVersion)
+                                    participantVersions[channel] = version;
+                            }
+                        }
+                    }
+
+                    if (_activeBatchId != rejoinRunId ||
+                        Interlocked.Read(ref _runEpoch) != rejoinRunEpoch ||
+                        restartMembers.Any(channel =>
                                 !IsChannelExecutionPermitCurrent(
                                     channel,
                                     rejoinPermits[channel])))
-                            throw new InvalidOperationException(
-                                $"FormalRejoinRejected ExecutionPermitRevoked " +
-                                $"Hydraulic={group.Key}");
-                        StartFormalPhaseTimers(
-                            new Dictionary<int, List<int>>
-                            {
-                                [group.Key] = restartMembers.ToList()
-                            },
-                            new Dictionary<int, DateTime>
-                            {
-                                [group.Key] = t0
-                            },
-                            staggerPlan,
-                            GetBatchSessionTokenOr(CancellationToken.None),
-                            CycleAttemptKind.FormalRecovery,
-                            new Dictionary<int, long>
-                            {
-                                [group.Key] = sharedFirstSlot
-                            },
-                            registerParticipants: false,
-                            timerTaskName: "RejoinedChannelTimer");
+                        throw new InvalidOperationException(
+                            $"FormalRejoinRejected ExecutionPermitRevoked Run={rejoinRunId:N}/{rejoinRunEpoch}");
+                    StartFormalPhaseTimers(
+                        restartGroups,
+                        t0ByGroup,
+                        staggerPlan,
+                        GetBatchSessionTokenOr(CancellationToken.None),
+                        CycleAttemptKind.FormalRecovery,
+                        restartGroups.Keys.ToDictionary(group => group, group => sharedFirstSlot),
+                        registerParticipants: false,
+                        timerTaskName: "RejoinedChannelTimer");
 
-                        if (!ownedByActiveDaqRecovery)
+                    if (!ownedByActiveDaqRecovery)
+                    {
+                        foreach (var channel in restartMembers)
                         {
-                            foreach (var channel in restartMembers)
-                            {
-                                PublishChannelRuntimeState(
-                                    channel,
-                                    ChannelRuntimeState.Running,
-                                    runtimeCode,
-                                    $"{runtimeReason}；FutureSlot={sharedFirstSlot}",
-                                    correlationId: _activeBatchId,
-                                    allowTerminalReset: allowTerminalReset,
-                                    allowSystemFaultReset: allowSystemFaultReset);
-                                NonCriticalObserver.Invoke(
-                                    ChannelResumed,
-                                    channel,
-                                    ex => _log?.Warn(
-                                        $"单通道继续观察者异常，已隔离：{ex.Message}",
-                                        "EPB"));
-                            }
+                            PublishChannelRuntimeState(
+                                channel,
+                                ChannelRuntimeState.Running,
+                                runtimeCode,
+                                $"{runtimeReason}；FutureSlot={sharedFirstSlot}",
+                                correlationId: rejoinRunId,
+                                allowTerminalReset: allowTerminalReset,
+                                allowSystemFaultReset: allowSystemFaultReset);
+                            NonCriticalObserver.Invoke(
+                                ChannelResumed,
+                                channel,
+                                ex => _log?.Warn(
+                                    $"单通道继续观察者异常，已隔离：{ex.Message}",
+                                    "EPB"));
                         }
+                    }
 
+                    foreach (var group in restartGroups)
+                    {
                         var candidates = group.Key == 1
                             ? Enumerable.Range(1, 6).ToArray()
                             : Enumerable.Range(7, 6).ToArray();
@@ -2510,32 +2535,38 @@ namespace Controller
                             group.Key,
                             candidates,
                             sharedFirstSlot);
-                        var missing = restartMembers
+                        var missing = group.Value
                             .Where(channel => !participants.Contains(channel))
                             .ToArray();
                         if (missing.Length > 0)
                             throw new InvalidOperationException(
                                 $"共同重入不变量失败 Hydraulic={group.Key} Slot={sharedFirstSlot} " +
-                                $"Expected=[{string.Join(",", restartMembers)}] " +
+                                $"Expected=[{string.Join(",", group.Value)}] " +
                                 $"Actual=[{string.Join(",", participants)}] " +
                                 $"Missing=[{string.Join(",", missing)}]");
 
                         _log?.Info(
                             $"通道按公共正式槽原子重新加入：Hydraulic={group.Key} " +
-                            $"Slot={sharedFirstSlot} Members=[{string.Join(",", restartMembers)}] " +
+                            $"Slot={sharedFirstSlot} Members=[{string.Join(",", group.Value)}] " +
                             $"Participants=[{string.Join(",", participants)}] " +
                             $"RecoveryEpoch={recoveryEpoch} Invariant=Passed Reason={runtimeCode}",
                             "液压协调");
                     }
-                    catch
+                }
+                catch
+                {
+                    foreach (var channel in restartMembers)
                     {
-                        foreach (var channel in restartMembers)
+                        lock (_channelExecutionGates[channel - 1])
                         {
-                            RemoveTimerRuntime(channel, "FormalSharedSlotRejoinRollback");
-                            UnmarkHydraulicParticipant(channel);
+                            if (IsChannelExecutionPermitCurrent(channel, rejoinPermits[channel]))
+                                RemoveTimerRuntime(channel, "FormalSharedSlotRejoinRollback");
                         }
-                        throw;
+                        if (participantVersions.TryGetValue(channel, out var version))
+                            TryUnmarkHydraulicParticipant(
+                                channel, version, "FormalSharedSlotRejoinRollback");
                     }
+                    throw;
                 }
             }
         }

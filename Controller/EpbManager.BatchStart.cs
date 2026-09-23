@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -261,6 +261,7 @@ namespace Controller
         private ElectricalStaggerPlan _activeStaggerPlan;
         private readonly GlobalHydraulicSlotCoordinator _globalHydraulicSlots =
             new GlobalHydraulicSlotCoordinator();
+        private readonly object _formalScheduleMembershipGate = new object();
         private readonly FormalBatchSlotCoordinator _formalBatchSlots =
             new FormalBatchSlotCoordinator();
         private readonly ConcurrentDictionary<int, FormalBatchParticipantLease> _formalParticipantLeases =
@@ -268,10 +269,10 @@ namespace Controller
         private readonly int _globalFormalSlotAdmissionWindowMs;
         private readonly ConcurrentDictionary<
             GlobalHydraulicSlotKey,
-            IReadOnlyDictionary<int, IReadOnlyList<int>>> _globalHydraulicParticipantSnapshots =
+            FormalBatchParticipantLease[]> _globalHydraulicParticipantSnapshots =
                 new ConcurrentDictionary<
                     GlobalHydraulicSlotKey,
-                    IReadOnlyDictionary<int, IReadOnlyList<int>>>();
+                    FormalBatchParticipantLease[]>();
         private RunChainIdentity _activeRunChainIdentity;
         private int _learningManifestPublished;
         private string _learningManifestReason = string.Empty;
@@ -320,7 +321,7 @@ namespace Controller
             catch (ObjectDisposedException) { return fallback; }
         }
 
-        private IReadOnlyDictionary<int, IReadOnlyList<int>> CaptureGlobalFormalParticipants(
+        private FormalBatchParticipantLease[] CaptureGlobalFormalParticipants(
             Guid runId,
             ElectricalStaggerPlan staggerPlan,
             long formalSlot)
@@ -330,12 +331,11 @@ namespace Controller
             var snapshot = _globalHydraulicParticipantSnapshots.GetOrAdd(key, _ =>
             {
                 var candidates = staggerPlan.Assignments.Keys.OrderBy(channel => channel).ToArray();
-                var result = new Dictionary<int, IReadOnlyList<int>>();
                 var pressure1 = GetHydraulicParticipantsInPressureGroupSnapshot(1, candidates, formalSlot);
                 var pressure2 = GetHydraulicParticipantsInPressureGroupSnapshot(2, candidates, formalSlot);
-                if (pressure1.Count > 0) result[1] = pressure1;
-                if (pressure2.Count > 0) result[2] = pressure2;
-                return result;
+                // Freeze generations together with channel IDs. A participant may retire
+                // and rejoin a future slot before a healthy peer reaches this old slot.
+                return CaptureFormalParticipantLeases(pressure1.Concat(pressure2));
             });
             TrimGlobalParticipantSnapshots(key);
             return snapshot;
@@ -404,8 +404,7 @@ namespace Controller
                 Guid runId,
                 long slot,
                 int channel,
-                DateTime pressureBuildPlannedUtc,
-                DateTime wallClockAnchorUtc,
+                FormalBatchSlotGrant grant,
                 ElectricalStaggerPlan staggerPlan,
                 CancellationToken operationToken,
                 CancellationToken waitToken)
@@ -422,8 +421,8 @@ namespace Controller
                     hydraulicId,
                     channel,
                     _globalFormalSlotAdmissionWindowMs,
-                    pressureBuildPlannedUtc,
-                    wallClockAnchorUtc,
+                    grant.PlannedUtc,
+                    grant.PlannedUtc,
                     PeriodMs,
                     maxPhaseMs,
                     GlobalMotorAnchorGuardMs,
@@ -437,7 +436,8 @@ namespace Controller
                         ct),
                     ReleaseSuccessfulGlobalSlotGroupsAsync,
                     operationToken,
-                    waitToken)
+                    waitToken,
+                    grant)
                 .ConfigureAwait(false);
             if (admission.Slot != null)
                 LogGlobalHydraulicSlotOnce(admission.Slot, staggerPlan);
@@ -3158,6 +3158,10 @@ namespace Controller
                          pair.Value != null && pair.Value.RunId == _activeBatchId).ToArray())
                 ((ICollection<KeyValuePair<int, FormalBatchParticipantLease>>)_formalParticipantLeases)
                     .Remove(pair);
+            foreach (var pair in _formalParticipantRetirementBoundaries.Where(pair =>
+                         pair.Value.Lease.RunId == _activeBatchId).ToArray())
+                ((ICollection<KeyValuePair<int, FormalParticipantRetirementBoundary>>)
+                    _formalParticipantRetirementBoundaries).Remove(pair);
             _globalHydraulicSlots.ClearRun(_activeBatchId);
             ClearDaqMechanicalRequalificationFences();
             foreach (var key in _globalHydraulicParticipantSnapshots.Keys
@@ -3257,7 +3261,7 @@ namespace Controller
 
         /// <summary>
         ///     为每个通道创建并启动 HighPrecisionTimer，使其每圈在 t0 + k*Period + phase 触发。
-        ///     计时器采用 AlignToWallClock，保证“每圈都与墙钟对齐（不累积误差）”。
+        ///     正式槽协调器独占单调周期调度；计时器仅管理回调、暂停和取消生命周期。
         /// </summary>
         private void StartFormalPhaseTimers(
             Dictionary<int, List<int>> groups,
@@ -3294,6 +3298,13 @@ namespace Controller
                     CaptureFormalParticipantLease(channel);
                 }
             }
+            // UTC 只在正式阶段首次建立起点时映射一次。所有压力组共用该运行时钟，
+            // 恢复时 Ensure 只校验周期，不重置仍在运行的健康通道。
+            var initialAnchorUtc = t0OfGroup.Values.DefaultIfEmpty(DateTime.UtcNow).Max();
+            var initialOffset = CalculateFirstFutureFormalSlot(initialAnchorUtc, DateTime.UtcNow, PeriodMs);
+            var initialLogicalSlot = _formalBatchSlots.EnsureRunSchedule(
+                _activeBatchId, Interlocked.Read(ref _runEpoch), PeriodMs,
+                initialAnchorUtc.AddMilliseconds(initialOffset * (double)PeriodMs));
             foreach (var kv in groups)
             {
                 var pg = kv.Key;
@@ -3310,30 +3321,19 @@ namespace Controller
                 // 800ms 通道仍进入当前槽，同一液压代次便会永久缺员并在 BarrierTimeout
                 // 后误报硬故障。整组必须从同一个未来零相位开始，电气错峰只在液压
                 // 资格完成后的共享 phaseWindow 内执行。
-                var scheduleCreatedUtc = DateTime.UtcNow;
                 var firstFormalSlot = firstSlotOverrides != null &&
                                       firstSlotOverrides.TryGetValue(pg, out var overriddenSlot)
                     ? overriddenSlot
-                    : CalculateFirstFutureFormalSlot(
-                        t0,
-                        scheduleCreatedUtc,
-                        PeriodMs);
-                var firstGroupCallbackUtc = t0.AddMilliseconds(firstFormalSlot * (double)PeriodMs);
+                    : initialLogicalSlot;
                 _log?.Info(
                     $"正式阶段液压槽已统一：Run={_activeBatchId:N} Hydraulic={pg} " +
-                    $"FirstSlot={firstFormalSlot} CallbackUtc={firstGroupCallbackUtc:O} " +
+                    $"FirstSlot={firstFormalSlot} Clock=Monotonic " +
                     $"Members=[{string.Join(",", enabled)}]",
                     "液压协调");
 
                 foreach (var ch in enabled)
                 {
                     var phase = staggerPlan.Get(ch).PhaseMs;
-                    // 所有成员在同一零相位回调，避免因启动时刻落在两个电气相位之间
-                    // 而被拆进相邻液压槽。使用固定 UTC 目标抵消逐通道创建计时器的耗时。
-                    var initialDelay = Math.Max(
-                        1,
-                        (int)Math.Ceiling((firstGroupCallbackUtc - DateTime.UtcNow).TotalMilliseconds));
-
                     var runner = GetRunner(ch);
                     PrepareRunnerForNoHeadAndTailCompensation(ch);
 
@@ -3343,6 +3343,7 @@ namespace Controller
                     var stopCts = RenewStopCts(ch, out var stopToken);
 
                     var timer = GetTimer(ch, PeriodMs, OverrunPolicy.AlignToWallClock);
+                    BindFormalParticipantTimer(formalParticipantLease, timer);
 
                     // 每个通道单独算一个“起始圈号基准”
                     var last = Recorder?.GetLastCycleNumber(ch);
@@ -3363,9 +3364,8 @@ namespace Controller
                     var successfulCycles = 0;
                     
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
-                    ObserveBackgroundTask(timer.StartAsync(
+                    ObserveBackgroundTask(timer.StartCoordinatedAsync(
                         repeat: null, // 由成功圈计数停止；可恢复失败尝试不消耗目标圈数
-                        initialDelay,
                         async (cycleIndex, ct) =>
                         {
                             if (startupPublished != null)
@@ -3397,110 +3397,132 @@ namespace Controller
                                 return false;
                             }
                             FormalBatchSlotScope formalSlotScope;
+                            using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                                token, timer.CoordinatedAdmissionToken);
                             try
                             {
-                                var slotParticipantChannels = CaptureGlobalFormalParticipants(
-                                        _activeBatchId,
-                                        staggerPlan,
-                                        phaseSlot)
-                                    .Values
-                                    .SelectMany(members => members ?? Array.Empty<int>())
-                                    .Distinct()
-                                    .OrderBy(member => member)
-                                    .ToArray();
-                                var slotParticipants = CaptureFormalParticipantLeases(
-                                    slotParticipantChannels);
-                                formalSlotScope = await _formalBatchSlots.EnterAsync(
-                                        formalParticipantLease,
-                                        phaseSlot,
-                                        slotParticipants,
-                                        t0,
-                                        PeriodMs,
-                                        () => PublishChannelRuntimeState(
-                                            ch,
-                                            ChannelRuntimeState.WaitingForSlotBarrier,
-                                            "WaitingForSlotBarrier",
-                                            "本卡钳已关闭输出，等待同一正式周期槽安全收尾"),
-                                        token,
-                                        () =>
-                                        {
-                                            var fallbackMotorOff = !IsChannelEnergized(ch);
-                                            var fallbackHydraulicReleased =
-                                                !_hydraulicLeaseByChannel.TryGetValue(
-                                                    ch,
-                                                    out var fallbackLease) ||
-                                                fallbackLease.IsClosed;
-                                            var fallbackPersistenceCommitted =
-                                                ResolveFormalFallbackPersistence(
-                                                    formalCycleAttempt,
-                                                    out var fallbackPersistenceRequired);
-                                            if (ShouldDelegateFormalPersistenceToHydraulicRecovery(
-                                                    IsHydraulicGroupRecoveryActiveForChannel(ch),
-                                                    fallbackMotorOff,
-                                                    fallbackHydraulicReleased))
-                                            {
-                                                fallbackPersistenceRequired = false;
-                                                fallbackPersistenceCommitted = true;
-                                            }
-                                            var fallbackReceipt = formalCycleAttempt == null
-                                                ? null
-                                                : EnrichFormalClosureReceipt(
-                                                    formalCycleAttempt.CaptureClosureReceipt(),
-                                                    phaseSlot);
-                                            var fallbackDisposition = ResolveFormalSlotDisposition(
-                                                fallbackMotorOff,
-                                                fallbackHydraulicReleased,
-                                                fallbackPersistenceRequired,
-                                                fallbackReceipt);
-                                            if (fallbackDisposition ==
-                                                FormalParticipantDisposition.SafetyUnproven)
-                                                ReportFormalSlotSafetyBoundaryFailure(
-                                                    ch,
-                                                    phaseSlot,
-                                                    fallbackMotorOff,
-                                                    fallbackHydraulicReleased,
-                                                    fallbackPersistenceCommitted,
-                                                    fallbackReceipt);
-                                             return new FormalBatchParticipantTerminal
-                                             {
-                                                 Channel = ch,
-                                                 Disposition = fallbackDisposition,
-                                                MotorOffConfirmed = fallbackMotorOff,
-                                                HydraulicMemberReleased = fallbackHydraulicReleased,
-                                                PersistenceBoundaryRequired =
-                                                    fallbackPersistenceRequired,
-                                                PersistenceCommitted =
-                                                    fallbackPersistenceCommitted,
-                                                Result = "CallbackExitedBeforeFormalCycleBoundary",
-                                                CallbackElapsedMs =
-                                                    callbackStopwatch.ElapsedMilliseconds,
-                                                SharedCoordinationWaitMs = 0,
-                                                ClosureReceipt = fallbackReceipt,
-                                                CompletedUtc = DateTime.UtcNow
-                                            };
-                                        },
-                                        previousSlotClosureTimeoutMs:
-                                            _cfg.Test.EffectiveFormalSlotClosureTimeoutMs,
-                                        waitingDetailsCallback: snapshot =>
-                                            PublishChannelRuntimeState(
+                                Task<FormalBatchSlotScope> admissionTask;
+                                // Freeze membership and materialize its logical slot atomically
+                                // against rejoin reservations; never hold this lock across await.
+                                lock (_formalScheduleMembershipGate)
+                                {
+                                    var slotParticipants = CaptureGlobalFormalParticipants(
+                                            _activeBatchId,
+                                            staggerPlan,
+                                            phaseSlot);
+                                    admissionTask = _formalBatchSlots.EnterAsync(
+                                            formalParticipantLease,
+                                            phaseSlot,
+                                            slotParticipants,
+                                            () => PublishChannelRuntimeState(
                                                 ch,
                                                 ChannelRuntimeState.WaitingForSlotBarrier,
                                                 "WaitingForSlotBarrier",
-                                                FormatFormalSlotWaitingReason(snapshot)))
-                                    .ConfigureAwait(false);
+                                                "本卡钳已关闭输出，等待同一正式周期槽安全收尾"),
+                                            admissionCancellation.Token,
+                                            () =>
+                                            {
+                                                var fallbackMotorOff = !IsChannelEnergized(ch);
+                                                var fallbackHydraulicReleased =
+                                                    !_hydraulicLeaseByChannel.TryGetValue(
+                                                        ch,
+                                                        out var fallbackLease) ||
+                                                    fallbackLease.IsClosed;
+                                                var fallbackPersistenceCommitted =
+                                                    ResolveFormalFallbackPersistence(
+                                                        formalCycleAttempt,
+                                                        out var fallbackPersistenceRequired);
+                                                if (ShouldDelegateFormalPersistenceToHydraulicRecovery(
+                                                        IsHydraulicGroupRecoveryActiveForChannel(ch),
+                                                        fallbackMotorOff,
+                                                        fallbackHydraulicReleased))
+                                                {
+                                                    fallbackPersistenceRequired = false;
+                                                    fallbackPersistenceCommitted = true;
+                                                }
+                                                var fallbackReceipt = formalCycleAttempt == null
+                                                    ? null
+                                                    : EnrichFormalClosureReceipt(
+                                                        formalCycleAttempt.CaptureClosureReceipt(),
+                                                        phaseSlot);
+                                                var fallbackDisposition = ResolveFormalSlotDisposition(
+                                                    fallbackMotorOff,
+                                                    fallbackHydraulicReleased,
+                                                    fallbackPersistenceRequired,
+                                                    fallbackReceipt);
+                                                if (fallbackDisposition ==
+                                                    FormalParticipantDisposition.SafetyUnproven)
+                                                    ReportFormalSlotSafetyBoundaryFailure(
+                                                        ch,
+                                                        phaseSlot,
+                                                        fallbackMotorOff,
+                                                        fallbackHydraulicReleased,
+                                                        fallbackPersistenceCommitted,
+                                                        fallbackReceipt);
+                                                 return new FormalBatchParticipantTerminal
+                                                 {
+                                                     Channel = ch,
+                                                     Disposition = fallbackDisposition,
+                                                    MotorOffConfirmed = fallbackMotorOff,
+                                                    HydraulicMemberReleased = fallbackHydraulicReleased,
+                                                    PersistenceBoundaryRequired =
+                                                        fallbackPersistenceRequired,
+                                                    PersistenceCommitted =
+                                                        fallbackPersistenceCommitted,
+                                                    Result = "CallbackExitedBeforeFormalCycleBoundary",
+                                                    CallbackElapsedMs =
+                                                        callbackStopwatch.ElapsedMilliseconds,
+                                                    SharedCoordinationWaitMs = 0,
+                                                    ClosureReceipt = fallbackReceipt,
+                                                    CompletedUtc = DateTime.UtcNow
+                                                };
+                                            },
+                                            previousSlotClosureTimeoutMs:
+                                                _cfg.Test.EffectiveFormalSlotClosureTimeoutMs,
+                                            waitingDetailsCallback: snapshot =>
+                                                PublishChannelRuntimeState(
+                                                    ch,
+                                                    ChannelRuntimeState.WaitingForSlotBarrier,
+                                                    "WaitingForSlotBarrier",
+                                                    FormatFormalSlotWaitingReason(snapshot)),
+                                            plannedWaitingCallback: () => PublishChannelRuntimeState(
+                                                ch,
+                                                ChannelRuntimeState.WaitingForSlotBarrier,
+                                                "WaitingForPlannedSlot",
+                                                "安全收尾已完成，等待下一周期计划时刻"));
+                                }
+                                formalSlotScope = await admissionTask.ConfigureAwait(false);
                             }
                             catch (FormalBatchSlotClosureTimeoutException ex)
                             {
                                 ReleaseCyclePauseCts(ch, cyclePauseCts);
-                                ReportFormalSlotClosureTimeout(ex.Snapshot);
+                                try { ReportFormalSlotClosureTimeout(ex.Snapshot); }
+                                finally { timer.Stop(); }
                                 return false;
                             }
-                            catch
+                            catch (OperationCanceledException) when (admissionCancellation.IsCancellationRequested)
                             {
                                 ReleaseCyclePauseCts(ch, cyclePauseCts);
                                 throw;
                             }
+                            catch (Exception ex)
+                            {
+                                var wasCanceled = admissionCancellation.IsCancellationRequested;
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                try
+                                {
+                                    if (!wasCanceled)
+                                        ReportFormalSlotAdmissionFailure(formalParticipantLease, timer, phaseSlot, ex);
+                                }
+                                finally { timer.Stop(); }
+                                return false;
+                            }
                             using var batchSlotScope = formalSlotScope;
+                            if (!timer.TryBeginCoordinatedAction())
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                return false;
+                            }
                             PublishChannelRuntimeState(
                                 ch,
                                 ChannelRuntimeState.Running,
@@ -3523,8 +3545,7 @@ namespace Controller
                                         _activeBatchId,
                                         phaseSlot,
                                         ch,
-                                        t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
-                                        t0,
+                                        formalSlotScope.Grant,
                                         staggerPlan,
                                         sessionToken,
                                         token)
@@ -3571,14 +3592,11 @@ namespace Controller
                             var lease = groupOutcome.Lease;
                             var plannedStartUtc = globalSlot.MotorAnchorUtc.Value
                                 .AddMilliseconds(phase);
-                            var delay = plannedStartUtc - DateTime.UtcNow;
-                            if (delay.TotalMilliseconds > 1)
-                                await Task.Delay(delay, token).ConfigureAwait(false);
-                            else
-                            {
-                                token.ThrowIfCancellationRequested();
-                                await Task.Yield();
-                            }
+                            var scheduleClock = formalSlotScope.Grant.Clock;
+                            var plannedStartTimestamp = scheduleClock.AddMilliseconds(
+                                globalSlot.MotorAnchorTimestamp.Value, phase);
+                            await scheduleClock.DelayUntilAsync(plannedStartTimestamp, token)
+                                .ConfigureAwait(false);
 
                             token.ThrowIfCancellationRequested();
                             if (IsAlarmStopRequested(ch)) return false;
@@ -3588,12 +3606,14 @@ namespace Controller
                             _log?.Info(
                                 $"正式阶段启动 Run={_activeBatchId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
                                 $"Cycle={cycleIndex} Phase={phase}ms PlannedUtc={plannedStartUtc:O} " +
-                                $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3} " +
+                                $"ActualUtc={actualStartUtc:O} DeviationMs={scheduleClock.ElapsedMilliseconds(plannedStartTimestamp, scheduleClock.NowTimestamp):F3} " +
+                                $"LogicalSlot={phaseSlot} ScheduleSlot={formalSlotScope.Grant.ScheduleSlot} " +
+                                $"StartTimestamp={scheduleClock.NowTimestamp} ClockFrequency={scheduleClock.Frequency} " +
                                 $"HydraulicQualifiedUtc={lease?.Qualification?.ReachedUtc:O}",
                                 "EPB");
 
                             // 双压力组共享最后相位截止点；资格过晚时整批共同顺延。
-                            var deadlineUtc = globalSlot.MotorDeadlineUtc.Value;
+                            var deadlineTimestamp = globalSlot.MotorDeadlineTimestamp.Value;
 
                             // 2.5) ★ 圈开始：通知 Recorder
                             var cycleNumber = cycleIndex + baseCycle;
@@ -3642,7 +3662,7 @@ namespace Controller
                                     T8BaseMs,
                                     phase,
                                     T8MinMs,
-                                    deadlineUtc,
+                                    () => scheduleClock.ElapsedMilliseconds(scheduleClock.NowTimestamp, deadlineTimestamp),
                                     cycleAttempt.AttemptCts.Token
                                 );
                                 var physicalActionGeneration =
@@ -3922,9 +3942,39 @@ namespace Controller
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return controlSucceeded && persistenceCommitted;
 
-                        }), timerTaskName, ch);
+                        }, pauseBeforeAdmission: true), timerTaskName, ch);
                 }
             }
+        }
+
+        private void ReportFormalSlotAdmissionFailure(
+            FormalBatchParticipantLease lease, HighPrecisionTimer timer, long slot, Exception error)
+        {
+            // A rejected logical admission cannot advance to another logical slot.
+            // Stop once rather than repeatedly creating gaps in a coordinated loop.
+            if (lease == null || lease.RunId != _activeBatchId ||
+                lease.RunEpoch != Interlocked.Read(ref _runEpoch) ||
+                !_formalParticipantLeases.TryGetValue(lease.Channel, out var current) ||
+                !lease.SameIdentity(current) ||
+                !_timers.TryGetValue(lease.Channel, out var currentTimer) ||
+                !ReferenceEquals(timer, currentTimer) ||
+                !_formalSlotSafetyFailureGate.TryLatch(lease.RunId, out var correlationId))
+                return;
+            var reason = $"FormalSlotAdmissionFailed Run={lease.RunId:N} Epoch={lease.RunEpoch} " +
+                         $"Slot={slot} EPB={lease.Channel}: {error?.Message}";
+            _log?.Error(reason, "周期屏障", error);
+            RevokeExecutionForExternalRecovery(reason);
+            PublishChannelRuntimeState(lease.Channel, ChannelRuntimeState.SystemFault,
+                "FormalSlotAdmissionFailed", "正式周期准入失败，已停止调度并启动安全停止",
+                correlationId: correlationId);
+            ObserveBackgroundTask(StopAllAsync(new StopContext
+            {
+                Source = StopSource.SystemFault,
+                Reason = reason,
+                Initiator = nameof(ReportFormalSlotAdmissionFailure),
+                CorrelationId = correlationId.ToString("N"),
+                RequestedUtc = DateTime.UtcNow
+            }, CancellationToken.None), "FormalSlotAdmissionFailureStopAll", lease.Channel);
         }
 
         private static CycleAttemptClosureReceipt EnrichFormalClosureReceipt(
@@ -4001,7 +4051,7 @@ namespace Controller
                 return "本卡钳已关闭输出，等待同一正式周期槽安全收尾";
             var pending = snapshot.Pending ?? Array.Empty<int>();
             if (pending.Length == 0)
-                return $"等待同槽：槽{snapshot.PreviousSlot}已收尾，等待下一完整墙钟边界";
+                return $"槽{snapshot.PreviousSlot}已收尾，等待下一周期计划时刻";
             return $"等待同槽：槽{snapshot.PreviousSlot}缺 " +
                    string.Join("、", pending.Select(channel => $"EPB{channel}"));
         }
@@ -6034,6 +6084,10 @@ namespace Controller
         /// </summary>
         Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, DateTime deadlineUtc,
             CancellationToken token);
+
+        /// <summary>正式运行使用同一单调调度时钟提供剩余截止时间（毫秒）。</summary>
+        Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs,
+            Func<double> remainingMilliseconds, CancellationToken token);
 
         // ===================== 批量学习（推荐） =====================
 

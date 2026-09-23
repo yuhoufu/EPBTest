@@ -490,7 +490,7 @@ namespace MTEmbTest
             // 容易被误解为数值状态。格内只保留状态，时间和原因放在悬浮提示中。
             label.Text = permanentAlarmLatched
                 ? "永久报警"
-                : GetRuntimeStateDisplayText(state.State, warningActive);
+                : GetRuntimeStateDisplayText(state.State, warningActive, state.ReasonCode);
             label.BackColor = warningActive &&
                               (state.State == ChannelRuntimeState.Running ||
                                state.State == ChannelRuntimeState.WarningRunning)
@@ -631,9 +631,14 @@ namespace MTEmbTest
 
         internal static string GetRuntimeStateDisplayText(
             ChannelRuntimeState state,
-            bool warningActive)
+            bool warningActive,
+            string reasonCode = null)
         {
-            return GetRuntimeStateText(state) + (warningActive ? " · 预警" : string.Empty);
+            var text = state == ChannelRuntimeState.WaitingForSlotBarrier &&
+                       string.Equals(reasonCode, "WaitingForPlannedSlot", StringComparison.Ordinal)
+                ? "等待周期"
+                : GetRuntimeStateText(state);
+            return text + (warningActive ? " · 预警" : string.Empty);
         }
 
         private static string GetDaqPersistenceStateText(DaqPersistenceState state)

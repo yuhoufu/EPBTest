@@ -78,6 +78,10 @@
     <Compile Include="DaqRealtimeControlTests.cs" />
     <Compile Include="EpbRecordNormalizationTests.cs" />
     <Compile Include="FormalBatchSlotCoordinatorTests.cs" />
+    <Compile Include="FormalMonotonicScheduleTests.cs" />
+    <Compile Include="FormalHydraulicScheduleTests.cs" />
+    <Compile Include="FormalRetirementBoundaryTests.cs" />
+    <Compile Include="CoordinatedTimerTests.cs" />
     <Compile Include="FirstRunBootstrapTests.cs" />
     <Compile Include="IncidentSessionPolicyTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />

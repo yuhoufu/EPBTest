@@ -426,6 +426,10 @@ namespace AdaptiveControlTests
                     args[0].Equals("--formal-slot-barrier", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += FormalBatchSlotCoordinatorTests.RunAll();
+                    _passed += FormalMonotonicScheduleTests.RunAll();
+                    _passed += FormalHydraulicScheduleTests.RunAll();
+                    _passed += FormalRetirementBoundaryTests.RunAll();
+                    _passed += CoordinatedTimerTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -591,6 +595,10 @@ namespace AdaptiveControlTests
                 _passed += StopWatchdogHardeningTests.RunAll();
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
                 _passed += FormalBatchSlotCoordinatorTests.RunAll();
+                _passed += FormalMonotonicScheduleTests.RunAll();
+                _passed += FormalHydraulicScheduleTests.RunAll();
+                _passed += FormalRetirementBoundaryTests.RunAll();
+                _passed += CoordinatedTimerTests.RunAll();
                 _passed += InstantDisplayRefreshTests.RunAll();
                 _passed += FirstRunBootstrapTests.RunAll();
                 Run("正常夹紧", NormalClamp);
@@ -6779,6 +6787,8 @@ namespace AdaptiveControlTests
             public Task<bool> LearnOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)
                 => Task.FromResult(false);
             public Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, DateTime deadlineUtc, CancellationToken token)
+                => Task.FromResult(false);
+            public Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, Func<double> remainingMilliseconds, CancellationToken token)
                 => Task.FromResult(false);
             public void BeginLearnAggregation() { }
             public Task<EpbCycleRunner.LearnSample> LearnOneAlignedCoreAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)

@@ -58,6 +58,8 @@ namespace Controller
         public bool PersistenceCommitted { get; set; }
         public bool RetirementBoundaryRequired { get; set; }
         public bool ExecutionPermitRevoked { get; set; }
+        // 精确参与者代际的旧 timer/attempt 已隔离；不表示当前通道的许可已撤销。
+        public bool ParticipantExecutionFenced { get; set; }
         public bool PermanentlyIsolated { get; set; }
         public long CallbackElapsedMs { get; set; }
         public long PhysicalActionElapsedMs { get; set; }
@@ -122,6 +124,7 @@ namespace Controller
 
         public int Channel { get; }
         public long SharedWaitMs { get; }
+        public FormalBatchSlotGrant Grant => _entry.Grant;
 
         public void Complete(FormalBatchParticipantTerminal terminal)
         {
@@ -158,11 +161,24 @@ namespace Controller
     }
 
     /// <summary>
-    /// 冻结同一正式槽的全批参与者，并在上一槽完成后统一滚动到首个未来墙钟边界。
+    /// 冻结同一正式槽的全批参与者，并在上一槽完成后统一滚动到首个未来单调时钟边界。
     /// 协调器不执行硬件操作；调用方必须在提交终态前完成电机 OFF、液压释放和持久化封圈。
     /// </summary>
     internal sealed class FormalBatchSlotCoordinator
     {
+        internal sealed class RunSchedule
+        {
+            internal readonly object Gate = new object();
+            internal DateTime InitialReleaseUtc;
+            internal long AnchorTimestamp;
+            internal long PeriodTicks;
+            internal int PeriodMs;
+            internal long FirstLogicalSlot;
+            internal long LatestLogicalSlot;
+            internal readonly Dictionary<long, long> RejoinReleaseFloors =
+                new Dictionary<long, long>();
+        }
+
         internal sealed class SlotEntry
         {
             internal readonly object Gate = new object();
@@ -180,10 +196,15 @@ namespace Controller
             internal readonly TaskCompletionSource<bool> Completion =
                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             internal DateTime? CompletedUtc;
-            internal DateTime? NextReleaseUtc;
+            internal long? CompletedTimestamp;
+            internal long? NextReleaseTimestamp;
+            internal RunSchedule Schedule;
+            internal FormalBatchSlotGrant Grant;
             internal string SafetyFailure;
         }
 
+        private readonly ConcurrentDictionary<string, RunSchedule> _schedules =
+            new ConcurrentDictionary<string, RunSchedule>();
         private readonly ConcurrentDictionary<string, SlotEntry> _slots =
             new ConcurrentDictionary<string, SlotEntry>();
         private readonly ConcurrentDictionary<string, string> _retirementRequests =
@@ -194,6 +215,71 @@ namespace Controller
         private readonly ConcurrentDictionary<string, FormalBatchParticipantLease> _activeLeases =
             new ConcurrentDictionary<string, FormalBatchParticipantLease>();
         private long _participantGeneration;
+
+        public FormalBatchSlotCoordinator(FormalScheduleClock clock = null)
+        {
+            Clock = clock ?? new FormalScheduleClock();
+        }
+
+        public FormalScheduleClock Clock { get; }
+
+        /// <summary>仅在新正式运行建立一次 UTC 到单调时钟的对应关系。</summary>
+        public long EnsureRunSchedule(
+            Guid runId,
+            long runEpoch,
+            int periodMs,
+            DateTime firstReleaseUtc,
+            long firstLogicalSlot = 0)
+        {
+            if (runId == Guid.Empty) throw new ArgumentException("正式调度 RunId 不能为空。", nameof(runId));
+            if (runEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(runEpoch));
+            if (periodMs <= 0) throw new ArgumentOutOfRangeException(nameof(periodMs));
+            if (firstLogicalSlot < 0) throw new ArgumentOutOfRangeException(nameof(firstLogicalSlot));
+            var utc = firstReleaseUtc.Kind == DateTimeKind.Utc
+                ? firstReleaseUtc : firstReleaseUtc.ToUniversalTime();
+            var nowTimestamp = Clock.NowTimestamp;
+            var nowUtc = Clock.NowUtc;
+            var candidate = new RunSchedule
+            {
+                InitialReleaseUtc = utc,
+                AnchorTimestamp = Clock.AddMilliseconds(nowTimestamp, (utc - nowUtc).TotalMilliseconds),
+                PeriodTicks = Clock.AddMilliseconds(0, periodMs),
+                PeriodMs = periodMs,
+                FirstLogicalSlot = firstLogicalSlot,
+                LatestLogicalSlot = firstLogicalSlot - 1
+            };
+            if (candidate.PeriodTicks <= 0)
+                throw new ArgumentOutOfRangeException(nameof(periodMs), "周期小于单调时钟分辨率。");
+            var schedule = _schedules.GetOrAdd(CreateScheduleKey(runId, runEpoch), candidate);
+            if (schedule.PeriodMs != periodMs)
+                throw new InvalidOperationException($"FormalSchedulePeriodImmutable Run={runId:N} Epoch={runEpoch}");
+            return schedule.FirstLogicalSlot;
+        }
+
+        /// <summary>
+        /// 重入只选择下一尚未创建的逻辑槽。未创建的预约可复用，取消重入不能留下安全链空洞。
+        /// 调用方应在共享成员锁内先登记全部重入成员，再启动任何通道执行体。
+        /// </summary>
+        public long ReserveNextLogicalSlot(Guid runId, long runEpoch)
+        {
+            var schedule = GetSchedule(runId, runEpoch);
+            lock (schedule.Gate)
+            {
+                var slot = checked(schedule.LatestLogicalSlot + 1);
+                var floor = FormalBatchSlotGrant.FirstFutureBoundary(
+                    schedule.AnchorTimestamp, Clock.NowTimestamp, schedule.PeriodTicks);
+                if (!schedule.RejoinReleaseFloors.TryGetValue(slot, out var existing) || floor > existing)
+                    schedule.RejoinReleaseFloors[slot] = floor;
+                return slot;
+            }
+        }
+
+        private RunSchedule GetSchedule(Guid runId, long runEpoch)
+        {
+            if (!_schedules.TryGetValue(CreateScheduleKey(runId, runEpoch), out var schedule))
+                throw new InvalidOperationException($"FormalScheduleMissing Run={runId:N} Epoch={runEpoch}");
+            return schedule;
+        }
 
         public FormalBatchParticipantLease RegisterParticipant(
             Guid runId,
@@ -221,7 +307,8 @@ namespace Controller
             CancellationToken token,
             Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null,
             int previousSlotClosureTimeoutMs = 0,
-            Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null)
+            Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null,
+            Action plannedWaitingCallback = null)
         {
             var frozenChannels = (participants ?? Array.Empty<int>())
                 .Where(item => item > 0)
@@ -243,7 +330,8 @@ namespace Controller
                     token,
                     fallbackTerminalFactory,
                     previousSlotClosureTimeoutMs,
-                    waitingDetailsCallback)
+                    waitingDetailsCallback,
+                    plannedWaitingCallback)
                 .ConfigureAwait(false);
         }
 
@@ -257,7 +345,33 @@ namespace Controller
             CancellationToken token,
             Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null,
             int previousSlotClosureTimeoutMs = 0,
-            Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null)
+            Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null,
+            Action plannedWaitingCallback = null)
+        {
+            if (participantLease == null) throw new ArgumentNullException(nameof(participantLease));
+            EnsureRunSchedule(participantLease.RunId, participantLease.RunEpoch,
+                periodMs, wallClockAnchorUtc, slotOrdinal);
+            var schedule = GetSchedule(participantLease.RunId, participantLease.RunEpoch);
+            var normalizedAnchor = wallClockAnchorUtc.Kind == DateTimeKind.Utc
+                ? wallClockAnchorUtc : wallClockAnchorUtc.ToUniversalTime();
+            if (schedule.InitialReleaseUtc != normalizedAnchor)
+                throw new InvalidOperationException("FormalBatchSlotImmutableMismatch: 调度锚点不能改变。");
+            return await EnterAsync(participantLease, slotOrdinal, participants,
+                    waitingCallback, token, fallbackTerminalFactory,
+                    previousSlotClosureTimeoutMs, waitingDetailsCallback, plannedWaitingCallback)
+                .ConfigureAwait(false);
+        }
+
+        public async Task<FormalBatchSlotScope> EnterAsync(
+            FormalBatchParticipantLease participantLease,
+            long slotOrdinal,
+            IEnumerable<FormalBatchParticipantLease> participants,
+            Action waitingCallback,
+            CancellationToken token,
+            Func<FormalBatchParticipantTerminal> fallbackTerminalFactory = null,
+            int previousSlotClosureTimeoutMs = 0,
+            Action<FormalBatchSlotWaitSnapshot> waitingDetailsCallback = null,
+            Action plannedWaitingCallback = null)
         {
             if (participantLease == null) throw new ArgumentNullException(nameof(participantLease));
             var runId = participantLease.RunId;
@@ -267,7 +381,7 @@ namespace Controller
             if (runEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(participantLease));
             if (slotOrdinal < 0) throw new ArgumentOutOfRangeException(nameof(slotOrdinal));
             if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
-            if (periodMs <= 0) throw new ArgumentOutOfRangeException(nameof(periodMs));
+            var schedule = GetSchedule(runId, runEpoch);
 
             var frozenLeases = (participants ?? Array.Empty<FormalBatchParticipantLease>())
                 .Where(item => item != null && item.RunId == runId && item.RunEpoch == runEpoch && item.Channel > 0)
@@ -276,34 +390,54 @@ namespace Controller
                 .OrderBy(item => item.Channel)
                 .ToArray();
             var frozen = frozenLeases.Select(item => item.Channel).ToArray();
-            if (!frozen.Contains(channel))
+            var frozenParticipant = frozenLeases.FirstOrDefault(item => item.Channel == channel);
+            if (frozenParticipant == null)
                 throw new InvalidOperationException(
                     $"FormalBatchSlotMemberMissing Run={runId:N} Slot={slotOrdinal} EPB={channel}");
+            if (!frozenParticipant.SameIdentity(participantLease))
+                throw new InvalidOperationException(
+                    $"FormalBatchParticipantLeaseMismatch Run={runId:N} Epoch={runEpoch} " +
+                    $"Slot={slotOrdinal} EPB={channel} FrozenGeneration={frozenParticipant.ParticipantGeneration} " +
+                    $"Generation={participantLease.ParticipantGeneration}");
             if (!IsLeaseCurrent(participantLease))
                 throw new InvalidOperationException(
                     $"FormalBatchParticipantLeaseStale Run={runId:N} Epoch={runEpoch} " +
                     $"Slot={slotOrdinal} EPB={channel} Generation={participantLease.ParticipantGeneration}");
 
-            var normalizedAnchor = wallClockAnchorUtc.Kind == DateTimeKind.Utc
-                ? wallClockAnchorUtc
-                : wallClockAnchorUtc.ToUniversalTime();
             var key = CreateKey(runId, runEpoch, slotOrdinal);
             var candidate = new SlotEntry
             {
                 RunId = runId,
                 RunEpoch = runEpoch,
                 SlotOrdinal = slotOrdinal,
-                WallClockAnchorUtc = normalizedAnchor,
-                PeriodMs = periodMs,
-                CreatedUtc = DateTime.UtcNow,
+                WallClockAnchorUtc = schedule.InitialReleaseUtc,
+                PeriodMs = schedule.PeriodMs,
+                CreatedUtc = Clock.NowUtc,
+                Schedule = schedule,
                 Participants = new HashSet<int>(frozen),
                 ParticipantLeases = frozenLeases.ToDictionary(item => item.Channel),
                 Pending = new HashSet<int>(frozen),
                 Entered = new HashSet<int>(),
                 Terminals = new Dictionary<int, FormalBatchParticipantTerminal>()
             };
-            var entry = _slots.GetOrAdd(key, candidate);
-            ValidateImmutable(entry, frozenLeases, normalizedAnchor, periodMs);
+            SlotEntry entry;
+            lock (schedule.Gate)
+            {
+                if (!_slots.TryGetValue(key, out entry))
+                {
+                    if (slotOrdinal != checked(schedule.LatestLogicalSlot + 1))
+                        throw new InvalidOperationException(
+                            $"FormalLogicalSlotGap Run={runId:N} Epoch={runEpoch} " +
+                            $"Requested={slotOrdinal} Expected={schedule.LatestLogicalSlot + 1}");
+                    if (slotOrdinal != schedule.FirstLogicalSlot &&
+                        !_slots.ContainsKey(CreateKey(runId, runEpoch, slotOrdinal - 1)))
+                        throw new InvalidOperationException(
+                            $"FormalPreviousLogicalSlotMissing Run={runId:N} Slot={slotOrdinal}");
+                    entry = _slots.GetOrAdd(key, candidate);
+                    schedule.LatestLogicalSlot = slotOrdinal;
+                }
+            }
+            ValidateImmutable(entry, frozenLeases, schedule.InitialReleaseUtc, schedule.PeriodMs);
             var completedByRetirement = false;
             string admissionFailure = null;
             lock (entry.Gate)
@@ -320,7 +454,7 @@ namespace Controller
             if (admissionFailure != null)
                 throw new InvalidOperationException(admissionFailure);
 
-            var waitStartedUtc = DateTime.UtcNow;
+            var waitStartedTimestamp = Clock.NowTimestamp;
             try
             {
                 if (_slots.TryGetValue(CreateKey(runId, runEpoch, slotOrdinal - 1L), out var previous))
@@ -333,7 +467,7 @@ namespace Controller
                             slotOrdinal,
                             channel,
                             previousSlotClosureTimeoutMs,
-                            waitStartedUtc));
+                            waitStartedTimestamp));
                     }
                     var previousClosed = await AwaitWithCancellationAndTimeout(
                             previous.Completion.Task,
@@ -346,32 +480,13 @@ namespace Controller
                             slotOrdinal,
                             channel,
                             previousSlotClosureTimeoutMs,
-                            waitStartedUtc));
-
-                    DateTime releaseUtc;
-                    lock (previous.Gate)
-                    {
-                        if (!previous.NextReleaseUtc.HasValue)
-                        {
-                            previous.NextReleaseUtc = CalculateFirstFutureBoundary(
-                                previous.WallClockAnchorUtc,
-                                previous.CompletedUtc ?? DateTime.UtcNow,
-                                previous.PeriodMs);
-                        }
-                        releaseUtc = previous.NextReleaseUtc.Value;
-                    }
-
-                    var delay = releaseUtc - DateTime.UtcNow;
-                    if (delay.TotalMilliseconds > 1)
-                    {
-                        waitingCallback?.Invoke();
-                        await Task.Delay(delay, token).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        token.ThrowIfCancellationRequested();
-                    }
+                            waitStartedTimestamp));
                 }
+
+                var grant = GetOrCreateGrant(entry);
+                if (grant.ReleaseTimestamp > Clock.NowTimestamp)
+                    (plannedWaitingCallback ?? waitingCallback)?.Invoke();
+                await Clock.DelayUntilAsync(grant.ReleaseTimestamp, token).ConfigureAwait(false);
             }
             catch
             {
@@ -384,8 +499,43 @@ namespace Controller
                 this,
                 entry,
                 channel,
-                (long)Math.Max(0, (DateTime.UtcNow - waitStartedUtc).TotalMilliseconds),
+                (long)Math.Max(0, Clock.ElapsedMilliseconds(waitStartedTimestamp, Clock.NowTimestamp)),
                 fallbackTerminalFactory);
+        }
+
+        private FormalBatchSlotGrant GetOrCreateGrant(SlotEntry entry)
+        {
+            var schedule = entry.Schedule;
+            lock (schedule.Gate)
+            {
+                lock (entry.Gate)
+                {
+                    if (entry.Grant != null) return entry.Grant;
+                    var release = schedule.AnchorTimestamp;
+                    if (entry.SlotOrdinal != schedule.FirstLogicalSlot)
+                    {
+                        if (!_slots.TryGetValue(CreateKey(entry.RunId, entry.RunEpoch,
+                                entry.SlotOrdinal - 1), out var previous))
+                            throw new InvalidOperationException("FormalPreviousLogicalSlotMissing");
+                        lock (previous.Gate)
+                        {
+                            if (!previous.Completion.Task.IsCompleted ||
+                                !previous.NextReleaseTimestamp.HasValue)
+                                throw new InvalidOperationException("FormalPreviousSlotNotSafelyClosed");
+                            release = previous.NextReleaseTimestamp.Value;
+                        }
+                    }
+                    if (schedule.RejoinReleaseFloors.TryGetValue(entry.SlotOrdinal, out var floor))
+                    {
+                        release = Math.Max(release, floor);
+                        schedule.RejoinReleaseFloors.Remove(entry.SlotOrdinal);
+                    }
+                    var scheduleSlot = Math.Max(0, (release - schedule.AnchorTimestamp) / schedule.PeriodTicks);
+                    entry.Grant = new FormalBatchSlotGrant(entry.SlotOrdinal, scheduleSlot,
+                        release, schedule.AnchorTimestamp, schedule.PeriodTicks, schedule.PeriodMs, Clock);
+                    return entry.Grant;
+                }
+            }
         }
 
         public bool RequestRetirement(Guid runId, int channel, string reason)
@@ -416,7 +566,10 @@ namespace Controller
             FormalBatchParticipantLease lease,
             FormalBatchParticipantTerminal terminal)
         {
-            if (lease == null || terminal == null || !IsLeaseCurrent(lease)) return;
+            if (lease == null || terminal == null) return;
+            // A successor can be registered before this generation's already
+            // requested safety closure finishes. The exact retirement key and
+            // frozen entry identity below confine its evidence to the old lease.
             if (!_retirementRequests.TryRemove(CreateRetirementKey(lease), out var reason))
                 return;
             var channel = lease.Channel;
@@ -450,7 +603,7 @@ namespace Controller
                     lock (entry.Gate)
                     {
                         entry.Pending.Clear();
-                        entry.CompletedUtc = DateTime.UtcNow;
+                        MarkSlotCompleted(entry);
                     }
                     entry.Completion.TrySetResult(true);
                 }
@@ -467,6 +620,10 @@ namespace Controller
                          .Where(key => key.StartsWith(runId.ToString("N") + ":", StringComparison.Ordinal))
                          .ToArray())
                 _activeLeases.TryRemove(key, out _);
+            foreach (var key in _schedules.Keys
+                         .Where(key => key.StartsWith(runId.ToString("N") + ":", StringComparison.Ordinal))
+                         .ToArray())
+                _schedules.TryRemove(key, out _);
         }
 
         internal void CompleteParticipant(
@@ -497,20 +654,22 @@ namespace Controller
             return complete;
         }
 
-        private static bool CompleteParticipantUnderLock(
+        private bool CompleteParticipantUnderLock(
             SlotEntry entry,
             FormalBatchParticipantTerminal terminal)
         {
             if (!entry.Pending.Remove(terminal.Channel)) return false;
             entry.Terminals[terminal.Channel] = terminal;
             var disposition = terminal.Disposition;
+            var participantExecutionClosed = terminal.ExecutionPermitRevoked ||
+                                             terminal.ParticipantExecutionFenced;
             if (disposition == FormalParticipantDisposition.LegacyUnknown)
             {
                 // Compatibility for legacy callers: a durably closed boundary
                 // is safe even when the attempt was intentionally aborted.
                 disposition = terminal.MotorOffConfirmed && terminal.HydraulicMemberReleased &&
                               (!terminal.PersistenceBoundaryRequired || terminal.PersistenceCommitted) &&
-                              (!terminal.RetirementBoundaryRequired || terminal.ExecutionPermitRevoked)
+                              (!terminal.RetirementBoundaryRequired || participantExecutionClosed)
                     ? terminal.ControlSucceeded
                         ? FormalParticipantDisposition.SafeCommitted
                         : FormalParticipantDisposition.SafeAborted
@@ -520,14 +679,15 @@ namespace Controller
             if (disposition == FormalParticipantDisposition.SafetyUnproven ||
                 !terminal.MotorOffConfirmed || !terminal.HydraulicMemberReleased ||
                 (terminal.PersistenceBoundaryRequired && !terminal.PersistenceCommitted) ||
-                (terminal.RetirementBoundaryRequired && !terminal.ExecutionPermitRevoked))
+                (terminal.RetirementBoundaryRequired && !participantExecutionClosed))
                 entry.SafetyFailure =
                     $"FormalSlotSafetyBoundaryFailed EPB={terminal.Channel} " +
                     $"Disposition={disposition} " +
                     $"MotorOff={terminal.MotorOffConfirmed} " +
                     $"HydraulicReleased={terminal.HydraulicMemberReleased} " +
                     $"Persistence={terminal.PersistenceCommitted} " +
-                    $"ExecutionRevoked={terminal.ExecutionPermitRevoked}";
+                    $"ExecutionRevoked={terminal.ExecutionPermitRevoked} " +
+                    $"ParticipantExecutionFenced={terminal.ParticipantExecutionFenced}";
             var receipt = terminal.ClosureReceipt ?? new CycleAttemptClosureReceipt();
             receipt.RunId = entry.RunId;
             receipt.RunEpoch = entry.RunEpoch;
@@ -552,27 +712,74 @@ namespace Controller
             terminal.ClosureReceipt = receipt;
             var complete = entry.Pending.Count == 0;
             if (complete)
-            {
-                entry.CompletedUtc = DateTime.UtcNow;
-                entry.NextReleaseUtc = CalculateFirstFutureBoundary(
-                    entry.WallClockAnchorUtc,
-                    entry.CompletedUtc.Value,
-                    entry.PeriodMs);
-            }
+                MarkSlotCompleted(entry);
             return complete;
         }
 
-        private static void PublishCompletion(SlotEntry entry, bool complete)
+        private void MarkSlotCompleted(SlotEntry entry)
         {
-            if (!complete) return;
-            if (string.IsNullOrWhiteSpace(entry.SafetyFailure))
-                entry.Completion.TrySetResult(true);
-            else
-                entry.Completion.TrySetException(
-                    new InvalidOperationException(entry.SafetyFailure));
+            entry.CompletedUtc = Clock.NowUtc;
+            entry.CompletedTimestamp = Clock.NowTimestamp;
+            var schedule = entry.Schedule;
+            var next = FormalBatchSlotGrant.FirstFutureBoundary(schedule.AnchorTimestamp,
+                entry.CompletedTimestamp.Value, schedule.PeriodTicks);
+            if (entry.Grant != null)
+                next = Math.Max(next, checked(entry.Grant.ReleaseTimestamp + schedule.PeriodTicks));
+            entry.NextReleaseTimestamp = next;
         }
 
-        private static void WithdrawBeforeAdmission(SlotEntry entry, int channel)
+        private void PublishCompletion(SlotEntry entry, bool complete)
+        {
+            if (!complete) return;
+            if (!string.IsNullOrWhiteSpace(entry.SafetyFailure))
+            {
+                entry.Completion.TrySetException(
+                    new InvalidOperationException(entry.SafetyFailure));
+                return;
+            }
+
+            // An entirely withdrawn/retired future slot has no physical work,
+            // but it is still a link in the logical safety chain. It must not
+            // let its successor bypass a predecessor that is still running.
+            if (entry.SlotOrdinal != entry.Schedule.FirstLogicalSlot &&
+                _slots.TryGetValue(CreateKey(entry.RunId, entry.RunEpoch,
+                    entry.SlotOrdinal - 1), out var previous))
+            {
+                if (!previous.Completion.Task.IsCompleted)
+                {
+                    previous.Completion.Task.ContinueWith(
+                        completed => CompleteAfterPredecessor(entry, completed),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    return;
+                }
+                CompleteAfterPredecessor(entry, previous.Completion.Task);
+                return;
+            }
+            CompleteAfterPredecessor(entry, null);
+        }
+
+        private void CompleteAfterPredecessor(SlotEntry entry, Task predecessor)
+        {
+            try
+            {
+                predecessor?.GetAwaiter().GetResult();
+                lock (entry.Gate)
+                {
+                    if (entry.Pending.Count != 0) return;
+                    if (entry.Grant == null)
+                        MarkSlotCompleted(entry);
+                }
+                entry.Completion.TrySetResult(true);
+            }
+            catch (Exception ex)
+            {
+                entry.Completion.TrySetException(ex);
+            }
+        }
+
+        private void WithdrawBeforeAdmission(SlotEntry entry, int channel)
         {
             var complete = false;
             lock (entry.Gate)
@@ -585,16 +792,9 @@ namespace Controller
                 if (!entry.Pending.Remove(channel)) return;
                 complete = entry.Pending.Count == 0;
                 if (complete)
-                {
-                    entry.CompletedUtc = DateTime.UtcNow;
-                    entry.NextReleaseUtc = CalculateFirstFutureBoundary(
-                        entry.WallClockAnchorUtc,
-                        entry.CompletedUtc.Value,
-                        entry.PeriodMs);
-                }
+                    MarkSlotCompleted(entry);
             }
-            if (complete)
-                entry.Completion.TrySetResult(true);
+            PublishCompletion(entry, complete);
         }
 
         internal static DateTime CalculateFirstFutureBoundary(
@@ -619,12 +819,12 @@ namespace Controller
             return boundary;
         }
 
-        private static FormalBatchSlotWaitSnapshot CaptureWaitSnapshot(
+        private FormalBatchSlotWaitSnapshot CaptureWaitSnapshot(
             SlotEntry previous,
             long waitingSlot,
             int waitingChannel,
             int timeoutMs,
-            DateTime waitStartedUtc)
+            long waitStartedTimestamp)
         {
             lock (previous.Gate)
             {
@@ -638,7 +838,7 @@ namespace Controller
                     TimeoutMs = Math.Max(0, timeoutMs),
                     ElapsedMs = (long)Math.Max(
                         0,
-                        (DateTime.UtcNow - waitStartedUtc).TotalMilliseconds),
+                        Clock.ElapsedMilliseconds(waitStartedTimestamp, Clock.NowTimestamp)),
                     SlotCreatedUtc = previous.CreatedUtc,
                     Participants = previous.Participants.OrderBy(item => item).ToArray(),
                     Entered = previous.Entered.OrderBy(item => item).ToArray(),
@@ -672,6 +872,9 @@ namespace Controller
 
         private static string CreateKey(Guid runId, long runEpoch, long slotOrdinal) =>
             $"{runId:N}:{runEpoch}:{slotOrdinal}";
+
+        private static string CreateScheduleKey(Guid runId, long runEpoch) =>
+            $"{runId:N}:{runEpoch}";
 
         private static string CreateActiveLeaseKey(Guid runId, long runEpoch, int channel) =>
             $"{runId:N}:{runEpoch}:{channel}";
@@ -727,6 +930,7 @@ namespace Controller
                 PersistenceCommitted = source.PersistenceCommitted,
                 RetirementBoundaryRequired = true,
                 ExecutionPermitRevoked = source.ExecutionPermitRevoked,
+                ParticipantExecutionFenced = source.ParticipantExecutionFenced,
                 PermanentlyIsolated = true,
                 CallbackElapsedMs = source.CallbackElapsedMs,
                 PhysicalActionElapsedMs = source.PhysicalActionElapsedMs,

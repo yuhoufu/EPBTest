@@ -64,12 +64,16 @@ namespace Controller
             DateTime? motorAnchorUtc,
             DateTime? motorDeadlineUtc,
             string alignmentState,
-            IEnumerable<GlobalHydraulicGroupOutcome> groups)
+            IEnumerable<GlobalHydraulicGroupOutcome> groups,
+            long? motorAnchorTimestamp = null,
+            long? motorDeadlineTimestamp = null)
         {
             Key = key;
             PressureBuildPlannedUtc = pressureBuildPlannedUtc;
             MotorAnchorUtc = motorAnchorUtc;
             MotorDeadlineUtc = motorDeadlineUtc;
+            MotorAnchorTimestamp = motorAnchorTimestamp;
+            MotorDeadlineTimestamp = motorDeadlineTimestamp;
             AlignmentState = alignmentState ?? "Unknown";
             _groups = (groups ?? Array.Empty<GlobalHydraulicGroupOutcome>())
                 .ToDictionary(item => item.HydraulicId);
@@ -79,6 +83,8 @@ namespace Controller
         public DateTime PressureBuildPlannedUtc { get; }
         public DateTime? MotorAnchorUtc { get; }
         public DateTime? MotorDeadlineUtc { get; }
+        public long? MotorAnchorTimestamp { get; }
+        public long? MotorDeadlineTimestamp { get; }
         public string AlignmentState { get; }
         public IReadOnlyDictionary<int, GlobalHydraulicGroupOutcome> Groups => _groups;
         public bool HasFailures => _groups.Values.Any(item => !item.IsSuccess);
@@ -225,7 +231,8 @@ namespace Controller
             Func<int, IReadOnlyList<int>, CancellationToken, Task<HydraulicCycleLease>> enterGroupAsync,
             Func<IReadOnlyList<int>, string, Task> releaseSuccessfulGroupsAsync,
             CancellationToken operationToken,
-            CancellationToken waitToken)
+            CancellationToken waitToken,
+            FormalBatchSlotGrant grant = null)
         {
             if (key == null) throw new ArgumentNullException(nameof(key));
             if (key.PhaseKind != HydraulicPhaseKind.Formal)
@@ -234,6 +241,8 @@ namespace Controller
             if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
             if (admissionWindowMs < 1) throw new ArgumentOutOfRangeException(nameof(admissionWindowMs));
             if (periodMs <= 0) throw new ArgumentOutOfRangeException(nameof(periodMs));
+            if (grant != null && (grant.LogicalSlot != key.Slot || grant.PeriodMs != periodMs))
+                throw new InvalidOperationException("FormalHydraulicGrantMismatch");
             if (enterGroupAsync == null) throw new ArgumentNullException(nameof(enterGroupAsync));
             if (releaseSuccessfulGroupsAsync == null)
                 throw new ArgumentNullException(nameof(releaseSuccessfulGroupsAsync));
@@ -242,8 +251,8 @@ namespace Controller
             var normalizedWallClockUtc = NormalizeUtc(wallClockAnchorUtc);
             var signature = string.Join(
                 ":",
-                normalizedPressureUtc.Ticks,
-                normalizedWallClockUtc.Ticks,
+                grant?.ReleaseTimestamp ?? normalizedPressureUtc.Ticks,
+                grant?.AnchorTimestamp ?? normalizedWallClockUtc.Ticks,
                 periodMs,
                 maxPhaseMs,
                 Math.Max(2, motorGuardMs),
@@ -304,7 +313,8 @@ namespace Controller
                         Math.Max(2, motorGuardMs),
                         enterGroupAsync,
                         releaseSuccessfulGroupsAsync,
-                        operationToken);
+                        operationToken,
+                        grant);
                 operation = entry.Operation;
             }
 
@@ -377,7 +387,8 @@ namespace Controller
             int motorGuardMs,
             Func<int, IReadOnlyList<int>, CancellationToken, Task<HydraulicCycleLease>> enterGroupAsync,
             Func<IReadOnlyList<int>, string, Task> releaseSuccessfulGroupsAsync,
-            CancellationToken token)
+            CancellationToken token,
+            FormalBatchSlotGrant grant)
         {
             await Task.Delay(admissionWindowMs, token).ConfigureAwait(false);
             IReadOnlyDictionary<int, IReadOnlyList<int>> participants;
@@ -411,7 +422,8 @@ namespace Controller
                     enterGroupAsync,
                     releaseSuccessfulGroupsAsync,
                     releaseSuccessfulOnFailure: false,
-                    token: token)
+                    token: token,
+                    grant: grant)
                 .ConfigureAwait(false);
         }
 
@@ -426,11 +438,17 @@ namespace Controller
             Func<int, IReadOnlyList<int>, CancellationToken, Task<HydraulicCycleLease>> enterGroupAsync,
             Func<IReadOnlyList<int>, string, Task> releaseSuccessfulGroupsAsync,
             bool releaseSuccessfulOnFailure,
-            CancellationToken token)
+            CancellationToken token,
+            FormalBatchSlotGrant grant = null)
         {
-            var delay = pressureBuildPlannedUtc - DateTime.UtcNow;
-            if (delay.TotalMilliseconds > 1)
-                await Task.Delay(delay, token).ConfigureAwait(false);
+            if (grant != null)
+                await grant.Clock.DelayUntilAsync(grant.ReleaseTimestamp, token).ConfigureAwait(false);
+            else
+            {
+                var delay = pressureBuildPlannedUtc - DateTime.UtcNow;
+                if (delay.TotalMilliseconds > 1)
+                    await Task.Delay(delay, token).ConfigureAwait(false);
+            }
             token.ThrowIfCancellationRequested();
 
             var startGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -496,6 +514,24 @@ namespace Controller
                     null,
                     "AllGroupsFailed",
                     outcomes);
+
+            if (grant != null)
+            {
+                // All qualification tasks have completed. UTC observations are retained for
+                // diagnostics only; phase and deadline use the same run clock as the barrier.
+                var clock = grant.Clock;
+                var motorAnchor = clock.AddMilliseconds(clock.NowTimestamp, motorGuardMs);
+                var boundary = grant.FirstFutureBoundary(motorAnchor);
+                if (clock.AddMilliseconds(motorAnchor, maxPhaseMs) >= boundary)
+                    motorAnchor = boundary;
+                var deadline = grant.FirstFutureBoundary(clock.AddMilliseconds(motorAnchor, maxPhaseMs));
+                var anchorUtc = clock.ToUtc(motorAnchor);
+                return new GlobalHydraulicSlotResult(
+                    key, pressureBuildPlannedUtc, anchorUtc,
+                    anchorUtc.AddMilliseconds(clock.ElapsedMilliseconds(motorAnchor, deadline)),
+                    hasFailures ? "DegradedHealthyGroupsContinue" : "Aligned",
+                    outcomes, motorAnchor, deadline);
+            }
 
             var lastQualifiedUtc = successfulOutcomes
                 .Select(item => item.QualifiedUtc ?? DateTime.UtcNow)

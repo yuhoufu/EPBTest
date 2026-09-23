@@ -29,10 +29,19 @@ public sealed class HighPrecisionTimerStateChangedEvent
 }
 
 /// <summary>
-///     高精度定时执行器：以固定周期调度任务，支持超时策略、暂停/恢复/停止。
+///     高精度定时执行器：支持固定周期或外部协调调度，以及暂停/恢复/停止。
 /// </summary>
 public sealed class HighPrecisionTimer
 {
+    private sealed class CoordinatedAdmissionState
+    {
+        internal readonly CancellationTokenSource Source = new();
+        internal bool ActionStarted;
+        internal bool CancelRequested;
+        internal bool CancellationFinished;
+        internal bool Finished;
+    }
+
     private readonly CancellationTokenSource _cts = new();
     private readonly IAppLogger _log;
     private readonly ManualResetEventSlim _pauseGate = new(true);
@@ -47,6 +56,7 @@ public sealed class HighPrecisionTimer
     // 0=两圈之间，1=圈执行中，2=已暂停。用 CAS 消除“已过暂停门但尚未进圈”的竞态。
     private int _cycleState;
     private TaskCompletionSource<bool> _gracefulPauseCompletion;
+    private CoordinatedAdmissionState _coordinatedAdmission;
 
     private long _startedUtcTicks;
     private long _lastCycleStartedUtcTicks;
@@ -69,6 +79,30 @@ public sealed class HighPrecisionTimer
     public DateTime? PauseUtc => ReadUtc(ref _pauseUtcTicks);
     public string PauseReason => Volatile.Read(ref _pauseReason) ?? string.Empty;
 
+    /// <summary>显式启用准入暂停时，本圈等待准入应关联的令牌；动作获准后使用原运行令牌。</summary>
+    public CancellationToken CoordinatedAdmissionToken
+    {
+        get
+        {
+            lock (_pauseSync)
+                return _coordinatedAdmission?.Source.Token ?? CancellationToken.None;
+        }
+    }
+
+    /// <summary>与优雅暂停原子竞争本圈动作准入。返回 false 时不得开始硬件或圈持久化动作。</summary>
+    public bool TryBeginCoordinatedAction()
+    {
+        lock (_pauseSync)
+        {
+            if (_coordinatedAdmission == null || _coordinatedAdmission.CancelRequested ||
+                _cts.IsCancellationRequested ||
+                Volatile.Read(ref _pauseAfterCurrentCycleRequested) != 0)
+                return false;
+            _coordinatedAdmission.ActionStarted = true;
+            return true;
+        }
+    }
+
     public event Action<HighPrecisionTimerStateChangedEvent> StateChanged;
 
     public HighPrecisionTimer(int periodMs, OverrunPolicy policy, IAppLogger log = null)
@@ -85,6 +119,39 @@ public sealed class HighPrecisionTimer
     /// <param name="startDelayMs">首次执行延迟（用于同组错峰）</param>
     /// <param name="work">每周期执行体；返回 true 表示本次成功，false 仅记录</param>
     public Task StartAsync(int? repeat, int startDelayMs, Func<int, CancellationToken, Task<bool>> work)
+    {
+        return StartCoreAsync(repeat, startDelayMs, work, externallyCoordinated: false,
+            pauseBeforeAdmission: false);
+    }
+
+    /// <summary>
+    ///     启动由执行体协调周期的任务。执行体负责正式槽位的准入与等待；
+    ///     定时器仅管理生命周期，不叠加固定周期、恢复延迟或超时跳槽策略。
+    /// </summary>
+    public Task StartCoordinatedAsync(int? repeat, Func<int, CancellationToken, Task<bool>> work)
+    {
+        return StartCoordinatedAsync(repeat, work, pauseBeforeAdmission: false);
+    }
+
+    /// <summary>
+    ///     显式启用准入暂停：执行体在等待槽位时关联 CoordinatedAdmissionToken，
+    ///     获得槽位后必须调用 TryBeginCoordinatedAction，成功后才可开始本圈实际动作。
+    /// </summary>
+    public Task StartCoordinatedAsync(
+        int? repeat,
+        Func<int, CancellationToken, Task<bool>> work,
+        bool pauseBeforeAdmission)
+    {
+        return StartCoreAsync(repeat, 0, work, externallyCoordinated: true,
+            pauseBeforeAdmission: pauseBeforeAdmission);
+    }
+
+    private Task StartCoreAsync(
+        int? repeat,
+        int startDelayMs,
+        Func<int, CancellationToken, Task<bool>> work,
+        bool externallyCoordinated,
+        bool pauseBeforeAdmission)
     {
         if (_running) throw new InvalidOperationException("Timer already running.");
         _running = true;
@@ -112,17 +179,23 @@ public sealed class HighPrecisionTimer
                     if (Interlocked.Exchange(ref _resumeAtFutureBoundaryRequested, 0) != 0)
                     {
                         var resumeDelay = Math.Max(1, Interlocked.Exchange(ref _resumeDelayMs, 0));
-                        _ticksStart = sw.ElapsedMilliseconds + resumeDelay - (long)i * _periodMs;
-                        _log.Info($"定时器按新同步锚点恢复，距下一完整圈 {resumeDelay}ms。", "Timer");
+                        if (!externallyCoordinated)
+                        {
+                            _ticksStart = sw.ElapsedMilliseconds + resumeDelay - (long)i * _periodMs;
+                            _log.Info($"定时器按新同步锚点恢复，距下一完整圈 {resumeDelay}ms。", "Timer");
+                        }
                     }
 
-                    var planned = _ticksStart + (long)i * _periodMs;
-                    var now = sw.ElapsedMilliseconds;
+                    if (!externallyCoordinated)
+                    {
+                        var planned = _ticksStart + (long)i * _periodMs;
+                        var now = sw.ElapsedMilliseconds;
 
-                    // 若提前到达，微等待以减小抖动
-                    var sleepMs = (int)(planned - now);
-                    if (sleepMs > 0)
-                        await Task.Delay(sleepMs, _cts.Token);
+                        // 若提前到达，微等待以减小抖动
+                        var sleepMs = (int)(planned - now);
+                        if (sleepMs > 0)
+                            await Task.Delay(sleepMs, _cts.Token);
+                    }
 
                     // 暂停请求可能发生在本轮已经越过 _pauseGate、仍等待计划时刻的窗口。
                     // 只有成功把状态从“两圈之间”切到“圈执行中”才允许调用 work。
@@ -135,6 +208,7 @@ public sealed class HighPrecisionTimer
                     var t0 = sw.ElapsedMilliseconds;
                     var ok = false;
                     Exception caught = null;
+                    var admission = pauseBeforeAdmission ? BeginCoordinatedAdmission() : null;
                     Interlocked.Exchange(ref _lastCycleStartedUtcTicks, DateTime.UtcNow.Ticks);
                     try
                     {
@@ -144,6 +218,10 @@ public sealed class HighPrecisionTimer
                     {
                         caught = ex;
                         ok = false;
+                    }
+                    finally
+                    {
+                        FinishCoordinatedAdmission(admission);
                     }
 
                     var t1 = sw.ElapsedMilliseconds;
@@ -169,7 +247,7 @@ public sealed class HighPrecisionTimer
                     if (!ok) _log.Warn($"周期 {i + 1} 返回失败", "Timer");
 
                     // 处理超时
-                    if (elapsed > _periodMs)
+                    if (!externallyCoordinated && elapsed > _periodMs)
                     {
                         var msg = $"周期 {i + 1} 超时：耗时={elapsed}ms > 设定={_periodMs}ms，策略={_policy}";
                         switch (_policy)
@@ -201,6 +279,9 @@ public sealed class HighPrecisionTimer
                     }
 
                     i++;
+                    // 外部协调器通常会异步等待；同步完成的回调也必须让出执行线程。
+                    if (externallyCoordinated)
+                        await Task.Yield();
                 }
             }
             catch (OperationCanceledException)
@@ -228,12 +309,18 @@ public sealed class HighPrecisionTimer
     {
         SetPauseReason(reason);
         Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
-        Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
+        CoordinatedAdmissionState admission;
+        lock (_pauseSync)
+        {
+            Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
+            admission = RequestCoordinatedAdmissionCancellationUnderLock();
+        }
         _pauseGate.Reset();
         PublishRuntimeState(HighPrecisionTimerRuntimeState.PausePending, PauseReason);
         if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
             Volatile.Read(ref _cycleState) == 2)
             CompleteGracefulPause();
+        CancelCoordinatedAdmission(admission);
         _log.Info($"定时器已暂停。Reason={PauseReason}", "Timer");
     }
 
@@ -263,26 +350,29 @@ public sealed class HighPrecisionTimer
     public Task PauseAfterCurrentCycleAsync(string reason = null)
     {
         Task completion;
+        CoordinatedAdmissionState admission;
         lock (_pauseSync)
         {
             if (!_running)
                 return Task.CompletedTask;
 
+            SetPauseReason(reason);
+            Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
             if (_gracefulPauseCompletion == null || _gracefulPauseCompletion.Task.IsCompleted)
                 _gracefulPauseCompletion = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
             completion = _gracefulPauseCompletion.Task;
+            Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
+            admission = RequestCoordinatedAdmissionCancellationUnderLock();
         }
 
-        SetPauseReason(reason);
-        Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
-        Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
         _pauseGate.Reset();
         PublishRuntimeState(HighPrecisionTimerRuntimeState.PausePending, PauseReason);
         if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
             Volatile.Read(ref _cycleState) == 2)
             CompleteGracefulPause();
 
+        CancelCoordinatedAdmission(admission);
         _log.Info($"定时器已请求在当前圈结束后暂停。Reason={PauseReason}", "Timer");
         return completion;
     }
@@ -342,13 +432,77 @@ public sealed class HighPrecisionTimer
 
     private void EnterGracefulPauseIfRequested()
     {
-        if (Volatile.Read(ref _pauseAfterCurrentCycleRequested) == 0)
+        if (_cts.IsCancellationRequested || Volatile.Read(ref _pauseAfterCurrentCycleRequested) == 0)
             return;
 
         _pauseGate.Reset();
         if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
             Volatile.Read(ref _cycleState) == 2)
             CompleteGracefulPause();
+    }
+
+    private CoordinatedAdmissionState BeginCoordinatedAdmission()
+    {
+        CoordinatedAdmissionState admission;
+        CoordinatedAdmissionState cancellation;
+        lock (_pauseSync)
+        {
+            admission = new CoordinatedAdmissionState();
+            _coordinatedAdmission = admission;
+            cancellation = Volatile.Read(ref _pauseAfterCurrentCycleRequested) != 0
+                ? RequestCoordinatedAdmissionCancellationUnderLock()
+                : null;
+        }
+        CancelCoordinatedAdmission(cancellation);
+        return admission;
+    }
+
+    private CoordinatedAdmissionState RequestCoordinatedAdmissionCancellationUnderLock()
+    {
+        var admission = _coordinatedAdmission;
+        if (admission == null || admission.ActionStarted || admission.CancelRequested)
+            return null;
+        admission.CancelRequested = true;
+        return admission;
+    }
+
+    private void CancelCoordinatedAdmission(CoordinatedAdmissionState admission)
+    {
+        if (admission == null) return;
+        try
+        {
+            // 不在暂停锁内执行取消回调；安全暂停入口也不会调用此方法。
+            admission.Source.Cancel();
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"协调准入取消观察者异常已隔离：{ex.Message}", "Timer");
+        }
+        finally
+        {
+            bool dispose;
+            lock (_pauseSync)
+            {
+                admission.CancellationFinished = true;
+                dispose = admission.Finished;
+            }
+            if (dispose) admission.Source.Dispose();
+        }
+    }
+
+    private void FinishCoordinatedAdmission(CoordinatedAdmissionState admission)
+    {
+        if (admission == null) return;
+        bool dispose;
+        lock (_pauseSync)
+        {
+            if (ReferenceEquals(_coordinatedAdmission, admission))
+                _coordinatedAdmission = null;
+            admission.Finished = true;
+            // 取消回调可能同步唤醒执行体，延后Dispose直到锁外Cancel已经返回。
+            dispose = !admission.CancelRequested || admission.CancellationFinished;
+        }
+        if (dispose) admission.Source.Dispose();
     }
 
     private void CompleteGracefulPause(bool publishPaused = true)
@@ -375,9 +529,16 @@ public sealed class HighPrecisionTimer
 
     private void PublishRuntimeState(HighPrecisionTimerRuntimeState state, string reason)
     {
-        var previous = (HighPrecisionTimerRuntimeState)Interlocked.Exchange(
-            ref _runtimeState,
-            (int)state);
+        HighPrecisionTimerRuntimeState previous;
+        do
+        {
+            previous = RuntimeState;
+            // 停止与当前圈收尾可能并发。原子检查旧状态，避免迟到的暂停确认覆盖Stopped。
+            if ((state == HighPrecisionTimerRuntimeState.PausePending ||
+                 state == HighPrecisionTimerRuntimeState.Paused) &&
+                (_cts.IsCancellationRequested || previous == HighPrecisionTimerRuntimeState.Stopped))
+                return;
+        } while (Interlocked.CompareExchange(ref _runtimeState, (int)state, (int)previous) != (int)previous);
         if (previous == state) return;
 
         var update = new HighPrecisionTimerStateChangedEvent

@@ -950,6 +950,8 @@ namespace Controller
         // 截止开始时看到的 participant，不能删除后来共同重入的新代状态。
         private readonly ConcurrentDictionary<int, long> _hydraulicParticipantVersions = new();
         private readonly ConcurrentDictionary<int, object> _hydraulicParticipantGates = new();
+        private readonly ConcurrentDictionary<int, FormalParticipantRetirementBoundary>
+            _formalParticipantRetirementBoundaries = new();
         private long _hydraulicParticipantVersionSequence;
         // 恢复通道在未来正式槽重新加入时，只有从该槽开始才可进入液压成员快照。
         // 不能只用全局 participant 布尔集合，否则新成员会污染仍在执行的上一槽。
@@ -2033,16 +2035,196 @@ namespace Controller
             }
         }
 
+        // A participant may be paused while its channel permit remains authorized.  Its
+        // exact timer/attempt boundary is therefore separate from channel revocation.
+        // This object survives replacement only in the already-running retirement task;
+        // the dictionary keeps at most one current object per channel.
+        internal sealed class FormalParticipantRetirementBoundary
+        {
+            private HighPrecisionTimer _timer;
+            private ChannelExecutionPermit _permit;
+            private CycleAttemptContext _attempt;
+            private CycleAttemptContext _execution;
+            private HydraulicChannelLeaseScope _hydraulicLease;
+            private bool _requested;
+            private FormalBatchParticipantTerminal _receipt;
+
+            internal FormalParticipantRetirementBoundary(FormalBatchParticipantLease lease)
+            {
+                Lease = lease ?? throw new ArgumentNullException(nameof(lease));
+            }
+
+            internal FormalBatchParticipantLease Lease { get; }
+            internal FormalBatchParticipantTerminal Receipt => _receipt;
+
+            internal void BindTimer(HighPrecisionTimer timer)
+            {
+                if (timer == null) throw new ArgumentNullException(nameof(timer));
+                if (_timer != null && !ReferenceEquals(_timer, timer))
+                    throw new InvalidOperationException("FormalParticipantTimerIdentityChanged");
+                _timer = timer;
+            }
+
+            internal void Request(
+                ChannelExecutionPermit permit,
+                CycleAttemptContext attempt,
+                CycleAttemptContext execution,
+                HydraulicChannelLeaseScope hydraulicLease = null)
+            {
+                if (_requested) return;
+                _permit = permit;
+                _attempt = attempt;
+                _execution = execution;
+                _hydraulicLease = hydraulicLease;
+                _requested = true;
+            }
+
+            internal bool TryCapture(
+                FormalBatchParticipantLease currentLease,
+                CycleAttemptContext currentAttempt,
+                CycleAttemptContext currentExecution,
+                Func<bool> readMotorOff,
+                Func<bool> readHydraulicReleased,
+                string reason,
+                out FormalBatchParticipantTerminal receipt)
+            {
+                receipt = _receipt;
+                if (receipt != null) return true;
+                // After replacement only an already captured receipt may be used.
+                // In particular, never read the replacement's IO or attempt state.
+                if (!_requested || !Lease.SameIdentity(currentLease)) return false;
+                if (!IsClosed(_attempt) || !IsClosed(_execution) ||
+                    !IsClosed(currentAttempt) || !IsClosed(currentExecution)) return false;
+
+                var executionRevoked = _permit.Channel == Lease.Channel &&
+                                       _permit.RunEpoch == Lease.RunEpoch &&
+                                       (!_permit.Authorized ||
+                                        _permit.RevocationToken.IsCancellationRequested);
+                var participantFenced = _timer != null &&
+                                        (_timer.IsPaused ||
+                                         (!_timer.IsRunning &&
+                                          _timer.RuntimeState != HighPrecisionTimerRuntimeState.Created));
+                if (!executionRevoked && !participantFenced) return false;
+                if ((_hydraulicLease != null && !_hydraulicLease.IsClosed) ||
+                    !readMotorOff() || !readHydraulicReleased()) return false;
+
+                var closedAttempt = currentAttempt ?? currentExecution ?? _attempt ?? _execution;
+                _receipt = new FormalBatchParticipantTerminal
+                {
+                    Channel = Lease.Channel,
+                    Disposition = FormalParticipantDisposition.SafeAborted,
+                    MotorOffConfirmed = true,
+                    HydraulicMemberReleased = true,
+                    PersistenceBoundaryRequired = closedAttempt != null,
+                    PersistenceCommitted = true,
+                    RetirementBoundaryRequired = true,
+                    ExecutionPermitRevoked = executionRevoked,
+                    ParticipantExecutionFenced = participantFenced,
+                    PermanentlyIsolated = executionRevoked,
+                    ClosureReceipt = closedAttempt?.CaptureClosureReceipt(),
+                    Result = reason ?? "ParticipantRetiredAfterSafetyFence",
+                    CompletedUtc = DateTime.UtcNow
+                };
+                receipt = _receipt;
+                return true;
+            }
+
+            private bool IsClosed(CycleAttemptContext attempt) =>
+                attempt == null ||
+                (attempt.RunId == Lease.RunId && attempt.RunEpoch == Lease.RunEpoch &&
+                 attempt.Channel == Lease.Channel &&
+                 attempt.IsExecutionCompleted && attempt.IsDurablyCommitted);
+        }
+
         private FormalBatchParticipantLease RegisterFormalParticipantLease(int channel)
         {
-            var runId = _activeBatchId;
-            var runEpoch = Interlocked.Read(ref _runEpoch);
-            if (runId == Guid.Empty || runEpoch <= 0)
-                throw new InvalidOperationException(
-                    $"FormalParticipantRegistrationRejected EPB={channel} Run={runId:N} Epoch={runEpoch}");
-            var lease = _formalBatchSlots.RegisterParticipant(runId, runEpoch, channel);
-            _formalParticipantLeases[channel] = lease;
-            return lease;
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                var runId = _activeBatchId;
+                var runEpoch = Interlocked.Read(ref _runEpoch);
+                if (runId == Guid.Empty || runEpoch <= 0)
+                    throw new InvalidOperationException(
+                        $"FormalParticipantRegistrationRejected EPB={channel} Run={runId:N} Epoch={runEpoch}");
+                if (_formalParticipantLeases.TryGetValue(channel, out var previous) &&
+                    previous.RunId == runId && previous.RunEpoch == runEpoch)
+                {
+                    var boundary = CaptureFormalParticipantRetirementBoundary(previous);
+                    if (!TryCaptureFormalParticipantRetirementBoundary(boundary, "FormalParticipantReplaced",
+                            out var receipt))
+                        throw new InvalidOperationException(
+                            $"FormalParticipantReplacementSafetyBoundaryPending EPB={channel} " +
+                            $"Generation={previous.ParticipantGeneration}");
+                    _formalBatchSlots.RequestRetirement(previous, "FormalParticipantReplaced");
+                    _formalBatchSlots.ConfirmRetirement(previous, receipt);
+                }
+
+                var lease = _formalBatchSlots.RegisterParticipant(runId, runEpoch, channel);
+                _formalParticipantLeases[channel] = lease;
+                _formalParticipantRetirementBoundaries[channel] =
+                    new FormalParticipantRetirementBoundary(lease);
+                return lease;
+            }
+        }
+
+        private void BindFormalParticipantTimer(FormalBatchParticipantLease lease, HighPrecisionTimer timer)
+        {
+            if (lease == null) throw new ArgumentNullException(nameof(lease));
+            lock (GetHydraulicParticipantGate(lease.Channel))
+            {
+                if (!_formalParticipantLeases.TryGetValue(lease.Channel, out var current) ||
+                    !lease.SameIdentity(current) ||
+                    !_formalParticipantRetirementBoundaries.TryGetValue(lease.Channel, out var boundary) ||
+                    !lease.SameIdentity(boundary.Lease))
+                    throw new InvalidOperationException("FormalParticipantTimerLeaseStale");
+                boundary.BindTimer(timer);
+            }
+        }
+
+        private FormalParticipantRetirementBoundary CaptureFormalParticipantRetirementBoundary(
+            FormalBatchParticipantLease lease)
+        {
+            // All callers hold the per-channel participant gate, which also protects
+            // registration. The IO snapshot can therefore never belong to a new lease.
+            if (!_formalParticipantRetirementBoundaries.TryGetValue(lease.Channel, out var boundary) ||
+                !lease.SameIdentity(boundary.Lease))
+            {
+                boundary = new FormalParticipantRetirementBoundary(lease);
+                if (_timers.TryGetValue(lease.Channel, out var timer) ||
+                    _timerCache.TryGetValue(lease.Channel, out timer))
+                    boundary.BindTimer(timer);
+                _formalParticipantRetirementBoundaries[lease.Channel] = boundary;
+            }
+            _cycleAttempts.TryGetCurrent(lease.Channel, out var attempt);
+            _cycleAttempts.TryGetLastExecution(lease.Channel, out var execution);
+            _hydraulicLeaseByChannel.TryGetValue(lease.Channel, out var hydraulicLease);
+            boundary.Request(_channelExecutionFence.Capture(lease.Channel), attempt, execution, hydraulicLease);
+            return boundary;
+        }
+
+        private bool TryCaptureFormalParticipantRetirementBoundary(
+            FormalParticipantRetirementBoundary boundary,
+            string reason,
+            out FormalBatchParticipantTerminal receipt)
+        {
+            var channel = boundary.Lease.Channel;
+            _formalParticipantLeases.TryGetValue(channel, out var current);
+            if (boundary.Receipt != null)
+            {
+                receipt = boundary.Receipt;
+                return true;
+            }
+            if (!boundary.Lease.SameIdentity(current))
+            {
+                receipt = null;
+                return false;
+            }
+            _cycleAttempts.TryGetCurrent(channel, out var attempt);
+            _cycleAttempts.TryGetLastExecution(channel, out var execution);
+            return boundary.TryCapture(current, attempt, execution,
+                () => !IsChannelEnergized(channel),
+                () => !_hydraulicLeaseByChannel.TryGetValue(channel, out var hydraulicLease) ||
+                      hydraulicLease.IsClosed,
+                reason, out receipt);
         }
 
         private FormalBatchParticipantLease CaptureFormalParticipantLease(int channel)
@@ -2071,119 +2253,94 @@ namespace Controller
             string reason)
         {
             if (lease == null) return;
-            if (!_formalBatchSlots.RequestRetirement(lease, reason)) return;
+            FormalParticipantRetirementBoundary boundary;
+            lock (GetHydraulicParticipantGate(lease.Channel))
+            {
+                if (!_formalParticipantLeases.TryGetValue(lease.Channel, out var current) ||
+                    !lease.SameIdentity(current)) return;
+                boundary = CaptureFormalParticipantRetirementBoundary(lease);
+                if (!_formalBatchSlots.RequestRetirement(lease, reason)) return;
+            }
             ObserveSafetyTask(
                 CompleteFormalParticipantRetirementFenceAsync(
-                    lease,
+                    boundary,
                     reason),
                 "FormalParticipantRetirementFence",
                 lease.Channel);
         }
 
         private async Task CompleteFormalParticipantRetirementFenceAsync(
-            FormalBatchParticipantLease participantLease,
+            FormalParticipantRetirementBoundary boundary,
             string reason)
         {
-            if (participantLease == null) return;
+            if (boundary == null) return;
+            var participantLease = boundary.Lease;
             var runId = participantLease.RunId;
             var runEpoch = participantLease.RunEpoch;
             var channel = participantLease.Channel;
             var requestedTimeoutMs = Math.Max(1L, PeriodMs) * 2L + 5000L;
             var timeoutMs = (int)Math.Max(5000L, Math.Min(60000L, requestedTimeoutMs));
-            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-            while (DateTime.UtcNow < deadline)
+            var elapsed = Stopwatch.StartNew();
+            while (elapsed.ElapsedMilliseconds < timeoutMs)
             {
                 if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch)
                     return;
-                if (!_formalParticipantLeases.TryGetValue(channel, out var currentLease) ||
-                    !participantLease.SameIdentity(currentLease))
-                    return;
-
-                var attemptClosed = true;
-                if (_cycleAttempts.TryGetCurrent(channel, out var attempt) &&
-                    attempt.RunId == runId && attempt.RunEpoch == runEpoch)
+                lock (GetHydraulicParticipantGate(channel))
                 {
-                    attemptClosed = attempt.IsDurablyCommitted;
-                    if (!attemptClosed)
+                    if (TryCaptureFormalParticipantRetirementBoundary(boundary, reason, out var receipt))
                     {
-                        var remaining = deadline - DateTime.UtcNow;
-                        if (remaining <= TimeSpan.Zero) break;
-                        var completed = await Task.WhenAny(
-                                attempt.DurableCompletion,
-                                Task.Delay(Math.Min(100, Math.Max(1, (int)remaining.TotalMilliseconds))))
-                            .ConfigureAwait(false);
-                        attemptClosed = completed == attempt.DurableCompletion &&
-                                        attempt.IsDurablyCommitted;
+                        _formalBatchSlots.ConfirmRetirement(participantLease, receipt);
+                        return;
                     }
-                }
-
-                var motorOff = !IsChannelEnergized(channel);
-                var hydraulicReleased =
-                    !_hydraulicLeaseByChannel.TryGetValue(channel, out var lease) ||
-                    lease.IsClosed;
-                var executionRevoked =
-                    !_channelExecutionFence.Capture(channel).Authorized;
-                if (attemptClosed && motorOff && hydraulicReleased && executionRevoked)
-                {
-                    _formalBatchSlots.ConfirmRetirement(
-                        participantLease,
-                        new FormalBatchParticipantTerminal
-                        {
-                            Channel = channel,
-                            MotorOffConfirmed = true,
-                            HydraulicMemberReleased = true,
-                            PersistenceBoundaryRequired = false,
-                            PersistenceCommitted = true,
-                            RetirementBoundaryRequired = true,
-                            ExecutionPermitRevoked = true,
-                            PermanentlyIsolated = true,
-                            Result = reason ?? "ParticipantRetiredAfterSafetyFence",
-                            CompletedUtc = DateTime.UtcNow
-                        });
-                    return;
+                    if (!_formalParticipantLeases.TryGetValue(channel, out var currentLease) ||
+                        !participantLease.SameIdentity(currentLease)) return;
                 }
                 await Task.Delay(25).ConfigureAwait(false);
             }
 
-            // The last await can cross a restart/rejoin boundary. An expired
-            // old participant must not escalate against its replacement.
-            if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch ||
-                !_formalParticipantLeases.TryGetValue(channel, out var currentFinalLease) ||
-                !participantLease.SameIdentity(currentFinalLease)) return;
-            var finalMotorOff = !IsChannelEnergized(channel);
-            var finalHydraulicReleased =
-                !_hydraulicLeaseByChannel.TryGetValue(channel, out var finalLease) ||
-                finalLease.IsClosed;
-            var finalPersistenceClosed =
-                !_cycleAttempts.TryGetCurrent(channel, out var finalAttempt) ||
-                finalAttempt.RunId != runId ||
-                finalAttempt.RunEpoch != runEpoch ||
-                finalAttempt.IsDurablyCommitted;
-            var finalExecutionRevoked =
-                !_channelExecutionFence.Capture(channel).Authorized;
-            _formalBatchSlots.ConfirmRetirement(
-                participantLease,
-                new FormalBatchParticipantTerminal
+            bool finalMotorOff;
+            bool finalHydraulicReleased;
+            bool finalPersistenceClosed;
+            bool finalExecutionRevoked;
+            CycleAttemptClosureReceipt finalReceipt;
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch)
+                    return;
+                if (TryCaptureFormalParticipantRetirementBoundary(boundary, reason, out var receipt))
+                {
+                    _formalBatchSlots.ConfirmRetirement(participantLease, receipt);
+                    return;
+                }
+                // An old observer can never diagnose or retire the replacement.
+                if (!_formalParticipantLeases.TryGetValue(channel, out var currentFinalLease) ||
+                    !participantLease.SameIdentity(currentFinalLease)) return;
+                finalMotorOff = !IsChannelEnergized(channel);
+                finalHydraulicReleased =
+                    !_hydraulicLeaseByChannel.TryGetValue(channel, out var finalLease) || finalLease.IsClosed;
+                finalPersistenceClosed = !_cycleAttempts.TryGetCurrent(channel, out var finalAttempt) ||
+                                             finalAttempt.IsDurablyCommitted;
+                finalExecutionRevoked = !_channelExecutionFence.Capture(channel).Authorized;
+                finalReceipt = finalAttempt?.CaptureClosureReceipt();
+                _formalBatchSlots.ConfirmRetirement(participantLease, new FormalBatchParticipantTerminal
                 {
                     Channel = channel,
+                    Disposition = FormalParticipantDisposition.SafetyUnproven,
                     MotorOffConfirmed = finalMotorOff,
                     HydraulicMemberReleased = finalHydraulicReleased,
                     PersistenceBoundaryRequired = true,
                     PersistenceCommitted = finalPersistenceClosed,
                     RetirementBoundaryRequired = true,
                     ExecutionPermitRevoked = finalExecutionRevoked,
-                    PermanentlyIsolated = true,
                     Result = "ParticipantRetirementSafetyFenceTimeout",
                     CompletedUtc = DateTime.UtcNow
                 });
-            ReportFormalSlotSafetyBoundaryFailure(
-                channel,
-                -1,
-                finalMotorOff,
-                finalHydraulicReleased,
-                finalPersistenceClosed,
-                finalAttempt?.CaptureClosureReceipt(),
-                finalExecutionRevoked);
+            }
+            if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch ||
+                !_formalParticipantLeases.TryGetValue(channel, out var reportLease) ||
+                !participantLease.SameIdentity(reportLease)) return;
+            ReportFormalSlotSafetyBoundaryFailure(channel, -1, finalMotorOff,
+                finalHydraulicReleased, finalPersistenceClosed, finalReceipt, finalExecutionRevoked);
         }
 
         /// <summary>
