@@ -374,6 +374,7 @@ namespace MTEmbTest
                     CbBuzzerEnabled.Visible = true;
                     CbBuzzerEnabled.Enabled = true;
                     CbBuzzerEnabled.Checked = _alarmManager.BuzzerEnabled;
+                    if (_alarmManager.SupervisorOwnsOutputs) CbBuzzerEnabled.Text = "项目蜂鸣器";
 
                     // 防重复订阅
                     CbBuzzerEnabled.CheckedChanged -= CbBuzzerEnabled_CheckedChanged;
@@ -384,6 +385,7 @@ namespace MTEmbTest
                 {
                     BtnClearAlarms.Visible = true;
                     BtnClearAlarms.Enabled = true;
+                    if (_alarmManager.SupervisorOwnsOutputs) BtnClearAlarms.Text = "复位项目报警";
 
                     // 防重复订阅
                     BtnClearAlarms.Click -= BtnClearAlarms_Click;
@@ -2135,6 +2137,7 @@ namespace MTEmbTest
         private void RevokeManualStopExitAuthorizationBeforeEnergization()
         {
             IndependentRecoveryStartup.Current?.RequireManualStopPersistenceCompleted();
+            WatchdogRuntime.MarkControlAdmission();
             _manualCloseTrialObserved = true;
             _stopSessionReceipt.RevokeForNewStart();
             _manualStopExitReceipt.RevokeForNewStart();
@@ -2744,6 +2747,12 @@ namespace MTEmbTest
                     LogInfo($"批量启动失败：{ex.Message}");
                     if (unattendedRecovery)
                         throw new InvalidOperationException("无人值守恢复批量启动失败。", ex);
+                    if (await ReleaseUnadmittedStartupAsync().ConfigureAwait(true))
+                    {
+                        ShowOperatorMessage("本次启动未获控制授权，失败会话已释放。\r\n" + ex.Message,
+                            "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return null;
+                    }
                     WatchdogRuntime.NotifyBatchStartFailed(
                         "BatchStartFailed:" + ex.GetBaseException().Message);
                     LogInfo("[启动保护] 已安全回滚；正式运行尚未提交时独立看门狗不会杀进程，" +
@@ -2771,10 +2780,24 @@ namespace MTEmbTest
                 logger?.Error($"启动卡钳{channelText}测试失败。", "启动", ex);
                 LogInfo($"启动卡钳{channelText} 测试失败：{ex.Message}");
                 if (unattendedRecovery) throw;
+                await ReleaseUnadmittedStartupAsync().ConfigureAwait(true);
                 ShowOperatorMessage($@"启动卡钳{channelText}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 return null;
             }
+        }
+
+        private async Task<bool> ReleaseUnadmittedStartupAsync()
+        {
+            if (!WatchdogRuntime.TryRejectUnadmittedSession()) return false;
+            var main = MdiParent as Main_Frm;
+            if (main == null)
+                throw new InvalidOperationException("启动失败时缺少主窗口会话所有者。");
+            var receipt = await main.ShutdownWatchdogSessionAndReleaseUiAsync("UnadmittedStartRejected")
+                .ConfigureAwait(true);
+            if (receipt == null || !receipt.IsTerminal)
+                throw new InvalidOperationException("启动失败会话尚未完成资源终态，请重试安全关闭。");
+            return true;
         }
 
         /// <summary>
@@ -3259,6 +3282,7 @@ namespace MTEmbTest
                         _epb?.IsBatchSessionActive ?? false);
                 if (idleFastClose)
                 {
+                    WatchdogRuntime.TryRejectUnadmittedSession();
                     safety = new StopSafetyResult
                     {
                         Source = StopSource.ApplicationClosing,
@@ -3368,6 +3392,25 @@ namespace MTEmbTest
                 if (!idleFastClose && !safety.PressureSafeConfirmed)
                     LogInfo("[安全警告] 停机处置已满足退出条件；压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
+
+                // Closing outputs acknowledges only a normal, completed close.
+                // A takeover, crash or incomplete safety result keeps P0 available.
+                if (!watchdogOwnsExit && _alarmManager != null &&
+                    (idleFastClose || safety.PhysicalSafetyConfirmed &&
+                     safety.PersistenceBoundaryConfirmed && safety.LogicalQuiescenceConfirmed))
+                {
+                    try
+                    {
+                        await _alarmManager.CompleteSafeCloseAsync().ConfigureAwait(true);
+                        LogInfo("正常关闭声光状态已确认；原故障锁存和审计记录保留，物理灯态需现场确认。");
+                    }
+                    catch (Exception alarmError)
+                    {
+                        LogInfo("声光关闭未持久确认，保留窗口以便重试：" + alarmError.GetBaseException().Message);
+                        ShowCloseOverlay("声光关闭未确认，请恢复报警服务或串口后重试关闭…");
+                        return false;
+                    }
+                }
 
             // Main_Frm's shutdown boundary sends ApplicationClosing as part
             // of ShutdownRuntimeWithReceipt.  Do not publish a second

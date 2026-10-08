@@ -469,6 +469,10 @@ namespace MTEmbTest
 
             var finalVersion = NextVersion(currentOwner.Version);
             var closingTerminalPersisted =
+                (!context.InitialStartupRejectedBeforeControl ||
+                 runtimeReceipt?.PipelineTerminal == true &&
+                 WatchdogRuntime.IsExactEngineTerminal(context, engineReceipt) &&
+                 flushCompleted && journalDisposed) &&
                 _session.TryCompleteSessionClosing(
                     context,
                     "RuntimeShutdownTerminal");

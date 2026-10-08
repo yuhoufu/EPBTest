@@ -105,6 +105,7 @@
     <Reference Include="System.Data" />
     <Reference Include="System.Deployment" />
     <Reference Include="System.Drawing" />
+    <Reference Include="System.ServiceProcess" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
@@ -131,6 +132,7 @@
     <Compile Include="ConfigOperation.cs" />
     <Compile Include="FirstRunBootstrap.cs" />
     <Compile Include="IndependentInstallSetup.cs" />
+    <Compile Include="Main_Frm.Alarm.cs" />
     <Compile Include="FormLoggerAdapter.cs" />
     <Compile Include="MonitorHardwareFactory.cs" />
     <Compile Include="FrmAlarmPanelTest.cs">
@@ -216,6 +218,7 @@
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="IndependentRecoveryStartup.cs" />
+    <Compile Include="IndependentProjectBinding.cs" />
     <Compile Include="IndependentRegistrationExport.cs" />
     <Compile Include="FrmEpbMainMonitor.IndependentFallback.cs" />
     <Compile Include="FrmEpbMainMonitor.SummarySelection.cs" />

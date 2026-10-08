@@ -195,6 +195,7 @@ namespace MtEmbTest
                 if (MdiChildren.Length == 0 && !_watchdogUiAdapter.HasResources &&
                     WatchdogRuntime.CaptureTransportSnapshot()?.Context == null)
                 {
+                    if (TryQueueIdleAlarmClose(e)) return true;
                     WatchdogRuntime.CompleteOperatorApplicationExit(_applicationCloseReceipt?.FinalStopSafety);
                     WatchdogRuntime.MarkApplicationExitGraceful("OperatorIdleMainCloseCompleted");
                     return false;

@@ -54,6 +54,7 @@
     <Compile Include="FallbackProgressVerifier.cs" />
     <Compile Include="DeadlinePipeExchange.cs" />
     <Compile Include="SupervisorProtocol.cs" />
+    <Compile Include="InstallationAlarmProtocol.cs" />
     <Compile Include="SessionAgentProtocol.cs" />
     <Compile Include="PackageSlotDescriptor.cs" />
     <Compile Include="DurableRelaunchPermit.cs" />

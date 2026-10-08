@@ -7,6 +7,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.IO.Ports;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
@@ -286,6 +287,9 @@ namespace MTTFTest.Watchdog
         {
             var security = new PipeSecurity();
             security.AddAccessRule(new PipeAccessRule(
+                new SecurityIdentifier(WellKnownSidType.NetworkSid, null),
+                PipeAccessRights.ReadWrite, AccessControlType.Deny));
+            security.AddAccessRule(new PipeAccessRule(
                 new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
                 PipeAccessRights.FullControl,
                 AccessControlType.Allow));
@@ -311,6 +315,8 @@ namespace MTTFTest.Watchdog
         private void HandleConnection(NamedPipeServerStream pipe)
         {
             using (pipe)
+            using (var deadline = new CancellationTokenSource(10000))
+            using (deadline.Token.Register(() => pipe.Dispose()))
             using (var reader = new BinaryReader(
                        pipe,
                        new UTF8Encoding(false),
@@ -323,6 +329,31 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     var magic = SupervisorProtocol.ReadRequestMagic(reader);
+                    if (magic == InstallationAlarmProtocol.RequestMagic)
+                    {
+                        InstallationAlarmRequest request = null;
+                        InstallationAlarmResponse response;
+                        try
+                        {
+                            request = InstallationAlarmProtocol.ReadBody<InstallationAlarmRequest>(reader);
+                            request.Validate();
+                            var sid = ValidateAlarmPipeIdentity(pipe, request.ProcessId, request.ProcessStartUtcTicks, true,
+                                request.Action == InstallationAlarmAction.Query || request.Action == InstallationAlarmAction.MuteBuzzer);
+                            response = new InstallationAlarmResponse
+                            {
+                                RequestId = request.RequestId, Accepted = true,
+                                State = _p0AlarmOwner.ApplyOperatorRequest(request, sid)
+                            };
+                        }
+                        catch (Exception error)
+                        {
+                            WriteAudit("InstallationAlarmRequestRejected", error.GetBaseException().Message);
+                            response = new InstallationAlarmResponse { RequestId = request?.RequestId,
+                                Error = error.GetBaseException().Message };
+                        }
+                        InstallationAlarmProtocol.Write(writer, InstallationAlarmProtocol.ResponseMagic, response);
+                        return;
+                    }
                     if (string.Equals(
                             magic,
                             SupervisorProtocol.RequestMagic,
@@ -391,7 +422,9 @@ namespace MTTFTest.Watchdog
                             request = SupervisorP0AlarmRequest.ReadBodyFrom(
                                 reader,
                                 magic);
-                            response = ApplyP0AlarmRequest(request);
+                            var sid = ValidateAlarmPipeIdentity(pipe, request.RequesterProcessId,
+                                request.RequesterProcessStartUtcTicks, false);
+                            response = ApplyP0AlarmRequest(request, sid);
                         }
                         catch (Exception ex)
                         {
@@ -419,10 +452,12 @@ namespace MTTFTest.Watchdog
         }
 
         private SupervisorP0AlarmResponse ApplyP0AlarmRequest(
-            SupervisorP0AlarmRequest request)
+            SupervisorP0AlarmRequest request, string requesterSid)
         {
             if (request?.IsStructurallyValid() != true)
                 throw new InvalidDataException("SupervisorP0AlarmRequestInvalid");
+            if (request.Action == SupervisorP0AlarmAction.MuteBuzzer)
+                throw new InvalidDataException("P0MuteRequiresEventRevisionCompareExchange");
             var exactOwnedRequester = _sessions.Values.Any(
                 session => session.MatchesProcess(
                     request.RequesterProcessId,
@@ -433,9 +468,10 @@ namespace MTTFTest.Watchdog
             if (_p0AlarmOwner == null)
                 throw new InvalidOperationException(
                     "SupervisorP0AlarmOwnerUnavailable");
-            _p0AlarmOwner.Apply(request);
+            _p0AlarmOwner.Apply(request, requesterSid);
+            var latchPreserved = request.Action == SupervisorP0AlarmAction.ClearTransient;
             WriteAudit(
-                "P0AlarmRequestApplied",
+                latchPreserved ? "P0AlarmRecoveryProgressAcceptedLatchPreserved" : "P0AlarmRequestApplied",
                 $"Action={request.Action};Event={request.EventId};" +
                 $"Code={request.Code};PID={request.RequesterProcessId}");
             return new SupervisorP0AlarmResponse
@@ -443,8 +479,57 @@ namespace MTTFTest.Watchdog
                 RequestId = request.RequestId,
                 ChallengeNonce = request.ChallengeNonce,
                 Accepted = true,
-                Detail = "DurableP0AlarmDemandAccepted"
+                Detail = latchPreserved ? "RecoveryProgressAccepted;P0AlarmLatchPreserved=True" : "DurableP0AlarmDemandAccepted"
             };
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint processId);
+
+        private string ValidateAlarmPipeIdentity(NamedPipeServerStream pipe, int claimedPid,
+            long claimedStart, bool operatorRequest, bool allowOwnedSidecar = false)
+        {
+            if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out var actualPid) ||
+                actualPid != claimedPid)
+                throw new InvalidDataException("AlarmPipeClientIdentityMismatch");
+            string sid = null;
+            pipe.RunAsClient(() =>
+            {
+                using (var identity = WindowsIdentity.GetCurrent()) sid = identity.User?.Value;
+            });
+            if (string.IsNullOrEmpty(sid)) throw new InvalidDataException("AlarmPipeUserMissing");
+            using (var process = Process.GetProcessById(claimedPid))
+            {
+                if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != claimedStart)
+                    throw new InvalidDataException("AlarmPipeProcessIdentityMismatch");
+                if (!operatorRequest) return sid; // The caller must additionally be an exact owned sidecar.
+                string expectedMain;
+                using (var supervisor = Process.GetCurrentProcess())
+                    expectedMain = Path.Combine(Path.GetDirectoryName(supervisor.MainModule.FileName), "MTTFTest.exe");
+                var bindingPath = IndependentInstallationBinding.PathFor(expectedMain);
+                IndependentProtectedFiles.RequireTrustedFile(bindingPath);
+                var binding = BoundedJson.Read<IndependentInstallationBinding>(bindingPath);
+                if (binding == null) throw new InvalidDataException("AlarmInstallationBindingMissing");
+                IndependentProtectedFiles.RequireTrustedFile(binding.RegistrationPath);
+                // Alarm acknowledgement remains available when project configuration blocks startup.
+                // It grants no recovery, maintenance or hardware-control authority.
+                var registration = BoundedJson.Read<IndependentExecutorRegistration>(binding.RegistrationPath);
+                binding.Validate(registration, expectedMain);
+                var isMain = string.Equals(process.MainModule.FileName, expectedMain, StringComparison.OrdinalIgnoreCase);
+                var isOwnedSidecar = allowOwnedSidecar && _sessions.Values.Any(session => session.MatchesProcess(claimedPid, claimedStart));
+                if (!AlarmOperatorIdentityAllowed(isMain, isOwnedSidecar, sid, registration.InteractiveUserSid) ||
+                    !SupervisorProtocol.Sha256Equals(SupervisorProtocol.ComputeSha256(expectedMain), registration.ExecutableSha256) ||
+                    string.IsNullOrEmpty(sid))
+                    throw new InvalidDataException("AlarmOperatorNotInstallationUser");
+            }
+            return sid;
+        }
+
+        private static bool AlarmOperatorIdentityAllowed(bool isInstalledMain, bool exactOwnedSidecar,
+            string actualSid, string interactiveSid)
+        {
+            // A SYSTEM sidecar is authorized only by the supervisor's exact live process registry.
+            return exactOwnedSidecar || isInstalledMain && actualSid == interactiveSid;
         }
 
         private SupervisorSafetyAgentLaunchResponse RegisterOrGetSafetyAgent(
@@ -1100,16 +1185,33 @@ namespace MTTFTest.Watchdog
             private readonly string _statePath;
             private readonly string _auditPath;
             private readonly P0AlarmHardwareConfiguration _configuration;
+            private readonly Action<bool, bool, bool[], bool> _driveForTest;
             private readonly AutoResetEvent _changed = new AutoResetEvent(false);
             private readonly CancellationTokenSource _stop =
                 new CancellationTokenSource();
             private readonly Task _worker;
             private SupervisorP0AlarmState _state;
+            private readonly bool[] _projectLights = new bool[12];
+            private bool _projectBuzzer;
+            private bool _projectSuppressed;
+            private int _projectPid;
+            private long _projectStart;
+            private long _outputVersion;
+            private long _commandSentRevision;
+            private string _outputStatus = "Pending";
+            private string _outputError = string.Empty;
 
             internal SupervisorP0AlarmHardwareOwner(
                 string executableDirectory,
                 string stateDirectory)
+                : this(executableDirectory, stateDirectory, null)
             {
+            }
+
+            internal SupervisorP0AlarmHardwareOwner(string executableDirectory, string stateDirectory,
+                Action<bool, bool, bool[], bool> driveForTest)
+            {
+                _driveForTest = driveForTest;
                 Directory.CreateDirectory(stateDirectory);
                 _statePath = Path.Combine(
                     stateDirectory,
@@ -1140,81 +1242,224 @@ namespace MTTFTest.Watchdog
                 _changed.Set();
             }
 
-            internal void Apply(SupervisorP0AlarmRequest request)
+            internal void Apply(SupervisorP0AlarmRequest request, string requesterSid = "OwnedSidecar")
             {
                 lock (_gate)
                 {
+                    var next = _state.Clone();
                     switch (request.Action)
                     {
                         case SupervisorP0AlarmAction.Latch:
-                            _state.Latched = true;
-                            _state.BuzzerMuted = false;
-                            _state.EventId = request.EventId;
-                            _state.Code = request.Code;
-                            _state.Detail = request.Detail;
+                            if (next.Latched && next.EventId == request.EventId)
+                            {
+                                if (next.Code != request.Code || next.Detail != request.Detail)
+                                    throw new InvalidDataException("P0AlarmEventIdentityConflict");
+                                return; // Delivery retries of one event do not cancel its acknowledgement.
+                            }
+                            next.Latched = true;
+                            next.BuzzerMuted = false;
+                            next.OutputsSuppressed = false;
+                            next.EventId = request.EventId;
+                            next.Code = request.Code;
+                            next.Detail = request.Detail;
+                            next.FirstObservedUtcTicks = DateTime.UtcNow.Ticks;
                             break;
                         case SupervisorP0AlarmAction.ClearTransient:
-                            _state.Latched = false;
-                            _state.BuzzerMuted = false;
-                            _state.EventId = request.EventId;
-                            _state.Code = request.Code;
-                            _state.Detail = request.Detail;
-                            break;
+                            // A new project's successful cycle cannot clear an installation safety latch.
+                            // Existing callers only establish recovery progress, never fault-clear authority.
+                            return;
                         case SupervisorP0AlarmAction.MuteBuzzer:
-                            if (_state.Latched) _state.BuzzerMuted = true;
-                            _state.EventId = request.EventId;
-                            _state.Code = request.Code;
-                            _state.Detail = request.Detail;
+                            if (!next.Latched) throw new InvalidOperationException("P0AlarmNotLatched");
+                            RecordMute(next, requesterSid, request.RequestId ?? Guid.NewGuid().ToString("N"));
                             break;
                         default:
                             throw new InvalidDataException(
                                 "SupervisorP0AlarmActionInvalid");
                     }
-                    _state.SchemaVersion = SupervisorProtocol.SchemaVersion;
-                    _state.Revision = Math.Max(
-                        _state.Revision + 1,
-                        DateTime.UtcNow.Ticks);
-                    _state.UpdatedUtcTicks = DateTime.UtcNow.Ticks;
-                    WriteState(_state);
+                    Commit(next);
                 }
                 _changed.Set();
             }
 
+            private void RecordMute(SupervisorP0AlarmState next, string sid, string requestId)
+            {
+                next.BuzzerMuted = true;
+                next.LastMuteOperatorSid = sid;
+                next.LastMuteRequestId = requestId;
+                next.LastMuteUtcTicks = DateTime.UtcNow.Ticks;
+                RecordOutputAction(next, sid, requestId, "MuteBuzzer");
+            }
+
+            private void RecordOutputAction(SupervisorP0AlarmState next, string sid, string requestId, string action)
+            {
+                next.LastOutputAction = action;
+                next.LastOutputOperatorSid = sid;
+                next.LastOutputActionUtcTicks = DateTime.UtcNow.Ticks;
+                next.MuteAudit.Add(new P0MuteAudit { EventId = next.EventId, BeforeRevision = next.Revision,
+                    OperatorSid = sid, RequestId = requestId, Action = action, UtcTicks = next.LastOutputActionUtcTicks });
+                // ponytail: bounded recent audit in the atomic state; the supervisor audit log retains older actions.
+                if (next.MuteAudit.Count > 128) next.MuteAudit.RemoveAt(0);
+            }
+
+            private void Commit(SupervisorP0AlarmState next)
+            {
+                next.SchemaVersion = SupervisorProtocol.SchemaVersion;
+                next.Revision = Math.Max(_state.Revision + 1, DateTime.UtcNow.Ticks);
+                next.UpdatedUtcTicks = DateTime.UtcNow.Ticks;
+                WriteState(next);
+                _state = next; // Failed persistence must never publish a mute that will be lost at restart.
+                _outputVersion++;
+                _outputStatus = "Pending";
+                WriteAudit("P0AlarmStateCommitted", "Event=" + next.EventId + ";Revision=" + next.Revision +
+                    ";Muted=" + next.BuzzerMuted + ";OutputsSuppressed=" + next.OutputsSuppressed +
+                    ";Action=" + next.LastOutputAction + ";OperatorSid=" + next.LastOutputOperatorSid);
+            }
+
+            internal InstallationAlarmSnapshot ApplyOperatorRequest(InstallationAlarmRequest request, string sid)
+            {
+                request.Validate();
+                lock (_gate)
+                {
+                    if (request.Action == InstallationAlarmAction.MuteBuzzer ||
+                        request.Action == InstallationAlarmAction.SuppressOutputs || request.Action == InstallationAlarmAction.CompleteSafeClose)
+                    {
+                        if (request.Action == InstallationAlarmAction.CompleteSafeClose) RetireExitedProject();
+                        if (request.Action == InstallationAlarmAction.CompleteSafeClose && _projectPid != 0 &&
+                            (_projectPid != request.ProcessId || _projectStart != request.ProcessStartUtcTicks))
+                            throw new InvalidOperationException("AlarmProjectOutputOwnerBusy");
+                        if (request.Action == InstallationAlarmAction.MuteBuzzer && !_state.Latched ||
+                            !string.Equals(_state.EventId ?? string.Empty, request.EventId ?? string.Empty, StringComparison.Ordinal) ||
+                            _state.Revision != request.ExpectedRevision)
+                            throw new InvalidOperationException("报警已变化，请刷新后重新确认输出操作。");
+                        var next = _state.Clone();
+                        if (request.Action == InstallationAlarmAction.MuteBuzzer) RecordMute(next, sid, request.RequestId);
+                        else
+                        {
+                            next.OutputsSuppressed = true;
+                            RecordOutputAction(next, sid, request.RequestId, request.Action.ToString());
+                        }
+                        Commit(next);
+                        if (request.Action != InstallationAlarmAction.MuteBuzzer) _projectSuppressed = true;
+                        if (request.Action == InstallationAlarmAction.CompleteSafeClose)
+                        {
+                            Array.Clear(_projectLights, 0, _projectLights.Length);
+                            _projectBuzzer = false;
+                            _projectPid = 0;
+                        }
+                        _changed.Set();
+                    }
+                    else if (request.Action != InstallationAlarmAction.Query)
+                    {
+                        RetireExitedProject();
+                        if (_projectPid != 0 && (_projectPid != request.ProcessId || _projectStart != request.ProcessStartUtcTicks))
+                            throw new InvalidOperationException("AlarmProjectOutputOwnerBusy");
+                        _projectPid = request.ProcessId;
+                        _projectStart = request.ProcessStartUtcTicks;
+                        switch (request.Action)
+                        {
+                            case InstallationAlarmAction.SetIndicator:
+                                if (request.On && !_projectLights[request.Channel - 1]) _projectSuppressed = false;
+                                _projectLights[request.Channel - 1] = request.On; break;
+                            case InstallationAlarmAction.SetBuzzer:
+                                if (request.On && !_projectBuzzer) _projectSuppressed = false;
+                                _projectBuzzer = request.On; break;
+                            case InstallationAlarmAction.ClearProjectOutputs:
+                            case InstallationAlarmAction.ReleaseProjectOutputs:
+                                Array.Clear(_projectLights, 0, _projectLights.Length);
+                                _projectBuzzer = false;
+                                _projectSuppressed = false;
+                                if (request.Action == InstallationAlarmAction.ReleaseProjectOutputs) _projectPid = 0;
+                                break;
+                            default: throw new InvalidDataException("InstallationAlarmActionInvalid");
+                        }
+                        _outputVersion++;
+                        _outputStatus = "Pending";
+                        _changed.Set();
+                    }
+                    var snapshot = _state.Clone();
+                    snapshot.CommandSentRevision = _commandSentRevision;
+                    snapshot.OutputStatus = _outputStatus;
+                    snapshot.OutputError = _outputError;
+                    var p0Active = _state.Latched && !_state.OutputsSuppressed;
+                    snapshot.RequestedLightCount = p0Active ? 12 : _projectSuppressed ? 0 : _projectLights.Count(on => on);
+                    snapshot.RequestedBuzzerOn = p0Active ? !_state.BuzzerMuted : !_projectSuppressed && _projectBuzzer;
+                    return snapshot;
+                }
+            }
+
+            private void RetireExitedProject()
+            {
+                if (_projectPid == 0) return;
+                try
+                {
+                    using (var process = Process.GetProcessById(_projectPid))
+                        if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == _projectStart) return;
+                }
+                catch (ArgumentException) { }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { return; }
+                Array.Clear(_projectLights, 0, _projectLights.Length);
+                _projectBuzzer = false;
+                _projectPid = 0;
+                _outputVersion++;
+            }
+
             private void WorkerLoop(CancellationToken cancellationToken)
             {
-                long appliedRevision = 0;
+                long appliedVersion = -1;
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     SupervisorP0AlarmState snapshot;
+                    long outputVersion;
+                    bool[] lights;
+                    bool buzzer;
                     lock (_gate)
+                    {
+                        RetireExitedProject();
                         snapshot = _state.Clone();
-                    var shouldDrive = snapshot.Revision != appliedRevision ||
+                        outputVersion = _outputVersion;
+                        lights = _projectSuppressed ? new bool[12] : (bool[])_projectLights.Clone();
+                        buzzer = !_projectSuppressed && _projectBuzzer;
+                    }
+                    var shouldDrive = outputVersion != appliedVersion ||
                                       snapshot.Latched;
                     if (shouldDrive)
                     {
                         try
                         {
-                            if (_configuration == null)
+                            if (_configuration == null && _driveForTest == null)
                                 throw new InvalidOperationException(
                                     "P0AlarmHardwareOwnerEngineeringModeDisabled");
-                            _configuration.Drive(
-                                snapshot.Latched,
-                                snapshot.BuzzerMuted);
-                            appliedRevision = snapshot.Revision;
+                            if (_driveForTest != null)
+                                _driveForTest(snapshot.Latched && !snapshot.OutputsSuppressed, snapshot.BuzzerMuted, lights, buzzer);
+                            else _configuration.Drive(snapshot.Latched && !snapshot.OutputsSuppressed,
+                                    snapshot.BuzzerMuted, lights, buzzer);
+                            appliedVersion = outputVersion;
+                            lock (_gate)
+                            {
+                                _commandSentRevision = snapshot.Revision;
+                                _outputStatus = outputVersion == _outputVersion ? "CommandSent" : "Pending";
+                                _outputError = string.Empty;
+                            }
                             AppendAudit(
-                                "P0AlarmHardwareApplied",
+                                "P0AlarmCommandSent",
                                 snapshot,
                                 string.Empty);
                         }
                         catch (Exception ex)
                         {
+                            lock (_gate)
+                            {
+                                _outputStatus = "RetryPending";
+                                _outputError = ex.GetBaseException().Message;
+                            }
                             AppendAudit(
                                 "P0AlarmHardwareRetryPending",
                                 snapshot,
                                 ex.GetBaseException().Message);
                         }
                     }
-                    var waitMs = snapshot.Latched ? 30000 : Timeout.Infinite;
+                    var waitMs = 30000;
                     WaitHandle.WaitAny(
                         new[] { _changed, cancellationToken.WaitHandle },
                         waitMs);
@@ -1226,45 +1471,20 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     if (!File.Exists(_statePath)) return null;
-                    var value = Json.Deserialize<SupervisorP0AlarmState>(
-                        File.ReadAllText(_statePath, Encoding.UTF8));
+                    var value = BoundedJson.Read<SupervisorP0AlarmState>(_statePath);
                     return value?.SchemaVersion == SupervisorProtocol.SchemaVersion &&
                            value.Revision > 0
                         ? value
-                        : null;
+                        : throw new InvalidDataException("P0AlarmStateInvalid");
                 }
-                catch
-                {
-                    return null;
-                }
+                catch (Exception error) { throw new InvalidDataException("P0AlarmStateUnreadable", error); }
             }
 
             private void WriteState(SupervisorP0AlarmState value)
             {
-                var temporary = _statePath + ".tmp-" +
-                                Guid.NewGuid().ToString("N");
-                try
-                {
-                    File.WriteAllText(
-                        temporary,
-                        Json.Serialize(value),
-                        new UTF8Encoding(false));
-                    using (var stream = new FileStream(
-                               temporary,
-                               FileMode.Open,
-                               FileAccess.ReadWrite,
-                               FileShare.Read))
-                        stream.Flush(true);
-                    if (File.Exists(_statePath))
-                        File.Replace(temporary, _statePath, null);
-                    else
-                        File.Move(temporary, _statePath);
-                }
-                finally
-                {
-                    try { if (File.Exists(temporary)) File.Delete(temporary); }
-                    catch { }
-                }
+                var bytes = new UTF8Encoding(false).GetBytes(Json.Serialize(value));
+                if (bytes.Length > BoundedJson.MaximumBytes) throw new InvalidDataException("P0AlarmStateTooLarge");
+                DurableJsonFileStore.WriteAtomicWithBackup(_statePath, bytes);
             }
 
             private void AppendAudit(
@@ -1298,16 +1518,9 @@ namespace MTTFTest.Watchdog
             }
         }
 
-        private sealed class SupervisorP0AlarmState
+        private sealed class SupervisorP0AlarmState : InstallationAlarmSnapshot
         {
-            public int SchemaVersion { get; set; }
-            public bool Latched { get; set; }
-            public bool BuzzerMuted { get; set; }
-            public string EventId { get; set; }
-            public string Code { get; set; }
-            public string Detail { get; set; }
-            public long Revision { get; set; }
-            public long UpdatedUtcTicks { get; set; }
+            public List<P0MuteAudit> MuteAudit { get; set; } = new List<P0MuteAudit>();
 
             internal SupervisorP0AlarmState Clone()
             {
@@ -1316,13 +1529,32 @@ namespace MTTFTest.Watchdog
                     SchemaVersion = SchemaVersion,
                     Latched = Latched,
                     BuzzerMuted = BuzzerMuted,
+                    OutputsSuppressed = OutputsSuppressed,
                     EventId = EventId,
                     Code = Code,
                     Detail = Detail,
                     Revision = Revision,
-                    UpdatedUtcTicks = UpdatedUtcTicks
+                    UpdatedUtcTicks = UpdatedUtcTicks,
+                    FirstObservedUtcTicks = FirstObservedUtcTicks,
+                    LastMuteOperatorSid = LastMuteOperatorSid,
+                    LastMuteRequestId = LastMuteRequestId,
+                    LastMuteUtcTicks = LastMuteUtcTicks,
+                    LastOutputAction = LastOutputAction,
+                    LastOutputOperatorSid = LastOutputOperatorSid,
+                    LastOutputActionUtcTicks = LastOutputActionUtcTicks,
+                    MuteAudit = new List<P0MuteAudit>(MuteAudit ?? new List<P0MuteAudit>())
                 };
             }
+        }
+
+        private sealed class P0MuteAudit
+        {
+            public string EventId { get; set; }
+            public long BeforeRevision { get; set; }
+            public string OperatorSid { get; set; }
+            public string RequestId { get; set; }
+            public string Action { get; set; }
+            public long UtcTicks { get; set; }
         }
 
         private sealed class P0AlarmHardwareConfiguration
@@ -1335,7 +1567,7 @@ namespace MTTFTest.Watchdog
             private int TimeoutMs { get; set; }
             private int Retry { get; set; }
             private List<P0AlarmCommand> AllOff { get; set; }
-            private List<P0AlarmCommand> LightsOn { get; set; }
+            private Dictionary<int, P0AlarmCommand[]> Lights { get; set; }
             private P0AlarmCommand BuzzerOn { get; set; }
             private P0AlarmCommand BuzzerOff { get; set; }
 
@@ -1368,13 +1600,15 @@ namespace MTTFTest.Watchdog
                         .ToString(CultureInfo.InvariantCulture) + ":" +
                     ((int?)element.Attribute("Line") ?? -1)
                         .ToString(CultureInfo.InvariantCulture);
-                var lightCommands = new List<P0AlarmCommand>();
+                var lightCommands = new Dictionary<int, P0AlarmCommand[]>();
                 foreach (var mapping in mappings.Elements("Epb"))
                 {
                     if (!single.TryGetValue(Key(mapping), out var command))
                         throw new InvalidDataException(
                             "AlarmLightCommandMissing:" + Key(mapping));
-                    lightCommands.Add(new P0AlarmCommand(command.On, true));
+                    var channel = (int?)mapping.Attribute("Channel") ?? 0;
+                    if (channel < 1 || channel > 12) throw new InvalidDataException("AlarmChannelInvalid");
+                    lightCommands.Add(channel, new[] { new P0AlarmCommand(command.Off, true), new P0AlarmCommand(command.On, true) });
                 }
                 var buzzer = mappings.Element("Buzzer") ??
                              throw new InvalidDataException("AlarmBuzzerMappingMissing");
@@ -1386,6 +1620,11 @@ namespace MTTFTest.Watchdog
                 var stopText = (string)serial.Attribute("StopBits") ?? "1";
                 var stopBits = stopText == "1" ? StopBits.One :
                     stopText == "2" ? StopBits.Two : StopBits.One;
+                var allOff = commands.Element("AllOff")?.Elements("Device")
+                    .Select(element => new P0AlarmCommand((string)element.Attribute("Hex") ?? string.Empty,
+                        (bool?)element.Attribute("ExpectResponse") ?? true)).ToList() ?? new List<P0AlarmCommand>();
+                if (allOff.Count == 0) throw new InvalidDataException("AlarmAllOffCommandsMissing");
+                foreach (var command in allOff) ParseHex(command.Hex);
                 return new P0AlarmHardwareConfiguration
                 {
                     PortName = (string)serial.Attribute("Port") ?? string.Empty,
@@ -1395,18 +1634,14 @@ namespace MTTFTest.Watchdog
                     StopBits = stopBits,
                     TimeoutMs = (int?)behavior?.Attribute("TimeoutMs") ?? 200,
                     Retry = (int?)behavior?.Attribute("Retry") ?? 2,
-                    AllOff = commands.Element("AllOff")?.Elements("Device")
-                        .Select(element => new P0AlarmCommand(
-                            (string)element.Attribute("Hex") ?? string.Empty,
-                            (bool?)element.Attribute("ExpectResponse") ?? true))
-                        .ToList() ?? new List<P0AlarmCommand>(),
-                    LightsOn = lightCommands,
+                    AllOff = allOff,
+                    Lights = lightCommands,
                     BuzzerOn = new P0AlarmCommand(buzzerCommand.On, true),
                     BuzzerOff = new P0AlarmCommand(buzzerCommand.Off, true)
                 };
             }
 
-            internal void Drive(bool latched, bool buzzerMuted)
+            internal void Drive(bool latched, bool buzzerMuted, bool[] projectLights, bool projectBuzzer)
             {
                 if (string.IsNullOrWhiteSpace(PortName))
                     throw new InvalidDataException("AlarmSerialPortMissing");
@@ -1422,13 +1657,14 @@ namespace MTTFTest.Watchdog
                 })
                 {
                     port.Open();
-                    if (!latched)
+                    if (!latched && !projectBuzzer && !projectLights.Any(on => on))
                     {
                         foreach (var command in AllOff) Send(port, command);
                         return;
                     }
-                    foreach (var command in LightsOn) Send(port, command);
-                    Send(port, buzzerMuted ? BuzzerOff : BuzzerOn);
+                    foreach (var light in Lights.OrderBy(pair => pair.Key))
+                        Send(port, light.Value[latched || projectLights[light.Key - 1] ? 1 : 0]);
+                    Send(port, (latched ? !buzzerMuted : projectBuzzer) ? BuzzerOn : BuzzerOff);
                 }
             }
 

@@ -51,6 +51,18 @@ namespace AdaptiveControlTests
                 ref passed, failures);
             Run("normal/recovery/emergency共用retention gate", AllEntryModesUseSharedGate,
                 ref passed, failures);
+            Run("完成通知空围栏仅一次绑定真实停止事务", CompletionFenceBindsStopTransactionOnce,
+                ref passed, failures);
+            Run("已有安全或恢复证据禁止补绑定停止事务", NonPristineFenceRejectsStopBinding,
+                ref passed, failures);
+            Run("未授权取消不覆盖真实停止事务", RejectedStartupPreservesStopTransaction,
+                ref passed, failures);
+            Run("未授权取消不覆盖已有安全证据", RejectedStartupPreservesSafetyEvidence,
+                ref passed, failures);
+            Run("并发首次停止绑定仅一个身份成功", ConcurrentFirstStopBindingHasOneWinner,
+                ref passed, failures);
+            Run("取消会话flush完成前不得提交终态", RejectedStartupWaitsForJournalFlush,
+                ref passed, failures);
             Run("真实Runtime与Sidecar两轮Closing等待StopCompleted后终态",
                 RealRuntimeClosingFenceWaitsForStopCompletedAcrossTwoRounds,
                 ref passed, failures);
@@ -58,6 +70,203 @@ namespace AdaptiveControlTests
                 throw new InvalidOperationException(
                     "Runtime shutdown retention专项失败: " + string.Join("; ", failures));
             return passed;
+        }
+
+        private static void CompletionFenceBindsStopTransactionOnce()
+        {
+            foreach (var completed in new[] { false, true })
+                WithIsolatedClosingContext(context =>
+                {
+                    if (completed) WatchdogRuntime.NotifyRunCompleted();
+                    else WatchdogRuntime.NotifyRunStopped(new WatchdogStopSummary { Detail = "Completed" });
+                    Assert(WatchdogClosingTombstoneStore.TryRead(context.JournalDirectory,
+                               context.SessionId, out var initial) &&
+                           string.IsNullOrWhiteSpace(initial.StopSafetyTransactionId),
+                        "完成通知未建立空事务Closing围栏");
+                    var transaction = Guid.NewGuid();
+                    var run = Guid.NewGuid();
+                    var bound = WatchdogRuntime.BeginSessionCloseExact(context, "ApplicationClosing",
+                        transaction, run, 7, 9);
+                    Assert(bound.IsIrreversible && bound.Tombstone.StopSafetyTransactionId == transaction.ToString("N") &&
+                           bound.Tombstone.StopRunId == run.ToString("N") && bound.Tombstone.StopRunEpoch == 7 &&
+                           bound.Tombstone.StopSafetyBoundaryGeneration == 9 &&
+                           bound.Tombstone.StateVersion == initial.StateVersion + 1 &&
+                           bound.Tombstone.ExitDisposition == initial.ExitDisposition,
+                        "空事务Closing围栏未耐久补绑定真实停止事务: " + bound.Error);
+                    Assert(!WatchdogRuntime.CompleteSessionCloseTombstone(context, "BeforeSafety"),
+                        "补绑定身份被误当作最终安全证明");
+                    var replay = WatchdogRuntime.BeginSessionCloseExact(context, "ApplicationClosing",
+                        transaction, run, 7, 9);
+                    Assert(replay.IsIrreversible && replay.Tombstone.StateVersion == bound.Tombstone.StateVersion,
+                        "同一停止身份重复绑定不是幂等操作");
+                    var overwrite = WatchdogRuntime.BeginSessionCloseExact(context, "ApplicationClosing",
+                        Guid.NewGuid(), run, 7, 9);
+                    Assert(overwrite.MarkOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch,
+                        "已绑定停止事务被替换");
+                    var changedRun = WatchdogRuntime.BeginSessionCloseExact(context, "ApplicationClosing",
+                        transaction, Guid.NewGuid(), 7, 9);
+                    Assert(changedRun.MarkOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch,
+                        "已绑定停止Run身份被替换");
+                    Assert(WatchdogRuntime.AdvanceSessionCloseSafety(context, new StopSafetyResult
+                    {
+                        SafetyTransactionId = transaction, RunId = run, RunEpoch = 7,
+                        SafetyBoundaryGeneration = 9, MotorOffCommandSucceeded = true,
+                        PowerOffConfirmed = true, PressureSafeConfirmed = true,
+                        PersistenceBoundaryConfirmed = true, LogicalQuiescenceConfirmed = true
+                    }) && WatchdogRuntime.CompleteSessionCloseTombstone(context, "AfterSafety"),
+                        "补绑定后无法凭真实最终安全结果完成收尾");
+                });
+        }
+
+        private static void NonPristineFenceRejectsStopBinding()
+        {
+            var changes = new Action<WatchdogClosingTombstone>[]
+            {
+                x => x.State = WatchdogClosingTombstoneState.Terminal,
+                x => x.StopRunId = Guid.NewGuid().ToString("N"),
+                x => x.StopRunEpoch = 3,
+                x => x.StopSafetyBoundaryGeneration = 4,
+                x => x.MotorsOff = true,
+                x => x.FinalSafetyResultCommitted = true,
+                x => x.ControllerProgressVersion = 1,
+                x => x.SafetyHandoffId = Guid.NewGuid().ToString("N"),
+                x => x.TakeoverTransactionId = Guid.NewGuid().ToString("N"),
+                x => { x.SchemaVersion = 6; x.StartupRejectedBeforeControl = true; },
+                x =>
+                {
+                    x.ExitDisposition = WatchdogExitDisposition.TakeoverReplacementExit;
+                    x.RelaunchDisposition = WatchdogRelaunchDisposition.PreserveApprovedPermit;
+                    x.TakeoverTransactionId = Guid.NewGuid().ToString("N");
+                    x.RelaunchPermitGeneration = 1;
+                    x.RelaunchPermitId = Guid.NewGuid().ToString("N");
+                    x.RelaunchPermitNonceSha256 = new string('a', 64);
+                }
+            };
+            foreach (var change in changes)
+                WithIsolatedClosingContext(context =>
+                {
+                    var initial = new WatchdogClosingTombstone
+                    {
+                        SessionId = context.SessionId, SessionGeneration = context.SessionGeneration,
+                        SessionLease = context.SessionLease, StateVersion = 1,
+                        State = WatchdogClosingTombstoneState.Closing
+                    };
+                    change(initial);
+                    WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, initial);
+                    var rejected = WatchdogRuntime.BeginSessionCloseExact(context, "ApplicationClosing",
+                        Guid.NewGuid(), Guid.NewGuid(), 7, 9);
+                    Assert(rejected.MarkOutcome == RuntimeShutdownMarkOutcome.IdentityMismatch,
+                        "非空白或终态围栏错误接受首次停止事务绑定");
+                });
+        }
+
+        private static void RejectedStartupPreservesStopTransaction()
+        {
+            foreach (var existing in new[] { false, true })
+                WithIsolatedClosingContext(context =>
+                {
+                    var transaction = Guid.NewGuid();
+                    var run = Guid.NewGuid();
+                    if (existing)
+                        Assert(WatchdogRuntime.BeginSessionCloseExact(context, "ManualStopIntent",
+                            transaction, run, 1, 1).IsIrreversible, "真实停止围栏创建失败");
+                    Assert(context.TryRejectBeforeControlAdmission(), "未授权上下文取消失败");
+                    var fence = WatchdogRuntime.BeginSessionCloseExact(context, "StartupFailed",
+                        transaction, run, 1, 1);
+                    Assert(fence.IsIrreversible && !fence.Tombstone.StartupRejectedBeforeControl &&
+                           fence.Tombstone.StopSafetyTransactionId == transaction.ToString("N"),
+                        "启动取消覆盖真实停止身份，导致围栏不能持久化: " + fence.Error);
+                    Assert(!WatchdogRuntime.CompleteSessionCloseTombstone(context, "BeforeSafety"),
+                        "真实停止事务被启动取消绕过安全证明");
+                });
+        }
+
+        private static void RejectedStartupPreservesSafetyEvidence()
+        {
+            WithIsolatedClosingContext(context =>
+            {
+                var initial = WatchdogRuntime.BeginSessionCloseExact(context, "RunStopped",
+                    Guid.Empty, Guid.Empty, 0, 0).Tombstone;
+                initial.PowerOff = true;
+                initial.StateVersion++;
+                WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, initial);
+                Assert(context.TryRejectBeforeControlAdmission(), "未授权上下文取消失败");
+                var reused = WatchdogRuntime.BeginSessionCloseExact(context, "StartupFailed",
+                    Guid.Empty, Guid.Empty, 0, 0);
+                Assert(reused.IsIrreversible && !reused.Tombstone.StartupRejectedBeforeControl &&
+                       reused.Tombstone.PowerOff, "取消标记覆盖已有安全证据");
+                Assert(!WatchdogRuntime.CompleteSessionCloseTombstone(context, "PartialSafety"),
+                    "部分安全证据被启动取消绕过");
+            });
+        }
+
+        private static void WithIsolatedClosingContext(Action<RuntimeTransportSessionContext> action)
+        {
+            var identity = WatchdogRuntime.CreateUiBindingProductionContext();
+            var journal = Path.Combine(
+                Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                "closing-bind-" + identity.SessionId);
+            Directory.CreateDirectory(journal);
+            var context = new RuntimeTransportSessionContext(identity.SessionId, identity.PipeName,
+                string.Empty, string.Empty, journal, new WatchdogJournalPolicy(), new[] { 4 },
+                false, 0, identity.SessionGeneration, 0, string.Empty, string.Empty,
+                RuntimeJournalMode.CreateNewInitial, null,
+                new RuntimeTransportSessionState(() => new WatchdogHeartbeat()), null,
+                new RuntimeCallbackIngressGate());
+            context.BindSessionLease(1);
+            Assert(WatchdogRuntime.InstallShutdownRetentionTestingContext(context),
+                "无法安装隔离Closing测试上下文");
+            try { action(context); }
+            finally
+            {
+                WatchdogRuntime.RemoveShutdownRetentionTestingContext(context);
+                DeleteLocalSessionCloseArtifacts(context.SessionId);
+                var projectCopy = WatchdogJournalPaths.ProjectClosingPath(context.JournalDirectory, context.SessionId);
+                if (File.Exists(projectCopy)) File.Delete(projectCopy);
+                Directory.Delete(journal, true);
+            }
+        }
+
+        private static void ConcurrentFirstStopBindingHasOneWinner()
+        {
+            WithIsolatedClosingContext(context =>
+            {
+                WatchdogRuntime.NotifyRunStopped(new WatchdogStopSummary { Detail = "Completed" });
+                var run = Guid.NewGuid();
+                using (var start = new ManualResetEventSlim(false))
+                {
+                    var tasks = Enumerable.Range(0, 32).Select(index => Task.Run(() =>
+                    {
+                        start.Wait();
+                        return WatchdogRuntime.BeginSessionCloseExact(context, "ConcurrentStop",
+                            Guid.NewGuid(), run, 1, 1);
+                    })).ToArray();
+                    start.Set();
+                    Task.WaitAll(tasks);
+                    Assert(tasks.Count(task => task.Result.IsIrreversible) == 1 &&
+                           tasks.Count(task => task.Result.MarkOutcome ==
+                               RuntimeShutdownMarkOutcome.IdentityMismatch) == 31,
+                        "并发补绑定允许多个停止身份成功或没有成功绑定");
+                }
+            });
+        }
+
+        private static void RejectedStartupWaitsForJournalFlush()
+        {
+            using (var session = new RuntimeShutdownRetentionProductionTestSession())
+            {
+                Assert(session.Context.TryRejectBeforeControlAdmission(), "未授权上下文取消失败");
+                session.FlushFailuresRemaining = 1;
+                var first = session.ShutdownOrRetry();
+                Assert(!first.IsTerminal && !first.SessionClosingPersisted &&
+                       !first.IsCloseAuthorized && session.CaptureOwner() != null,
+                    "取消会话在日志flush失败时提前提交关闭终态");
+                var terminal = session.ShutdownOrRetry();
+                Assert(terminal.IsTerminal && terminal.SessionClosingPersisted &&
+                       session.TransportCalls == 1 && session.PipelineCalls == 1 &&
+                       session.JournalFlushCalls == 2 && session.JournalDisposeCalls == 1,
+                    "取消会话未在仅重试flush完成后提交关闭终态");
+            }
         }
 
         private static void RealRuntimeClosingFenceWaitsForStopCompletedAcrossTwoRounds()

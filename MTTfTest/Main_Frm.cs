@@ -458,6 +458,7 @@ namespace MtEmbTest
             关于ToolStripMenuItem1.Visible = true;
             关于ToolStripMenuItem1.Text = "运行身份";
             关于ToolStripMenuItem1.Click += ShowRuntimeBuildIdentity;
+            InitializeInstallationAlarmMenu();
         }
 
         private void PublishCurrentProjectBuildIdentity(RuntimeBuildIdentity identity = null)

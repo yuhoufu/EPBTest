@@ -6261,6 +6261,7 @@ namespace MTTFTest.Watchdog
             var muted = SupervisorP0AlarmClient.TryMuteBuzzer(
                 "OperatorMuteFromRecoveryWindow",
                 "RecoveryTransitionWindow");
+            _transitionWindow.ReportMuteResult(muted);
             RecordEvent(
                 muted ? "P0AlarmBuzzerMutedByOperator" : "P0AlarmBuzzerMuteRejected",
                 "FaultLightAndLatchPreserved=True;SupervisorAccepted=" + muted);
@@ -6425,7 +6426,7 @@ namespace MTTFTest.Watchdog
                 return WatchdogCloseFenceAction.None;
             if (closing.PreservesApprovedPermit)
                 return WatchdogCloseFenceAction.None;
-            if (closing.IsSafetyTerminal)
+            if (closing.IsSessionTerminal)
                 return WatchdogCloseFenceAction.TerminateSession;
             if (closing.State != WatchdogClosingTombstoneState.Closing &&
                 closing.State != WatchdogClosingTombstoneState.Terminal)
@@ -6446,7 +6447,7 @@ namespace MTTFTest.Watchdog
             if (closing != null)
             {
                 ObserveClosingFence(closing);
-                if (closing.IsSafetyTerminal)
+                if (closing.IsSessionTerminal)
                 {
                     if (MatchesPreservedTakeoverPermit(closing))
                     {

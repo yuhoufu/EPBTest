@@ -155,6 +155,22 @@ namespace MTEmbTest
         private WatchdogStopAllScopeLease _scopeLease;
         private int _callbackPipelineActive;
         private int _engineShutdownReceiptObserved;
+        private int _controlAdmissionState;
+        internal bool InitialStartupRejectedBeforeControl =>
+            Volatile.Read(ref _controlAdmissionState) == 2;
+
+        internal bool TryRejectBeforeControlAdmission()
+        {
+            if (JournalMode != RuntimeJournalMode.CreateNewInitial || RecoveryProcess) return false;
+            var previous = Interlocked.CompareExchange(ref _controlAdmissionState, 2, 0);
+            return previous == 0 || previous == 2;
+        }
+
+        internal void MarkControlAdmission()
+        {
+            if (Interlocked.CompareExchange(ref _controlAdmissionState, 1, 0) == 2)
+                throw new InvalidOperationException("本次启动已取消，不能授权控制动作。");
+        }
         private long _closingAttempt;
         private RuntimeShutdownReceipt _cachedShutdownReceipt;
         private readonly List<IDisposable> _callbackHandlerLeases = new List<IDisposable>();
@@ -1159,6 +1175,27 @@ namespace MTEmbTest
             }
         }
 
+        internal static async Task RequireManualBindingBoundaryAsync()
+        {
+            await SessionLifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (!IsShutdownReady(ShutdownRuntimeWithReceiptNoGate()))
+                    throw new InvalidOperationException("旧会话尚未完成安全与资源收尾，不能更新项目恢复绑定。");
+            }
+            finally { SessionLifecycleGate.Release(); }
+        }
+
+        internal static bool TryRejectUnadmittedSession()
+        {
+            lock (Gate) return _activeContext?.TryRejectBeforeControlAdmission() == true;
+        }
+
+        internal static void MarkControlAdmission()
+        {
+            lock (Gate) _activeContext?.MarkControlAdmission();
+        }
+
         private static async Task<WatchdogAttachResult> StartSessionCoreAsync(int[] selectedChannels)
         {
             var previous = ShutdownRuntimeWithReceiptNoGate();
@@ -1218,9 +1255,11 @@ namespace MTEmbTest
             try
             {
                 await StartAndAwaitExactAttachedAsync(context, null, null).ConfigureAwait(false);
+                if (!IsExactAttached(CaptureTransportSnapshot()))
+                    throw new InvalidOperationException("Watchdog Attached在启动授权返回前失效。");
                 return new WatchdogAttachResult
                 {
-                    Attached = IsExactAttached(CaptureTransportSnapshot()),
+                    Attached = true,
                     SessionId = context.SessionId,
                     Warning = warnings.Count == 0 ? null : string.Join(" | ", warnings),
                     JournalPolicyLog = policy.ToStartupLogLine()
@@ -1228,6 +1267,10 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
+                // This method has not returned Attached to its caller, so it has
+                // not issued permission to start control. This is session evidence,
+                // never proof that motors, power or pressure were physically safe.
+                context.TryRejectBeforeControlAdmission();
                 try { context.Journal?.RecordError("Sidecar startup failed: " + ex); } catch { }
                 try { context.Journal?.Flush(TimeSpan.FromSeconds(1)); } catch { }
                 var receipt = ShutdownRuntimeWithReceiptNoGate();
@@ -3310,6 +3353,30 @@ namespace MTEmbTest
             WatchdogRelaunchDisposition relaunchDisposition =
                 WatchdogRelaunchDisposition.Forbidden)
         {
+            if (context == null)
+                return new RuntimeSessionCloseFenceReceipt
+                {
+                    MarkOutcome = RuntimeShutdownMarkOutcome.NoEngineSession,
+                    Error = "Watchdog exact close context is missing."
+                };
+            // Serialize first binding against another close notification for
+            // this same session; neither caller may replace a bound transaction.
+            lock (context)
+                return BeginSessionCloseExactCore(context, closeIntent, stopSafetyTransactionId,
+                    stopRunId, stopRunEpoch, stopSafetyBoundaryGeneration,
+                    exitDisposition, relaunchDisposition);
+        }
+
+        private static RuntimeSessionCloseFenceReceipt BeginSessionCloseExactCore(
+            RuntimeTransportSessionContext context,
+            string closeIntent,
+            Guid stopSafetyTransactionId,
+            Guid stopRunId,
+            long stopRunEpoch,
+            long stopSafetyBoundaryGeneration,
+            WatchdogExitDisposition exitDisposition,
+            WatchdogRelaunchDisposition relaunchDisposition)
+        {
             var receipt = new RuntimeSessionCloseFenceReceipt { Context = context };
             if (context == null || context.SessionLease <= 0)
             {
@@ -3345,6 +3412,17 @@ namespace MTEmbTest
                 exitDisposition = typedExit.ExitDisposition;
                 relaunchDisposition = typedExit.RelaunchDisposition;
             }
+            var bindStopTransaction = hasPrevious &&
+                CanBindClosingTransaction(previous, stopSafetyTransactionId,
+                    stopRunEpoch, stopSafetyBoundaryGeneration);
+            if (bindStopTransaction && hasTypedExit &&
+                (relaunchDisposition != WatchdogRelaunchDisposition.Forbidden ||
+                 exitDisposition == WatchdogExitDisposition.TakeoverReplacementExit ||
+                 !string.IsNullOrWhiteSpace(typedExit.StopSafetyTransactionId) &&
+                 !string.Equals(typedExit.StopSafetyTransactionId,
+                     stopSafetyTransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase)))
+                return RejectSessionCloseFence(receipt, context,
+                    "TypedExitStopIdentityChanged", previous);
             if (hasPrevious &&
                 (!IsExactClosingTombstoneIdentity(context, previous) ||
                  !IsCompatibleClosingTransaction(
@@ -3383,6 +3461,46 @@ namespace MTEmbTest
 
             if (hasPrevious)
             {
+                if (bindStopTransaction)
+                {
+                    previous.StopSafetyTransactionId = stopSafetyTransactionId.ToString("N");
+                    previous.StopRunId = stopRunId == Guid.Empty ? string.Empty : stopRunId.ToString("N");
+                    previous.StopRunEpoch = stopRunEpoch;
+                    previous.StopSafetyBoundaryGeneration = stopSafetyBoundaryGeneration;
+                    previous.StateVersion++;
+                    try
+                    {
+                        previous = WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, previous);
+                    }
+                    catch (Exception ex)
+                    {
+                        receipt.Error = ex.GetBaseException().Message;
+                        receipt.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+                        return receipt;
+                    }
+                }
+                if (context.InitialStartupRejectedBeforeControl &&
+                    HasUnboundClosingIntent(previous) &&
+                    previous.ExitDisposition == WatchdogExitDisposition.OperatorExit &&
+                    exitDisposition == WatchdogExitDisposition.OperatorExit &&
+                    relaunchDisposition == WatchdogRelaunchDisposition.Forbidden &&
+                    stopSafetyTransactionId == Guid.Empty && stopRunId == Guid.Empty &&
+                    stopRunEpoch == 0 && stopSafetyBoundaryGeneration == 0)
+                {
+                    previous.SchemaVersion = 6;
+                    previous.StartupRejectedBeforeControl = true;
+                    previous.StateVersion++;
+                    try
+                    {
+                        previous = WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, previous);
+                    }
+                    catch (Exception ex)
+                    {
+                        receipt.Error = ex.GetBaseException().Message;
+                        receipt.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+                        return receipt;
+                    }
+                }
                 if (previous.SchemaVersion < 5)
                 {
                     if (relaunchDisposition ==
@@ -3476,6 +3594,13 @@ namespace MTEmbTest
                 SafetyOwner = "MainProcess",
                 TerminalReason = closeIntent ?? string.Empty
             };
+            if (context.InitialStartupRejectedBeforeControl &&
+                HasUnboundClosingIntent(tombstone) &&
+                tombstone.ExitDisposition == WatchdogExitDisposition.OperatorExit)
+            {
+                tombstone.SchemaVersion = 6;
+                tombstone.StartupRejectedBeforeControl = true;
+            }
 
             try
             {
@@ -3526,9 +3651,10 @@ namespace MTEmbTest
                     existing.SessionLease != context.SessionLease)
                     return false;
                 if (existing.State == WatchdogClosingTombstoneState.Terminal)
-                    return existing.IsSafetyTerminal;
-                if (!existing.MotorsOff || !existing.PowerOff || !existing.PressureSafe ||
-                    !existing.PersistenceDrained || !existing.LogicalQuiescent)
+                    return existing.IsSessionTerminal;
+                if (!existing.IsUnadmittedStartupCancellation &&
+                    (!existing.MotorsOff || !existing.PowerOff || !existing.PressureSafe ||
+                     !existing.PersistenceDrained || !existing.LogicalQuiescent))
                     return false;
                 existing.State = WatchdogClosingTombstoneState.Terminal;
                 existing.SafetyStage = WatchdogClosingSafetyStage.Terminal;
@@ -3674,6 +3800,9 @@ namespace MTEmbTest
             long stopSafetyBoundaryGeneration)
         {
             if (tombstone == null) return false;
+            if (CanBindClosingTransaction(tombstone, stopSafetyTransactionId,
+                    stopRunEpoch, stopSafetyBoundaryGeneration))
+                return true;
             if (stopSafetyTransactionId != Guid.Empty &&
                 !string.Equals(
                     tombstone.StopSafetyTransactionId,
@@ -3692,6 +3821,40 @@ namespace MTEmbTest
                 tombstone.StopSafetyBoundaryGeneration != stopSafetyBoundaryGeneration)
                 return false;
             return true;
+        }
+
+        private static bool CanBindClosingTransaction(
+            WatchdogClosingTombstone tombstone,
+            Guid stopSafetyTransactionId,
+            long stopRunEpoch,
+            long stopSafetyBoundaryGeneration)
+        {
+            return stopSafetyTransactionId != Guid.Empty && stopRunEpoch >= 0 &&
+                   stopSafetyBoundaryGeneration > 0 && HasUnboundClosingIntent(tombstone);
+        }
+
+        private static bool HasUnboundClosingIntent(WatchdogClosingTombstone tombstone)
+        {
+            return tombstone != null &&
+                   tombstone.State == WatchdogClosingTombstoneState.Closing &&
+                   tombstone.EffectiveSafetyStage == WatchdogClosingSafetyStage.ClosingIntent &&
+                   !tombstone.StartupRejectedBeforeControl &&
+                   string.IsNullOrWhiteSpace(tombstone.StopSafetyTransactionId) &&
+                   string.IsNullOrWhiteSpace(tombstone.StopRunId) &&
+                   tombstone.StopRunEpoch == 0 && tombstone.StopSafetyBoundaryGeneration == 0 &&
+                   tombstone.ControllerStopStage == 0 && tombstone.ControllerProgressVersion == 0 &&
+                   !tombstone.FinalSafetyResultCommitted && !tombstone.MotorsOff &&
+                   !tombstone.PowerOff && !tombstone.PressureSafe &&
+                   !tombstone.PersistenceDrained && !tombstone.LogicalQuiescent &&
+                   !tombstone.DataContinuityVerified && !tombstone.OldProcessExitProven &&
+                   tombstone.DataAuditState == WatchdogDataAuditState.Unknown &&
+                   string.IsNullOrWhiteSpace(tombstone.SafetyHandoffId) &&
+                   string.IsNullOrWhiteSpace(tombstone.TakeoverTransactionId) &&
+                   tombstone.ExitDisposition != WatchdogExitDisposition.TakeoverReplacementExit &&
+                   tombstone.RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden &&
+                   tombstone.RelaunchPermitGeneration == 0 &&
+                   string.IsNullOrWhiteSpace(tombstone.RelaunchPermitId) &&
+                   string.IsNullOrWhiteSpace(tombstone.RelaunchPermitNonceSha256);
         }
 
         private static RuntimeSessionCloseFenceReceipt RejectSessionCloseFence(

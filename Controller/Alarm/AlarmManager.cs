@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Ports;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
+using MTTFTest.Watchdog.Protocol;
 
 namespace Controller.Alarm
 {
@@ -20,6 +22,9 @@ namespace Controller.Alarm
         private readonly Dictionary<int, AlarmEpbMapping> _epbMap;
 
         private readonly M7055dSerialClient _client;
+        private readonly bool _supervisorOwned;
+        private readonly Func<InstallationAlarmAction, int, bool, CancellationToken, Task<InstallationAlarmSnapshot>> _supervisorOutput;
+        private int _safeCloseStarted;
 
         private readonly HashSet<int> _active = new();
         private volatile bool _buzzerEnabled;
@@ -27,6 +32,12 @@ namespace Controller.Alarm
         private CancellationTokenSource _buzzerDebounceCts;
 
         public AlarmManager(AlarmConfig cfg, IAppLogger log = null)
+            : this(cfg, log, null)
+        {
+        }
+
+        internal AlarmManager(AlarmConfig cfg, IAppLogger log,
+            Func<InstallationAlarmAction, int, bool, CancellationToken, Task<InstallationAlarmSnapshot>> supervisorOutput)
         {
             _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
             _log = log ?? NullLogger.Instance;
@@ -44,7 +55,15 @@ namespace Controller.Alarm
                 .GroupBy(x => x.Channel)
                 .ToDictionary(g => g.Key, g => g.First());
 
-            _client = new M7055dSerialClient(
+            string executable;
+            using (var process = Process.GetCurrentProcess()) executable = process.MainModule.FileName;
+            _supervisorOwned = supervisorOutput != null || File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MTTFTest.UnattendedMode.required")) ||
+                               File.Exists(IndependentInstallationBinding.PathFor(executable));
+            _supervisorOutput = supervisorOutput ?? ((action, channel, on, token) =>
+                action == InstallationAlarmAction.CompleteSafeClose
+                    ? InstallationAlarmClient.CompleteSafeCloseAsync(token)
+                    : Task.Run(() => InstallationAlarmClient.Send(action, channel, on, cancellation: token).State, token));
+            if (!_supervisorOwned) _client = new M7055dSerialClient(
                 _cfg.Serial.Port,
                 _cfg.Serial.Baud,
                 _cfg.Serial.DataBits,
@@ -63,12 +82,47 @@ namespace Controller.Alarm
                     $"Device={_cfg.Mappings.Buzzer.DeviceId} Line={_cfg.Mappings.Buzzer.Line}",
                     "报警");
 
-            TryOpen();
+            if (!_supervisorOwned) TryOpen();
+            else _log.Info("报警输出由 Supervisor 统一持有；主程序不打开报警串口。", "报警");
         }
 
         public event Action<int, bool, string> AlarmStateChanged;
 
         public bool BuzzerEnabled => _buzzerEnabled;
+
+        public bool SupervisorOwnsOutputs => _supervisorOwned;
+
+        /// <summary>仅在现有物理安全停止/正常关闭屏障成功后调用；Dispose 不代表安全关闭。</summary>
+        public async Task<InstallationAlarmSnapshot> CompleteSafeCloseAsync(CancellationToken token = default)
+        {
+            Interlocked.Exchange(ref _safeCloseStarted, 1);
+            try { _buzzerDebounceCts?.Cancel(); } catch { }
+            var held = false;
+            try
+            {
+                await _ioGate.WaitAsync(token).ConfigureAwait(false);
+                held = true;
+                if (_supervisorOwned)
+                    return await _supervisorOutput(InstallationAlarmAction.CompleteSafeClose, 0, false, token).ConfigureAwait(false);
+                if (!_cfg.Commands.AllOff.Any(command => command != null && !string.IsNullOrWhiteSpace(command.Hex)))
+                    throw new InvalidDataException("AlarmAllOffCommandsMissing");
+                foreach (var command in _cfg.Commands.AllOff.Where(command => command != null).OrderBy(command => command.DeviceId))
+                    _client.Send(HexToBytes(command.Hex), command.ExpectResponse);
+                return null;
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _safeCloseStarted, 0);
+                // Restore ordinary demands only. Never re-acknowledge a newer P0 after a failed close.
+                _tasks.Observe(Task.Run(async () =>
+                {
+                    await RefreshAllIndicatorsAsync().ConfigureAwait(false);
+                    await RefreshBuzzerAsync().ConfigureAwait(false);
+                }), "AlarmRestoreAfterFailedClose", Guid.Empty);
+                throw;
+            }
+            finally { if (held) _ioGate.Release(); }
+        }
 
         public void SetBuzzerEnabled(bool enabled)
         {
@@ -158,10 +212,13 @@ namespace Controller.Alarm
             await _ioGate.WaitAsync(token).ConfigureAwait(false);
             try
             {
+                if (Volatile.Read(ref _safeCloseStarted) != 0) return;
                 _cooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(0, _cfg.Behavior.RearmDelayMs));
 
                 // 发送 AllOff
-                foreach (var cmd in _cfg.Commands.AllOff.OrderBy(x => x.DeviceId))
+                if (_supervisorOwned)
+                    await _supervisorOutput(InstallationAlarmAction.ClearProjectOutputs, 0, false, token).ConfigureAwait(false);
+                else foreach (var cmd in _cfg.Commands.AllOff.OrderBy(x => x.DeviceId))
                 {
                     if (cmd == null) continue;
                     await SendHexNoGateAsync(cmd.Hex, cmd.ExpectResponse, token).ConfigureAwait(false);
@@ -343,6 +400,24 @@ namespace Controller.Alarm
             CancellationToken token,
             string identity = null)
         {
+            if (Volatile.Read(ref _safeCloseStarted) != 0) return;
+            if (_supervisorOwned)
+            {
+                await _ioGate.WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    if (Volatile.Read(ref _safeCloseStarted) != 0) return;
+                    var buzzer = _cfg.Mappings.Buzzer;
+                    var isBuzzer = buzzer != null && buzzer.DeviceId == deviceId && buzzer.Line == line;
+                    var channel = _epbMap.FirstOrDefault(pair => pair.Value.DeviceId == deviceId && pair.Value.Line == line).Key;
+                    if (!isBuzzer && channel == 0) throw new InvalidDataException("AlarmOutputMappingMissing");
+                    await _supervisorOutput(isBuzzer ? InstallationAlarmAction.SetBuzzer :
+                        InstallationAlarmAction.SetIndicator, channel, on, token).ConfigureAwait(false);
+                    _log.Info($"AlarmOutputDemandAccepted {identity} State={(on ? "On" : "Off")} Confirmation=SupervisorQueue", "报警");
+                    return;
+                }
+                finally { _ioGate.Release(); }
+            }
             if (!_singleCoil.TryGetValue((deviceId, line), out var cmd))
             {
                 _log.Warn(
@@ -369,10 +444,10 @@ namespace Controller.Alarm
             var result = await SendHexAsync(hex, expectResponse: true, token).ConfigureAwait(false);
             if (result.Succeeded)
                 _log.Info(
-                    $"AlarmOutputAcked {identity ?? "Output=Unknown"} " +
+                    $"AlarmOutputCommandSent {identity ?? "Output=Unknown"} " +
                     $"Device={deviceId} Line={line} State={(on ? "On" : "Off")} " +
                     $"Attempt={result.Attempts} LatencyMs={result.ElapsedMilliseconds:F1} " +
-                    "Confirmation=SerialResponse",
+                    "Confirmation=SerialWriteOnly;PhysicalState=Unverified",
                     "报警");
             else
                 _log.Warn(
@@ -456,7 +531,13 @@ namespace Controller.Alarm
             }
 
             try { _tasks.DrainAsync(1000).GetAwaiter().GetResult(); } catch { }
-            _client.Dispose();
+            // A process crash/disposal only releases project demands. It never acknowledges P0.
+            if (_supervisorOwned && Volatile.Read(ref _safeCloseStarted) == 0)
+            {
+                try { _supervisorOutput(InstallationAlarmAction.ReleaseProjectOutputs, 0, false, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (Exception error) { _log.Warn("项目报警输出释放未确认：" + error.Message, "报警"); }
+            }
+            _client?.Dispose();
             _ioGate.Dispose();
         }
     }

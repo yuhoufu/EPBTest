@@ -32,6 +32,9 @@
     </Reference>
     <Reference Include="System" />
     <Compile Include="IndependentBootstrapTests.cs" />
+    <Compile Include="WatchdogFailedStartupTests.cs" />
+    <Compile Include="InstallationAlarmTests.cs" />
+    <Compile Include="IndependentProjectBindingTests.cs" />
     <Compile Include="RecoveryCommitRoutingTests.cs" />
     <Compile Include="EpbSummarySelectionTests.cs" />
     <Compile Include="IndependentInstallSetupTests.cs" />

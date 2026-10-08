@@ -2294,10 +2294,31 @@ namespace MTTFTest.Watchdog.Client
                         WatchdogConnectFailureKind.SessionRevoked,
                         "Watchdog Attached 后Session已失效。");
 
-                if (!SendHeartbeatSnapshot("Attached", sessionLease, connectionGeneration, connectionIdentity))
+                var firstHeartbeat = SendHeartbeatSnapshotWithDisposition(
+                    "Attached", sessionLease, connectionGeneration, connectionIdentity);
+                if (firstHeartbeat != HeartbeatSendDisposition.Sent)
+                {
+                    if (firstHeartbeat == HeartbeatSendDisposition.ScopeStale)
+                    {
+                        lock (_gate)
+                        {
+                            // Attached may release the caller before this first
+                            // heartbeat is queued. Closing rejects ordinary
+                            // heartbeat work, but the exact pipe still carries
+                            // StopCompleted and the remaining close messages.
+                            if (_sessionClosing != 0 && _safeDegraded == 0 &&
+                                _transportFailClosed == 0 && !lifetimeToken.IsCancellationRequested &&
+                                IsCurrentConnectionLocked(connectionGeneration, sessionGeneration,
+                                    sessionLease, connectionIdentity) &&
+                                _attachedConnectionGeneration == connectionGeneration &&
+                                _identity.HasAuthority && ReferenceEquals(_sendQueueOwner, sendOwner))
+                                return;
+                        }
+                    }
                     throw new WatchdogConnectException(
                         WatchdogConnectFailureKind.TransportFailure,
                         "Attached 后首个Watchdog心跳发送失败。");
+                }
                 heartbeatTask = Task.Run(() => HeartbeatLoopAsync(
                     lifetimeToken,
                     connectionGeneration,

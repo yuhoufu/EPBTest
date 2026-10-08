@@ -68,6 +68,12 @@ namespace AdaptiveControlTests
                 }
                 if (args.Length == 1 && args[0] == "--independent-bootstrap")
                 { IndependentBootstrapTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--failed-startup")
+                { WatchdogFailedStartupTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--installation-alarm")
+                { InstallationAlarmTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--independent-project-binding")
+                { IndependentProjectBindingTests.RunAll(); return 0; }
                 if (args.Length == 1 && args[0] == "--independent-executor-runtime")
                 { var count = IndependentExecutorRuntimeTests.RunAll(); Console.WriteLine($"PASS {count}/{count}"); return 0; }
                 if (args.Length == 1 && args[0] == "--startup-stagger-regression")
@@ -579,6 +585,9 @@ namespace AdaptiveControlTests
                 _passed += IndependentRecoveryTransactionTests.RunAll();
                 _passed += IndependentBoundedWorkerTests.RunAll();
                 _passed += IndependentBootstrapTests.RunAll();
+                _passed += WatchdogFailedStartupTests.RunAll();
+                _passed += InstallationAlarmTests.RunAll();
+                _passed += IndependentProjectBindingTests.RunAll();
                 _passed += FallbackCoordinationTests.RunAll();
                 // Recovery coordination owns process-wide owner/preemption registries. Run it
                 // before broader controller suites that intentionally leave terminal evidence.

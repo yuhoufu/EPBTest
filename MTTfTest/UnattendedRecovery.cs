@@ -1092,15 +1092,21 @@ namespace MTEmbTest
             {
                 var candidates = new List<string>();
                 var configDirectory = RuntimeConfigPaths.Directory;
-                if (Directory.Exists(configDirectory))
-                    candidates.AddRange(Directory.GetFiles(configDirectory, "*.xml", SearchOption.TopDirectoryOnly));
+                string projectConfig = null;
                 if (config?.Test != null)
+                    projectConfig = ConfigLoader.GetProjectTestConfigPath(config.Test.StoreDir, config.Test.TestName);
+                if (independentSelection && (string.IsNullOrWhiteSpace(projectConfig) || !File.Exists(projectConfig)))
+                    return "unavailable";
+                if (Directory.Exists(configDirectory))
                 {
-                    var projectConfig = ConfigLoader.GetProjectTestConfigPath(
-                        config.Test.StoreDir,
-                        config.Test.TestName);
-                    if (File.Exists(projectConfig)) candidates.Add(projectConfig);
+                    // The selected project's TestConfig is authoritative. The runtime
+                    // TestConfig is a last-used template; UIConfig only remembers views.
+                    candidates.AddRange(Directory.GetFiles(configDirectory, "*.xml", SearchOption.TopDirectoryOnly)
+                        .Where(path => !independentSelection ||
+                            (!string.Equals(Path.GetFileName(path), "UIConfig.xml", StringComparison.OrdinalIgnoreCase) &&
+                             !string.Equals(Path.GetFileName(path), "TestConfig.xml", StringComparison.OrdinalIgnoreCase))));
                 }
+                if (File.Exists(projectConfig)) candidates.Add(projectConfig);
 
                 using (var sha = SHA256.Create())
                 using (var buffer = new MemoryStream())

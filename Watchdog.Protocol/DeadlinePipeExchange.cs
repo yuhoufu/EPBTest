@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Text;
 using System.Threading;
+using System.Security.Principal;
 
 namespace MTTFTest.Watchdog.Protocol
 {
@@ -25,12 +26,13 @@ namespace MTTFTest.Watchdog.Protocol
         }
         public static T Execute<T>(string name, int timeoutMs,
             Action<BinaryWriter> write, Func<BinaryReader, T> read,
-            CancellationToken cancellation = default)
+            CancellationToken cancellation = default,
+            TokenImpersonationLevel impersonation = TokenImpersonationLevel.None)
         {
             if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation))
             using (var pipe = new NamedPipeClientStream(".", name,
-                       PipeDirection.InOut, PipeOptions.Asynchronous))
+                       PipeDirection.InOut, PipeOptions.Asynchronous, impersonation))
             {
                 deadline.CancelAfter(timeoutMs);
                 using (deadline.Token.Register(() => pipe.Dispose()))

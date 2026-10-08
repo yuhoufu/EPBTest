@@ -123,6 +123,13 @@ namespace MTEmbTest
             using (var user = System.Security.Principal.WindowsIdentity.GetCurrent())
                 if (user.User.Value != Registration.InteractiveUserSid)
                     throw new UnauthorizedAccessException("IndependentBootstrapInteractiveUserMismatch");
+            if (IsRecoveryLaunch && File.Exists(IndependentProjectBinding.PendingPath(RegistrationPath)))
+                throw new InvalidOperationException("IndependentProjectBindingRecoveryRequiresManualLaunch");
+            if (!IsRecoveryLaunch)
+            {
+                IndependentProjectBinding.RecoverPending(RegistrationPath);
+                Registration = IndependentExecutorRegistration.LoadTrusted(RegistrationPath);
+            }
             _store = new IndependentProjectStateStore(Registration.StateDirectory);
             var state = _store.Read();
             if (state == null) throw new InvalidOperationException("IndependentInstalledStateMissing");
@@ -220,12 +227,58 @@ namespace MTEmbTest
                 StartupBudgetMs = checked(Registration.StartupPositioningBudgetMs +
                     (Math.Max(0L, learnCycles) + 2) * config.Test.PeriodMs)
             };
+            // Durable arming is itself an authorization boundary. A write whose
+            // response is uncertain must not be closed as a never-admitted session.
+            WatchdogRuntime.MarkControlAdmission();
             _store.ArmManualRun(state.Revision, intent, Identity, DateTime.UtcNow.Ticks);
             Nonce = null; RunId = intent.RunId; RootRunId = RunId; ParentRunId = Guid.Empty.ToString("N");
             RunEpoch = epoch; Generation = 0;
-            ValidateCurrent();
+            ValidateArmedManualRun(intent);
             UnattendedRecoveryCoordinator.SetRecoveryProcessMode(false);
             return new DataOperation.RunChainIdentity(runId, runId, Guid.Empty, 0, epoch);
+        }
+
+        internal void ValidateArmedManualRun(IndependentRunIntent intent)
+        {
+            try { ValidateCurrent(); }
+            catch (Exception admissionError)
+            {
+                try
+                {
+                    _store.RecordControllerManualStop(Identity, intent.RunId, intent.RunEpoch,
+                        Guid.NewGuid().ToString("N"), DateTime.UtcNow.Ticks);
+                }
+                catch (Exception stopError)
+                {
+                    _manualStopPersistence = System.Threading.Tasks.Task.FromException(stopError);
+                    throw new AggregateException("IndependentManualStartRevocationUnconfirmed", admissionError, stopError);
+                }
+                throw;
+            }
+        }
+
+        internal async System.Threading.Tasks.Task PrepareManualStartBindingAsync(GlobalConfig config)
+        {
+            RequireManualStopPersistenceCompleted();
+            IndependentExecutionFence.RequireCurrentAuthority();
+            var current = IndependentExecutorRegistration.LoadTrusted(RegistrationPath);
+            if (!IndependentProjectBinding.NeedsChange(RegistrationPath, current, config))
+            {
+                Registration = current;
+                return;
+            }
+            // This is called after the manual Start UI's combined stop receipt,
+            // before creating any new watchdog session or granting run intent.
+            await WatchdogRuntime.RequireManualBindingBoundaryAsync().ConfigureAwait(false);
+            Registration = await System.Threading.Tasks.Task.Run(() =>
+                IndependentProjectBinding.Change(RegistrationPath, config)).ConfigureAwait(false);
+            Nonce = null;
+            RunId = null;
+            RootRunId = null;
+            ParentRunId = null;
+            RunEpoch = 0;
+            Generation = 0;
+            _manualStopPersistence = null;
         }
 
         internal System.Threading.Tasks.Task PersistManualStopAsync(string commandId)
@@ -282,14 +335,19 @@ namespace MTEmbTest
 
         private void ValidateProjectConfiguration(GlobalConfig config)
         {
-            if (config?.Test == null ||
-                !string.Equals(Path.GetFullPath(Path.Combine(config.Test.StoreDir, config.Test.TestName)).TrimEnd('\\'),
-                    Path.GetFullPath(Registration.ProjectDirectory).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config),
-                    Registration.ConfigurationSha256, StringComparison.OrdinalIgnoreCase) ||
-                !File.Exists(Registration.DatabasePath) ||
-                File.GetCreationTimeUtc(Registration.DatabasePath).Ticks != Registration.DatabaseCreationUtcTicks)
-                throw new InvalidOperationException("IndependentBootstrapProjectConfigurationMismatch");
+            if (config?.Test == null) throw new InvalidOperationException("IndependentBootstrapProjectConfigurationMissing");
+            if (!string.Equals(Path.GetFullPath(Path.Combine(config.Test.StoreDir, config.Test.TestName)).TrimEnd('\\'),
+                Path.GetFullPath(Registration.ProjectDirectory).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentBootstrapProjectDirectoryMismatch");
+            if (!File.Exists(Registration.DatabasePath))
+                throw new InvalidOperationException("IndependentBootstrapDatabaseMissing");
+            if (File.GetCreationTimeUtc(Registration.DatabasePath).Ticks != Registration.DatabaseCreationUtcTicks)
+                throw new InvalidOperationException("IndependentBootstrapDatabaseIdentityChanged");
+            IndependentProjectBinding.RequireDatabaseIdentity(Registration, Registration.ProjectDirectory, Registration.DatabasePath);
+            var actual = UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config);
+            if (!SupervisorProtocol.Sha256Equals(actual, Registration.ConfigurationSha256))
+                throw new InvalidOperationException("IndependentBootstrapControlConfigurationMismatch：控制参数与授权不一致；" +
+                    "请完成停止、保存项目，再由人工开始重新授权。Expected=" + Registration.ConfigurationSha256 + ";Actual=" + actual);
         }
     }
 }

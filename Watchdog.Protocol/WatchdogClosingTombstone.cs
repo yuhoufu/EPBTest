@@ -59,6 +59,7 @@ namespace MTTFTest.Watchdog.Protocol
         public long ControllerProgressVersion { get; set; }
         public string ControllerProgressDetail { get; set; } = string.Empty;
         public bool FinalSafetyResultCommitted { get; set; }
+        public bool StartupRejectedBeforeControl { get; set; }
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
         public bool PressureSafe { get; set; }
@@ -82,12 +83,14 @@ namespace MTTFTest.Watchdog.Protocol
         {
             var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
                           SchemaVersion == 3 || SchemaVersion == 4 ||
-                          SchemaVersion == 5) &&
+                          SchemaVersion == 5 || SchemaVersion == 6) &&
                    !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    SessionGeneration > 0 && SessionLease > 0 && StateVersion > 0 &&
                    (State == WatchdogClosingTombstoneState.Closing ||
                     State == WatchdogClosingTombstoneState.Terminal);
+            if (StartupRejectedBeforeControl && !IsUnadmittedStartupCancellation)
+                return false;
             if (!common || SchemaVersion < 4) return common;
             if (!Enum.IsDefined(typeof(WatchdogExitDisposition), ExitDisposition) ||
                 !Enum.IsDefined(typeof(WatchdogRelaunchDisposition), RelaunchDisposition) ||
@@ -120,6 +123,28 @@ namespace MTTFTest.Watchdog.Protocol
             State == WatchdogClosingTombstoneState.Terminal &&
             SafetyStage == WatchdogClosingSafetyStage.Terminal &&
             MotorsOff && PowerOff && PressureSafe && PersistenceDrained && LogicalQuiescent;
+
+        // Cancellation of an unissued start is a session terminal only. It must
+        // never satisfy the physical-safety predicate used for recovery.
+        public bool IsUnadmittedStartupCancellation =>
+            SchemaVersion >= 6 && StartupRejectedBeforeControl &&
+            !FinalSafetyResultCommitted && !MotorsOff && !PowerOff && !PressureSafe &&
+            !PersistenceDrained && !LogicalQuiescent && !DataContinuityVerified &&
+            ControllerStopStage == 0 && ControllerProgressVersion == 0 &&
+            !OldProcessExitProven && OldProcessId == 0 && OldProcessStartUtcTicks == 0 &&
+            OldProcessExitObservedUtcTicks == 0 && DataAuditState == WatchdogDataAuditState.Unknown &&
+            string.IsNullOrWhiteSpace(StopSafetyTransactionId) &&
+            string.IsNullOrWhiteSpace(StopRunId) && StopRunEpoch == 0 && StopSafetyBoundaryGeneration == 0 &&
+            string.IsNullOrWhiteSpace(SafetyHandoffId) &&
+            string.IsNullOrWhiteSpace(TakeoverTransactionId) &&
+            ExitDisposition == WatchdogExitDisposition.OperatorExit &&
+            RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden &&
+            RelaunchPermitGeneration == 0 && string.IsNullOrWhiteSpace(RelaunchPermitId) &&
+            string.IsNullOrWhiteSpace(RelaunchPermitNonceSha256);
+
+        public bool IsSessionTerminal => IsSafetyTerminal ||
+            IsUnadmittedStartupCancellation && State == WatchdogClosingTombstoneState.Terminal &&
+            SafetyStage == WatchdogClosingSafetyStage.Terminal;
 
         public bool HasExactOldProcessExitProof =>
             SchemaVersion >= 5 && OldProcessExitProven && OldProcessId > 0 &&
@@ -156,6 +181,7 @@ namespace MTTFTest.Watchdog.Protocol
                     tombstone.EffectiveSafetyStage < previous.EffectiveSafetyStage ||
                     tombstone.ControllerProgressVersion < previous.ControllerProgressVersion ||
                     previous.FinalSafetyResultCommitted && !tombstone.FinalSafetyResultCommitted ||
+                    previous.StartupRejectedBeforeControl && !tombstone.StartupRejectedBeforeControl ||
                     previous.OldProcessExitProven && !tombstone.OldProcessExitProven ||
                     previous.OldProcessExitProven &&
                     (previous.OldProcessId != tombstone.OldProcessId ||

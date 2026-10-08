@@ -9,7 +9,7 @@ namespace AdaptiveControlTests
     {
         internal static int RunAll()
         {
-            var count = VerifyInitializationBoundary();
+            var count = VerifyInitializationBoundary() + VerifyIndependentConfigurationInputs();
             var nonce = Guid.NewGuid().ToString("N");
             var path = @"D:\registered\executor.json";
             void Reject(string[] args)
@@ -81,6 +81,56 @@ namespace AdaptiveControlTests
             count++;
             Console.WriteLine($"PASS independent bootstrap {count}/{count}");
             return count;
+        }
+
+        private static int VerifyIndependentConfigurationInputs()
+        {
+            var root = Path.Combine(Environment.GetEnvironmentVariable("EPB_TEST_ARTIFACT_ROOT") ?? Path.GetTempPath(),
+                "binding-hash-" + Guid.NewGuid().ToString("N"));
+            var project = Path.Combine(root, "project", "Config");
+            Directory.CreateDirectory(project);
+            var projectPath = Path.Combine(project, "TestConfig.xml");
+            File.WriteAllText(projectPath, "<TestConfig><PeriodMs>15000</PeriodMs><TestTarget>100</TestTarget></TestConfig>");
+            var config = new GlobalConfig { Test = new TestConfig { StoreDir = root, TestName = "project" } };
+            var runtime = Config.RuntimeConfigPaths.Directory;
+            Directory.CreateDirectory(runtime);
+            var uiPath = Path.Combine(runtime, "UIConfig.xml");
+            var templatePath = Path.Combine(runtime, "TestConfig.xml");
+            var controlPath = Path.Combine(runtime, "BindingControlRegression.xml");
+            var oldUi = File.Exists(uiPath) ? File.ReadAllBytes(uiPath) : null;
+            var oldTemplate = File.Exists(templatePath) ? File.ReadAllBytes(templatePath) : null;
+            var oldControl = File.Exists(controlPath) ? File.ReadAllBytes(controlPath) : null;
+            try
+            {
+                File.WriteAllText(uiPath, "<UIConfig><Curve Checked=\"true\" /></UIConfig>");
+                File.WriteAllText(templatePath, "<TestConfig><TestName>old-template</TestName></TestConfig>");
+                File.WriteAllText(controlPath, "<Control><CurrentLimit>18</CurrentLimit></Control>");
+                var baseline = UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config);
+                if (baseline == "unavailable") throw new Exception("configuration fixture could not be hashed");
+                File.WriteAllText(uiPath, "<UIConfig><Curve Checked=\"false\" /></UIConfig>");
+                if (baseline != UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config))
+                    throw new Exception("display-only UI state changed independent control identity");
+                File.WriteAllText(templatePath, "<TestConfig><TestName>new-template</TestName></TestConfig>");
+                if (baseline != UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config))
+                    throw new Exception("default template changed an already-selected project's identity");
+                File.WriteAllText(projectPath, "<TestConfig><PeriodMs>16000</PeriodMs><TestTarget>100</TestTarget></TestConfig>");
+                if (baseline == UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config))
+                    throw new Exception("project control period no longer protected");
+                File.WriteAllText(projectPath, "<TestConfig><PeriodMs>15000</PeriodMs><TestTarget>100</TestTarget></TestConfig>");
+                File.WriteAllText(controlPath, "<Control><CurrentLimit>19</CurrentLimit></Control>");
+                if (baseline == UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config))
+                    throw new Exception("non-UI control XML no longer protected");
+                File.Delete(projectPath);
+                if (UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config) != "unavailable")
+                    throw new Exception("missing active project configuration silently fell back to template");
+                return 5;
+            }
+            finally
+            {
+                if (oldUi == null) File.Delete(uiPath); else File.WriteAllBytes(uiPath, oldUi);
+                if (oldTemplate == null) File.Delete(templatePath); else File.WriteAllBytes(templatePath, oldTemplate);
+                if (oldControl == null) File.Delete(controlPath); else File.WriteAllBytes(controlPath, oldControl);
+            }
         }
 
         private static int VerifyInitializationBoundary()
