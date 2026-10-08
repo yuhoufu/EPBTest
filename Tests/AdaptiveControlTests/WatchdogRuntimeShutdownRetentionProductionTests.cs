@@ -358,9 +358,19 @@ namespace AdaptiveControlTests
                         journal,
                         "session-" + WatchdogJournalPaths.SafeName(context.SessionId) +
                         ".sidecar-events.jsonl");
+                    var clientEvents = Path.Combine(
+                        journal,
+                        "session-" + WatchdogJournalPaths.SafeName(context.SessionId) +
+                        ".client-events.jsonl");
+                    // Shared-spool replay can preserve a sidecar event in the
+                    // client file. Require its source and exact session, not
+                    // which journal worker happened to replay the event.
                     Assert(WaitUntilWithDelay(
                             () => WatchdogJournalStore.ReadValidEvents(sidecarEvents)
-                                .Any(item => string.Equals(
+                                .Concat(WatchdogJournalStore.ReadValidEvents(clientEvents))
+                                .Any(item => string.Equals(item.Source, "sidecar", StringComparison.Ordinal) &&
+                                    string.Equals(item.SessionId, context.SessionId, StringComparison.Ordinal) &&
+                                    string.Equals(
                                     item.EventType,
                                     "ClosingFenceObserved",
                                     StringComparison.Ordinal)),
