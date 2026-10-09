@@ -18,9 +18,63 @@ msbuild TfTest.sln /p:Configuration=Release /p:Platform="Any CPU"
 dotnet test .\Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj
 ```
 
-The first command is the normal local build. The remaining commands validate release compilation, control/watchdog behavior, disk persistence, and the .NET 8 debugger. Use `Tools\Build-Release.ps1` only for a clean, validated field package with vendor SDKs available.
+The first command is the normal local build. The remaining commands validate release compilation, control/watchdog behavior, disk persistence, and the .NET 8 debugger. Use `Tools\Build-Release.ps1` for a clean release candidate with the required vendor SDKs available; field deployment requires separate acceptance evidence.
 
 > 中文提示：Debug 固定使用 x86；现场发布前必须确认工作区干净且硬件依赖齐全。
+
+## Release Packages and Packaging
+
+### 当前最新完整程序包（2026-10-09 核对）
+
+产品版本统一读取 `ProductVersion.props` 的 `EpbProductVersion`，当前为 **4.1.0.9**。现存完整包由干净提交 `4fa2d27deebb5368d6600222a8ab647c66ca6a06` 构建及组包；后续 `main` 合并不会自动重建该包，不能将它标记为由当前 `main` HEAD 构建。
+
+| 用途 | 绝对路径 |
+| --- | --- |
+| 最终交付根目录 | `D:\Github\wanxiang\EPBTest_Releases\V4.1.0.9\` |
+| 完整解压目录 | `D:\Github\wanxiang\EPBTest_Releases\V4.1.0.9\V4.1.0.9_4fa2d27deebb_AUTO_RECOVERY_ONECLICK\` |
+| 分发压缩包 | `D:\Github\wanxiang\EPBTest_Releases\V4.1.0.9\V4.1.0.9_4fa2d27deebb_AUTO_RECOVERY_ONECLICK.7z` |
+| 压缩包摘要 | 同一压缩包路径追加 `.sha256.txt` |
+| 交付与验收说明 | `D:\Github\wanxiang\EPBTest_Releases\V4.1.0.9\V4.1.0.9_发布与验收说明.md` |
+| 本次基础候选包 | `D:\Github\wanxiang\EPBTest\Codex\wj-fixes-20261008\release-base-4fa2d27\V4.1.0.9-4fa2d27deebb-20261008_090700\` |
+| 本次构建、组包和核验记录 | `D:\Github\wanxiang\EPBTest\Codex\wj-fixes-20261008\` |
+
+压缩包大小为 `34,572,728` 字节，SHA-256 为 `A27576DEE4E70621F07CF32A429C7BDC0BE51278CFBF072BF4F4CD8A65B9C122`。基础身份 `Base/build-identity.json` 与完整清单 `automatic-bundle.json` 均为 `CANDIDATE_NOT_FIELD_VALIDATED`，对应 `deploymentApproved=false` / `fieldDeploymentApproved=false`。候选标识与 Git 标签为 `v4.1.0.9-rc.1`，标签指向上述实际构建提交；组包脚本本身不会创建 Git tag。入口名“一键安装正式版.cmd”不代表已完成现场验收。
+
+### 后续打包路径与执行顺序
+
+1. **固定存放位置。** 最终交付按版本保存到 `D:\Github\wanxiang\EPBTest_Releases\V<版本>\`，目录名由脚本生成 `V<版本>_<源码提交前12位>_AUTO_RECOVERY_ONECLICK`，旁边保存 `.7z`、`.7z.sha256.txt` 和交付说明；保留历史版本，不覆盖已封包内容。基础候选、日志、回归及核验证据放到当前仓库 `Codex/<本次任务>/`，这是最终交付目录与本地产物目录的明确分工。发布产物不得提交 Git。
+2. **冻结源码。** 从当前主工作区 `D:\Github\wanxiang\EPBTest` 使用 **PowerShell 7** 打包；先提交改动并确认工作区干净，记录完整 HEAD。构建到组包结束期间不得编辑、切换分支或提交。检查 MSBuild、.NET Framework 4.8、.NET SDK / .NET 8 运行时、Python `py -3`、7-Zip 和项目实际需要的厂商 SDK；硬件范围遵守下文 `Current Hardware Scope`。`EPB_TEST_ARTIFACT_ROOT` 使用 `Codex/` 下的 Windows 绝对路径，`TEMP` / `TMP` 使用短路径 `D:\Github\wanxiang\EPBTest\Codex\t`，避免旧框架的路径长度限制。
+3. **构建基础候选。** 执行 `Tools/Build-Release.ps1 -Candidate -PackageRoot <Codex下的本次基础候选根>`，必须显式指定 `-PackageRoot`；脚本默认的 `artifacts/releases` 不作为本项目交付位置。脚本还原依赖、清理 `MTTfTest/bin/Release` 暂存输出、以 Release / `Any CPU` 重建解决方案（主程序包身份为 x86），运行控制、落盘、电源及安装/维护脚本回归，核验组件版本和 8 份 XML 配置，生成 `build-identity.json`、`SHA256SUMS.txt`。通过后输出不可变目录 `V<版本>-<提交前12位>-<UTC时间戳>`。不要直接分发或部署 `bin/Release`，不要使用 `-AllowDirtyCandidate` 交付。
+4. **独立核验并补测。** 对上一步实际输出的 `PackageOutput` 执行 `Tools/Verify-Release.ps1 -ReleaseDirectory <基础候选目录>`；它核对身份、文件集合、大小、摘要及配置。再运行 `Tests/IndependentRecovery.ProcessTests/bin/Release/IndependentRecovery.ProcessTests.exe` 全套；Build-Release 没有运行该完整进程套件。每步必须确认退出码和通过摘要，失败即停止并保留证据。
+5. **组装完整一键包。** 再确认同一干净 HEAD、基础身份中的 `gitCommit` / `gitDirty=false`、版本及候选状态，再执行 `Tools/New-AutomaticRecoveryBundle.ps1 -ReleaseDirectory <基础候选目录> -OutputRoot <最终版本交付目录> -CandidateTag v<版本>-rc.<候选序号>`，不传 `-LegacyRecovery`。脚本复制完整 `Base/`，加入本次 Release 构建的 `FallbackGuard/`（含 SQLite x86 依赖）、`Tools/`、13 个中文 CMD 入口和说明，写入 `automatic-bundle.json`，使用 7-Zip `a -t7z -m0=LZMA2 -mx=9 -mmt=2` 压缩，执行 `7z t` 后生成 SHA-256 文件。脚本拒绝覆盖同名包，但不自行保证组包源码干净或 `packagingGitCommit == gitCommit`，必须额外核对。
+
+同版本的新构建使用递增候选序号，不移动或覆盖已有标签；已有 `v4.1.0.9-rc.1` 指向现存包，因此从当前 `main` 再打 V4.1.0.9 包时应使用未占用的 `v4.1.0.9-rc.2` 或后续序号。
+
+命令参数示例（在 PowerShell 7 中分步执行；每次使用新的 `$baseRoot`，`$releaseDirectory` 取 Build-Release 日志中的实际 `PackageOutput`，不要复用历史目录；示例候选序号按 V4.1.0.9 下一构建选择，其他版本按实际已有标签调整）：
+
+```powershell
+Set-Location -LiteralPath 'D:\Github\wanxiang\EPBTest'
+[xml]$versionProps = [IO.File]::ReadAllText((Join-Path (Get-Location) 'ProductVersion.props'))
+$version = [string]$versionProps.Project.PropertyGroup.EpbProductVersion
+$candidateTag = 'v' + $version + '-rc.2'
+$releaseWork = Join-Path 'D:\Github\wanxiang\EPBTest\Codex' ('release-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
+$baseRoot = Join-Path $releaseWork 'release-base'
+$deliveryRoot = Join-Path 'D:\Github\wanxiang\EPBTest_Releases' ('V' + $version)
+$env:EPB_TEST_ARTIFACT_ROOT = [IO.Path]::GetFullPath((Join-Path $releaseWork 'tests'))
+$env:TEMP = 'D:\Github\wanxiang\EPBTest\Codex\t'
+$env:TMP = $env:TEMP
+[IO.Directory]::CreateDirectory($env:EPB_TEST_ARTIFACT_ROOT) | Out-Null
+[IO.Directory]::CreateDirectory($env:TEMP) | Out-Null
+pwsh -NoProfile -File .\Tools\Build-Release.ps1 -Candidate -PackageRoot $baseRoot
+# 确认成功后设置 $releaseDirectory 为本次 PackageOutput，再逐步执行：
+pwsh -NoProfile -File .\Tools\Verify-Release.ps1 -ReleaseDirectory $releaseDirectory
+.\Tests\IndependentRecovery.ProcessTests\bin\Release\IndependentRecovery.ProcessTests.exe
+pwsh -NoProfile -File .\Tools\New-AutomaticRecoveryBundle.ps1 -ReleaseDirectory $releaseDirectory -OutputRoot $deliveryRoot -CandidateTag $candidateTag
+```
+
+**封包核验与放行边界：** 必须核对 Base 与完整清单的版本、同一构建提交、干净状态和候选状态，以及九类产品组件的十份文件版本（Protocol 在 Base/FallbackGuard 各一份，摘要必须相同）；核对实际文件集合与清单、全部 SHA-256、13 个入口、`7z t` 及归档摘要。对完整包的 `RecoveryGuard-Acceptance.ps1` 在 PowerShell 5.1 / 7 下做离线包核验，不传 `-InstallRoot`，证据用 `-OutputPath` 保存到 `Codex/`。包完整性通过不证明硬件动作、计数推进、正式落盘或长期运行通过；`NOT_VERIFIED` 不得写为通过。缺少现场验收时始终使用 `-Candidate`，不能靠省略开关使基础包显示 `FORMAL_RELEASE` 来代替验收，也不能手改清单放行。组包不自动安装、升级或部署现场。需要修改包内文件时重新构建/组包；补充交付说明保存到包外的版本目录。
+
+本版本修复与验证依据见 `docs/02_Issues/2026-10-08_V4.1.0.9_项目切换与声光退出修复.md`。新包交付后，同步更新本节“当前最新完整程序包”的版本、路径、实际构建提交、摘要和验收状态。
 
 ## Coding Style & Naming Conventions
 
@@ -46,9 +100,9 @@ Unless specified otherwise, create documents as Markdown (`.md`). With no reques
 
 ## Codex Local Artifacts
 
-Place documents, scripts, and other artifacts produced while Codex executes tasks in the repository-root `Codex/` directory. This directory is local-only and Git-ignored. Do not use `C:/Users/19812/Documents/Codex/` for these artifacts.
+Place documents, scripts, and other artifacts produced while Codex executes tasks in the repository-root `Codex/` directory, except for final release deliverables in the location specified by `Release Packages and Packaging`. This directory is local-only and Git-ignored. Do not use `C:/Users/19812/Documents/Codex/` for these artifacts.
 
-> 中文提示：Codex 执行任务过程中产生的文档、脚本及其他产物统一放在项目根目录的 `Codex/` 文件夹中，并保持 Git 忽略；不得放在 `C:/Users/19812/Documents/Codex/`。
+> 中文提示：Codex 执行任务过程中产生的文档、脚本及其他产物统一放在项目根目录的 `Codex/` 文件夹中，并保持 Git 忽略；最终发布交付物按上文发布目录规则存放。不得放在 `C:/Users/19812/Documents/Codex/`。
 
 ## Commit & Pull Request Guidelines
 
