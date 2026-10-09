@@ -1,0 +1,93 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='500'>
+<rect x='0' y='0' width='1200' height='500' fill='white' />
+<text x='600.0' y='30' text-anchor='middle' font-family='Segoe UI' font-size='18'>EPB[1] Imax 分布 (0.1A 分辨率, N=2275)</text>
+<line x1='70' y1='420' x2='1180' y2='420' stroke='#222' stroke-width='1' />
+<line x1='70' y1='60' x2='70' y2='420' stroke='#222' stroke-width='1' />
+<line x1='65' y1='420.0' x2='70' y2='420.0' stroke='#222' stroke-width='1' />
+<text x='60' y='424.0' text-anchor='end' font-family='Segoe UI' font-size='12'>0</text>
+<line x1='70' y1='420.0' x2='1180' y2='420.0' stroke='#eee' stroke-width='1' />
+<line x1='65' y1='348.0' x2='70' y2='348.0' stroke='#222' stroke-width='1' />
+<text x='60' y='352.0' text-anchor='end' font-family='Segoe UI' font-size='12'>28</text>
+<line x1='70' y1='348.0' x2='1180' y2='348.0' stroke='#eee' stroke-width='1' />
+<line x1='65' y1='276.0' x2='70' y2='276.0' stroke='#222' stroke-width='1' />
+<text x='60' y='280.0' text-anchor='end' font-family='Segoe UI' font-size='12'>56</text>
+<line x1='70' y1='276.0' x2='1180' y2='276.0' stroke='#eee' stroke-width='1' />
+<line x1='65' y1='204.0' x2='70' y2='204.0' stroke='#222' stroke-width='1' />
+<text x='60' y='208.0' text-anchor='end' font-family='Segoe UI' font-size='12'>85</text>
+<line x1='70' y1='204.0' x2='1180' y2='204.0' stroke='#eee' stroke-width='1' />
+<line x1='65' y1='132.0' x2='70' y2='132.0' stroke='#222' stroke-width='1' />
+<text x='60' y='136.0' text-anchor='end' font-family='Segoe UI' font-size='12'>113</text>
+<line x1='70' y1='132.0' x2='1180' y2='132.0' stroke='#eee' stroke-width='1' />
+<line x1='65' y1='60.0' x2='70' y2='60.0' stroke='#222' stroke-width='1' />
+<text x='60' y='64.0' text-anchor='end' font-family='Segoe UI' font-size='12'>141</text>
+<line x1='70' y1='60.0' x2='1180' y2='60.0' stroke='#eee' stroke-width='1' />
+<rect x='70.0' y='417.4468085106383' width='31.95454545454545' height='2.5531914893617227' fill='#4C78A8' />
+<rect x='103.63636363636363' y='414.8936170212766' width='31.95454545454545' height='5.1063829787233885' fill='#4C78A8' />
+<rect x='137.27272727272725' y='409.78723404255317' width='31.95454545454545' height='10.212765957446834' fill='#4C78A8' />
+<rect x='170.9090909090909' y='374.0425531914894' width='31.95454545454545' height='45.95744680851061' fill='#4C78A8' />
+<rect x='204.54545454545453' y='340.8510638297872' width='31.95454545454545' height='79.14893617021278' fill='#4C78A8' />
+<rect x='238.18181818181816' y='269.36170212765956' width='31.95454545454545' height='150.63829787234044' fill='#4C78A8' />
+<rect x='271.8181818181818' y='182.55319148936172' width='31.95454545454545' height='237.44680851063828' fill='#4C78A8' />
+<rect x='305.45454545454544' y='146.8085106382979' width='31.95454545454545' height='273.1914893617021' fill='#4C78A8' />
+<rect x='339.09090909090907' y='134.04255319148933' width='31.95454545454545' height='285.95744680851067' fill='#4C78A8' />
+<rect x='372.7272727272727' y='141.70212765957447' width='31.95454545454545' height='278.29787234042556' fill='#4C78A8' />
+<rect x='406.3636363636363' y='180.0' width='31.95454545454545' height='240.0' fill='#4C78A8' />
+<rect x='439.99999999999994' y='208.08510638297875' width='31.95454545454545' height='211.91489361702125' fill='#4C78A8' />
+<rect x='473.6363636363636' y='251.48936170212767' width='31.95454545454545' height='168.51063829787233' fill='#4C78A8' />
+<rect x='507.27272727272725' y='233.61702127659575' width='31.95454545454545' height='186.38297872340425' fill='#4C78A8' />
+<rect x='540.9090909090909' y='180.0' width='31.95454545454545' height='240.0' fill='#4C78A8' />
+<rect x='574.5454545454545' y='128.93617021276597' width='31.95454545454545' height='291.063829787234' fill='#4C78A8' />
+<rect x='608.1818181818181' y='103.40425531914892' width='31.95454545454545' height='316.5957446808511' fill='#4C78A8' />
+<rect x='641.8181818181818' y='80.42553191489361' width='31.95454545454545' height='339.5744680851064' fill='#4C78A8' />
+<rect x='675.4545454545454' y='113.61702127659575' width='31.95454545454545' height='306.3829787234042' fill='#4C78A8' />
+<rect x='709.090909090909' y='60.0' width='31.95454545454545' height='360.0' fill='#4C78A8' />
+<rect x='742.7272727272726' y='100.85106382978725' width='31.95454545454545' height='319.1489361702128' fill='#4C78A8' />
+<rect x='776.3636363636363' y='95.74468085106383' width='31.95454545454545' height='324.25531914893617' fill='#4C78A8' />
+<rect x='809.9999999999999' y='134.04255319148933' width='31.95454545454545' height='285.95744680851067' fill='#4C78A8' />
+<rect x='843.6363636363635' y='185.1063829787234' width='31.95454545454545' height='234.8936170212766' fill='#4C78A8' />
+<rect x='877.2727272727273' y='205.53191489361703' width='31.95454545454545' height='214.46808510638297' fill='#4C78A8' />
+<rect x='910.9090909090909' y='254.04255319148936' width='31.95454545454545' height='165.95744680851064' fill='#4C78A8' />
+<rect x='944.5454545454545' y='320.4255319148936' width='31.95454545454545' height='99.57446808510639' fill='#4C78A8' />
+<rect x='978.1818181818181' y='366.3829787234043' width='31.95454545454545' height='53.61702127659572' fill='#4C78A8' />
+<rect x='1011.8181818181818' y='371.48936170212767' width='31.95454545454545' height='48.51063829787233' fill='#4C78A8' />
+<rect x='1045.4545454545455' y='412.3404255319149' width='31.95454545454545' height='7.659574468085111' fill='#4C78A8' />
+<rect x='1079.090909090909' y='402.1276595744681' width='31.95454545454545' height='17.87234042553189' fill='#4C78A8' />
+<rect x='1112.7272727272725' y='414.8936170212766' width='31.95454545454545' height='5.1063829787233885' fill='#4C78A8' />
+<rect x='1146.3636363636363' y='417.4468085106383' width='31.95454545454545' height='2.5531914893617227' fill='#4C78A8' />
+<line x1='86.81818181818181' y1='420' x2='86.81818181818181' y2='425' stroke='#222' stroke-width='1' />
+<text x='86.81818181818181' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>13.2</text>
+<line x1='154.09090909090907' y1='420' x2='154.09090909090907' y2='425' stroke='#222' stroke-width='1' />
+<text x='154.09090909090907' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>13.7</text>
+<line x1='221.36363636363635' y1='420' x2='221.36363636363635' y2='425' stroke='#222' stroke-width='1' />
+<text x='221.36363636363635' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>13.9</text>
+<line x1='288.6363636363636' y1='420' x2='288.6363636363636' y2='425' stroke='#222' stroke-width='1' />
+<text x='288.6363636363636' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>14.1</text>
+<line x1='355.9090909090909' y1='420' x2='355.9090909090909' y2='425' stroke='#222' stroke-width='1' />
+<text x='355.9090909090909' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>14.3</text>
+<line x1='423.18181818181813' y1='420' x2='423.18181818181813' y2='425' stroke='#222' stroke-width='1' />
+<text x='423.18181818181813' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>14.5</text>
+<line x1='490.45454545454544' y1='420' x2='490.45454545454544' y2='425' stroke='#222' stroke-width='1' />
+<text x='490.45454545454544' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>14.7</text>
+<line x1='557.7272727272727' y1='420' x2='557.7272727272727' y2='425' stroke='#222' stroke-width='1' />
+<text x='557.7272727272727' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>14.9</text>
+<line x1='625.0' y1='420' x2='625.0' y2='425' stroke='#222' stroke-width='1' />
+<text x='625.0' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>15.1</text>
+<line x1='692.2727272727273' y1='420' x2='692.2727272727273' y2='425' stroke='#222' stroke-width='1' />
+<text x='692.2727272727273' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>15.3</text>
+<line x1='759.5454545454545' y1='420' x2='759.5454545454545' y2='425' stroke='#222' stroke-width='1' />
+<text x='759.5454545454545' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>15.5</text>
+<line x1='826.8181818181818' y1='420' x2='826.8181818181818' y2='425' stroke='#222' stroke-width='1' />
+<text x='826.8181818181818' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>15.7</text>
+<line x1='894.0909090909091' y1='420' x2='894.0909090909091' y2='425' stroke='#222' stroke-width='1' />
+<text x='894.0909090909091' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>15.9</text>
+<line x1='961.3636363636364' y1='420' x2='961.3636363636364' y2='425' stroke='#222' stroke-width='1' />
+<text x='961.3636363636364' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>16.1</text>
+<line x1='1028.6363636363635' y1='420' x2='1028.6363636363635' y2='425' stroke='#222' stroke-width='1' />
+<text x='1028.6363636363635' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>16.3</text>
+<line x1='1095.9090909090908' y1='420' x2='1095.9090909090908' y2='425' stroke='#222' stroke-width='1' />
+<text x='1095.9090909090908' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>16.5</text>
+<line x1='1163.181818181818' y1='420' x2='1163.181818181818' y2='425' stroke='#222' stroke-width='1' />
+<text x='1163.181818181818' y='442' text-anchor='middle' font-family='Segoe UI' font-size='11'>16.7</text>
+<text x='625.0' y='475' text-anchor='middle' font-family='Segoe UI' font-size='14'>Imax(A) (bin=0.1A)</text>
+<text x='18' y='240.0' text-anchor='middle' font-family='Segoe UI' font-size='14' transform='rotate(-90 18 240.0)'>Count</text>
+</svg>

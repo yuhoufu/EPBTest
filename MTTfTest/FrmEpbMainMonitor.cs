@@ -1980,7 +1980,11 @@ namespace MTEmbTest
 
             if (gap > 0.3) // 阈值 0.3s
             {
-                if (list.Count > 0) list.Add(double.NaN, double.NaN);
+                // 重要：不要用 NaN 作为 X。
+                // 否则后续“按 X 清理旧点”的逻辑会因为比较失败而无法裁剪，长跑后点数无限增长导致卡顿/崩溃。
+                // 采用“正常 X + Y=NaN”作为断线标记，ZedGraph 会断开线段且可正常裁剪。
+                if (list.Count > 0)
+                    list.Add(expectedX, double.NaN);
             }
 
             // 显示层抽稀
@@ -2003,7 +2007,9 @@ namespace MTEmbTest
             //    注意：这里直接用 startX + i*dt 计算，不再依赖累加，避免浮点漂移
             for (var i = 0; i < colCount; i += stride)
             {
-                list.Add(startX + i * dt, eng[row, i]);
+                var y = eng[row, i];
+                if (double.IsNaN(y) || double.IsInfinity(y)) y = double.NaN;
+                list.Add(startX + i * dt, y);
             }
 
             // 更新最后一点的 X
@@ -3701,11 +3707,23 @@ namespace MTEmbTest
                     if (list == null || list.Count == 0) continue;
 
                     // 最早的点仍在“保留区”(>= purgeBefore)，无需清理
-                    if (list[0].X >= purgeBefore) continue;
+                    // 若首点 X 非法（NaN/Inf），按需清理时一并剔除。
+                    if (!double.IsNaN(list[0].X) && !double.IsInfinity(list[0].X) && list[0].X >= purgeBefore)
+                        continue;
 
                     // 线性寻界（点数很多时可改成二分搜索）
                     int cut = 0, cnt = list.Count;
-                    while (cut < cnt && list[cut].X < purgeBefore) cut++;
+                    while (cut < cnt)
+                    {
+                        var x = list[cut].X;
+                        if (double.IsNaN(x) || double.IsInfinity(x) || x < purgeBefore)
+                        {
+                            cut++;
+                            continue;
+                        }
+
+                        break;
+                    }
 
                     if (cut > 0)
                     {
@@ -3734,7 +3752,17 @@ namespace MTEmbTest
                     {
                         var cut2 = 0;
                         var cnt2 = list.Count;
-                        while (cut2 < cnt2 && list[cut2].X < ownKeepMin) cut2++;
+                        while (cut2 < cnt2)
+                        {
+                            var x = list[cut2].X;
+                            if (double.IsNaN(x) || double.IsInfinity(x) || x < ownKeepMin)
+                            {
+                                cut2++;
+                                continue;
+                            }
+
+                            break;
+                        }
                         if (cut2 > 0)
                         {
                             var keep2 = cnt2 - cut2;
