@@ -1,0 +1,24 @@
+<Project>
+  <PropertyGroup>
+    <EpbVersionedComponent Condition="'$(MSBuildProjectName)' == 'MTTfTest' Or '$(MSBuildProjectName)' == 'Controller' Or '$(MSBuildProjectName)' == 'FallbackGuard' Or '$(MSBuildProjectName)' == 'Watchdog.Protocol' Or '$(MSBuildProjectName)' == 'Watchdog.Client' Or '$(MSBuildProjectName)' == 'MTTFTest.Watchdog' Or '$(MSBuildProjectName)' == 'MTTFTest.SessionAgent' Or '$(MSBuildProjectName)' == 'MTTFTest.SafetyHardware' Or '$(MSBuildProjectName)' == 'MTTFTest.SafetyAgent'">true</EpbVersionedComponent>
+  </PropertyGroup>
+  <Target Name="GenerateEpbProductVersion" BeforeTargets="CoreCompile" Condition="'$(EpbVersionedComponent)' == 'true'">
+    <Error Condition="'$(EpbProductVersion)' == ''" Text="ProductVersion.props must declare EpbProductVersion." />
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <ItemGroup>
+      <EpbVersionAttribute Include="System.Reflection.AssemblyVersionAttribute">
+        <_Parameter1>$(EpbProductVersion)</_Parameter1>
+      </EpbVersionAttribute>
+      <EpbVersionAttribute Include="System.Reflection.AssemblyFileVersionAttribute">
+        <_Parameter1>$(EpbProductVersion)</_Parameter1>
+      </EpbVersionAttribute>
+      <EpbVersionAttribute Include="System.Reflection.AssemblyInformationalVersionAttribute">
+        <_Parameter1>$(EpbProductVersion)</_Parameter1>
+      </EpbVersionAttribute>
+    </ItemGroup>
+    <WriteCodeFragment Language="C#" AssemblyAttributes="@(EpbVersionAttribute)" OutputFile="$(IntermediateOutputPath)Epb.Version.g.cs">
+      <Output TaskParameter="OutputFile" ItemName="Compile" />
+      <Output TaskParameter="OutputFile" ItemName="FileWrites" />
+    </WriteCodeFragment>
+  </Target>
+</Project>

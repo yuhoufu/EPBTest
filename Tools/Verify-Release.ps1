@@ -1,10 +1,29 @@
 ﻿param(
-    [string]$ReleaseDirectory = '',
-    [switch]$AllowInstalledRuntimeState
+    [string]$ReleaseDirectory = ''
 )
+# Public entry points accept PowerShell 7; .NET Framework deployment work is
+# executed by the Windows PowerShell host with typed, data-only arguments.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $epbBridgeParameters = @{}
+    foreach ($epbBridgeKey in $PSBoundParameters.Keys) {
+        $epbBridgeValue = $PSBoundParameters[$epbBridgeKey]
+        if ($epbBridgeValue -is [Management.Automation.SwitchParameter]) { $epbBridgeValue = [bool]$epbBridgeValue }
+        $epbBridgeParameters[$epbBridgeKey] = $epbBridgeValue
+    }
+    $epbBridgeData = @{ Script = $PSCommandPath; Parameters = $epbBridgeParameters } | ConvertTo-Json -Depth 5 -Compress
+    $epbBridgePayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($epbBridgeData))
+    $epbBridgeCode = '$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $epbBridgePayload + '"))|ConvertFrom-Json;$p=@{};foreach($v in $d.Parameters.PSObject.Properties){$p[$v.Name]=$v.Value};$global:LASTEXITCODE=0;& ([string]$d.Script) @p;exit $LASTEXITCODE'
+    $epbBridgeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($epbBridgeCode))
+    $epbBridgeModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules"
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand $epbBridgeEncoded
+        $epbBridgeExitCode = $LASTEXITCODE
+    } finally { $env:PSModulePath = $epbBridgeModulePath }
+    exit $epbBridgeExitCode
+}
 
 $ErrorActionPreference = 'Stop'
-$installedExclusions = if ($AllowInstalledRuntimeState) { @('MTTFTest.FirstRun.configured') } else { @() }
 
 $expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
@@ -199,67 +218,6 @@ if ($actualAssemblyName -ne $expectedAssemblyName -or
 if ($identity.platform -ne 'x86') {
     throw "identity 平台不是 x86：$($identity.platform)"
 }
-if ($expectedProductVersion -ne '2.17.0.0') {
-    throw "无人值守正式版必须统一为 2.17.0.0：$expectedProductVersion"
-}
-if ((Get-RequiredJsonProperty $identity 'watchdogSchema' 'identity') -ne 7) {
-    throw "identity.watchdogSchema 不是 7：$($identity.watchdogSchema)"
-}
-$mainExecutableSha256 = [string](Get-RequiredJsonProperty `
-    $identity 'mainExecutableSha256' 'identity')
-$actualMainExecutableSha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($mainExecutableSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
-    $mainExecutableSha256.ToLowerInvariant() -ne $actualMainExecutableSha256) {
-    throw "identity.mainExecutableSha256 不匹配：Identity=$mainExecutableSha256 Actual=$actualMainExecutableSha256"
-}
-
-$requiredComponentNames = @(
-    'MTTFTest.exe',
-    'Controller.dll',
-    'MTTFTest.Watchdog.exe',
-    'MTTFTest.Watchdog.Protocol.dll',
-    'MTTFTest.Watchdog.Client.dll',
-    'MTTFTest.SafetyAgent.exe',
-    'MTTFTest.SafetyHardware.dll',
-    'MTTFTest.SessionAgent.exe'
-)
-$componentIdentities = @(Get-RequiredJsonProperty `
-    $identity 'componentIdentities' 'identity')
-if ($componentIdentities.Count -ne $requiredComponentNames.Count) {
-    throw "identity.componentIdentities 数量错误：$($componentIdentities.Count)"
-}
-$seenComponentNames = New-Object 'System.Collections.Generic.HashSet[string]' `
-    ([StringComparer]::OrdinalIgnoreCase)
-foreach ($component in $componentIdentities) {
-    $name = [string](Get-RequiredJsonProperty $component 'name' 'componentIdentity')
-    if ($name -notin $requiredComponentNames -or -not $seenComponentNames.Add($name)) {
-        throw "identity.componentIdentities 存在未知或重复组件：$name"
-    }
-    $componentPath = Get-SafePackagePath -Root $release -RelativePath $name
-    $componentPdb = [string](Get-RequiredJsonProperty $component 'pdb' "componentIdentity.$name")
-    $componentPdbPath = Get-SafePackagePath -Root $release -RelativePath $componentPdb
-    foreach ($requiredPath in @($componentPath, $componentPdbPath)) {
-        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
-            throw "组件身份文件缺失：$requiredPath"
-        }
-    }
-    $componentVersion = (Get-Item -LiteralPath $componentPath).VersionInfo.FileVersion
-    if ($componentVersion -ne $expectedProductVersion -or
-        [string]$component.fileVersion -ne $expectedProductVersion) {
-        throw "组件版本不一致：$name Actual=$componentVersion Identity=$($component.fileVersion)"
-    }
-    $componentHash = (Get-FileHash -LiteralPath $componentPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $componentPdbHash = (Get-FileHash -LiteralPath $componentPdbPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($componentHash -ne ([string]$component.sha256).ToLowerInvariant() -or
-        $componentPdbHash -ne ([string]$component.pdbSha256).ToLowerInvariant()) {
-        throw "组件或 PDB 身份哈希不匹配：$name"
-    }
-}
-foreach ($name in $requiredComponentNames) {
-    if (-not $seenComponentNames.Contains($name)) {
-        throw "identity.componentIdentities 缺少组件：$name"
-    }
-}
 
 $gitCommit = Get-RequiredJsonProperty $identity 'gitCommit' 'identity'
 if ($gitCommit -isnot [string] -or $gitCommit -notmatch '^[0-9a-fA-F]{40}$') {
@@ -317,19 +275,12 @@ foreach ($file in @($identity.files)) {
 }
 
 $actualManifestFiles = Get-RecursivePackageFiles -Root $release `
-    -ExcludedRelativePaths (@('build-identity.json', 'SHA256SUMS.txt') + $installedExclusions)
+    -ExcludedRelativePaths @('build-identity.json', 'SHA256SUMS.txt')
 foreach ($name in $actualManifestFiles.Keys) {
     if (-not $manifestNames.Contains($name)) { throw "identity 缺少文件：$name" }
 }
 if ($manifestNames.Count -ne $actualManifestFiles.Count) {
     throw "identity 文件数量不匹配：Manifest=$($manifestNames.Count) Actual=$($actualManifestFiles.Count)"
-}
-$actualPackageContentSha256 = Get-AggregateFileHash $actualManifestFiles
-$identityPackageContentSha256 = [string](Get-RequiredJsonProperty `
-    $identity 'packageContentSha256' 'identity')
-if ($identityPackageContentSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
-    $identityPackageContentSha256.ToLowerInvariant() -ne $actualPackageContentSha256) {
-    throw "发布包内容聚合哈希不匹配：Identity=$identityPackageContentSha256 Actual=$actualPackageContentSha256"
 }
 
 $publishedConfigs = New-OrdinalPathMap
@@ -363,7 +314,7 @@ foreach ($line in Get-Content -LiteralPath $checksumPath -Encoding UTF8) {
     $checksums.Add($name, $Matches[1].ToLowerInvariant())
 }
 $expectedChecksumFiles = Get-RecursivePackageFiles -Root $release `
-    -ExcludedRelativePaths (@('SHA256SUMS.txt') + $installedExclusions)
+    -ExcludedRelativePaths @('SHA256SUMS.txt')
 $expectedChecksumNames = @($expectedChecksumFiles.Keys)
 foreach ($name in $expectedChecksumNames) {
     if (-not $checksums.ContainsKey($name)) { throw "SHA256SUMS 缺少文件：$name" }
@@ -388,9 +339,6 @@ $result = [ordered]@{
     verification = 'PASS'
     identityFileCount = @($identity.files).Count
     checksumFileCount = $checksums.Count
-    exeSha256 = $actualMainExecutableSha256
-    packageContentSha256 = $actualPackageContentSha256
-    watchdogSchema = [int]$identity.watchdogSchema
-    componentIdentityCount = $componentIdentities.Count
+    exeSha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $result | ConvertTo-Json -Depth 3

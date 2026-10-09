@@ -49,6 +49,7 @@ namespace AdaptiveControlTests
             Run("首次保压下降仅触发软件自愈", FirstPressureLossIsRecoverable, ref passed);
             Run("保压连续三代次下降才确认硬件报警", ThirdPressureLossConfirmsHardwareFault, ref passed);
             Run("压力样本陈旧只触发软件自愈", StalePressureLossIsRecoverable, ref passed);
+            Run("陈旧压力两秒后恢复不触发液压故障", StalePressureRecoversAfterTwoSeconds, ref passed);
             Run("液压压力异常输出稳定分型故障码", PressureLossUsesStableFaultCodes, ref passed);
             Run("液压任务取消不得确认硬件报警", CanceledHydraulicWorkIsNotHardware, ref passed);
             Run("未知液压异常不得绕过连续确认", UnknownHydraulicFaultIsNotHardware, ref passed);
@@ -969,15 +970,27 @@ namespace AdaptiveControlTests
                 _ => new PressureSample(2, 70, DateTime.UtcNow, staleTick),
                 _ => Task.CompletedTask,
                 NullLogger.Instance);
+            var clock = Stopwatch.StartNew();
+            long faultAtMs = -1;
             ControlFault publishedFault = null;
-            coordinator.FaultRaised += fault => publishedFault = fault;
+            coordinator.FaultRaised += fault =>
+            {
+                Interlocked.Exchange(ref faultAtMs, clock.ElapsedMilliseconds);
+                Volatile.Write(ref publishedFault, fault);
+            };
             var lease = coordinator.EnterGenerationAsync(
                     new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Formal, 200),
                     new[] { 8 },
                     CancellationToken.None)
                 .GetAwaiter().GetResult();
 
-            Thread.Sleep(1150);
+            Thread.Sleep(2200);
+            Assert(Volatile.Read(ref publishedFault) == null,
+                "陈旧压力未等待完整三秒即升级故障");
+            Assert(SpinWait.SpinUntil(() => Volatile.Read(ref publishedFault) != null, 1500),
+                "持续陈旧压力超过三秒仍未升级故障");
+            Assert(Interlocked.Read(ref faultAtMs) >= 3000,
+                "陈旧压力确认窗口短于三秒");
             try
             {
                 coordinator.MarkVoltageReleaseAsync(lease, 8).GetAwaiter().GetResult();
@@ -993,6 +1006,57 @@ namespace AdaptiveControlTests
                    publishedFault.Code == "HydraulicSampleStale" &&
                    publishedFault.Classification == FaultClassification.SystemFault,
                 "陈旧压力样本仍被错误发布成硬件保压丢失。");
+        }
+
+        private static void StalePressureRecoversAfterTwoSeconds()
+        {
+            var state = 0;
+            var staleTick = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 2;
+            var config = new TestConfig();
+            var hydraulic = new HydraulicItem
+            {
+                Id = 2,
+                Enabled = true,
+                PressureThresholdBar = 70,
+                ReleaseStableMs = 10,
+                ReleaseTimeoutMs = 300
+            };
+            hydraulic.Members.Add(8);
+            config.Hydraulics.Add(hydraulic);
+            var coordinator = new HydraulicGroupCoordinator(
+                config,
+                _ =>
+                {
+                    var current = Volatile.Read(ref state);
+                    return new PressureSample(2, current == 2 ? 0 : 70, DateTime.UtcNow,
+                        current == 0 ? staleTick : Stopwatch.GetTimestamp());
+                },
+                _ =>
+                {
+                    Volatile.Write(ref state, 2);
+                    return Task.CompletedTask;
+                },
+                NullLogger.Instance);
+            ControlFault fault = null;
+            coordinator.FaultRaised += value => Volatile.Write(ref fault, value);
+            var lease = coordinator.EnterGenerationAsync(
+                    new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Formal, 201),
+                    new[] { 8 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            try
+            {
+                Thread.Sleep(2200);
+                Assert(Volatile.Read(ref fault) == null, "短时陈旧压力在恢复前被升级为液压故障");
+                Volatile.Write(ref state, 1);
+                Thread.Sleep(50);
+                coordinator.MarkVoltageReleaseAsync(lease, 8).GetAwaiter().GetResult();
+                Assert(Volatile.Read(ref fault) == null, "新鲜压力恢复后仍错误发布过期故障");
+            }
+            finally
+            {
+                Volatile.Write(ref state, 2);
+                coordinator.ForceReleaseAsync(2, "SampleRecoveryTestCleanup").GetAwaiter().GetResult();
+            }
         }
 
         private static void CanceledHydraulicWorkIsNotHardware()

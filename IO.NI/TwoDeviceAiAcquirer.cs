@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.CodeDom;
 using System.Collections.Concurrent;
@@ -21,6 +21,54 @@ using System.Threading.Tasks;
 
 namespace IO.NI
 {
+    internal interface IAiInputSession : IDisposable
+    {
+        double SampleClockRate { get; }
+        void Start();
+        void Stop();
+        void BeginReadMultiSample(int samples, AsyncCallback callback, object state);
+        double[,] EndReadMultiSample(IAsyncResult result);
+    }
+
+    internal sealed class NiAiInputSession : IAiInputSession
+    {
+        private readonly NIDaqTask _task;
+        private AnalogMultiChannelReader _reader;
+
+        internal NiAiInputSession(string name, string[] channels, double min, double max,
+            AITerminalConfiguration terminal, double sampleRate, int samples, int bufferSamples)
+        {
+            _task = new NIDaqTask(name);
+            try
+            {
+                foreach (var channel in channels)
+                    _task.AIChannels.CreateVoltageChannel(channel, "", terminal, min, max, AIVoltageUnits.Volts);
+                _task.Timing.ConfigureSampleClock("", sampleRate, SampleClockActiveEdge.Rising,
+                    SampleQuantityMode.ContinuousSamples, samples);
+                // Preserve the configured driver buffer before Verify; this does not change callback batch size.
+                _task.Stream.ConfigureInputBuffer(bufferSamples);
+                _task.Control(TaskAction.Verify);
+            }
+            catch
+            {
+                try { _task.Dispose(); } catch { }
+                throw;
+            }
+        }
+
+        public double SampleClockRate => _task.Timing.SampleClockRate;
+        public void Start() { _task.Start(); }
+        public void Stop() { _task.Stop(); }
+        public void BeginReadMultiSample(int samples, AsyncCallback callback, object state)
+        {
+            if (_reader == null)
+                _reader = new AnalogMultiChannelReader(_task.Stream) { SynchronizeCallbacks = false };
+            _reader.BeginReadMultiSample(samples, callback, state);
+        }
+        public double[,] EndReadMultiSample(IAsyncResult result) => _reader.EndReadMultiSample(result);
+        public void Dispose() { _task.Dispose(); }
+    }
+
     /// <summary>
     ///     分离“回调已经分配的序号”和“后台 Raw/SQLite 流水线已经接收的序号”。
     ///     队列拒绝最后一批时，已分配序号不能作为停止耐久边界，否则进程会永久等待一个
@@ -163,15 +211,6 @@ namespace IO.NI
         public long LastControlEnqueuedMonotonicTicks { get; set; }
         public long LastControlProcessedMonotonicTicks { get; set; }
         public double CallbackAgeMs { get; set; }
-        public double SampleAgeMs { get; set; }
-        public int BufferedSamples { get; set; }
-        public double DriverBacklogMs { get; set; }
-        public FastSignalQualityFlags QualityFlags { get; set; }
-        public string RejectionReason { get; set; } = "NoCommittedBatch";
-        public DaqReaderLagState ReaderLagState { get; set; }
-        public int ConsecutiveFreshBatches { get; set; }
-        public long DroppedStaleFromSequence { get; set; }
-        public long DroppedStaleToSequence { get; set; }
         public long CallbackGapEventCount { get; set; }
         public double LastCallbackGapIntervalMs { get; set; }
         public long LastCallbackGapMonotonicTicks { get; set; }
@@ -187,15 +226,6 @@ namespace IO.NI
         public int QueueDepth { get; set; }
         public double OldestBatchAgeMs { get; set; }
         public DateTime ObservedUtc { get; set; }
-    }
-
-    public enum DaqReaderLagState
-    {
-        Starting = 0,
-        Healthy = 1,
-        Backlog = 2,
-        Draining = 3,
-        Stale = 4
     }
 
     /// <summary>
@@ -924,13 +954,14 @@ namespace IO.NI
         private readonly Thread _controlThreadDev1;
         private readonly Thread _controlThreadDev2;
         private DateTime _lastTs = DateTime.Now;
-        private AnalogMultiChannelReader _reader1, _reader2;
+        private IAiInputSession _reader1, _reader2;
         private DeviceReadState _readState1, _readState2;
         private DateTime _t0 = DateTime.Now;
 
 
         // NI 任务
-        private NIDaqTask _task1, _task2;
+        private IAiInputSession _task1, _task2;
+        private readonly Func<string, string[], double, double, AITerminalConfiguration, IAiInputSession> _inputFactory;
         private readonly object _taskGateDev1 = new();
         private readonly object _taskGateDev2 = new();
         // StopAll 与恢复重建必须对每台设备共享同一个生命周期门。仅依赖 taskGate
@@ -966,9 +997,6 @@ namespace IO.NI
         private readonly AiConfigDetailRecord[] _dev1Records;
         private readonly AiConfigDetailRecord[] _dev2Records;
 
-        private readonly ConcurrentDictionary<string, DeviceReadState> _quiescingReads =
-            new ConcurrentDictionary<string, DeviceReadState>(StringComparer.OrdinalIgnoreCase);
-
         private sealed class DeviceReadState
         {
             public DeviceReadState(ClockDisciplineOptions clockOptions)
@@ -978,8 +1006,8 @@ namespace IO.NI
 
             public string Device { get; set; }
             public long Generation { get; set; }
-            public NIDaqTask Task { get; set; }
-            public AnalogMultiChannelReader Reader { get; set; }
+            public IAiInputSession Task { get; set; }
+            public IAiInputSession Reader { get; set; }
             public ManualResetEventSlim Quiesced { get; } = new(false);
             public ClockDisciplinedSampleTimeline Timeline { get; }
             public double NominalSampleRateHz { get; set; }
@@ -987,30 +1015,6 @@ namespace IO.NI
             public WallClockStepDetector WallClockStepDetector { get; } =
                 new WallClockStepDetector();
             public long UtcEpochId = 1;
-            public Thread ReadThread { get; set; }
-            public int ReadFaulted;
-            public DaqReadDispatcher<SynchronousReadResult> Dispatcher;
-            public Task StopTask;
-        }
-
-        private sealed class SynchronousReadResult : IAsyncResult
-        {
-            internal SynchronousReadResult(DeviceReadState state, double[,] raw)
-            {
-                AsyncState = state;
-                Raw = raw;
-                ReadTick = Stopwatch.GetTimestamp();
-                ReadUtc = DateTime.UtcNow;
-            }
-
-            internal double[,] Raw { get; }
-            internal long ReadTick { get; }
-            internal DateTime ReadUtc { get; }
-            internal int BufferedSamples { get; set; }
-            public object AsyncState { get; }
-            public WaitHandle AsyncWaitHandle => null;
-            public bool CompletedSynchronously => true;
-            public bool IsCompleted => true;
         }
 
         // 动态置零偏移（参数名 -> offset，工程值单位）
@@ -1045,7 +1049,6 @@ namespace IO.NI
         /// </summary>
         private sealed class CallbackTimingDiag
         {
-            internal DaqControlPublication CommittedPublication;
             /// <summary>上一次回调进入时刻（Stopwatch Tick）。</summary>
             public long LastCallbackEntrySwTick;
 
@@ -1097,13 +1100,6 @@ namespace IO.NI
             public long ClockResidualMsBits;
             public long ClockWindowSecondsBits;
             public long ClockCorrectionPpmBits;
-            public long LastSampleMonotonicTicks;
-            public int BufferedSamples;
-            public int ReaderLagState;
-            public int ConsecutiveFreshBatches;
-            public int FreshRejoinRequired;
-            public long DroppedStaleFromSequence;
-            public long DroppedStaleToSequence;
             public int ClockState;
         }
 
@@ -1230,16 +1226,12 @@ namespace IO.NI
         private void MarkControlProcessed(
             string device,
             long processedSwTick,
-            long sampleMonotonicTicks,
             DateTime sampleUtc,
             long generation,
             long sequence)
         {
             var diag = _callbackTimingDiag.GetOrAdd(device, _ => new CallbackTimingDiag());
             Interlocked.Exchange(ref diag.LastProcessedSampleUtcTicks, sampleUtc.ToUniversalTime().Ticks);
-            Interlocked.Exchange(
-                ref diag.LastSampleMonotonicTicks,
-                sampleMonotonicTicks);
             Interlocked.Exchange(ref diag.LastGeneration, generation);
             Interlocked.Exchange(ref diag.LastProcessedSequence, sequence);
             Interlocked.Exchange(ref diag.LastSampleCommitSwTick, processedSwTick);
@@ -1811,6 +1803,13 @@ namespace IO.NI
             int samplesPerChannel,
             int medianLens, // 走 ClsDataFilter 的中值窗长（用你全局配置传入）
             ILogger log = null)
+            : this(cfg, sampleRate, samplesPerChannel, medianLens, log, null)
+        {
+        }
+
+        internal TwoDeviceAiAcquirer(AiConfigDetail cfg, double sampleRate, int samplesPerChannel,
+            int medianLens, ILogger log,
+            Func<string, string[], double, double, AITerminalConfiguration, IAiInputSession> inputFactory)
         {
             if (cfg == null)
                 throw new DaqRuntimeConfigException("AI configuration is null.", nameof(cfg));
@@ -1831,6 +1830,9 @@ namespace IO.NI
             _enabled = cfg.Enabled();
             _sampleRate = sampleRate;
             _samplesPerChannel = samplesPerChannel;
+            _inputFactory = inputFactory ?? ((name, channels, min, max, terminal) =>
+                new NiAiInputSession(name, channels, min, max, terminal, _sampleRate,
+                    _samplesPerChannel, _inputBufferSamplesPerChannel));
             _inputBufferSamplesPerChannel = SelectInputBufferSamplesPerChannel(
                 sampleRate,
                 samplesPerChannel,
@@ -2756,17 +2758,6 @@ namespace IO.NI
 
         public DaqFreshnessSnapshot GetDaqFreshnessSnapshot(string device, double maxAgeMs = 100)
         {
-            DaqFreshnessSnapshot snapshot = null;
-            for (var attempt = 0; attempt < 3; attempt++)
-            {
-                snapshot = CaptureDaqFreshnessSnapshot(device, maxAgeMs);
-                if (snapshot.RejectionReason != "SnapshotGenerationChanged") return snapshot;
-            }
-            return snapshot;
-        }
-
-        private DaqFreshnessSnapshot CaptureDaqFreshnessSnapshot(string device, double maxAgeMs)
-        {
             if (string.IsNullOrWhiteSpace(device) ||
                 !_callbackTimingDiag.TryGetValue(device, out var diag))
                 return new DaqFreshnessSnapshot
@@ -2776,17 +2767,15 @@ namespace IO.NI
                     IsFresh = false
                 };
 
-            var generation = GetCurrentGeneration(device);
             var callbackTick = Interlocked.Read(ref diag.LastCallbackEntrySwTick);
             var enqueuedTick = Interlocked.Read(ref diag.LastControlEnqueuedSwTick);
             var processedTick = Interlocked.Read(ref diag.LastSampleCommitSwTick);
-            var sampleTick = Interlocked.Read(ref diag.LastSampleMonotonicTicks);
-            var committed = DaqControlPublication.Capture(ref diag.CommittedPublication, out var nowTick);
+            var nowTick = Stopwatch.GetTimestamp();
             var ageMs = processedTick <= 0
                 ? double.PositiveInfinity
                 : (nowTick - processedTick) * 1000.0 / Stopwatch.Frequency;
             var processedUtcTicks = Interlocked.Read(ref diag.LastProcessedSampleUtcTicks);
-            var snapshot = new DaqFreshnessSnapshot
+            return new DaqFreshnessSnapshot
             {
                 Device = device,
                 Generation = Interlocked.Read(ref diag.LastGeneration),
@@ -2804,33 +2793,13 @@ namespace IO.NI
                     Interlocked.Read(ref diag.ClockResidualMsBits)),
                 LastArrivalMonotonicTicks = processedTick,
                 AgeMs = ageMs,
-                IsFresh = processedTick > 0 && sampleTick > 0 &&
-                          ageMs <= Math.Max(1, maxAgeMs) &&
-                          (nowTick - sampleTick) * 1000.0 /
-                              Stopwatch.Frequency <= Math.Max(1, maxAgeMs) &&
-                          Volatile.Read(ref diag.ReaderLagState) ==
-                              (int)DaqReaderLagState.Healthy &&
-                          Volatile.Read(ref diag.ConsecutiveFreshBatches) >= 3,
+                IsFresh = processedTick > 0 && ageMs <= Math.Max(1, maxAgeMs),
                 LastCallbackMonotonicTicks = callbackTick,
                 LastControlEnqueuedMonotonicTicks = enqueuedTick,
                 LastControlProcessedMonotonicTicks = processedTick,
                 CallbackAgeMs = callbackTick <= 0
                     ? double.PositiveInfinity
                     : (nowTick - callbackTick) * 1000.0 / Stopwatch.Frequency,
-                SampleAgeMs = sampleTick <= 0
-                    ? double.PositiveInfinity
-                    : (nowTick - sampleTick) * 1000.0 / Stopwatch.Frequency,
-                BufferedSamples = Math.Max(
-                    0,
-                    Volatile.Read(ref diag.BufferedSamples)),
-                ReaderLagState = (DaqReaderLagState)Volatile.Read(
-                    ref diag.ReaderLagState),
-                ConsecutiveFreshBatches = Volatile.Read(
-                    ref diag.ConsecutiveFreshBatches),
-                DroppedStaleFromSequence = Interlocked.Read(
-                    ref diag.DroppedStaleFromSequence),
-                DroppedStaleToSequence = Interlocked.Read(
-                    ref diag.DroppedStaleToSequence),
                 CallbackGapEventCount = Interlocked.Read(ref diag.CallbackGapEventCount),
                 LastCallbackGapIntervalMs = BitConverter.Int64BitsToDouble(
                     Interlocked.Read(ref diag.LastCallbackGapIntervalMsBits)),
@@ -2844,14 +2813,6 @@ namespace IO.NI
                     ? new DateTime(processedUtcTicks, DateTimeKind.Utc)
                     : default
             };
-            snapshot.IsFresh = false;
-            committed?.Apply(snapshot, generation, nowTick, Math.Max(1, maxAgeMs));
-            if (generation != GetCurrentGeneration(device))
-            {
-                snapshot.IsFresh = false;
-                snapshot.RejectionReason = "SnapshotGenerationChanged";
-            }
-            return snapshot;
         }
 
         /// <summary>串行重建指定EPB所属DAQ，并等待连续新鲜回调。</summary>
@@ -3325,11 +3286,10 @@ namespace IO.NI
             AsyncCallback again)
         {
             var state = ar.AsyncState as DeviceReadState;
-            var synchronous = ar as SynchronousReadResult;
             var device = state?.Device ?? "Unknown";
             var generation = state?.Generation ?? -1;
-            var rearmed = synchronous != null;
-            var callbackEntrySwTick = synchronous?.ReadTick ?? Stopwatch.GetTimestamp();
+            var rearmed = false;
+            var callbackEntrySwTick = Stopwatch.GetTimestamp();
             var previousCallbackEntrySwTick = MarkCallbackEntry(device, callbackEntrySwTick);
             try
             {
@@ -3337,7 +3297,7 @@ namespace IO.NI
                 var reader = state.Reader;
 
                 // 回调进入时刻：用于计算“回调间隔/到达延迟”（与数据时间 current 区分）
-                var arrivalUtc = synchronous?.ReadUtc ?? DateTime.UtcNow;
+                var arrivalUtc = DateTime.UtcNow;
                 var wallClockStep = state.WallClockStepDetector.Observe(
                     arrivalUtc,
                     callbackEntrySwTick,
@@ -3365,7 +3325,7 @@ namespace IO.NI
                 }
 
                 var endReadStartSwTick = Stopwatch.GetTimestamp();
-                var raw = synchronous?.Raw ?? reader.EndReadMultiSample(ar); // [ch, n]
+                var raw = reader.EndReadMultiSample(ar); // [ch, n]
                 var endReadMs = (Stopwatch.GetTimestamp() - endReadStartSwTick) * 1000.0 / Stopwatch.Frequency;
                 // Stop/重建会先推进 generation；迟到的旧回调只负责 EndRead 释放，
                 // 不得写快照、入队或给新任务 re-arm。
@@ -3436,92 +3396,6 @@ namespace IO.NI
                         Volatile.Write(ref sequenceDiag.ClockState, (int)timeline.ClockState);
                     }
 
-                    var sampleAgeMs = AgeMs(
-                        timeline.BatchEndMonotonicTicks,
-                        Stopwatch.GetTimestamp());
-                    var bufferedSamples = _callbackTimingDiag.TryGetValue(
-                        device,
-                        out var lagDiag)
-                        ? Math.Max(0, Volatile.Read(ref lagDiag.BufferedSamples))
-                        : 0;
-                    if (synchronous != null) bufferedSamples = synchronous.BufferedSamples;
-                    var backlogMs = DaqBacklogPolicy.Milliseconds(bufferedSamples, state.NominalSampleRateHz);
-                    var backlogPresent = backlogMs > 100;
-                    var staleSample = sampleAgeMs > 100;
-                    var deviceControlActive = IsDeviceControlActive(device);
-                    var dropStaleBatch = !deviceControlActive &&
-                                         (staleSample || backlogPresent);
-                    if (lagDiag != null)
-                    {
-                        Interlocked.Exchange(
-                            ref lagDiag.LastSampleMonotonicTicks,
-                            timeline.BatchEndMonotonicTicks);
-                        if (staleSample || backlogPresent)
-                        {
-                            Volatile.Write(ref lagDiag.ConsecutiveFreshBatches, 0);
-                            Volatile.Write(ref lagDiag.FreshRejoinRequired, 1);
-                            Volatile.Write(
-                                ref lagDiag.ReaderLagState,
-                                (int)(sampleAgeMs >= 250
-                                    ? DaqReaderLagState.Stale
-                                    : DaqReaderLagState.Backlog));
-                        }
-                        else if (Volatile.Read(ref lagDiag.FreshRejoinRequired) != 0)
-                        {
-                            var fresh = Interlocked.Increment(
-                                ref lagDiag.ConsecutiveFreshBatches);
-                            if (fresh >= 3)
-                            {
-                                Volatile.Write(ref lagDiag.FreshRejoinRequired, 0);
-                                Volatile.Write(
-                                    ref lagDiag.ReaderLagState,
-                                    (int)DaqReaderLagState.Healthy);
-                            }
-                            else
-                            {
-                                Volatile.Write(
-                                    ref lagDiag.ReaderLagState,
-                                    (int)DaqReaderLagState.Draining);
-                            }
-                        }
-                        else
-                        {
-                            if (Volatile.Read(ref lagDiag.ConsecutiveFreshBatches) < 3)
-                                Interlocked.Increment(
-                                    ref lagDiag.ConsecutiveFreshBatches);
-                            Volatile.Write(
-                                ref lagDiag.ReaderLagState,
-                                (int)DaqReaderLagState.Healthy);
-                        }
-                        if (dropStaleBatch)
-                        {
-                            Interlocked.CompareExchange(
-                                ref lagDiag.DroppedStaleFromSequence,
-                                sequence,
-                                0);
-                            Interlocked.Exchange(
-                                ref lagDiag.DroppedStaleToSequence,
-                                sequence);
-                        }
-                    }
-                    var freshRejoinReady = lagDiag == null ||
-                        Volatile.Read(ref lagDiag.FreshRejoinRequired) == 0;
-                    if (staleSample || !freshRejoinReady || backlogPresent)
-                        qualityFlags |= FastSignalQualityFlags.SampleStale;
-                    if (deviceControlActive && sampleAgeMs >= 250)
-                        PublishQueueFullFault(
-                            device,
-                            generation,
-                            "DaqSampleStale",
-                            "DedicatedReader",
-                            bufferedSamples,
-                            _inputBufferSamplesPerChannel,
-                            sampleAgeMs,
-                            $"Device={device} Generation={generation} " +
-                            $"Sequence={sequence} SampleAgeMs={sampleAgeMs:F1} " +
-                            $"BufferedSamples={bufferedSamples};" +
-                            "Action=ImmediatePowerOffAndAbortCurrentCycle");
-
                     if (timeline.StateChanged || timeline.RequiresRecovery)
                     {
                         AppendDiagnostic(new DaqTimingValue
@@ -3562,7 +3436,7 @@ namespace IO.NI
                             state.NominalSampleRateHz);
                     }
 
-                    if (!dropStaleBatch && _fastSource == FastSource.DaqCallback)
+                    if (_fastSource == FastSource.DaqCallback)
                         {
                             var devRecs = GetDeviceRecords(device);
                             var chCount = Math.Min(raw.GetLength(0), devRecs.Length);
@@ -3579,7 +3453,7 @@ namespace IO.NI
                                     var isPressure = TryParsePressureId(rec.参数名, out var pressureId);
                                     if ((epbCh < 1 || epbCh > 12) && !isPressure) continue;
                                     var representative = ComputeFastRepresentative(raw, c, lastCol, rec);
-                                    var sampleQuality = qualityFlags;
+                                    var sampleQuality = FastSignalQualityFlags.None;
                                     if (double.IsNaN(representative) || double.IsInfinity(representative))
                                         sampleQuality |= FastSignalQualityFlags.NonFinite;
                                     var rawTailStart = Math.Max(0, lastCol - ControlBatchRing.RawTailCapacity + 1);
@@ -3606,7 +3480,7 @@ namespace IO.NI
                                 sequence,
                                 current,
                                 arrivalUtc,
-                                timeline.BatchEndMonotonicTicks,
+                                callbackEntrySwTick,
                                 controlEnqueuedTick,
                                 timeline.SampleLeadMs,
                                 timeline.EffectiveSampleRateHz,
@@ -3615,11 +3489,7 @@ namespace IO.NI
                                 timeline.ResidualMs,
                                 timeline.EstimatorWindowSeconds,
                                 Thread.CurrentThread.ManagedThreadId,
-                                qualityFlags,
-                                bufferedSamples,
-                                lagDiag == null ? 0 : Volatile.Read(ref lagDiag.ConsecutiveFreshBatches),
-                                lagDiag == null ? DaqReaderLagState.Starting :
-                                    (DaqReaderLagState)Volatile.Read(ref lagDiag.ReaderLagState));
+                                qualityFlags);
                             if (EnqueueForControl(
                                     device,
                                     metadata,
@@ -3632,9 +3502,6 @@ namespace IO.NI
                         // 执行 ConvertToEngineeringInPlace，因此必须等快速代表值计算、
                         // 质量检查和控制环 RawTail 深复制全部完成后，才发布同一数组引用。
                         // 此调用是所有权转移点；调用后本回调不得再读写 raw。
-                        // Control may reject a stale sample, but every source batch
-                        // still belongs to the raw evidence stream. An OFF motor
-                        // can have an open learning/formal attempt awaiting its tail.
                         EnqueueForProcessing(new Item(
                             device,
                             generation,
@@ -3656,8 +3523,7 @@ namespace IO.NI
 
                     if (!IsCurrentGeneration(device, generation)) return;
                     var rearmStartSwTick = Stopwatch.GetTimestamp();
-                    if (synchronous == null)
-                        reader.BeginReadMultiSample(_samplesPerChannel, again, state);
+                    reader.BeginReadMultiSample(_samplesPerChannel, again, state);
                     var rearmMs = (Stopwatch.GetTimestamp() - rearmStartSwTick) * 1000.0 / Stopwatch.Frequency;
                     rearmed = true;
 
@@ -3683,13 +3549,11 @@ namespace IO.NI
             catch (DaqException ex)
             {
                 if (!IsCurrentGeneration(device, generation)) return;
-                if (state != null) Volatile.Write(ref state.ReadFaulted, 1);
                 ScheduleDeviceRecovery(device, generation, ex);
             }
             catch (Exception ex)
             {
                 if (!IsCurrentGeneration(device, generation)) return;
-                if (state != null) Volatile.Write(ref state.ReadFaulted, 1);
                 ScheduleDeviceRecovery(device, generation, ex);
             }
             finally
@@ -4003,22 +3867,26 @@ namespace IO.NI
                             }
                             if (double.IsNaN(filtered) || double.IsInfinity(filtered))
                                 sampleQuality |= FastSignalQualityFlags.NonFinite;
-                            var hasEpbChannel = samples[i].Channel >= 1 && samples[i].Channel <= 12;
+                            _lastFastValue[parameterName] = filtered;
+
+                            if (samples[i].PressureId > 0)
+                                _lastPressureSample[parameterName] = new PressureSample(
+                                    samples[i].PressureId,
+                                    filtered,
+                                    metadata.SampleUtc,
+                                    metadata.CaptureMonotonicTicks);
+
+                            if (samples[i].Channel < 1 || samples[i].Channel > 12) continue;
                             var fastSample = new FastEpbCurrentSample(
-                                samples[i].Channel, filtered, samples[i].RepresentativeA,
-                                metadata.SampleUtc, metadata.CaptureMonotonicTicks,
-                                metadata.Generation, metadata.SourceSequence, sampleQuality);
-                            var sampleIndex = i;
-                            if (!TryPublishCurrentGeneration(workerDevice, metadata.Generation, () =>
-                            {
-                                _lastFastValue[parameterName] = filtered;
-                                if (samples[sampleIndex].PressureId > 0)
-                                    _lastPressureSample[parameterName] = new PressureSample(
-                                        samples[sampleIndex].PressureId, filtered,
-                                        metadata.SampleUtc, metadata.CaptureMonotonicTicks);
-                                if (hasEpbChannel) _lastFastEpbSample[samples[sampleIndex].Channel] = fastSample;
-                            })) break;
-                            if (!hasEpbChannel) continue;
+                                samples[i].Channel,
+                                filtered,
+                                samples[i].RepresentativeA,
+                                metadata.SampleUtc,
+                                metadata.CaptureMonotonicTicks,
+                                metadata.Generation,
+                                metadata.SourceSequence,
+                                sampleQuality);
+                            _lastFastEpbSample[samples[i].Channel] = fastSample;
                             _fastEvidence.Append(
                                 workerDevice,
                                 new FastControlBatchMetadata(
@@ -4056,15 +3924,12 @@ namespace IO.NI
                         }
 
                         var processedTicks = Stopwatch.GetTimestamp();
-                        TryPublishCurrentGeneration(workerDevice, metadata.Generation, () =>
-                        {
-                            MarkControlProcessed(workerDevice, processedTicks,
-                                metadata.CaptureMonotonicTicks, metadata.SampleUtc,
-                                metadata.Generation, metadata.SourceSequence);
-                            if (_callbackTimingDiag.TryGetValue(workerDevice, out var committedDiag))
-                                Volatile.Write(ref committedDiag.CommittedPublication,
-                                    new DaqControlPublication(metadata, processedTicks));
-                        });
+                        MarkControlProcessed(
+                            workerDevice,
+                            processedTicks,
+                            metadata.SampleUtc,
+                            metadata.Generation,
+                            metadata.SourceSequence);
                         var processMs = AgeMs(batchStarted, processedTicks);
                         Interlocked.Exchange(
                             ref isDev1Worker ? ref _lastControlBatchProcessMsBitsDev1 : ref _lastControlBatchProcessMsBitsDev2,
@@ -4090,18 +3955,6 @@ namespace IO.NI
             {
                 _backgroundTasks.TryRun("ControlWorkerFault:" + workerDevice, () =>
                     _log.Error($"{workerDevice} DAQ控制工作线程异常：{ex}", "AI", ex));
-            }
-        }
-
-        internal bool TryPublishCurrentGeneration(string device, long generation, Action publish)
-        {
-            // Share the task generation transition lock, but never invoke subscribers under it.
-            // This closes the check-then-write race with StopDevice/StartDevice.
-            lock (string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase) ? _taskGateDev1 : _taskGateDev2)
-            {
-                if (!IsCurrentGeneration(device, generation)) return false;
-                publish();
-                return true;
             }
         }
 
@@ -5285,21 +5138,11 @@ namespace IO.NI
         }
 
         // —— 工具 —— //
-        private NIDaqTask CreateAiTask(string name, string[] channels, double aiMin, double aiMax,
+        private IAiInputSession CreateAiTask(string name, string[] channels, double aiMin, double aiMax,
             AITerminalConfiguration term)
         {
-            var task = new NIDaqTask(name);
-            foreach (var ch in channels)
-                task.AIChannels.CreateVoltageChannel(ch, "", term, aiMin, aiMax, AIVoltageUnits.Volts);
-
-            task.Timing.ConfigureSampleClock("", _sampleRate, SampleClockActiveEdge.Rising,
-                SampleQuantityMode.ContinuousSamples, _samplesPerChannel);
-            // 输入缓冲只扩大驱动侧的抗调度抖动窗口，不改变每次读取点数和10ms控制节拍。
-            // 必须在 Verify 前配置；现场 -200279 即为应用线程约3秒未及时取数后覆盖旧样本。
-            task.Stream.ConfigureInputBuffer(_inputBufferSamplesPerChannel);
-
-            task.Control(TaskAction.Verify);
-            return task;
+            return _inputFactory(name, channels, aiMin, aiMax, term)
+                ?? throw new InvalidOperationException("AI input factory returned null");
         }
 
         internal static int SelectInputBufferSamplesPerChannel(
@@ -5637,8 +5480,6 @@ namespace IO.NI
 
         private void ResetFreshness(string device)
         {
-            if (_callbackTimingDiag.TryGetValue(device, out var publicationDiag))
-                Volatile.Write(ref publicationDiag.CommittedPublication, null);
             if (!_callbackTimingDiag.TryGetValue(device, out var diag)) return;
             Interlocked.Exchange(ref diag.LastCallbackEntrySwTick, 0);
             Interlocked.Exchange(ref diag.LastControlEnqueuedSwTick, 0);
@@ -5661,28 +5502,11 @@ namespace IO.NI
             Interlocked.Exchange(ref diag.ClockResidualMsBits, 0);
             Interlocked.Exchange(ref diag.ClockWindowSecondsBits, 0);
             Interlocked.Exchange(ref diag.ClockCorrectionPpmBits, 0);
-            Interlocked.Exchange(ref diag.LastSampleMonotonicTicks, 0);
-            Volatile.Write(ref diag.BufferedSamples, 0);
-            Volatile.Write(
-                ref diag.ReaderLagState,
-                (int)DaqReaderLagState.Starting);
-            Volatile.Write(ref diag.ConsecutiveFreshBatches, 0);
-            Volatile.Write(ref diag.FreshRejoinRequired, 1);
-            Interlocked.Exchange(ref diag.DroppedStaleFromSequence, 0);
-            Interlocked.Exchange(ref diag.DroppedStaleToSequence, 0);
             Volatile.Write(ref diag.ClockState, (int)ClockState.WarmingUp);
         }
 
         private void StartDevice(string device)
         {
-            if (_quiescingReads.TryGetValue(device, out var previousRead))
-            {
-                if (!previousRead.Quiesced.IsSet || previousRead.Dispatcher?.Quiesced.IsSet == false ||
-                    previousRead.ReadThread?.IsAlive == true ||
-                    previousRead.StopTask == null || previousRead.StopTask.Status != TaskStatus.RanToCompletion)
-                    throw new InvalidOperationException("PreviousDaqGenerationNotQuiesced:" + device);
-                _quiescingReads.TryRemove(device, out _);
-            }
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(TwoDeviceAiAcquirer));
             var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
@@ -5697,7 +5521,7 @@ namespace IO.NI
                 (isDev1 ? _controlRingDev1 : _controlRingDev2).Reset();
                 ResetFreshness(device);
                 var taskName = $"{device}_AI_g{generation}";
-                NIDaqTask task = null;
+                IAiInputSession task = null;
                 try
                 {
                     task = CreateAiTask(
@@ -5710,7 +5534,7 @@ namespace IO.NI
                     var nominalSampleRate = _sampleRate;
                     try
                     {
-                        var coercedRate = task.Timing.SampleClockRate;
+                        var coercedRate = task.SampleClockRate;
                         if (coercedRate > 0 && !double.IsNaN(coercedRate) && !double.IsInfinity(coercedRate))
                             nominalSampleRate = coercedRate;
                     }
@@ -5718,10 +5542,7 @@ namespace IO.NI
                     {
                         _log.Warn($"{device} 无法读取DAQ强制采样率，使用配置值 {_sampleRate:F6}Hz：{ex.Message}", "AI");
                     }
-                    var reader = new AnalogMultiChannelReader(task.Stream)
-                    {
-                        SynchronizeCallbacks = false
-                    };
+                    var reader = task;
                     var state = new DeviceReadState(_clockDisciplineOptions)
                     {
                         Device = device,
@@ -5754,21 +5575,10 @@ namespace IO.NI
                         _reader2 = reader;
                         _readState2 = state;
                     }
-                    state.Dispatcher = new DaqReadDispatcher<SynchronousReadResult>(
-                        "AI-Publish-" + device, 64,
-                        frame =>
-                        {
-                            if (IsCurrentGeneration(device, generation))
-                                OnAiBatch(frame, isDev1 ? _colIndexDev1 : _colIndexDev2, null);
-                        },
-                        ex => ScheduleDeviceRecovery(device, generation, ex));
-                    state.ReadThread = new Thread(() => ReadDeviceLoop(state))
-                    {
-                        IsBackground = true,
-                        Name = "AI-Read-" + device,
-                        Priority = ThreadPriority.AboveNormal
-                    };
-                    state.ReadThread.Start();
+                    reader.BeginReadMultiSample(
+                        _samplesPerChannel,
+                        isDev1 ? Dev1Callback : Dev2Callback,
+                        state);
                 }
                 catch
                 {
@@ -5784,7 +5594,7 @@ namespace IO.NI
         {
             var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
             var gate = isDev1 ? _taskGateDev1 : _taskGateDev2;
-            NIDaqTask task;
+            IAiInputSession task;
             DeviceReadState state;
             lock (gate)
             {
@@ -5811,93 +5621,12 @@ namespace IO.NI
             }
 
             if (task == null) return;
-            if (state != null)
-            {
-                _quiescingReads[device] = state;
-                state.Dispatcher?.Complete();
-            }
-            var stop = Task.Run(() =>
-            {
-                try { task.Stop(); }
-                catch (Exception ex) { _log.Warn($"停止 {device} DAQ任务异常：{ex.Message}", "AI"); }
-                finally { task.Dispose(); }
-            });
-            if (state != null) state.StopTask = stop;
-            _ = stop.ContinueWith(failed => { var observed = failed.Exception; },
-                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
-            if (!stop.Wait(1000) || (state != null &&
-                (!state.Quiesced.Wait(500) || state.ReadThread?.Join(500) == false ||
-                    state.Dispatcher?.Quiesced.Wait(500) == false)))
-                throw new TimeoutException("PreviousDaqGenerationNotQuiesced:" + device);
-            _quiescingReads.TryRemove(device, out _);
-        }
-
-        private void ReadDeviceLoop(DeviceReadState state)
-        {
-            if (state == null) return;
-            try
-            {
-                while (Volatile.Read(ref _disposed) == 0 &&
-                       IsCurrentGeneration(state.Device, state.Generation) &&
-                       Volatile.Read(ref state.ReadFaulted) == 0)
-                {
-                    double[,] raw;
-                    try
-                    {
-                        raw = state.Reader.ReadMultiSample(_samplesPerChannel);
-                    }
-                    catch (Exception ex)
-                    {
-                        if (IsCurrentGeneration(state.Device, state.Generation))
-                            ScheduleDeviceRecovery(
-                                state.Device,
-                                state.Generation,
-                                ex);
-                        break;
-                    }
-                    if (!IsCurrentGeneration(state.Device, state.Generation))
-                        break;
-                    var frame = new SynchronousReadResult(state, raw);
-                    UpdateDriverBacklog(state);
-                    if (_callbackTimingDiag.TryGetValue(state.Device, out var diag))
-                        frame.BufferedSamples = Volatile.Read(ref diag.BufferedSamples);
-                    if (!state.Dispatcher.TryPublish(frame))
-                    {
-                        Interlocked.Exchange(ref state.ReadFaulted, 1);
-                        _backgroundTasks.TryRun("ReadDispatchOverflow:" + state.Device, () =>
-                            ScheduleDeviceRecovery(state.Device, state.Generation,
-                                new InvalidOperationException("DaqReadDispatchOverflow: rejected raw read; capacity=64")));
-                        break;
-                    }
-                }
-            }
-            finally
-            {
-                state.Dispatcher?.Complete();
-                state.Quiesced.Set();
-            }
-        }
-
-        private void UpdateDriverBacklog(DeviceReadState state)
-        {
-            if (state == null ||
-                !_callbackTimingDiag.TryGetValue(state.Device, out var diag))
-                return;
-            var buffered = 0;
-            try
-            {
-                buffered = (int)Math.Min(
-                    int.MaxValue,
-                    Math.Max(
-                        0L,
-                        state.Task.Stream.AvailableSamplesPerChannel));
-            }
-            catch
-            {
-                // Driver versions without this diagnostic keep zero; sample
-                // age and sequence continuity still enforce the safety gate.
-            }
-            Volatile.Write(ref diag.BufferedSamples, buffered);
+            try { task.Stop(); }
+            catch (Exception ex) { _log.Warn($"停止 {device} DAQ任务异常：{ex.Message}", "AI"); }
+            try { task.Dispose(); }
+            catch (Exception ex) { _log.Warn($"释放 {device} DAQ任务异常：{ex.Message}", "AI"); }
+            if (state != null && !state.Quiesced.Wait(500))
+                _log.Warn($"{device} 旧DAQ回调在500ms内未退出；新任务将使用独立代次和唯一名称。", "AI");
         }
 
         private void ScheduleDeviceRecovery(string device, long generation, Exception cause)

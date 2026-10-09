@@ -236,9 +236,8 @@ namespace MTEmbTest
         /// <summary>
         ///     瞬时值（文本框）刷新节流：避免每批都刷新导致 UI 抖动。
         /// </summary>
-        private int _lastInstantUiUpdateTick;
+        private readonly InstantDisplayRefreshGate _instantDisplayRefreshGate = new();
 
-        private const int InstantUiUpdateMinIntervalMs = 200;
 
         /// <summary>
         ///     绘图零点时间（绝对时间），用于将 DAQ 的绝对时间戳转换为曲线的相对时间 X。
@@ -357,7 +356,14 @@ namespace MTEmbTest
                 }
 
                 _alarmCfg = AlarmConfigLoader.Load(alarmCfgPath, logger);
-                _alarmManager = new AlarmManager(_alarmCfg, logger);
+                _alarmManager = _hardwareFactory == null
+                    ? new AlarmManager(_alarmCfg, logger)
+                    : _hardwareFactory.CreateAlarm(_alarmCfg, logger);
+                if (_alarmManager == null)
+                {
+                    logger?.Info("监控测试硬件组合未提供物理报警输出。", "报警");
+                    return;
+                }
 
                 _epb.Alarm = _alarmManager;
                 _epb.AlarmConfig = _alarmCfg;
@@ -368,6 +374,7 @@ namespace MTEmbTest
                     CbBuzzerEnabled.Visible = true;
                     CbBuzzerEnabled.Enabled = true;
                     CbBuzzerEnabled.Checked = _alarmManager.BuzzerEnabled;
+                    if (_alarmManager.SupervisorOwnsOutputs) CbBuzzerEnabled.Text = "项目蜂鸣器";
 
                     // 防重复订阅
                     CbBuzzerEnabled.CheckedChanged -= CbBuzzerEnabled_CheckedChanged;
@@ -378,6 +385,7 @@ namespace MTEmbTest
                 {
                     BtnClearAlarms.Visible = true;
                     BtnClearAlarms.Enabled = true;
+                    if (_alarmManager.SupervisorOwnsOutputs) BtnClearAlarms.Text = "复位项目报警";
 
                     // 防重复订阅
                     BtnClearAlarms.Click -= BtnClearAlarms_Click;
@@ -452,6 +460,7 @@ namespace MTEmbTest
 
         private DataOperation.TestConfig testConfig;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
+        private readonly IMonitorHardwareFactory _hardwareFactory;
 
 
         public FrmEpbMainMonitor()
@@ -461,7 +470,13 @@ namespace MTEmbTest
         }
 
         internal FrmEpbMainMonitor(DaqRuntimeSettings daqRuntimeSettings)
+            : this(daqRuntimeSettings, null)
         {
+        }
+
+        internal FrmEpbMainMonitor(DaqRuntimeSettings daqRuntimeSettings, IMonitorHardwareFactory hardwareFactory)
+        {
+            _hardwareFactory = hardwareFactory;
             _daqRuntimeSettings = daqRuntimeSettings ??
                 throw new ArgumentNullException(nameof(daqRuntimeSettings));
             InitializeComponent();
@@ -699,7 +714,14 @@ namespace MTEmbTest
 
         internal FrmEpbMainMonitor(
             Guid protectedLearningRootId,
-            DaqRuntimeSettings daqRuntimeSettings) : this(daqRuntimeSettings)
+            DaqRuntimeSettings daqRuntimeSettings) : this(protectedLearningRootId, daqRuntimeSettings, null)
+        {
+        }
+
+        internal FrmEpbMainMonitor(
+            Guid protectedLearningRootId,
+            DaqRuntimeSettings daqRuntimeSettings,
+            IMonitorHardwareFactory hardwareFactory) : this(daqRuntimeSettings, hardwareFactory)
         {
             _protectedLearningRootId = protectedLearningRootId;
         }
@@ -1115,19 +1137,26 @@ namespace MTEmbTest
 
 
                 // 2) 初始化 DO 控制器
-                _do = new DoController(_cfg.DO, logger);
+                _do = _hardwareFactory == null
+                    ? new DoController(_cfg.DO, logger)
+                    : _hardwareFactory.CreateDigitalOutput(_cfg.DO, logger)
+                        ?? throw new InvalidOperationException("Monitor digital output factory returned null");
 
                 // 3) 初始化 AO 控制器
-                _ao = new AoController(_cfg.AO, logger);
+                _ao = _hardwareFactory == null
+                    ? new AoController(_cfg.AO, logger)
+                    : _hardwareFactory.CreateAnalogOutput(_cfg.AO, logger)
+                        ?? throw new InvalidOperationException("Monitor analog output factory returned null");
 
                 aiConfigDetail =
                     AiConfigLoader.Load(RuntimeConfigPaths.GetPath("AIConfig.xml"));
 
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(
+                twoDeviceAiAcquirer = _hardwareFactory == null ? new TwoDeviceAiAcquirer(
                     aiConfigDetail,
                     _daqRuntimeSettings.SampleRateHz,
                     _daqRuntimeSettings.SamplesPerChannel,
-                    10, logger);
+                    10, logger) : _hardwareFactory.CreateAcquirer(aiConfigDetail, _daqRuntimeSettings, logger)
+                        ?? throw new InvalidOperationException("Monitor acquisition factory returned null");
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
 
@@ -1151,6 +1180,12 @@ namespace MTEmbTest
                     twoDeviceAiAcquirer,
                     logger,
                     safetyMarginMode,
+                    powerSupply: _hardwareFactory == null ? null :
+                        _hardwareFactory.CreatePowerSupply(_cfg, logger)
+                            ?? throw new InvalidOperationException("Monitor power supply factory returned null"),
+                    daqHardwareProbe: _hardwareFactory == null ? null :
+                        _hardwareFactory.CreateDaqProbe()
+                            ?? throw new InvalidOperationException("Monitor DAQ probe factory returned null"),
                     protectedLearningRootIds: _protectedLearningRootId == Guid.Empty
                         ? null
                         : new[] { _protectedLearningRootId });
@@ -1240,6 +1275,30 @@ namespace MTEmbTest
                     logger?.Info("Raw 原始数据落盘未启用；不创建 DataStore\\时间戳空目录。", "Storage");
                 }
                 SetMonitorLifecycle(EpbMonitorLifecycle.Idle);
+                if (IndependentRecoveryStartup.Current != null)
+                {
+                    var manager = _epb;
+                    var independent = IndependentRecoveryStartup.Current;
+                    manager.PermanentRecoveryResetWriter = (channel, selected) =>
+                        independent.ResetPermanentExclusion(_cfg, channel, selected);
+                    manager.PermanentRecoveryExclusionWriter = (runId, epoch, channels, code, command) =>
+                        independent.PersistPermanentExclusion(runId, epoch, channels, code, command);
+                    manager.NearZeroRecoveryDecisionWriter = independent.RecordNearZeroFault;
+                    var observer = IndependentRecoveryStartup.Current.ObserveCooperativeStop(async requestId =>
+                    {
+                        var result = await manager.StopAllAsync(new StopContext
+                        {
+                            Source = StopSource.SystemFault,
+                            Reason = "独立执行器协作停止",
+                            Initiator = "IndependentFallbackGuard",
+                            CorrelationId = requestId,
+                            RequestedUtc = DateTime.UtcNow
+                        }, CancellationToken.None).ConfigureAwait(false);
+                        return result?.LogicalQuiescenceConfirmed == true;
+                    });
+                    FormClosed += (sender, args) => observer.Dispose();
+                }
+                _monitorInitialization.CompleteLoad();
             }
 
             catch (Exception ex)
@@ -1251,6 +1310,11 @@ namespace MTEmbTest
                 if (!IsDisposed && !Disposing && IsHandleCreated)
                     BeginInvoke((Action)Close);
             }
+            finally
+            {
+                if (MonitorLifecycle == EpbMonitorLifecycle.Initializing)
+                    SetMonitorLifecycle(EpbMonitorLifecycle.InitializationFailed);
+            }
         }
 
         internal EpbMonitorLifecycle MonitorLifecycle =>
@@ -1259,6 +1323,8 @@ namespace MTEmbTest
         private void SetMonitorLifecycle(EpbMonitorLifecycle lifecycle)
         {
             Interlocked.Exchange(ref _monitorLifecycle, (int)lifecycle);
+            if (lifecycle == EpbMonitorLifecycle.InitializationFailed || lifecycle == EpbMonitorLifecycle.Closed)
+                _monitorInitialization.Fail();
         }
 
         private bool CanUseIdleFastClose()
@@ -1324,7 +1390,36 @@ namespace MTEmbTest
         }
 
 
-        /// <summary>保留历史次数基线，仅用耐久机械回执补齐重启前尚未保存的动作。</summary>
+        /// <summary>
+        ///     启动加载试验时，从 SQLite(index.db) 回填每个 EPB 的累计圈次数到 <see cref="_uiEpbRecords"/>。
+        /// </summary>
+        /// <returns>
+        ///     若存在任何通道的 <see cref="EpbTestRecord.RunCount"/> 被更新，则返回 true；否则返回 false。
+        /// </returns>
+        /// <remarks>
+        ///     <para>
+        ///     口径说明：
+        ///     <list type="bullet">
+        ///         <item>
+        ///             <description>
+        ///             本项目中 <see cref="EpbTestRecord.RunCount"/> 既用于 UI 展示“已运行圈数”，也用于“下一圈号”的续号基准；
+        ///             因此启动回填必须与落盘使用的圈号口径一致。
+        ///             </description>
+        ///         </item>
+        ///         <item>
+        ///             <description>
+        ///             回填采用：<c>RunCount = MAX(cycle_number)</c>（CycleNumber &gt; 0）。
+        ///             这样即便现场手工修正过 <c>cycle_number</c>（例如补齐/跳号），
+        ///             也能保证 TestConfig.xml 与 index.db 的“圈号基准”一致，避免开始后出现差 1 或唯一键冲突。
+        ///             </description>
+        ///         </item>
+        ///     </list>
+        ///     </para>
+        ///     <para>
+        ///     为避免“首次新建项目/缺失 DB 文件”导致把 XML 进度覆盖成 0：
+        ///     仅当启动时检测到项目目录下已存在 index.db 时，才执行回填。
+        ///     </para>
+        /// </remarks>
         private bool TryBackfillRunCountFromDiskIndex()
         {
             if (!_shouldBackfillRunCountFromDbOnLoad)
@@ -1343,8 +1438,21 @@ namespace MTEmbTest
                     if (rec == null || rec.Id < 1 || rec.Id > 12)
                         continue;
 
-                    var dbMechanicalCount = writer.ReconcileMechanicalBaseline(
-                        rec.Id, rec.EffectiveMechanicalCycleCount);
+                    // 关键：使用“最大圈号”回填，保证与 BeginCycle/续号基准一致。
+                    var dbLastCycleNumber = writer.GetLastCycleNumber(rec.Id);
+                    if (dbLastCycleNumber < 0) dbLastCycleNumber = 0;
+
+                    if (rec.RunCount != dbLastCycleNumber)
+                    {
+                        rec.RunCount = dbLastCycleNumber;
+                        changed = true;
+                    }
+                    if (rec.MechanicalCycleCount < dbLastCycleNumber)
+                    {
+                        rec.MechanicalCycleCount = dbLastCycleNumber;
+                        changed = true;
+                    }
+                    var dbMechanicalCount = writer.GetMechanicalCycleCompletedCount(rec.Id);
                     if (rec.MechanicalCycleCount < dbMechanicalCount)
                     {
                         rec.MechanicalCycleCount = dbMechanicalCount;
@@ -1438,23 +1546,7 @@ namespace MTEmbTest
             EpbGroup[channel - 1].CtrlCycles.Text =
                 Math.Max(record.MechanicalCycleCount, record.RunCount).ToString();
 
-            if (_currentEpbSummaryChannel == channel && record.Status == EpbTestStatus.Completed)
-            {
-                int nextChannel;
-                lock (_epbRecordsLock)
-                    nextChannel = EpbProjectPolicies.FindSummaryChannelAfterCompletion(
-                        _uiEpbRecords,
-                        channel);
-
-                if (nextChannel != channel)
-                    SelectEpbSummaryChannel(nextChannel);
-                else
-                    RefreshCurrentEpbSummary(channel);
-            }
-            else
-            {
-                RefreshCurrentEpbSummary(channel);
-            }
+            RefreshCurrentEpbSummary(channel);
 
             // —— 4) 下拉框右侧面板选中时刷新 —— //
             // —— ?? 取消实时保存，改为“定时自动保存” —— //
@@ -2044,6 +2136,9 @@ namespace MTEmbTest
 
         private void RevokeManualStopExitAuthorizationBeforeEnergization()
         {
+            IndependentRecoveryStartup.Current?.RequireManualStopPersistenceCompleted();
+            WatchdogRuntime.MarkControlAdmission();
+            _manualCloseTrialObserved = true;
             _stopSessionReceipt.RevokeForNewStart();
             _manualStopExitReceipt.RevokeForNewStart();
             Interlocked.Exchange(ref _operatorStopRequested, 0);
@@ -2134,9 +2229,8 @@ namespace MTEmbTest
                 // 瞬时值刷新节流：最多每 200ms 更新一次
                 var nowTick = Environment.TickCount;
                 if ((p1 != null || p2 != null) &&
-                    unchecked(nowTick - _lastInstantUiUpdateTick) >= InstantUiUpdateMinIntervalMs)
+                    _instantDisplayRefreshGate.TryRefresh(nowTick))
                 {
-                    _lastInstantUiUpdateTick = nowTick;
                     UpdateInstantDisplayValues();
                 }
             }
@@ -2533,7 +2627,8 @@ namespace MTEmbTest
 
                 // Revoke the preceding run's manual-stop authorization before
                 // any new batch can reconfigure or energize control hardware.
-                RevokeManualStopExitAuthorizationBeforeEnergization();
+                if (unattendedRecovery || IndependentRecoveryStartup.Current == null)
+                    RevokeManualStopExitAuthorizationBeforeEnergization();
 
                 // 读取自学习圈数（比如从一个文本框；没有就用3）
                 var learnCycles = _cfg.Test.LearnCycles;
@@ -2566,19 +2661,36 @@ namespace MTEmbTest
                     RunChainIdentity chainIdentity = null;
                     if (unattendedRecovery)
                     {
-                        var checkpoint = UnattendedRunCheckpointStore.Load();
-                        if (checkpoint == null ||
-                            !Guid.TryParse(checkpoint.RunId, out var recoveredRunId) ||
-                            recoveredRunId == Guid.Empty)
-                            throw new InvalidOperationException("无人值守恢复缺少有效父RunId，拒绝创建无身份学习链。");
-                        Guid.TryParse(checkpoint.RootRunId, out var rootRunId);
-                        Guid.TryParse(checkpoint.ParentRunId, out var parentRunId);
-                        chainIdentity = new RunChainIdentity(
-                            Guid.NewGuid(),
-                            rootRunId == Guid.Empty ? recoveredRunId : rootRunId,
-                            parentRunId == Guid.Empty ? recoveredRunId : parentRunId,
-                            Math.Max(0, checkpoint.RestartGeneration + 1),
-                            Math.Max(1, checkpoint.RunEpoch + 1));
+                        var independent = IndependentRecoveryStartup.Current;
+                        if (independent != null)
+                        {
+                            independent.ValidateConfiguration(_cfg);
+                            chainIdentity = new RunChainIdentity(Guid.Parse(independent.RunId),
+                                Guid.Parse(independent.RootRunId), Guid.Parse(independent.ParentRunId),
+                                checked((int)independent.Generation), independent.RunEpoch);
+                        }
+                        else
+                        {
+                            var checkpoint = UnattendedRunCheckpointStore.Load();
+                            if (checkpoint == null ||
+                                !Guid.TryParse(checkpoint.RunId, out var recoveredRunId) ||
+                                recoveredRunId == Guid.Empty)
+                                throw new InvalidOperationException("无人值守恢复缺少有效父RunId，拒绝创建无身份学习链。");
+                            Guid.TryParse(checkpoint.RootRunId, out var rootRunId);
+                            Guid.TryParse(checkpoint.ParentRunId, out var parentRunId);
+                            chainIdentity = new RunChainIdentity(
+                                Guid.NewGuid(),
+                                rootRunId == Guid.Empty ? recoveredRunId : rootRunId,
+                                parentRunId == Guid.Empty ? recoveredRunId : parentRunId,
+                                Math.Max(0, checkpoint.RestartGeneration + 1),
+                                Math.Max(1, checkpoint.RunEpoch + 1));
+                        }
+                    }
+                    if (!unattendedRecovery && IndependentRecoveryStartup.Current != null)
+                    {
+                        chainIdentity = await System.Threading.Tasks.Task.Run(() =>
+                            IndependentRecoveryStartup.Current.ArmManualRun(_cfg, channels, learnCycles));
+                        RevokeManualStopExitAuthorizationBeforeEnergization();
                     }
                     var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
                         channels, // 批量要跑的通道
@@ -2635,6 +2747,12 @@ namespace MTEmbTest
                     LogInfo($"批量启动失败：{ex.Message}");
                     if (unattendedRecovery)
                         throw new InvalidOperationException("无人值守恢复批量启动失败。", ex);
+                    if (await ReleaseUnadmittedStartupAsync().ConfigureAwait(true))
+                    {
+                        ShowOperatorMessage("本次启动未获控制授权，失败会话已释放。\r\n" + ex.Message,
+                            "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return null;
+                    }
                     WatchdogRuntime.NotifyBatchStartFailed(
                         "BatchStartFailed:" + ex.GetBaseException().Message);
                     LogInfo("[启动保护] 已安全回滚；正式运行尚未提交时独立看门狗不会杀进程，" +
@@ -2662,10 +2780,24 @@ namespace MTEmbTest
                 logger?.Error($"启动卡钳{channelText}测试失败。", "启动", ex);
                 LogInfo($"启动卡钳{channelText} 测试失败：{ex.Message}");
                 if (unattendedRecovery) throw;
+                await ReleaseUnadmittedStartupAsync().ConfigureAwait(true);
                 ShowOperatorMessage($@"启动卡钳{channelText}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 return null;
             }
+        }
+
+        private async Task<bool> ReleaseUnadmittedStartupAsync()
+        {
+            if (!WatchdogRuntime.TryRejectUnadmittedSession()) return false;
+            var main = MdiParent as Main_Frm;
+            if (main == null)
+                throw new InvalidOperationException("启动失败时缺少主窗口会话所有者。");
+            var receipt = await main.ShutdownWatchdogSessionAndReleaseUiAsync("UnadmittedStartRejected")
+                .ConfigureAwait(true);
+            if (receipt == null || !receipt.IsTerminal)
+                throw new InvalidOperationException("启动失败会话尚未完成资源终态，请重试安全关闭。");
+            return true;
         }
 
         /// <summary>
@@ -2703,6 +2835,8 @@ namespace MTEmbTest
             _manualStopExitReceipt.Revoke();
             Interlocked.Exchange(ref _operatorStopRequested, 1);
             var stopCommandId = Guid.NewGuid().ToString("N");
+            _manualCloseCommandId = stopCommandId;
+            Interlocked.Exchange(ref _manualStopStartRevision, Interlocked.Read(ref _manualCloseStartRevision));
             _stopSessionReceipt.Begin(stopCommandId);
             var stopWatchdogContext = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
             StopSafetyResult completedSafety = null;
@@ -2712,6 +2846,8 @@ namespace MTEmbTest
             BtnStop.Cursor = Cursors.WaitCursor;
             BtnStartTest.Enabled = false;
             BtnStartTest.Cursor = Cursors.WaitCursor;
+            var independentStopTask = IndependentRecoveryStartup.Current?.PersistManualStopAsync(stopCommandId)
+                ?? System.Threading.Tasks.Task.CompletedTask;
             try
             {
                 // 物理断电必须成为停止按钮后的第一个可能阻塞操作。恢复检查点的
@@ -2729,6 +2865,7 @@ namespace MTEmbTest
                 // StopAll 已取得事务身份后立即建立不可逆 Close Fence；即使后续
                 // 管道回执、detach 或 UI 收口失败，同一 Watchdog 会话也不能再拉起主程序。
                 var stopProgress = _epb.CaptureStopSafetyProgress();
+                _epb.BindManualCloseIntent(stopCommandId, stopProgress);
                 var closeFence = WatchdogRuntime.BeginSessionCloseExact(
                     stopWatchdogContext,
                     "ManualStopIntent",
@@ -2778,11 +2915,14 @@ namespace MTEmbTest
                             $"({elapsed:F0}/5秒)");
                     else
                         LogInfo(
-                            $"正在安全收尾：阶段={progress.Stage}，{progress.Detail}；" +
-                            $"已等待{elapsed:F0}秒。人工停止后不自动续跑。");
+                            $"正在安全收尾，必要时将自动重启；Watchdog接管倒计时 " +
+                            $"{Math.Max(0, 15 - (int)elapsed)} 秒。阶段={progress.Stage}");
                 }
                 var safety = await stopTask;
                 completedSafety = safety;
+                if (await System.Threading.Tasks.Task.WhenAny(independentStopTask, System.Threading.Tasks.Task.Delay(5000)) != independentStopTask)
+                    throw new TimeoutException("设备停止已返回，但独立续测授权撤销尚未持久确认。");
+                await independentStopTask;
                 WatchdogRuntime.AdvanceSessionCloseSafety(stopWatchdogContext, safety);
                 if (!_manualStopExitReceipt.Publish(safety, stopCommandId))
                     logger?.Warn(
@@ -2796,7 +2936,6 @@ namespace MTEmbTest
                         System.Threading.Tasks.Task.Delay(750));
                 if (safety.RequiresProcessRestart || safety.TimedOut)
                 {
-                    await RequestManualStopSafetyHandoffAsync(stopWatchdogContext, safety);
                     _stopSessionReceipt.Complete(new StopSessionReceipt
                     {
                         CommandId = stopCommandId,
@@ -2849,7 +2988,9 @@ namespace MTEmbTest
                     Error = ex.GetBaseException().Message
                 });
                 // 操作员的停止意图已经成立；关闭或下一次启动会再次执行幂等清场。
-                LogInfo($"设备已 OFF，监督会话关闭待重试；自动恢复保持撤权：{ex.Message}");
+                LogInfo(independentStopTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion
+                    ? $"停止收尾异常，监督会话关闭待重试，请检查停止结果：{ex.Message}"
+                    : $"人工停止收尾异常，独立续测授权撤销未确认，禁止再次开始：{ex.Message}");
                 BtnStartTest.Enabled = false;
             }
             finally
@@ -2863,7 +3004,7 @@ namespace MTEmbTest
                 if (!IsDisposed && BtnStartTest != null)
                 {
                     ApplyBatchPauseState(_epb?.CurrentBatchPauseState ?? BatchPauseState.Idle);
-                    if (_epb?.RequiresProcessRestart == true)
+                    if (_epb?.RequiresProcessRestart == true || independentStopTask.Status != System.Threading.Tasks.TaskStatus.RanToCompletion)
                         BtnStartTest.Enabled = false;
                 }
             }
@@ -3005,15 +3146,22 @@ namespace MTEmbTest
             SetMonitorLifecycle(EpbMonitorLifecycle.Stopping);
             _isClosing = true;
             ScheduleCloseOverlay();
-            BeginMonitorCloseSequence();
+            if (Volatile.Read(ref _watchdogTakeoverExit) == 0)
+                AcceptOperatorClose();
+            _ = _manualCloseDrain.Join(BeginMonitorCloseSequence);
         }
 
-        private async void BeginMonitorCloseSequence()
+        private async System.Threading.Tasks.Task BeginMonitorCloseSequence()
         {
             try
             {
                 var completed = await PrepareAndFinalizeMonitorCloseAsync(
                     closeAfterPreparation: true);
+                while (!completed && _manualCloseAccepted && !IsDisposed)
+                {
+                    await System.Threading.Tasks.Task.Delay(1000);
+                    completed = await PrepareAndFinalizeMonitorCloseAsync(closeAfterPreparation: true);
+                }
                 if (!completed)
                 {
                     HideCloseOverlay();
@@ -3043,18 +3191,33 @@ namespace MTEmbTest
         internal async System.Threading.Tasks.Task<bool> PrepareForMainApplicationExitAsync()
         {
             if (Volatile.Read(ref _closingReentry) == 3) return true;
+            var retainedMonitorClose = _manualCloseDrain.Current;
+            if (retainedMonitorClose != null)
+            {
+                await retainedMonitorClose.ConfigureAwait(true);
+                return _preparedCloseSafety?.CanCloseApplication == true;
+            }
             Interlocked.CompareExchange(ref _closingReentry, 1, 0);
             _isClosing = true;
             ScheduleCloseOverlay();
-            return await PrepareAndFinalizeMonitorCloseAsync(
-                    closeAfterPreparation: false)
-                .ConfigureAwait(true);
+            do
+            {
+                if (await PrepareAndFinalizeMonitorCloseAsync(closeAfterPreparation: false)
+                    .ConfigureAwait(true)) return true;
+                if (!_manualCloseAccepted) return false;
+                await System.Threading.Tasks.Task.Delay(1000);
+            } while (!IsDisposed);
+            return false;
         }
 
         internal void CloseAfterMainExitAuthorized()
         {
             Interlocked.Exchange(ref _closingReentry, 3);
             if (!IsDisposed && !Disposing) Close();
+            // Hidden MDI children have no HWND. Form.Close then disposes the
+            // child directly without raising FormClosed. Safety and resource
+            // draining have already completed before this authorized entry.
+            if (IsDisposed) SetMonitorLifecycle(EpbMonitorLifecycle.Closed);
         }
 
         internal static StopSource ResolveMonitorCloseStopSource(bool watchdogOwnsExit)
@@ -3065,6 +3228,26 @@ namespace MTEmbTest
         }
 
         private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseAsync(
+            bool closeAfterPreparation)
+        {
+            while (true)
+            {
+                try
+                {
+                    var completed = await PrepareAndFinalizeMonitorCloseCoreAsync(closeAfterPreparation);
+                    if (completed || !_manualCloseAccepted) return completed;
+                }
+                catch (Exception ex)
+                {
+                    if (!_manualCloseAccepted) throw;
+                    logger?.Error("人工关闭后台收尾失败，保留资源并重试：" + ex.Message, "EPB");
+                }
+                if (IsDisposed) return false;
+                await System.Threading.Tasks.Task.Delay(1000);
+            }
+        }
+
+        private async System.Threading.Tasks.Task<bool> PrepareAndFinalizeMonitorCloseCoreAsync(
             bool closeAfterPreparation)
         {
                 var idleFastClose = CanUseIdleFastClose();
@@ -3099,6 +3282,7 @@ namespace MTEmbTest
                         _epb?.IsBatchSessionActive ?? false);
                 if (idleFastClose)
                 {
+                    WatchdogRuntime.TryRejectUnadmittedSession();
                     safety = new StopSafetyResult
                     {
                         Source = StopSource.ApplicationClosing,
@@ -3113,6 +3297,17 @@ namespace MTEmbTest
                         CompletedUtc = DateTime.UtcNow
                     };
                     LogInfo("监控窗未开始试验，执行空闲快速关闭；不连接、不查询程控电源。");
+                }
+                else if (_manualCloseAccepted && !string.IsNullOrEmpty(_manualCloseCommandId))
+                {
+                    safety = _manualStopExitReceipt.TryCaptureCompletedManualClose(
+                        _manualCloseCommandId, _epb?.IsBatchSessionActive ?? false);
+                    if (safety == null)
+                    {
+                        // An early safe close still owns unfinished persistence.
+                        safety = await _epb.CompleteManualClosePersistenceAsync(_manualCloseCommandId)
+                            .ConfigureAwait(true);
+                    }
                 }
                 else if (reusableManualStop != null)
                 {
@@ -3198,6 +3393,25 @@ namespace MTEmbTest
                     LogInfo("[安全警告] 停机处置已满足退出条件；压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
 
+                // Closing outputs acknowledges only a normal, completed close.
+                // A takeover, crash or incomplete safety result keeps P0 available.
+                if (!watchdogOwnsExit && _alarmManager != null &&
+                    (idleFastClose || safety.PhysicalSafetyConfirmed &&
+                     safety.PersistenceBoundaryConfirmed && safety.LogicalQuiescenceConfirmed))
+                {
+                    try
+                    {
+                        await _alarmManager.CompleteSafeCloseAsync().ConfigureAwait(true);
+                        LogInfo("正常关闭声光状态已确认；原故障锁存和审计记录保留，物理灯态需现场确认。");
+                    }
+                    catch (Exception alarmError)
+                    {
+                        LogInfo("声光关闭未持久确认，保留窗口以便重试：" + alarmError.GetBaseException().Message);
+                        ShowCloseOverlay("声光关闭未确认，请恢复报警服务或串口后重试关闭…");
+                        return false;
+                    }
+                }
+
             // Main_Frm's shutdown boundary sends ApplicationClosing as part
             // of ShutdownRuntimeWithReceipt.  Do not publish a second
             // protocol path here; it used to race the retention owner.
@@ -3208,6 +3422,12 @@ namespace MTEmbTest
             {
                 if (closeAfterPreparation)
                 {
+                    if (_manualCloseAccepted)
+                    {
+                        var finalReceipt = await AuthorizeApplicationExitAfterPreparationAsync();
+                        if (finalReceipt?.CanExit != true) return false;
+                        (MdiParent as Main_Frm)?.CacheApplicationCloseReceipt(finalReceipt);
+                    }
                     Interlocked.Exchange(ref _closingReentry, 3);
                     if (!IsDisposed && !Disposing && IsHandleCreated)
                         BeginInvoke((Action)Close);
@@ -3350,23 +3570,28 @@ namespace MTEmbTest
 
                 // 直接等待异步Flush完成后再释放写盘器。事件处理器本身是async，
                 // 不会阻塞消息泵，也不会留下“窗口已关闭但Flush仍访问已释放资源”的裸任务。
-                try
+                while (true)
                 {
-                    if (_daqDev1 != null)
+                    try
                     {
-                        await _daqDev1.FlushRawToDiskAsync();
-                        await _daqDev1.FlushStatToDiskAsync();
+                        if (_daqDev1 != null)
+                        {
+                            await _daqDev1.FlushRawToDiskAsync();
+                            await _daqDev1.FlushStatToDiskAsync();
+                        }
+                        if (_daqDev2 != null)
+                        {
+                            await _daqDev2.FlushRawToDiskAsync();
+                            await _daqDev2.FlushStatToDiskAsync();
+                        }
+                        break;
                     }
-
-                    if (_daqDev2 != null)
+                    catch (Exception ex)
                     {
-                        await _daqDev2.FlushRawToDiskAsync();
-                        await _daqDev2.FlushStatToDiskAsync();
+                        logger?.Error("关闭窗口时DAQ最终Flush失败：" + ex.Message, "DAQ", ex);
+                        if (!_manualCloseAccepted) break;
+                        await System.Threading.Tasks.Task.Delay(1000);
                     }
-                }
-                catch (Exception ex)
-                {
-                    logger?.Error("关闭窗口时DAQ最终Flush失败：" + ex.Message, "DAQ", ex);
                 }
             }
             catch
@@ -3491,8 +3716,13 @@ namespace MTEmbTest
                 }
                 (MdiParent as Main_Frm)?.CacheApplicationCloseReceipt(closeReceipt);
                 Interlocked.Exchange(ref _closingReentry, 3);
-                if (!IsDisposed && !Disposing && IsHandleCreated)
-                    BeginInvoke((Action)Close);
+                if (!IsDisposed && !Disposing)
+                {
+                    if (IsHandleCreated)
+                        BeginInvoke((Action)CloseAfterMainExitAuthorized);
+                    else
+                        CloseAfterMainExitAuthorized();
+                }
             }
             return true;
         }
@@ -3518,6 +3748,7 @@ namespace MTEmbTest
                 // callback target。设备、持久化和本窗资源均已闭合后允许直接关闭。
                 return _applicationCloseReceipt = new ApplicationCloseReceipt
                 {
+                    FinalStopSafety = safety,
                     SessionId = context?.SessionId ?? string.Empty,
                     SessionGeneration = context?.SessionGeneration ?? 0,
                     SessionLease = context?.SessionLease ?? 0,
@@ -3530,7 +3761,8 @@ namespace MTEmbTest
             }
 
             RuntimeShutdownReceipt shutdown = null;
-            if (EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(safety))
+            if (EpbMonitorClosePolicy.CanShutdownWatchdogGracefully(safety) ||
+                (_manualCloseAccepted && safety.FullyConfirmed))
             {
                 if (main != null)
                     shutdown = await (safety.PowerDisposition ==
@@ -3545,6 +3777,7 @@ namespace MTEmbTest
             {
                 return _applicationCloseReceipt = new ApplicationCloseReceipt
                 {
+                    FinalStopSafety = safety,
                     SessionId = context?.SessionId ?? shutdown.SessionId ?? string.Empty,
                     SessionGeneration = context?.SessionGeneration ?? shutdown.SessionGeneration,
                     SessionLease = context?.SessionLease ?? shutdown.SessionLease,
@@ -3710,7 +3943,7 @@ namespace MTEmbTest
         /// <summary>
         /// 初始化 EPB 概览区域：
         /// 1. 用 _uiEpbRecords 填充下拉框；
-        /// 2. 默认选中第一个通道并刷新 Led / 进度条 / 状态灯。
+        /// 2. 由实时启动状态选择通道；尚无启动通道时显示一个已启用通道作为初始占位。
         /// </summary>
         private void InitEpbSummaryPanel()
         {
@@ -3735,8 +3968,10 @@ namespace MTEmbTest
             // 如果有项目，默认选中第一项
             if (comboBoxEditCurrentRecord.Properties.Items.Count > 0)
             {
-                var initialChannel = EpbProjectPolicies.FindInitialSummaryChannel(_uiEpbRecords);
-                comboBoxEditCurrentRecord.SelectedIndex = Math.Max(0, initialChannel - 1);
+                // With no live channel yet this is a placeholder, never proof of a running trial.
+                var initialChannel = _uiEpbRecords.OrderBy(record => record.Id)
+                    .FirstOrDefault(record => record.Enabled)?.Id ?? _uiEpbRecords.Min(record => record.Id);
+                comboBoxEditCurrentRecord.SelectedIndex = comboBoxEditCurrentRecord.Properties.Items.IndexOf($"EPB-{initialChannel}");
             }
 
             // 重新绑定事件
@@ -3823,13 +4058,14 @@ namespace MTEmbTest
 
             // —— 3) 更新当前选中通道并刷新显示 —— //
             _currentEpbSummaryChannel = channelId;
-            var curRecord = EnsureEpbRecord(channelId);
+            SynchronizeEpbSummarySelection();
+            var curRecord = EnsureEpbRecord(_currentEpbSummaryChannel);
 
             UpdateEpbSummaryPanel(curRecord);
         }
 
         /// <summary>
-        /// Refreshes the summary only when the changed channel is the channel selected in the summary combo box.
+        /// Reconciles display selection, then refreshes values when the changed channel is selected.
         /// </summary>
         private void RefreshCurrentEpbSummary(int channel)
         {
@@ -3847,6 +4083,7 @@ namespace MTEmbTest
                 return;
             }
 
+            SynchronizeEpbSummarySelection();
             if (_currentEpbSummaryChannel != channel)
                 return;
 
@@ -3866,8 +4103,8 @@ namespace MTEmbTest
         private void SelectEpbSummaryChannel(int channel)
         {
             if (channel < 1 || channel > 12 || comboBoxEditCurrentRecord == null) return;
-            var selectedIndex = channel - 1;
-            if (selectedIndex >= comboBoxEditCurrentRecord.Properties.Items.Count) return;
+            var selectedIndex = comboBoxEditCurrentRecord.Properties.Items.IndexOf($"EPB-{channel}");
+            if (selectedIndex < 0) return;
 
             comboBoxEditCurrentRecord.SelectedIndex = selectedIndex;
             RefreshSummaryByComboSelection();
@@ -3911,7 +4148,7 @@ namespace MTEmbTest
             LedRunTime.Text = EpbTestRecord.FormatDHMS(record.RunTimeSpan);
 
             // === ③ 完成次数 ===
-            UpdateCycleAccountingDisplay(record.Id);
+            uiLabel57.Text = "机械完成次数";
             var mechanicalCount = Math.Max(record.MechanicalCycleCount, record.RunCount);
             LedRunCycles.Text = mechanicalCount.ToString();
 
@@ -4723,6 +4960,8 @@ namespace MTEmbTest
             _uiTimer.Tick += (_, __) =>
             {
                 if (Volatile.Read(ref _formClosedFlag) == 1) return;
+                // Also reconcile after batch UI guards settle, even when the graph has no new data.
+                SynchronizeEpbSummarySelection();
                 if (zedGraphRealChart == null || zedGraphRealChart.IsDisposed) return;
 
                 if (!_dirtyForRedraw || zedGraphRealChart == null) return;

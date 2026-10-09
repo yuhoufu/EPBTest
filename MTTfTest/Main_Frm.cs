@@ -29,6 +29,7 @@ namespace MtEmbTest
         private const int MaxWarns = 2000;
         public GlobalConfig Cfg;
         private DaqRuntimeSettings _daqRuntimeSettings;
+        private readonly IMonitorHardwareFactory _monitorHardwareFactory;
 
         #endregion
         
@@ -47,6 +48,20 @@ namespace MtEmbTest
             _watchdogUiAdapter = new MainWatchdogUiLifecycleAdapter(this);
             Shown += ShowPreviousForcedExitNoticeOnce;
 
+        }
+
+        internal Main_Frm(IMonitorHardwareFactory monitorHardwareFactory) : this()
+        {
+            _monitorHardwareFactory = monitorHardwareFactory ??
+                throw new ArgumentNullException(nameof(monitorHardwareFactory));
+        }
+
+        internal FrmEpbMainMonitor CreateMonitor(
+            DaqRuntimeSettings settings, Guid? protectedLearningRootId = null)
+        {
+            return protectedLearningRootId.HasValue
+                ? new FrmEpbMainMonitor(protectedLearningRootId.Value, settings, _monitorHardwareFactory)
+                : new FrmEpbMainMonitor(settings, _monitorHardwareFactory);
         }
 
         private void ShowPreviousForcedExitNoticeOnce(object sender, EventArgs e)
@@ -443,6 +458,7 @@ namespace MtEmbTest
             关于ToolStripMenuItem1.Visible = true;
             关于ToolStripMenuItem1.Text = "运行身份";
             关于ToolStripMenuItem1.Click += ShowRuntimeBuildIdentity;
+            InitializeInstallationAlarmMenu();
         }
 
         private void PublishCurrentProjectBuildIdentity(RuntimeBuildIdentity identity = null)
@@ -519,6 +535,11 @@ namespace MtEmbTest
 
         private void TsmRealMinitor_Click(object sender, EventArgs e)
         {
+            if (MdiChildren.OfType<FrmEpbMainMonitor>().Any(monitor => monitor.OperatorClosePending))
+            {
+                ShowMainOperatorMessage("上一试验正在后台保存数据，请等待收尾完成后再打开监控。");
+                return;
+            }
             foreach (var childForm in MdiChildren)
             {
                 if (childForm.Text == "扭矩调节")
@@ -530,7 +551,7 @@ namespace MtEmbTest
 
 
             //FrmMainMonitor frmRealMonitor = new FrmMainMonitor();
-            var frmRealMonitor = new FrmEpbMainMonitor(_daqRuntimeSettings);
+            var frmRealMonitor = CreateMonitor(_daqRuntimeSettings);
             frmRealMonitor.Name = "实时监视";
             OpenChildForm(frmRealMonitor);
         }

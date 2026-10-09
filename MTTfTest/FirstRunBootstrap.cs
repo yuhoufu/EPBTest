@@ -81,14 +81,9 @@ namespace MtEmbTest
             if (formalMode && !recoveryProcess && !runningFromInstalledDirectory &&
                 ShouldLaunchInstalledExecutable(executable, installedExecutable))
             {
-                var installedLauncher = Path.Combine(
-                    Path.GetDirectoryName(installedExecutable),
-                    "MTTFTest.Watchdog.exe");
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = installedLauncher,
-                    Arguments = "--launch-main --main-executable " +
-                                Quote(installedExecutable),
+                    FileName = installedExecutable,
                     WorkingDirectory = Path.GetDirectoryName(installedExecutable),
                     UseShellExecute = true
                 });
@@ -175,14 +170,9 @@ namespace MtEmbTest
                     MessageBoxIcon.Error);
                 return false;
             }
-            var launcher = Path.Combine(
-                Path.GetDirectoryName(installedExecutable),
-                "MTTFTest.Watchdog.exe");
             Process.Start(new ProcessStartInfo
             {
-                FileName = launcher,
-                Arguments = "--launch-main --main-executable " +
-                            Quote(installedExecutable),
+                FileName = installedExecutable,
                 WorkingDirectory = Path.GetDirectoryName(installedExecutable),
                 UseShellExecute = true
             });
@@ -266,12 +256,15 @@ namespace MtEmbTest
             return false;
         }
 
-        private static bool HasRecoveryArguments(string[] args)
+        internal static bool HasRecoveryArguments(string[] args)
         {
             return (args ?? Array.Empty<string>()).Any(argument =>
                 !string.IsNullOrWhiteSpace(argument) &&
                 (argument.StartsWith("--watchdog-", StringComparison.OrdinalIgnoreCase) ||
-                 argument.StartsWith("--recovery-", StringComparison.OrdinalIgnoreCase)));
+                 argument.StartsWith("--recovery-", StringComparison.OrdinalIgnoreCase) ||
+                 argument.Equals("--independent-registration", StringComparison.Ordinal) ||
+                 argument.Equals("--independent-ticket", StringComparison.Ordinal) ||
+                 argument.Equals("--independent-installation", StringComparison.Ordinal)));
         }
 
         private static string ResolveProductProgramFiles()

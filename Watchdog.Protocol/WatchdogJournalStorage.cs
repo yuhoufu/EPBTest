@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Diagnostics;
@@ -15,7 +15,7 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public sealed class WatchdogJournalPolicy
     {
-        public const int CurrentSchemaVersion = 6;
+        public const int CurrentSchemaVersion = 5;
         public const int DefaultRetentionDays = 90;
         public const int DefaultRetainSessionCount = 32;
         public const long DefaultMaxTotalBytes = 128L * 1024L * 1024L;
@@ -181,7 +181,7 @@ namespace MTTFTest.Watchdog.Protocol
             if (value.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion)
                 return value;
             if (value.SchemaVersion == 2 || value.SchemaVersion == 3 ||
-                value.SchemaVersion == 4 || value.SchemaVersion == 5)
+                value.SchemaVersion == 4)
             {
                 value.SchemaVersion = WatchdogJournalPolicy.CurrentSchemaVersion;
                 return value;
@@ -730,12 +730,18 @@ namespace MTTFTest.Watchdog.Protocol
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         private readonly object _gate = new object();
-        private readonly object _snapshotWriteGate = new object();
         private readonly Queue<PendingEvent> _events = new Queue<PendingEvent>();
         private readonly Queue<string> _errors = new Queue<string>();
         private readonly AutoResetEvent _wake = new AutoResetEvent(false);
         private readonly ManualResetEventSlim _idle = new ManualResetEventSlim(true);
         private readonly Thread _worker;
+        private string _workerStage = "Starting";
+        private static int _globalSpoolMaintenanceRunning;
+        private static long _globalSpoolDroppedEvents;
+
+        // Diagnostic only; this is not a durability or recovery-success receipt.
+        public string CurrentWorkerStage => Volatile.Read(ref _workerStage);
+        public static long GlobalSpoolDroppedEventCount => Interlocked.Read(ref _globalSpoolDroppedEvents);
         private readonly string _directory;
         private readonly string _sessionId;
         private readonly string _safeSession;
@@ -746,8 +752,6 @@ namespace MTTFTest.Watchdog.Protocol
         private readonly long _processStartTicks;
         private readonly string _spoolDirectory;
         private string _snapshot;
-        private long _snapshotRevision;
-        private long _lastSynchronousSnapshotRevision;
         private bool _leasePending = true;
         private string _revocationReason;
         private PendingTerminal _terminal;
@@ -835,7 +839,6 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 if (_stopping) return false;
                 _snapshot = json;
-                _snapshotRevision++;
                 if (DateTime.UtcNow.Ticks - _lastLeaseUtcTicks >= TimeSpan.FromSeconds(30).Ticks)
                     _leasePending = true;
                 _idle.Reset();
@@ -851,6 +854,8 @@ namespace MTTFTest.Watchdog.Protocol
         /// process relaunch is scheduled.  A failure is returned to the
         /// caller, which must fail closed in memory and refuse relaunch.
         /// </summary>
+        public string LastSnapshotPublishFailure { get; private set; }
+
         public bool TryPublishSnapshotSynchronously(string json)
         {
             if (IsClientAuditOnly) return RejectAuthorityOperation("TryPublishSnapshotSynchronously");
@@ -858,28 +863,20 @@ namespace MTTFTest.Watchdog.Protocol
             lock (_gate)
             {
                 if (_stopping) return false;
-                var snapshotRevision = ++_snapshotRevision;
                 try
                 {
-                    lock (_snapshotWriteGate)
-                    {
-                        Directory.CreateDirectory(_directory);
-                        AtomicWrite(
-                            Path.Combine(_directory, "session-" + _safeSession + ".json"),
-                            json);
-                        TryDelete(Path.Combine(
-                            _spoolDirectory,
-                            "session.snapshot.pending.json"));
-                        Interlocked.Exchange(
-                            ref _lastSynchronousSnapshotRevision,
-                            snapshotRevision);
-                    }
+                    Directory.CreateDirectory(_directory);
+                    AtomicWrite(
+                        Path.Combine(_directory, "session-" + _safeSession + ".json"),
+                        json);
                     _snapshot = null;
                     _idle.Set();
+                    TryDelete(Path.Combine(_spoolDirectory, "session.snapshot.pending.json"));
                     return true;
                 }
-                catch
+                catch (Exception error)
                 {
+                    LastSnapshotPublishFailure = Truncate(error.ToString(), 4096);
                     // Keep the emergency spool attempt for later replay, but
                     // report false so the caller cannot treat this as durable.
                     TrySpoolAtomic("session.snapshot.pending.json", json);
@@ -1034,7 +1031,6 @@ namespace MTTFTest.Watchdog.Protocol
             {
                 _wake.WaitOne(1000);
                 string snapshot;
-                long snapshotRevision;
                 bool lease;
                 PendingTerminal terminal;
                 string revocationReason;
@@ -1045,7 +1041,6 @@ namespace MTTFTest.Watchdog.Protocol
                 lock (_gate)
                 {
                     snapshot = _snapshot;
-                    snapshotRevision = _snapshotRevision;
                     _snapshot = null;
                     lease = _leasePending;
                     _leasePending = false;
@@ -1062,10 +1057,12 @@ namespace MTTFTest.Watchdog.Protocol
                     stopping = _stopping;
                 }
 
+                Volatile.Write(ref _workerStage, "ReplaySpool");
                 TryReplaySpool();
+                Volatile.Write(ref _workerStage, "WriteLeaseAndSnapshot");
                 if (!IsClientAuditOnly && lease) TryWriteLease();
-                if (!IsClientAuditOnly && snapshot != null)
-                    TryWriteSnapshot(snapshot, snapshotRevision);
+                if (!IsClientAuditOnly && snapshot != null) TryWriteSnapshot(snapshot);
+                Volatile.Write(ref _workerStage, "WriteEvents");
                 foreach (var item in events)
                 {
                     if (item.Checkpoint && IsStopping())
@@ -1075,16 +1072,21 @@ namespace MTTFTest.Watchdog.Protocol
                     }
                     TryWriteEvent(item);
                 }
+                Volatile.Write(ref _workerStage, "WriteErrorsAndTerminal");
                 foreach (var error in errors) TryWriteError(error);
                 if (revocationReason != null) TryWriteProjectRevocation(revocationReason);
                 if (!IsClientAuditOnly && terminal != null) TryPublishTerminal(terminal);
+                Volatile.Write(ref _workerStage, "Retention");
                 if (!IsClientAuditOnly && retention && _source == "sidecar") TryEnforceRetention();
                 // Both authority and audit stores have an independent bounded
                 // emergency spool.  EnforceSpoolBudget selects the historical
                 // authority root for FullAuthority and this store's private
                 // client-audit directory for ClientAuditOnly.
+                Volatile.Write(ref _workerStage, "SpoolBudget");
                 if (Interlocked.Exchange(ref _spoolWritesSinceBudget, 0) > 0)
                     EnforceSpoolBudget();
+
+                Volatile.Write(ref _workerStage, "Idle");
 
                 lock (_gate)
                 {
@@ -1097,25 +1099,15 @@ namespace MTTFTest.Watchdog.Protocol
             }
         }
 
-        private void TryWriteSnapshot(string content, long snapshotRevision)
+        private void TryWriteSnapshot(string content)
         {
             if (IsClientAuditOnly) return;
             try
             {
-                lock (_snapshotWriteGate)
-                {
-                    if (snapshotRevision <= Interlocked.Read(
-                            ref _lastSynchronousSnapshotRevision))
-                        return;
-                    Directory.CreateDirectory(_directory);
-                    AtomicWrite(
-                        Path.Combine(_directory, "session-" + _safeSession + ".json"),
-                        content);
-                    var pending = Path.Combine(
-                        _spoolDirectory,
-                        "session.snapshot.pending.json");
-                    TryDelete(pending);
-                }
+                Directory.CreateDirectory(_directory);
+                AtomicWrite(Path.Combine(_directory, "session-" + _safeSession + ".json"), content);
+                var pending = Path.Combine(_spoolDirectory, "session.snapshot.pending.json");
+                TryDelete(pending);
             }
             catch
             {
@@ -1240,13 +1232,9 @@ namespace MTTFTest.Watchdog.Protocol
                 var snapshot = Path.Combine(_spoolDirectory, "session.snapshot.pending.json");
                 if (File.Exists(snapshot))
                 {
-                    lock (_snapshotWriteGate)
-                    {
-                        AtomicWrite(
-                            Path.Combine(_directory, "session-" + _safeSession + ".json"),
-                            File.ReadAllText(snapshot, Encoding.UTF8));
-                        File.Delete(snapshot);
-                    }
+                    AtomicWrite(Path.Combine(_directory, "session-" + _safeSession + ".json"),
+                        File.ReadAllText(snapshot, Encoding.UTF8));
+                    File.Delete(snapshot);
                 }
                 var lease = Path.Combine(_spoolDirectory, "session.lease.pending.json");
                 if (File.Exists(lease))
@@ -1342,18 +1330,32 @@ namespace MTTFTest.Watchdog.Protocol
 
         private void EnforceSpoolBudget()
         {
+            // Flush must include this session's budget, not a traversal of all
+            // historical project directories on the machine. Audit-only stores
+            // remain confined to their own namespace.
+            EnforceSpoolBudgetCore(_spoolDirectory, SearchOption.TopDirectoryOnly,
+                _policy.EmergencySpoolMaxBytes, () => Interlocked.Increment(ref _droppedEvents));
+            if (IsClientAuditOnly || Interlocked.CompareExchange(ref _globalSpoolMaintenanceRunning, 1, 0) != 0)
+                return;
+            var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MTTFTest", "WatchdogSpoolV2");
+            var budget = _policy.EmergencySpoolMaxBytes;
+            var maintenance = new Thread(() =>
+            {
+                try { EnforceSpoolBudgetCore(root, SearchOption.AllDirectories, budget,
+                    () => Interlocked.Increment(ref _globalSpoolDroppedEvents)); }
+                finally { Volatile.Write(ref _globalSpoolMaintenanceRunning, 0); }
+            }) { IsBackground = true, Name = "WatchdogSpoolMaintenance", Priority = ThreadPriority.BelowNormal };
+            try { maintenance.Start(); }
+            catch { Volatile.Write(ref _globalSpoolMaintenanceRunning, 0); }
+        }
+
+        private static void EnforceSpoolBudgetCore(string root, SearchOption searchOption, long budget, Action dropped)
+        {
             try
             {
-                // Preserve FullAuthority's historical cross-session budget
-                // behavior.  AuditOnly must never enumerate the parent spool:
-                // it is allowed to see only its own client-audit directory.
-                var root = IsClientAuditOnly
-                    ? _spoolDirectory
-                    : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "MTTFTest", "WatchdogSpoolV2");
                 if (!Directory.Exists(root)) return;
                 var cutoff = DateTime.UtcNow.AddDays(-WatchdogJournalPolicy.EmergencySpoolRetentionDays);
-                var searchOption = IsClientAuditOnly ? SearchOption.TopDirectoryOnly : SearchOption.AllDirectories;
                 var files = new DirectoryInfo(root).EnumerateFiles("*.pending.*", searchOption)
                     .Where(file => (file.Attributes & FileAttributes.ReparsePoint) == 0)
                     .OrderBy(file => file.LastWriteTimeUtc)
@@ -1366,11 +1368,12 @@ namespace MTTFTest.Watchdog.Protocol
                 var total = files.Sum(SafeLength);
                 foreach (var file in files)
                 {
-                    if (total <= _policy.EmergencySpoolMaxBytes) break;
+                    if (total <= budget) break;
                     var length = SafeLength(file);
                     TryDelete(file.FullName);
-                    total -= length;
-                    Interlocked.Increment(ref _droppedEvents);
+                    // An unsuccessful delete must not be counted as released
+                    // capacity. Concurrent replay/removal may already free it.
+                    if (!File.Exists(file.FullName)) { total -= length; dropped?.Invoke(); }
                 }
             }
             catch { }
@@ -1499,7 +1502,10 @@ namespace MTTFTest.Watchdog.Protocol
             if (leaseFile == null) return false;
             try
             {
-                var lease = Json.Deserialize<WatchdogJournalLease>(File.ReadAllText(leaseFile.FullName, Encoding.UTF8));
+                WatchdogJournalLease lease;
+                using (var stream = OpenRetentionRead(leaseFile.FullName))
+                using (var reader = new StreamReader(stream, Encoding.UTF8, true))
+                    lease = Json.Deserialize<WatchdogJournalLease>(reader.ReadToEnd());
                 if (lease == null ||
                     (lease.SchemaVersion != WatchdogJournalPolicy.CurrentSchemaVersion &&
                      lease.SchemaVersion != 4 && lease.SchemaVersion != 3 &&
@@ -1511,12 +1517,29 @@ namespace MTTFTest.Watchdog.Protocol
             catch { return false; }
         }
 
+        private static FileStream OpenRetentionRead(string path)
+        {
+            // Retention observes an immutable file instance and must allow the
+            // authority writer to atomically replace the path during the read.
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length > 4L * 1024L * 1024L)
+            {
+                stream.Dispose();
+                throw new InvalidDataException("Retention metadata exceeds 4 MiB");
+            }
+            return stream;
+        }
+
         private static bool HasSupportedSchema(FileInfo file)
         {
             if (file == null || !file.Exists || file.Length > 4L * 1024L * 1024L) return false;
             try
             {
-                var text = File.ReadAllText(file.FullName, Encoding.UTF8);
+                string text;
+                using (var stream = OpenRetentionRead(file.FullName))
+                using (var reader = new StreamReader(stream, Encoding.UTF8, true))
+                    text = reader.ReadToEnd();
                 // V2/V3 journals remain recognizable for retention/migration,
                 // but all new leases/snapshots are stamped with CurrentSchemaVersion.
                 return text.IndexOf("\"SchemaVersion\":4", StringComparison.Ordinal) >= 0 ||
@@ -1642,15 +1665,44 @@ namespace MTTFTest.Watchdog.Protocol
 
         private static void AtomicWrite(string path, string content)
         {
-            var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+            var expected = content ?? string.Empty;
+            for (var attempt = 0; ; attempt++)
+            {
+                var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    File.WriteAllText(temporary, expected, new UTF8Encoding(false));
+                    using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+                        stream.Flush(true);
+                    if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                    return;
+                }
+                catch (IOException)
+                {
+                    // Windows Replace can fail transiently (including error
+                    // 1175) or report an ambiguous result. Confirm exact bytes
+                    // before retrying; never delete the destination to retry.
+                    if (SnapshotContentMatches(path, expected)) return;
+                    if (attempt >= 4) throw;
+                    Thread.Sleep(25);
+                }
+                finally { TryDelete(temporary); }
+            }
+        }
+
+        private static bool SnapshotContentMatches(string path, string expected)
+        {
             try
             {
-                File.WriteAllText(temporary, content ?? string.Empty, new UTF8Encoding(false));
-                using (var stream = new FileStream(temporary, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
-                    stream.Flush(true);
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (stream.Length != Encoding.UTF8.GetByteCount(expected)) return false;
+                    using (var reader = new StreamReader(stream, Encoding.UTF8, false))
+                        return string.Equals(reader.ReadToEnd(), expected, StringComparison.Ordinal);
+                }
             }
-            finally { TryDelete(temporary); }
+            catch { return false; }
         }
 
         private static long SafeLength(FileInfo file)

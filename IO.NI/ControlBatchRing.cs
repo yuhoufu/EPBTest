@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -118,8 +118,7 @@ namespace IO.NI
         DuplicateBatch = 64,
         OutOfOrderBatch = 128,
         MonotonicTickInvalid = 256,
-        FilterStateInvalid = 512,
-        SampleStale = 1024
+        FilterStateInvalid = 512
     }
 
     /// <summary>控制器使用的结构化快速电流样本。</summary>
@@ -164,8 +163,7 @@ namespace IO.NI
                              FastSignalQualityFlags.DuplicateBatch |
                              FastSignalQualityFlags.OutOfOrderBatch |
                              FastSignalQualityFlags.MonotonicTickInvalid |
-                             FastSignalQualityFlags.FilterStateInvalid |
-                             FastSignalQualityFlags.SampleStale)) == 0;
+                             FastSignalQualityFlags.FilterStateInvalid)) == 0;
     }
 
     /// <summary>兼容轮询控制所需的最近快速样本及新鲜度。</summary>
@@ -259,10 +257,7 @@ namespace IO.NI
             double clockResidualMs,
             double clockWindowSeconds,
             int producerThreadId,
-            FastSignalQualityFlags qualityFlags,
-            int bufferedSamples = 0,
-            int consecutiveFreshBatches = 3,
-            DaqReaderLagState readerLagState = DaqReaderLagState.Healthy)
+            FastSignalQualityFlags qualityFlags)
         {
             Generation = generation;
             SourceSequence = sourceSequence;
@@ -278,9 +273,6 @@ namespace IO.NI
             EstimatedSkewPpm = estimatedSkewPpm;
             ClockResidualMs = clockResidualMs;
             ClockWindowSeconds = clockWindowSeconds;
-            BufferedSamples = bufferedSamples;
-            ConsecutiveFreshBatches = consecutiveFreshBatches;
-            ReaderLagState = readerLagState;
             ProducerThreadId = producerThreadId;
             QualityFlags = qualityFlags;
         }
@@ -297,9 +289,6 @@ namespace IO.NI
         public double EstimatedSkewPpm { get; }
         public double ClockResidualMs { get; }
         public double ClockWindowSeconds { get; }
-        public int BufferedSamples { get; }
-        public int ConsecutiveFreshBatches { get; }
-        public DaqReaderLagState ReaderLagState { get; }
         public int ProducerThreadId { get; }
         public FastSignalQualityFlags QualityFlags { get; }
     }

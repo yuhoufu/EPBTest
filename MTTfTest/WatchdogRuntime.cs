@@ -155,6 +155,22 @@ namespace MTEmbTest
         private WatchdogStopAllScopeLease _scopeLease;
         private int _callbackPipelineActive;
         private int _engineShutdownReceiptObserved;
+        private int _controlAdmissionState;
+        internal bool InitialStartupRejectedBeforeControl =>
+            Volatile.Read(ref _controlAdmissionState) == 2;
+
+        internal bool TryRejectBeforeControlAdmission()
+        {
+            if (JournalMode != RuntimeJournalMode.CreateNewInitial || RecoveryProcess) return false;
+            var previous = Interlocked.CompareExchange(ref _controlAdmissionState, 2, 0);
+            return previous == 0 || previous == 2;
+        }
+
+        internal void MarkControlAdmission()
+        {
+            if (Interlocked.CompareExchange(ref _controlAdmissionState, 1, 0) == 2)
+                throw new InvalidOperationException("本次启动已取消，不能授权控制动作。");
+        }
         private long _closingAttempt;
         private RuntimeShutdownReceipt _cachedShutdownReceipt;
         private readonly List<IDisposable> _callbackHandlerLeases = new List<IDisposable>();
@@ -751,14 +767,9 @@ namespace MTEmbTest
         internal TaskCompletionSource<RecoveryFailureReceipt> Completion { get; }
     }
 
-    internal sealed class RuntimeHeartbeatSource : IDisposable
+    internal sealed class RuntimeHeartbeatSource
     {
         private Func<WatchdogHeartbeat> _provider;
-        private WatchdogHeartbeat _snapshot;
-        private readonly AutoResetEvent _providerChanged = new AutoResetEvent(false);
-        private readonly CancellationTokenSource _stop = new CancellationTokenSource();
-        private Thread _publisherThread;
-        private long _snapshotRevision;
 
         internal RuntimeHeartbeatSource(Func<WatchdogHeartbeat> provider)
         {
@@ -768,87 +779,12 @@ namespace MTEmbTest
         internal void Set(Func<WatchdogHeartbeat> provider)
         {
             Interlocked.Exchange(ref _provider, provider);
-            EnsurePublisher();
-            _providerChanged.Set();
         }
 
         internal WatchdogHeartbeat Capture()
         {
-            var snapshot = Volatile.Read(ref _snapshot);
-            return snapshot ?? new WatchdogHeartbeat
-            {
-                SnapshotRevision = 0,
-                SnapshotCapturedUtcTicks = 0,
-                RecoveryCode = "SemanticSnapshotPending",
-                RecoveryContext = "Heartbeat publisher has not committed a snapshot."
-            };
-        }
-
-        private void EnsurePublisher()
-        {
-            if (Volatile.Read(ref _publisherThread) != null) return;
-            var thread = new Thread(PublishLoop)
-            {
-                IsBackground = true,
-                Name = "MTTFTest.WatchdogSemanticSnapshot"
-            };
-            if (Interlocked.CompareExchange(
-                    ref _publisherThread,
-                    thread,
-                    null) == null)
-                thread.Start();
-        }
-
-        private void PublishLoop()
-        {
-            var handles = new WaitHandle[]
-            {
-                _providerChanged,
-                _stop.Token.WaitHandle
-            };
-            while (!_stop.IsCancellationRequested)
-            {
-                var provider = Volatile.Read(ref _provider);
-                if (provider != null)
-                {
-                    try
-                    {
-                        var snapshot = provider() ?? new WatchdogHeartbeat
-                        {
-                            RecoveryCode = "SemanticSnapshotProviderReturnedNull"
-                        };
-                        snapshot.SnapshotRevision = Interlocked.Increment(
-                            ref _snapshotRevision);
-                        snapshot.SnapshotCapturedUtcTicks = DateTime.UtcNow.Ticks;
-                        Interlocked.Exchange(ref _snapshot, snapshot);
-                    }
-                    catch (Exception ex)
-                    {
-                        var previous = Volatile.Read(ref _snapshot);
-                        if (previous == null)
-                            Interlocked.Exchange(
-                                ref _snapshot,
-                                new WatchdogHeartbeat
-                                {
-                                    SnapshotRevision = Interlocked.Increment(
-                                        ref _snapshotRevision),
-                                    SnapshotCapturedUtcTicks = DateTime.UtcNow.Ticks,
-                                    RecoveryCode = "SemanticSnapshotProviderFault",
-                                    RecoveryContext = ex.GetBaseException().Message
-                                });
-                    }
-                }
-                if (WaitHandle.WaitAny(handles, 250) == 1) return;
-            }
-        }
-
-        public void Dispose()
-        {
-            try { _stop.Cancel(); } catch { }
-            _providerChanged.Set();
-            try { _publisherThread?.Join(1000); } catch { }
-            _providerChanged.Dispose();
-            _stop.Dispose();
+            var provider = Volatile.Read(ref _provider);
+            return provider == null ? null : provider();
         }
     }
 
@@ -902,10 +838,6 @@ namespace MTEmbTest
         private static string _journalExportDirectory;
         private static long _sessionGeneration;
         private static DaqRuntimeSettings _daqRuntimeSettings;
-        private static string _latestTypedExitTransactionId = string.Empty;
-
-        internal static string LatestTypedExitTransactionId =>
-            Volatile.Read(ref _latestTypedExitTransactionId) ?? string.Empty;
 
         internal static event Action<string, string> TransportLost;
         internal static event Action<string, string> TransportError;
@@ -1243,6 +1175,27 @@ namespace MTEmbTest
             }
         }
 
+        internal static async Task RequireManualBindingBoundaryAsync()
+        {
+            await SessionLifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (!IsShutdownReady(ShutdownRuntimeWithReceiptNoGate()))
+                    throw new InvalidOperationException("旧会话尚未完成安全与资源收尾，不能更新项目恢复绑定。");
+            }
+            finally { SessionLifecycleGate.Release(); }
+        }
+
+        internal static bool TryRejectUnadmittedSession()
+        {
+            lock (Gate) return _activeContext?.TryRejectBeforeControlAdmission() == true;
+        }
+
+        internal static void MarkControlAdmission()
+        {
+            lock (Gate) _activeContext?.MarkControlAdmission();
+        }
+
         private static async Task<WatchdogAttachResult> StartSessionCoreAsync(int[] selectedChannels)
         {
             var previous = ShutdownRuntimeWithReceiptNoGate();
@@ -1294,16 +1247,19 @@ namespace MTEmbTest
             if (context == null)
                 return new WatchdogAttachResult
                 {
-                    Warning = "独立看门狗Journal初始化失败；已拒绝启动不可审计的Sidecar。"
+                    Warning = "独立看门狗Journal初始化失败；已拒绝启动不可审计的Sidecar。" +
+                              string.Join(" | ", warnings)
                 };
 
             InstallContext(context);
             try
             {
                 await StartAndAwaitExactAttachedAsync(context, null, null).ConfigureAwait(false);
+                if (!IsExactAttached(CaptureTransportSnapshot()))
+                    throw new InvalidOperationException("Watchdog Attached在启动授权返回前失效。");
                 return new WatchdogAttachResult
                 {
-                    Attached = IsExactAttached(CaptureTransportSnapshot()),
+                    Attached = true,
                     SessionId = context.SessionId,
                     Warning = warnings.Count == 0 ? null : string.Join(" | ", warnings),
                     JournalPolicyLog = policy.ToStartupLogLine()
@@ -1311,6 +1267,10 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
+                // This method has not returned Attached to its caller, so it has
+                // not issued permission to start control. This is session evidence,
+                // never proof that motors, power or pressure were physically safe.
+                context.TryRejectBeforeControlAdmission();
                 try { context.Journal?.RecordError("Sidecar startup failed: " + ex); } catch { }
                 try { context.Journal?.Flush(TimeSpan.FromSeconds(1)); } catch { }
                 var receipt = ShutdownRuntimeWithReceiptNoGate();
@@ -1683,11 +1643,12 @@ namespace MTEmbTest
                     throw new FileNotFoundException("未找到独立看门狗程序。", sidecar);
                 return context;
             }
-            catch
+            catch (Exception error)
             {
                 try { ingressGate?.Dispose(); } catch { }
                 try { journal?.Flush(TimeSpan.FromSeconds(1)); } catch { }
                 try { journal?.Dispose(); } catch { }
+                warnings?.Add("JournalContextCreationFailed: " + error.ToString());
                 return null;
             }
         }
@@ -2605,6 +2566,19 @@ namespace MTEmbTest
 
         internal static void NotifyManualStop(string reason)
         {
+            var fallbackContext = CaptureContext();
+            if (fallbackContext != null)
+            {
+                try
+                {
+                    var fallbackStore = new FallbackLedgerStore(fallbackContext.JournalDirectory, fallbackContext.SessionId);
+                    if (fallbackStore.Exists) fallbackStore.Stop();
+                }
+                catch (Exception error)
+                {
+                    RecordClientEvent("FallbackStopPersistenceUnknown", error.Message);
+                }
+            }
             RecordClientEvent("ManualStopIntent", reason);
             SendSimple(WatchdogMessageType.ManualStopIntent, reason);
             FlushClientJournal();
@@ -2652,11 +2626,10 @@ namespace MTEmbTest
         internal static WatchdogSafetyHandoffReceipt RequestSafetyHandoff(
             RuntimeTransportSessionContext context,
             StopSafetyResult safety,
-            bool hardwareResourcesReleased,
-            bool safetyOnly = false)
+            bool hardwareResourcesReleased)
         {
             if (context == null || context.SessionLease <= 0 || safety == null ||
-                safety.SafetyTransactionId == Guid.Empty || (!safetyOnly && !safety.PersistenceBoundaryConfirmed) ||
+                safety.SafetyTransactionId == Guid.Empty || !safety.PersistenceBoundaryConfirmed ||
                 !hardwareResourcesReleased ||
                 Volatile.Read(ref context.State.SessionClosing) == 0 ||
                 (context.PipelineState != RuntimeCallbackPipelineState.Closing &&
@@ -2668,8 +2641,6 @@ namespace MTEmbTest
                 if (WatchdogSafetyHandoffReceiptStore.TryRead(
                         context.JournalDirectory, context.SessionId, out existing))
                 {
-                    if (safetyOnly && existing.RelaunchDisposition != WatchdogRelaunchDisposition.Forbidden)
-                        throw new InvalidOperationException("ManualStopExistingHandoffHasRelaunchIntent: " + existing.HandoffId);
                     if (existing.SessionGeneration == context.SessionGeneration &&
                         existing.SessionLease == context.SessionLease &&
                         string.Equals(existing.StopSafetyTransactionId,
@@ -2678,8 +2649,8 @@ namespace MTEmbTest
                     return null;
                 }
                 var handoffId = Guid.NewGuid().ToString("N");
-                WatchdogApplicationExitReceipt applicationExit = null;
-                var hasTypedApplicationExit = !safetyOnly && WatchdogApplicationExitReceiptStore.TryRead(
+                WatchdogApplicationExitReceipt applicationExit;
+                var hasTypedApplicationExit = WatchdogApplicationExitReceiptStore.TryRead(
                                                   context.JournalDirectory,
                                                   context.SessionId,
                                                   out applicationExit) &&
@@ -2758,7 +2729,7 @@ namespace MTEmbTest
                         configSnapshot?.Error ?? "SafetyConfigSnapshotUnavailable");
                 var receipt = new WatchdogSafetyHandoffReceipt
                 {
-                    SchemaVersion = SupervisorProtocol.SchemaVersion,
+                    SchemaVersion = 5,
                     SessionId = context.SessionId,
                     SessionGeneration = context.SessionGeneration,
                     SessionLease = context.SessionLease,
@@ -2913,7 +2884,11 @@ namespace MTEmbTest
 
         internal static void NotifyApplicationClosing()
         {
-            var context = CaptureContext();
+            NotifyApplicationClosing(CaptureContext());
+        }
+
+        internal static void NotifyApplicationClosing(RuntimeTransportSessionContext context)
+        {
             if (context == null) return;
             var fence = BeginSessionCloseExact(
                 context,
@@ -2989,18 +2964,11 @@ namespace MTEmbTest
                         out existing) &&
                     existing.SessionGeneration == context.SessionGeneration &&
                     existing.SessionLease == context.SessionLease)
-                {
-                    if (existing.SchemaVersion >= 2 &&
-                        existing.ExitDisposition == exitDisposition &&
-                        existing.RelaunchDisposition == relaunchDisposition)
-                    {
-                        Volatile.Write(
-                            ref _latestTypedExitTransactionId,
-                            existing.ExitIntentId ?? string.Empty);
-                        return existing;
-                    }
-                    return null;
-                }
+                    return existing.SchemaVersion >= 2 &&
+                           existing.ExitDisposition == exitDisposition &&
+                           existing.RelaunchDisposition == relaunchDisposition
+                        ? existing
+                        : null;
 
                 var permit = preservePermit
                     ? AwaitApprovedRelaunchPermit(context, TimeSpan.FromSeconds(2))
@@ -3045,9 +3013,6 @@ namespace MTEmbTest
                     WatchdogApplicationExitReceiptStore.WriteThrough(
                         context.JournalDirectory,
                         receipt);
-                    Volatile.Write(
-                        ref _latestTypedExitTransactionId,
-                        receipt.ExitIntentId);
                     RecordClientEvent(
                         context,
                         "ApplicationExitRequested",
@@ -3107,6 +3072,16 @@ namespace MTEmbTest
                 WatchdogApplicationExitState.GracefulCompleted,
                 false,
                 detail);
+        }
+
+        internal static void CompleteOperatorApplicationExit(StopSafetyResult safety)
+        {
+            if (safety == null || !safety.CanCloseApplication) return;
+            // Publish the compatibility receipt only after draining, not a deadline while draining.
+            var receipt = ArmApplicationExitDeadline("OperatorCloseDrainCompleted",
+                TimeSpan.FromSeconds(30), RuntimeShutdownIntent.ApplicationExit, null);
+            if (receipt == null) return;
+            UpdateApplicationExitSafety(CaptureContextOrLastDetached(), safety);
         }
 
         internal static void MarkApplicationExitDeadlineForced(string detail)
@@ -3378,6 +3353,30 @@ namespace MTEmbTest
             WatchdogRelaunchDisposition relaunchDisposition =
                 WatchdogRelaunchDisposition.Forbidden)
         {
+            if (context == null)
+                return new RuntimeSessionCloseFenceReceipt
+                {
+                    MarkOutcome = RuntimeShutdownMarkOutcome.NoEngineSession,
+                    Error = "Watchdog exact close context is missing."
+                };
+            // Serialize first binding against another close notification for
+            // this same session; neither caller may replace a bound transaction.
+            lock (context)
+                return BeginSessionCloseExactCore(context, closeIntent, stopSafetyTransactionId,
+                    stopRunId, stopRunEpoch, stopSafetyBoundaryGeneration,
+                    exitDisposition, relaunchDisposition);
+        }
+
+        private static RuntimeSessionCloseFenceReceipt BeginSessionCloseExactCore(
+            RuntimeTransportSessionContext context,
+            string closeIntent,
+            Guid stopSafetyTransactionId,
+            Guid stopRunId,
+            long stopRunEpoch,
+            long stopSafetyBoundaryGeneration,
+            WatchdogExitDisposition exitDisposition,
+            WatchdogRelaunchDisposition relaunchDisposition)
+        {
             var receipt = new RuntimeSessionCloseFenceReceipt { Context = context };
             if (context == null || context.SessionLease <= 0)
             {
@@ -3413,6 +3412,17 @@ namespace MTEmbTest
                 exitDisposition = typedExit.ExitDisposition;
                 relaunchDisposition = typedExit.RelaunchDisposition;
             }
+            var bindStopTransaction = hasPrevious &&
+                CanBindClosingTransaction(previous, stopSafetyTransactionId,
+                    stopRunEpoch, stopSafetyBoundaryGeneration);
+            if (bindStopTransaction && hasTypedExit &&
+                (relaunchDisposition != WatchdogRelaunchDisposition.Forbidden ||
+                 exitDisposition == WatchdogExitDisposition.TakeoverReplacementExit ||
+                 !string.IsNullOrWhiteSpace(typedExit.StopSafetyTransactionId) &&
+                 !string.Equals(typedExit.StopSafetyTransactionId,
+                     stopSafetyTransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase)))
+                return RejectSessionCloseFence(receipt, context,
+                    "TypedExitStopIdentityChanged", previous);
             if (hasPrevious &&
                 (!IsExactClosingTombstoneIdentity(context, previous) ||
                  !IsCompatibleClosingTransaction(
@@ -3451,6 +3461,46 @@ namespace MTEmbTest
 
             if (hasPrevious)
             {
+                if (bindStopTransaction)
+                {
+                    previous.StopSafetyTransactionId = stopSafetyTransactionId.ToString("N");
+                    previous.StopRunId = stopRunId == Guid.Empty ? string.Empty : stopRunId.ToString("N");
+                    previous.StopRunEpoch = stopRunEpoch;
+                    previous.StopSafetyBoundaryGeneration = stopSafetyBoundaryGeneration;
+                    previous.StateVersion++;
+                    try
+                    {
+                        previous = WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, previous);
+                    }
+                    catch (Exception ex)
+                    {
+                        receipt.Error = ex.GetBaseException().Message;
+                        receipt.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+                        return receipt;
+                    }
+                }
+                if (context.InitialStartupRejectedBeforeControl &&
+                    HasUnboundClosingIntent(previous) &&
+                    previous.ExitDisposition == WatchdogExitDisposition.OperatorExit &&
+                    exitDisposition == WatchdogExitDisposition.OperatorExit &&
+                    relaunchDisposition == WatchdogRelaunchDisposition.Forbidden &&
+                    stopSafetyTransactionId == Guid.Empty && stopRunId == Guid.Empty &&
+                    stopRunEpoch == 0 && stopSafetyBoundaryGeneration == 0)
+                {
+                    previous.SchemaVersion = 6;
+                    previous.StartupRejectedBeforeControl = true;
+                    previous.StateVersion++;
+                    try
+                    {
+                        previous = WatchdogClosingTombstoneStore.WriteThrough(context.JournalDirectory, previous);
+                    }
+                    catch (Exception ex)
+                    {
+                        receipt.Error = ex.GetBaseException().Message;
+                        receipt.MarkOutcome = RuntimeShutdownMarkOutcome.TombstonePersistenceFailed;
+                        return receipt;
+                    }
+                }
                 if (previous.SchemaVersion < 5)
                 {
                     if (relaunchDisposition ==
@@ -3461,7 +3511,7 @@ namespace MTEmbTest
                             context,
                             "TakeoverCloseFenceMissingTypedExit",
                             previous);
-                    previous.SchemaVersion = SupervisorProtocol.SchemaVersion;
+                    previous.SchemaVersion = 5;
                     previous.ExitDisposition = exitDisposition;
                     previous.RelaunchDisposition = relaunchDisposition;
                     previous.TakeoverTransactionId = hasTypedExit
@@ -3507,7 +3557,7 @@ namespace MTEmbTest
             const long version = 1;
             var tombstone = new WatchdogClosingTombstone
             {
-                SchemaVersion = SupervisorProtocol.SchemaVersion,
+                SchemaVersion = 5,
                 SessionId = context.SessionId,
                 SessionGeneration = context.SessionGeneration,
                 SessionLease = context.SessionLease,
@@ -3544,6 +3594,13 @@ namespace MTEmbTest
                 SafetyOwner = "MainProcess",
                 TerminalReason = closeIntent ?? string.Empty
             };
+            if (context.InitialStartupRejectedBeforeControl &&
+                HasUnboundClosingIntent(tombstone) &&
+                tombstone.ExitDisposition == WatchdogExitDisposition.OperatorExit)
+            {
+                tombstone.SchemaVersion = 6;
+                tombstone.StartupRejectedBeforeControl = true;
+            }
 
             try
             {
@@ -3594,9 +3651,10 @@ namespace MTEmbTest
                     existing.SessionLease != context.SessionLease)
                     return false;
                 if (existing.State == WatchdogClosingTombstoneState.Terminal)
-                    return existing.IsSafetyTerminal;
-                if (!existing.MotorsOff || !existing.PowerOff || !existing.PressureSafe ||
-                    !existing.PersistenceDrained || !existing.LogicalQuiescent)
+                    return existing.IsSessionTerminal;
+                if (!existing.IsUnadmittedStartupCancellation &&
+                    (!existing.MotorsOff || !existing.PowerOff || !existing.PressureSafe ||
+                     !existing.PersistenceDrained || !existing.LogicalQuiescent))
                     return false;
                 existing.State = WatchdogClosingTombstoneState.Terminal;
                 existing.SafetyStage = WatchdogClosingSafetyStage.Terminal;
@@ -3742,6 +3800,9 @@ namespace MTEmbTest
             long stopSafetyBoundaryGeneration)
         {
             if (tombstone == null) return false;
+            if (CanBindClosingTransaction(tombstone, stopSafetyTransactionId,
+                    stopRunEpoch, stopSafetyBoundaryGeneration))
+                return true;
             if (stopSafetyTransactionId != Guid.Empty &&
                 !string.Equals(
                     tombstone.StopSafetyTransactionId,
@@ -3760,6 +3821,40 @@ namespace MTEmbTest
                 tombstone.StopSafetyBoundaryGeneration != stopSafetyBoundaryGeneration)
                 return false;
             return true;
+        }
+
+        private static bool CanBindClosingTransaction(
+            WatchdogClosingTombstone tombstone,
+            Guid stopSafetyTransactionId,
+            long stopRunEpoch,
+            long stopSafetyBoundaryGeneration)
+        {
+            return stopSafetyTransactionId != Guid.Empty && stopRunEpoch >= 0 &&
+                   stopSafetyBoundaryGeneration > 0 && HasUnboundClosingIntent(tombstone);
+        }
+
+        private static bool HasUnboundClosingIntent(WatchdogClosingTombstone tombstone)
+        {
+            return tombstone != null &&
+                   tombstone.State == WatchdogClosingTombstoneState.Closing &&
+                   tombstone.EffectiveSafetyStage == WatchdogClosingSafetyStage.ClosingIntent &&
+                   !tombstone.StartupRejectedBeforeControl &&
+                   string.IsNullOrWhiteSpace(tombstone.StopSafetyTransactionId) &&
+                   string.IsNullOrWhiteSpace(tombstone.StopRunId) &&
+                   tombstone.StopRunEpoch == 0 && tombstone.StopSafetyBoundaryGeneration == 0 &&
+                   tombstone.ControllerStopStage == 0 && tombstone.ControllerProgressVersion == 0 &&
+                   !tombstone.FinalSafetyResultCommitted && !tombstone.MotorsOff &&
+                   !tombstone.PowerOff && !tombstone.PressureSafe &&
+                   !tombstone.PersistenceDrained && !tombstone.LogicalQuiescent &&
+                   !tombstone.DataContinuityVerified && !tombstone.OldProcessExitProven &&
+                   tombstone.DataAuditState == WatchdogDataAuditState.Unknown &&
+                   string.IsNullOrWhiteSpace(tombstone.SafetyHandoffId) &&
+                   string.IsNullOrWhiteSpace(tombstone.TakeoverTransactionId) &&
+                   tombstone.ExitDisposition != WatchdogExitDisposition.TakeoverReplacementExit &&
+                   tombstone.RelaunchDisposition == WatchdogRelaunchDisposition.Forbidden &&
+                   tombstone.RelaunchPermitGeneration == 0 &&
+                   string.IsNullOrWhiteSpace(tombstone.RelaunchPermitId) &&
+                   string.IsNullOrWhiteSpace(tombstone.RelaunchPermitNonceSha256);
         }
 
         private static RuntimeSessionCloseFenceReceipt RejectSessionCloseFence(

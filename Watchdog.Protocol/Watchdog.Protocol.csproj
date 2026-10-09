@@ -1,7 +1,6 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
-  <Import Project="..\Build\UnattendedVersion.props" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
@@ -25,21 +24,37 @@
     <Compile Include="AssemblyInfo.cs" />
     <Reference Include="System" /><Reference Include="System.Core" />
     <Reference Include="System.Security" />
+    <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Web.Extensions" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="WatchdogProtocol.cs" />
     <Compile Include="StopSafetyHeartbeatProjection.cs" />
     <Compile Include="WatchdogPolicy.cs" />
-    <Compile Include="ContinuousRecoveryPolicy.cs" />
-    <Compile Include="PipeExchangeDeadline.cs" />
     <Compile Include="TakeoverTransactionCoordinator.cs" />
     <Compile Include="SidecarIdentityStateMachine.cs" />
     <Compile Include="SidecarProcessHandleOwner.cs" />
+    <Compile Include="FallbackCoordination.cs" />
+    <Compile Include="IndependentFallback.cs" />
+    <Compile Include="IndependentRecoveryTransaction.cs" />
+    <Compile Include="IndependentRecoveryExecutor.cs" />
+    <Compile Include="IndependentBoundedWorker.cs" />
+    <Compile Include="IndependentProjectState.cs" />
+    <Compile Include="IndependentProjectRecoveryPump.cs" />
+    <Compile Include="IndependentSafetyWorkerProtocol.cs" />
+    <Compile Include="IndependentSafetyWorkerOperation.cs" />
+    <Compile Include="IndependentExecutorRegistration.cs" />
+    <Compile Include="IndependentProcessRetirement.cs" />
+    <Compile Include="IndependentProjectSafetyRunner.cs" />
+    <Compile Include="IndependentExecutionFence.cs" />
+    <Compile Include="IndependentExecutorLease.cs" />
+    <Compile Include="IndependentInteractiveLauncher.cs" />
+    <Compile Include="IndependentLaunchWorkerOperation.cs" />
+    <Compile Include="FallbackControlPipe.cs" />
+    <Compile Include="FallbackProgressVerifier.cs" />
+    <Compile Include="DeadlinePipeExchange.cs" />
     <Compile Include="SupervisorProtocol.cs" />
-    <Compile Include="SupervisorSessionRetirement.cs" />
-    <Compile Include="WatchdogMaintenancePolicy.cs" />
-    <Compile Include="SupervisorSafetyAuthority.cs" />
+    <Compile Include="InstallationAlarmProtocol.cs" />
     <Compile Include="SessionAgentProtocol.cs" />
     <Compile Include="PackageSlotDescriptor.cs" />
     <Compile Include="DurableRelaunchPermit.cs" />

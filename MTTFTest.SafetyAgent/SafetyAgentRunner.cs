@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
-using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 using MTTFTest.SafetyHardware;
 using MTTFTest.Watchdog.Protocol;
@@ -16,10 +15,6 @@ namespace MTTFTest.SafetyAgent
         public string HandoffId { get; private set; }
         public string Nonce { get; private set; }
         public string JournalDirectory { get; private set; }
-        public string AuthorityId { get; private set; }
-        public string AuthorityReceiptPath { get; private set; }
-        public long AuthorityRevision { get; private set; }
-        public string AuthorityCanonicalSha256 { get; private set; }
 
         public static bool TryParse(string[] args, out SafetyAgentArguments value)
         {
@@ -35,25 +30,13 @@ namespace MTTFTest.SafetyAgent
                 SessionId = Read("--session-id"),
                 HandoffId = Read("--handoff-id"),
                 Nonce = Read("--handoff-nonce"),
-                JournalDirectory = Read("--journal-directory"),
-                AuthorityId = Read("--authority-id"),
-                AuthorityReceiptPath = Read("--authority-receipt"),
-                AuthorityCanonicalSha256 = Read("--authority-sha256")
+                JournalDirectory = Read("--journal-directory")
             };
-            long.TryParse(Read("--authority-revision"), out var revision);
-            value.AuthorityRevision = revision;
             Guid parsed;
             return Guid.TryParseExact(value.SessionId ?? string.Empty, "N", out parsed) &&
                    Guid.TryParseExact(value.HandoffId ?? string.Empty, "N", out parsed) &&
-                   Guid.TryParseExact(value.AuthorityId ?? string.Empty, "N", out parsed) &&
                    WatchdogProcessIdentityPolicy.IsValidChallengeNonce(value.Nonce) &&
-                   !string.IsNullOrWhiteSpace(value.JournalDirectory) &&
-                   !string.IsNullOrWhiteSpace(value.AuthorityReceiptPath) &&
-                   value.AuthorityRevision > 0 &&
-                   Regex.IsMatch(
-                       value.AuthorityCanonicalSha256 ?? string.Empty,
-                       "^[0-9A-Fa-f]{64}$",
-                       RegexOptions.CultureInvariant);
+                   !string.IsNullOrWhiteSpace(value.JournalDirectory);
         }
     }
 
@@ -87,7 +70,8 @@ namespace MTTFTest.SafetyAgent
                 {
                     WatchdogSafetyHandoffReceipt receipt;
                     if (!TryReadExact(args, out receipt) ||
-                        receipt.SchemaVersion != SupervisorProtocol.SchemaVersion ||
+                        (receipt.SchemaVersion != 3 && receipt.SchemaVersion != 4 &&
+                         receipt.SchemaVersion != 5) ||
                         receipt.State < WatchdogSafetyHandoffState.Accepted)
                         return 3;
                     if (receipt.IsSafetyCompleted) return 0;
@@ -199,7 +183,7 @@ namespace MTTFTest.SafetyAgent
             }
         }
 
-        private static void ValidateBinding(
+        internal static void ValidateBinding(
             WatchdogSafetyHandoffReceipt receipt,
             WatchdogSafetyConfigSnapshotResult snapshot)
         {
@@ -213,10 +197,9 @@ namespace MTTFTest.SafetyAgent
                 manifest.PermitGeneration != receipt.RelaunchPermitGeneration ||
                 !string.Equals(manifest.PermitId, receipt.RelaunchPermitId ?? string.Empty,
                     StringComparison.Ordinal) ||
-                !string.Equals(manifest.MainExecutableSha256, receipt.MainExecutableSha256,
-                    StringComparison.Ordinal) ||
-                !string.Equals(manifest.SafetyAgentExecutableSha256,
-                    receipt.SafetyAgentExecutableSha256, StringComparison.Ordinal))
+                !SupervisorProtocol.Sha256Equals(manifest.MainExecutableSha256, receipt.MainExecutableSha256) ||
+                !SupervisorProtocol.Sha256Equals(manifest.SafetyAgentExecutableSha256,
+                    receipt.SafetyAgentExecutableSha256))
                 throw new InvalidDataException("SafetyAgentConfigInvalid:IdentityBindingMismatch");
         }
 
@@ -242,12 +225,7 @@ namespace MTTFTest.SafetyAgent
             receipt.Detail = detail ?? string.Empty;
             mutate?.Invoke(receipt);
             receipt.Revision++;
-            SupervisorSafetyAuthorityStore.Advance(
-                AuthorityDirectory(args),
-                args.AuthorityId,
-                args.AuthorityRevision,
-                args.AuthorityCanonicalSha256,
-                receipt);
+            WatchdogSafetyHandoffReceiptStore.WriteThrough(args.JournalDirectory, receipt);
         }
 
         private static void RecordFailure(
@@ -266,12 +244,7 @@ namespace MTTFTest.SafetyAgent
                 receipt.Detail = detail ?? string.Empty;
                 if (terminal) receipt.State = WatchdogSafetyHandoffState.Failed;
                 receipt.Revision++;
-                SupervisorSafetyAuthorityStore.Advance(
-                    AuthorityDirectory(args),
-                    args.AuthorityId,
-                    args.AuthorityRevision,
-                    args.AuthorityCanonicalSha256,
-                    receipt);
+                WatchdogSafetyHandoffReceiptStore.WriteThrough(args.JournalDirectory, receipt);
             }
             catch { }
         }
@@ -288,61 +261,10 @@ namespace MTTFTest.SafetyAgent
             SafetyAgentArguments args,
             out WatchdogSafetyHandoffReceipt receipt)
         {
-            receipt = null;
-            var directory = AuthorityDirectory(args);
-            var expectedPath = SupervisorSafetyAuthorityStore.GetPath(
-                directory,
-                args.AuthorityId);
-            if (!string.Equals(
-                    Path.GetFullPath(expectedPath),
-                    Path.GetFullPath(args.AuthorityReceiptPath),
-                    StringComparison.OrdinalIgnoreCase))
-                return RecordIdentityRejection(args, "AuthorityPathMismatch Expected=" + expectedPath);
-            SupervisorSafetyAuthorityRecord authority;
-            string failure;
-            if (!SupervisorSafetyAuthorityStore.TryRead(
-                    directory,
-                    args.AuthorityId,
-                    out authority,
-                    out failure))
-                return RecordIdentityRejection(args, "AuthorityReadFailed:" + failure);
-            if (authority.InitialReceiptRevision != args.AuthorityRevision)
-                return RecordIdentityRejection(args, "InitialRevisionMismatch Expected=" + authority.InitialReceiptRevision + " Actual=" + args.AuthorityRevision);
-            if (!string.Equals(authority.InitialReceiptCanonicalSha256, args.AuthorityCanonicalSha256, StringComparison.Ordinal))
-                return RecordIdentityRejection(args, "InitialCanonicalSha256Mismatch");
-            if (!string.Equals(authority.SessionId, args.SessionId, StringComparison.Ordinal))
-                return RecordIdentityRejection(args, "SessionIdMismatch Expected=" + authority.SessionId);
-            if (!string.Equals(authority.HandoffId, args.HandoffId, StringComparison.Ordinal))
-                return RecordIdentityRejection(args, "HandoffIdMismatch Expected=" + authority.HandoffId);
-            if (!string.Equals(authority.Receipt.Nonce, args.Nonce, StringComparison.Ordinal))
-                return RecordIdentityRejection(args, "NonceMismatch");
-            receipt = authority.Receipt;
-            return true;
-        }
-
-        private static bool RecordIdentityRejection(SafetyAgentArguments args, string detail)
-        {
-            var text = DateTime.UtcNow.ToString("O") + " Session=" + args.SessionId +
-                " Handoff=" + args.HandoffId + " AuthorityPath=" + args.AuthorityReceiptPath + " " + detail;
-            try { Console.Error.WriteLine(text); } catch { }
-            try
-            {
-                var path = Path.Combine(AuthorityDirectory(args), "safety-agent-identity-rejections.log");
-                if (File.Exists(path) && new FileInfo(path).Length > 1024 * 1024)
-                {
-                    if (File.Exists(path + ".1")) File.Delete(path + ".1");
-                    File.Move(path, path + ".1");
-                }
-                File.AppendAllText(path, text + Environment.NewLine);
-            }
-            catch { }
-            return false;
-        }
-
-        private static string AuthorityDirectory(SafetyAgentArguments args)
-        {
-            var fullPath = Path.GetFullPath(args.AuthorityReceiptPath ?? string.Empty);
-            return Path.GetDirectoryName(fullPath) ?? string.Empty;
+            return WatchdogSafetyHandoffReceiptStore.TryRead(
+                       args.JournalDirectory, args.SessionId, out receipt) &&
+                   string.Equals(receipt.HandoffId, args.HandoffId, StringComparison.Ordinal) &&
+                   string.Equals(receipt.Nonce, args.Nonce, StringComparison.Ordinal);
         }
 
         private static RecoveryFailureDomain ClassifyInvalidData(InvalidDataException exception)

@@ -157,11 +157,15 @@ namespace MTEmbTest
                 if (state.State == ChannelRuntimeState.Running ||
                     state.State == ChannelRuntimeState.WarningRunning)
                 {
+                    if (IndependentRecoveryStartup.Current != null)
+                        await IndependentRecoveryStartup.Current.PersistChannelPauseAsync(channel, true).ConfigureAwait(true);
                     await _epb.PauseChannelGracefullyAsync(channel).ConfigureAwait(true);
                     return;
                 }
                 if (state.State == ChannelRuntimeState.Paused && !_epb.IsBatchPaused)
                 {
+                    if (IndependentRecoveryStartup.Current != null)
+                        await IndependentRecoveryStartup.Current.PersistChannelPauseAsync(channel, false).ConfigureAwait(true);
                     RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumePausedChannelAsync(channel).ConfigureAwait(true);
                     return;

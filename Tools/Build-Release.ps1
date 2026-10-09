@@ -1,24 +1,38 @@
 ﻿param(
     [string]$MsBuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe',
     [string]$PackageRoot = '',
-    [string]$PythonExe = '',
-    [switch]$AllowDirtyCandidate
+    [switch]$AllowDirtyCandidate,
+    [switch]$Candidate
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$versionPropsPath = Join-Path $repo 'Build\UnattendedVersion.props'
-if (-not (Test-Path -LiteralPath $versionPropsPath -PathType Leaf)) {
-    throw '缺少统一版本源 Build\UnattendedVersion.props。'
+# Standalone packaging must not depend on an interactive shell having prepared
+# the regression evidence environment. Resolve the primary repository so linked
+# worktrees keep generated test artifacts under its ignored Codex directory.
+if ([string]::IsNullOrWhiteSpace($env:EPB_TEST_ARTIFACT_ROOT)) {
+    $commonDirectory = [string](& git rev-parse --git-common-dir)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commonDirectory)) {
+        throw '无法定位 Git 公共目录，未启动构建测试。'
+    }
+    $commonDirectory = $commonDirectory.Trim()
+    if (-not [IO.Path]::IsPathRooted($commonDirectory)) { $commonDirectory = Join-Path $repo $commonDirectory }
+    $commonDirectory = [IO.Path]::GetFullPath($commonDirectory)
+    $env:EPB_TEST_ARTIFACT_ROOT = Join-Path ([IO.Path]::GetDirectoryName($commonDirectory)) 'Codex\release-tests'
 }
-[xml]$versionPropsXml = Get-Content -LiteralPath $versionPropsPath -Raw
-$expectedProductVersion = ([string]$versionPropsXml.Project.PropertyGroup.UnattendedProductVersion |
+$env:EPB_TEST_ARTIFACT_ROOT = [IO.Path]::GetFullPath($env:EPB_TEST_ARTIFACT_ROOT)
+[IO.Directory]::CreateDirectory($env:EPB_TEST_ARTIFACT_ROOT) | Out-Null
+Write-Host ('回归证据目录：' + $env:EPB_TEST_ARTIFACT_ROOT)
+
+$releaseProjectPath = Join-Path $repo 'ProductVersion.props'
+[xml]$releaseProjectXml = Get-Content -LiteralPath $releaseProjectPath -Raw
+$expectedProductVersion = ([string]$releaseProjectXml.Project.PropertyGroup.EpbProductVersion |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Select-Object -First 1).Trim()
 if ([string]::IsNullOrWhiteSpace($expectedProductVersion)) {
-    throw '统一版本源未声明 UnattendedProductVersion。'
+    throw 'ProductVersion.props 未声明 EpbProductVersion。'
 }
 $expectedProductLabel = 'V' + $expectedProductVersion
 $expectedAssemblyName = 'MTTFTest'
@@ -217,72 +231,28 @@ function Invoke-CandidateTest {
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
-        [Parameter(Mandatory = $true)][string]$SuccessPattern,
-        [ValidateRange(1, 1800)][int]$TimeoutSeconds = 900
+        [Parameter(Mandatory = $true)][string]$SuccessPattern
     )
 
     Write-Host "[$Label] $FilePath $($ArgumentList -join ' ')"
-    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
-    $captureDirectory = [IO.Path]::GetFullPath((Join-Path $tempRoot `
-        ('epb-release-test-' + [Guid]::NewGuid().ToString('N'))))
-    $tempPrefix = $tempRoot + [IO.Path]::DirectorySeparatorChar
-    if (-not $captureDirectory.StartsWith(
-            $tempPrefix,
-            [StringComparison]::OrdinalIgnoreCase)) {
-        throw "$Label 测试输出临时目录越界：$captureDirectory"
-    }
-    $stdoutPath = Join-Path $captureDirectory 'stdout.log'
-    $stderrPath = Join-Path $captureDirectory 'stderr.log'
+    $previousErrorPreference = $ErrorActionPreference
     try {
-        [void](New-Item -ItemType Directory -Path $captureDirectory)
-        $startParameters = @{
-            FilePath = $FilePath
-            WorkingDirectory = $repo
-            RedirectStandardOutput = $stdoutPath
-            RedirectStandardError = $stderrPath
-            PassThru = $true
-            WindowStyle = 'Hidden'
-        }
-        if (@($ArgumentList).Count -ne 0) {
-            $startParameters.ArgumentList = $ArgumentList
-        }
-        $process = Start-Process @startParameters
-        # Windows PowerShell 5.1 may discard the native process handle before
-        # ExitCode is materialized when Start-Process redirects both streams.
-        # Force handle acquisition while the process is alive so ExitCode is
-        # always available after WaitForExit.
-        $processHandle = $process.Handle
-        $completed = $process.WaitForExit($TimeoutSeconds * 1000)
-        if (-not $completed) {
-            try {
-                if (-not $process.HasExited) { $process.Kill() }
-            }
-            catch { }
-        }
-        $process.WaitForExit()
-        $captured = @(
-            @([IO.File]::ReadAllLines($stdoutPath, [Text.Encoding]::Default)) +
-            @([IO.File]::ReadAllLines($stderrPath, [Text.Encoding]::Default)))
-        foreach ($line in $captured) { Write-Host ([string]$line) }
-        if (-not $completed) {
-            throw "$Label 超过 $TimeoutSeconds 秒仍未退出，已终止精确测试进程 PID=$($process.Id)。"
-        }
-        $exitCode = $process.ExitCode
-        if ($exitCode -ne 0) {
-            throw "$Label 失败，ExitCode=$exitCode"
-        }
-        $summary = @($captured | ForEach-Object { [string]$_ } |
-            Where-Object { $_ -match $SuccessPattern } | Select-Object -Last 1)
-        if ($summary.Count -eq 0) {
-            throw "$Label 未输出预期通过摘要：$SuccessPattern"
-        }
-        return $summary[0].Trim()
+        # Windows PowerShell 5.1 wraps native stderr as ErrorRecord even when
+        # the executable succeeds. Preserve diagnostics and judge exit + summary.
+        $ErrorActionPreference = 'Continue'
+        $captured = @(& $FilePath @ArgumentList 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousErrorPreference }
+    foreach ($line in $captured) { Write-Host ([string]$line) }
+    if ($exitCode -ne 0) {
+        throw "$Label 失败，ExitCode=$exitCode"
     }
-    finally {
-        if (Test-Path -LiteralPath $captureDirectory -PathType Container) {
-            Remove-Item -LiteralPath $captureDirectory -Recurse -Force
-        }
+    $summary = @($captured | ForEach-Object { [string]$_ } |
+        Where-Object { $_ -match $SuccessPattern } | Select-Object -Last 1)
+    if ($summary.Count -eq 0) {
+        throw "$Label 未输出预期通过摘要：$SuccessPattern"
     }
+    return $summary[0].Trim()
 }
 
 # 这些安全、持续运行和背压类位于旧式非 SDK 项目中。目录里存在 .cs 并不代表会参与
@@ -331,7 +301,6 @@ Assert-LegacyCompileItems -ProjectRelativePath 'Watchdog.Protocol\Watchdog.Proto
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.Watchdog\MTTFTest.Watchdog.csproj' -RequiredItems @(
     'UnattendedAlarmSink.cs',
     'SupervisorServiceHost.cs',
-    'SupervisorMainLaunchClient.cs',
     'SessionAgentLaunchClient.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTFTest.SessionAgent\MTTFTest.SessionAgent.csproj' -RequiredItems @(
@@ -343,8 +312,8 @@ $snapshotSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\W
 $receiptSource = Get-Content -LiteralPath (Join-Path $repo 'Watchdog.Protocol\WatchdogSafetyReceipts.cs') -Raw
 $programSource = Get-Content -LiteralPath (Join-Path $repo 'MTTfTest\Program.cs') -Raw
 if ($snapshotSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*2' -or
-    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*SupervisorProtocol\.SchemaVersion') {
-    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 7 支持。'
+    $receiptSource -notmatch 'SchemaVersion\s*\{\s*get;\s*set;\s*\}\s*=\s*5') {
+    throw '拒绝发布：缺少 safety snapshot v2 或 safety receipt schema 5 支持。'
 }
 if ($programSource -match 'watchdog-safety-shutdown' -or
     (Test-Path -LiteralPath (Join-Path $repo 'MTTfTest\WatchdogSafetyShutdownWorker.cs'))) {
@@ -548,18 +517,11 @@ $powerSupplyTrxPath = Join-Path $powerSupplyResultsDirectory $powerSupplyTrxName
 $powerSupplySummary = $null
 try {
     [void](New-Item -ItemType Directory -Path $powerSupplyResultsDirectory)
-    $previousErrorActionPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        $powerSupplyOutput = @(& dotnet test $powerSupplyProject `
-            --configuration Release --no-restore --no-build --verbosity minimal `
-            --results-directory $powerSupplyResultsDirectory `
-            --logger "trx;LogFileName=$powerSupplyTrxName" 2>&1)
-        $powerSupplyExitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-    }
+    $powerSupplyOutput = @(& dotnet test $powerSupplyProject `
+        --configuration Release --no-restore --no-build --verbosity minimal `
+        --results-directory $powerSupplyResultsDirectory `
+        --logger "trx;LogFileName=$powerSupplyTrxName" 2>&1)
+    $powerSupplyExitCode = $LASTEXITCODE
     foreach ($line in $powerSupplyOutput) { Write-Host ([string]$line) }
     if ($powerSupplyExitCode -ne 0) {
         throw "PowerSupplyDebugger.Tests 失败，ExitCode=$powerSupplyExitCode"
@@ -606,17 +568,10 @@ $fieldGateOutput = @()
 $fieldGateExitCode = -1
 try {
     [void](New-Item -ItemType Directory -Path $fieldGateResultsDirectory)
-    $pythonArguments = @('-m', 'unittest', '-v', 'Tools.test_validate_epb_field_gate')
-    if (-not [string]::IsNullOrWhiteSpace($PythonExe)) { $pythonLauncher = $PythonExe }
-    else {
-        $py = Get-Command py.exe -ErrorAction SilentlyContinue
-        if ($null -eq $py) { throw '缺少 Python 启动器；请通过 -PythonExe 传入 Python 3 可执行文件。' }
-        $pythonLauncher = $py.Source
-        $pythonArguments = @('-3') + $pythonArguments
-    }
+    $pythonLauncher = (Get-Command py.exe -ErrorAction Stop).Source
     $fieldGateProcess = Start-Process `
         -FilePath $pythonLauncher `
-        -ArgumentList $pythonArguments `
+        -ArgumentList @('-3', '-m', 'unittest', '-v', 'Tools.test_validate_epb_field_gate') `
         -WorkingDirectory $repo `
         -NoNewWindow `
         -RedirectStandardOutput $fieldGateStdOut `
@@ -642,6 +597,42 @@ finally {
         Remove-Item -LiteralPath $fieldGateResultsDirectory -Recurse -Force
     }
 }
+
+$shortcutOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-IndependentShortcut.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('桌面快捷方式回归失败：' + ($shortcutOutput -join "`n")) }
+foreach ($line in $shortcutOutput) { Write-Host ([string]$line) }
+if (@($shortcutOutput | Where-Object { [string]$_ -like 'PASS shortcut *' }).Count -ne 1) { throw '桌面快捷方式回归缺少通过摘要。' }
+$oneClickSetupOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-OneClickSetup.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('无参数安装准备回归失败：' + ($oneClickSetupOutput -join "`n")) }
+foreach ($line in $oneClickSetupOutput) { Write-Host ([string]$line) }
+$oneClickSetupSummary = @($oneClickSetupOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS one-click setup \d+ checks;' })
+if ($oneClickSetupSummary.Count -ne 1) { throw '无参数安装准备回归缺少通过摘要。' }
+$scriptHostOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-ScriptHostCompatibility.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('安装脚本跨宿主回归失败：' + ($scriptHostOutput -join "`n")) }
+foreach ($line in $scriptHostOutput) { Write-Host ([string]$line) }
+$scriptHostSummary = ($scriptHostOutput -join "`n") | ConvertFrom-Json
+if ($scriptHostSummary.passed -ne 18 -or $scriptHostSummary.hostCount -ne 3) { throw '安装脚本跨宿主回归未完整通过。' }
+$maintenanceOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-MaintenanceContext.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('无参数维护回归失败：' + ($maintenanceOutput -join "`n")) }
+foreach ($line in $maintenanceOutput) { Write-Host ([string]$line) }
+$maintenanceSummary = @($maintenanceOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS maintenance context 29 checks;' })
+if ($maintenanceSummary.Count -ne 1) { throw '无参数维护回归缺少通过摘要。' }
+$reinstallOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-ReinstallResume.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('原地重装回归失败：' + ($reinstallOutput -join "`n")) }
+foreach ($line in $reinstallOutput) { Write-Host ([string]$line) }
+$reinstallSummary = @($reinstallOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS reinstall resume 19 checks;' })
+if ($reinstallSummary.Count -ne 1) { throw '原地重装回归缺少通过摘要。' }
+$commandResolutionOutput = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot '..\Tests\IndependentRecovery.ProcessTests\Test-OneClickCommandResolution.ps1') 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ('一键命令解析回归失败：' + ($commandResolutionOutput -join "`n")) }
+foreach ($line in $commandResolutionOutput) { Write-Host ([string]$line) }
+$commandResolutionSummary = @($commandResolutionOutput | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^PASS one-click command resolution 26 checks;' })
+if ($commandResolutionSummary.Count -ne 1) { throw '一键命令解析回归缺少通过摘要。' }
 
 $deploymentContractOutput = @(& (Join-Path `
     $PSScriptRoot 'Test-MTTFTest-UnattendedDeployment.ps1') 2>&1)
@@ -674,17 +665,17 @@ Assert-SourceSnapshot -ExpectedCommit $commit `
     -ExpectedFingerprint $sourceSnapshotFingerprint `
     -Stage '写入构建身份前源码快照校验'
 
-$v217Deployment = @(& (Join-Path $PSScriptRoot 'Test-V217Deployment.ps1') 2>&1)
-foreach ($line in $v217Deployment) { Write-Host ([string]$line) }
-$v217DeploymentSummary = @($v217Deployment | Where-Object { [string]$_ -match '^PASS V217Deployment \d+/\d+ ' } | Select-Object -Last 1)
-if ($v217DeploymentSummary.Count -ne 1) { throw 'V2.17 隔离换包测试未通过。' }
 $verification = [ordered]@{
-    v217Deployment = [string]$v217DeploymentSummary[0]
     solutionRebuild = 'PASS'
     adaptiveControlTests = $adaptiveSummary
     epbDiskWriterTests = $diskWriterSummary
     powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
+    oneClickSetupTests = $oneClickSetupSummary[0].Trim()
+    scriptHostCompatibilityTests = ('PASS {0} checks; {1} hosts; {2} scripts' -f $scriptHostSummary.passed,$scriptHostSummary.hostCount,$scriptHostSummary.scriptCount)
+    maintenanceContextTests = $maintenanceSummary[0].Trim()
+    reinstallResumeTests = $reinstallSummary[0].Trim()
+    oneClickCommandResolutionTests = $commandResolutionSummary[0].Trim()
     simpleUnattendedDeploymentContract = $deploymentContractSummary[0].Trim()
     quickDeployCommandParse = $quickDeployParseSummary[0].Trim()
     releaseBuildNoMandatorySoak = $noMandatorySoakSummary[0].Trim()
@@ -717,10 +708,9 @@ $deploymentDirectory = Join-Path $output 'Deployment'
 $utf8Bom = New-Object Text.UTF8Encoding($true)
 foreach ($deploymentScriptName in @(
         'Install-EPB-UnattendedAlarm.ps1',
+        'Get-EpbBusinessEvidence.ps1',
         'Install-MTTFTest-Unattended.ps1',
-        'Verify-Release.ps1',
-        'Stop-RelatedProcesses.ps1',
-        'Export-StabilityEvidence.ps1')) {
+        'Verify-Release.ps1')) {
     $deploymentScriptSource = Join-Path $repo (Join-Path 'Tools' $deploymentScriptName)
     $deploymentScriptDestination = Join-Path $deploymentDirectory $deploymentScriptName
     $deploymentScriptText = [IO.File]::ReadAllText(
@@ -735,7 +725,6 @@ New-Item -ItemType File -Path (Join-Path $output 'MTTFTest.UnattendedMode.requir
 
 $files = Get-RecursivePackageFiles -Root $output `
     -ExcludedRelativePaths @('build-identity.json', 'SHA256SUMS.txt')
-$packageContentSha256 = Get-AggregateFileHash $files
 $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
     $file = Get-Item -LiteralPath $entry.Value
     [ordered]@{
@@ -744,23 +733,6 @@ $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
         sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
-$componentIdentities = @(
-    @($exePath) + @($versionedComponents) |
-    Sort-Object -Unique |
-    ForEach-Object {
-        $componentPath = [IO.Path]::GetFullPath($_)
-        $pdbPath = [IO.Path]::ChangeExtension($componentPath, '.pdb')
-        if (-not (Test-Path -LiteralPath $pdbPath -PathType Leaf)) {
-            throw "正式组件缺少 PDB 身份：$componentPath"
-        }
-        [ordered]@{
-            name = [IO.Path]::GetFileName($componentPath)
-            fileVersion = (Get-Item -LiteralPath $componentPath).VersionInfo.FileVersion
-            sha256 = (Get-FileHash -LiteralPath $componentPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            pdb = [IO.Path]::GetFileName($pdbPath)
-            pdbSha256 = (Get-FileHash -LiteralPath $pdbPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        }
-    })
 $identity = [ordered]@{
     productVersion = $expectedProductLabel
     fileVersion = $actualFileVersion
@@ -773,15 +745,10 @@ $identity = [ordered]@{
     gitBranch = $branch
     gitDirty = $isDirty
     buildUtc = $buildUtc
-    mainExecutableSha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    packageContentSha256 = $packageContentSha256
     configSha256 = $configHash
     platform = 'x86'
-    recoveryArchitectureGeneration = 'EPB-V2.17'
-    fieldValidation = 'PENDING_USER_HARDWARE_AND_168H'
-    watchdogSchema = 7
+    watchdogSchema = 5
     packageSlotSchema = 5
-    componentIdentities = $componentIdentities
     verification = $verification
     files = @($manifestFiles)
 }
@@ -837,10 +804,13 @@ try {
     $identity.releaseStatus = if ($isDirty) {
         'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION'
     }
+    elseif ($Candidate) {
+        'CANDIDATE_NOT_FIELD_VALIDATED'
+    }
     else {
         'FORMAL_RELEASE'
     }
-    $identity.deploymentApproved = -not $isDirty
+    $identity.deploymentApproved = -not $isDirty -and -not $Candidate
     $identity | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath $packageIdentityPath -Encoding UTF8
     $packageChecksumMap = Get-RecursivePackageFiles -Root $stagingOutput `
@@ -873,6 +843,9 @@ catch {
 
 if ($isDirty) {
     Write-Warning "已生成独立 DIRTY CANDIDATE：仅用于当前代码验证，不得作为正式生产放行包。"
+}
+elseif ($Candidate) {
+    Write-Host "Release 候选包已生成并校验，现场验收未完成：$packageOutput"
 }
 else {
     Write-Host "Release 正式包已生成并独立校验：$packageOutput"

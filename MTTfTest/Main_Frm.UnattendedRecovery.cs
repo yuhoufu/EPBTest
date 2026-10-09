@@ -18,6 +18,7 @@ namespace MtEmbTest
 
         private RecoveryStartupIntent _recoveryStartupIntent;
         private WatchdogRecoveryIntent _watchdogRecoveryIntent;
+        internal Exception IndependentRecoveryStartupFailure { get; private set; }
 
         internal Main_Frm(RecoveryStartupIntent recoveryStartupIntent) : this()
         {
@@ -34,6 +35,29 @@ namespace MtEmbTest
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            if (IndependentRecoveryStartup.Current?.IsRecoveryLaunch == true)
+            {
+                BeginInvoke((Action)(async () =>
+                {
+                    try
+                    {
+                        var startup = IndependentRecoveryStartup.Current;
+                        startup.ValidateConfiguration(Cfg);
+                        var monitor = CreateMonitor(_daqRuntimeSettings, Guid.Parse(startup.ParentRunId));
+                        monitor.Name = "实时监视";
+                        OpenChildForm(monitor);
+                        await monitor.ResumeFromIndependentRecoveryAsync(startup);
+                    }
+                    catch (Exception error)
+                    {
+                        IndependentRecoveryStartupFailure = error;
+                        ProjectLogHub.Write(ProjectLogLevel.Error,
+                            "独立恢复启动未完成，交由独立执行器按持久事务验证和处理：" + error.Message,
+                            "独立恢复", error);
+                    }
+                }));
+                return;
+            }
             if (_watchdogRecoveryIntent != null)
             {
                 var watchdogIntent = _watchdogRecoveryIntent;
@@ -465,7 +489,7 @@ namespace MtEmbTest
                 var monitor = new FrmEpbMainMonitor(
                     ProtectedRoot(checkpoint), _daqRuntimeSettings) { Name = "实时监视" };
                 OpenChildForm(monitor);
-                await monitor.ResumeFromUnattendedCheckpointAsync(checkpoint);
+                await monitor.ResumeFromUnattendedCheckpointAsync(checkpoint, RecoveryStartupSource.SoftwareCheckpoint);
             }
             catch (Exception ex)
             {

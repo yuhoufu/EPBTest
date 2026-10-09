@@ -10,6 +10,32 @@ using Task = System.Threading.Tasks.Task;
 
 namespace IO.NI
 {
+    // The internal port keeps production voltage conversion and lifecycle under
+    // test without loading a device. The public constructor always uses NI.
+    internal interface IAoVoltageOutput : IDisposable
+    {
+        void Write(double voltage);
+    }
+
+    internal sealed class NiAoVoltageOutput : IAoVoltageOutput
+    {
+        private readonly NationalInstruments.DAQmx.Task _task;
+        private readonly AnalogSingleChannelWriter _writer;
+        internal NiAoVoltageOutput(AoConfig config, AoDevice device)
+        {
+            _task = new NationalInstruments.DAQmx.Task($"AO_{device.Name}");
+            try
+            {
+                _task.AOChannels.CreateVoltageChannel(device.PhysicalChannel, "",
+                    config.MinVoltage, config.MaxVoltage, AOVoltageUnits.Volts);
+                _writer = new AnalogSingleChannelWriter(_task.Stream);
+            }
+            catch { _task.Dispose(); throw; }
+        }
+        public void Write(double voltage) => _writer.WriteSingleSample(true, voltage);
+        public void Dispose() => _task.Dispose();
+    }
+
     public readonly struct AoWriteResult
     {
         public AoWriteResult(bool success, string deviceName, double commandPressureBar, double voltage)
@@ -40,49 +66,43 @@ namespace IO.NI
         private int _postDisposeWarningLogged;
         private int _resetAllExecutionCount;
 
-        // 每个设备名 -> 物理通道信息
-        private readonly Dictionary<string, AnalogSingleChannelWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, NationalInstruments.DAQmx.Task> _tasks = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, IAoVoltageOutput> _outputs = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Func<AoDevice, IAoVoltageOutput> _createOutput;
 
-        public AoController(AoConfig cfg, Logger log = null)
+        public AoController(AoConfig cfg, Logger log = null) : this(cfg, log, null) { }
+
+        internal AoController(AoConfig cfg, Logger log, Func<AoDevice, IAoVoltageOutput> createOutput)
         {
             _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
             _log = log ?? NLogger.Instance;
-
+            if (double.IsNaN(cfg.MinVoltage) || double.IsInfinity(cfg.MinVoltage) ||
+                double.IsNaN(cfg.MaxVoltage) || double.IsInfinity(cfg.MaxVoltage) ||
+                cfg.MinVoltage >= cfg.MaxVoltage || cfg.MinVoltage > 0 || cfg.MaxVoltage < 0)
+                throw new ArgumentException("AO voltage range must contain literal zero.", nameof(cfg));
+            _createOutput = createOutput ?? (device => new NiAoVoltageOutput(_cfg, device));
             Initialize();
         }
 
-        /// <summary>
-        /// 初始化所有 AO 通道，构建 Task + Writer。
-        /// </summary>
         private void Initialize()
         {
             foreach (var kv in _cfg.Devices)
             {
                 var dev = kv.Value;
+                IAoVoltageOutput output = null;
                 try
                 {
-                    var task = new NationalInstruments.DAQmx.Task($"AO_{dev.Name}");
-                    task.AOChannels.CreateVoltageChannel(
-                        dev.PhysicalChannel, "",
-                        _cfg.MinVoltage, _cfg.MaxVoltage,
-                        AOVoltageUnits.Volts);
-
-                    var writer = new AnalogSingleChannelWriter(task.Stream);
-
-                    _tasks[dev.Name] = task;
-                    _writers[dev.Name] = writer;
-
-                    // 初始化为 0%
-                    WritePressure(dev.Name, 0);
+                    output = _createOutput(dev) ?? throw new InvalidOperationException("AO output missing.");
+                    // Safety zero is a literal voltage, never a pressure setpoint.
+                    output.Write(0);
+                    _outputs.Add(dev.Name, output);
+                    output = null; // ownership transferred only after confirmed initialization
                 }
                 catch (Exception ex)
                 {
                     _log.Error($"AO[{dev.Name}] 初始化失败：{ex.Message}", "AO", ex);
                 }
+                finally { output?.Dispose(); }
             }
-
-            _log.Info($"AO 控制器初始化完成：共 {_writers.Count} 路", "AO");
         }
 
         /// <summary>
@@ -93,7 +113,7 @@ namespace IO.NI
             lock (_lifecycleGate)
             {
                 if (RejectDisposedOperation(nameof(WritePercent))) return false;
-                if (!_writers.TryGetValue(deviceName, out var writer)) return false;
+                if (!_outputs.TryGetValue(deviceName, out var writer)) return false;
                 if (!_cfg.Devices.TryGetValue(deviceName, out var dev)) return false;
 
                 // 限幅
@@ -105,7 +125,8 @@ namespace IO.NI
 
                 try
                 {
-                    writer.WriteSingleSample(true, v);
+                    if (v != 0) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
+                    writer.Write(v);
                     _log.Info($"AO[{deviceName}] 输出百分比 {percent:F1}% -> 电压 {v:F2} V", "AO");
                     return true;
                 }
@@ -130,7 +151,7 @@ namespace IO.NI
             {
                 if (RejectDisposedOperation(nameof(WritePressureDetailed)))
                     return new AoWriteResult(false, deviceName, pressure, double.NaN);
-                if (!_writers.TryGetValue(deviceName, out var writer))
+                if (!_outputs.TryGetValue(deviceName, out var writer))
                     return new AoWriteResult(false, deviceName, pressure, double.NaN);
                 if (!_cfg.Devices.TryGetValue(deviceName, out var dev))
                     return new AoWriteResult(false, deviceName, pressure, double.NaN);
@@ -143,7 +164,8 @@ namespace IO.NI
 
                 try
                 {
-                    writer.WriteSingleSample(true, v);
+                    if (v != 0) MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
+                    writer.Write(v);
                     _log.Info($"AO[{deviceName}] CommandPressure={pressure:F1}bar AoVoltage={v:F3}V", "AO");
                     return new AoWriteResult(true, deviceName, pressure, v);
                 }
@@ -186,13 +208,19 @@ namespace IO.NI
             {
                 if (RejectDisposedOperation(nameof(TryResetAll))) return false;
                 Interlocked.Increment(ref _resetAllExecutionCount);
-                var success = _cfg.Devices.Count > 0 && _writers.Count == _cfg.Devices.Count;
+                var success = _cfg.Devices.Count > 0 && _outputs.Count == _cfg.Devices.Count;
                 foreach (var name in _cfg.Devices.Keys)
                 {
-                    if (!WritePressure(name, 0)) success = false;
+                    if (!_outputs.TryGetValue(name, out var output)) { success = false; continue; }
+                    try { output.Write(0); }
+                    catch (Exception ex)
+                    {
+                        success = false;
+                        _log.Error($"AO[{name}] 安全写入0V失败：{ex.Message}", "AO", ex);
+                    }
                 }
                 if (success)
-                    _log.Info("AO 所有通道已复位为 0%。", "AO");
+                    _log.Info("AO 所有通道已写入 0V。", "AO");
                 else
                     _log.Error("AO 冷启动安全基线写零失败；至少一路未确认归零。", "AO");
                 return success;
@@ -204,12 +232,11 @@ namespace IO.NI
             lock (_lifecycleGate)
             {
                 if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-                foreach (var t in _tasks.Values)
+                foreach (var t in _outputs.Values)
                 {
                     try { t?.Dispose(); } catch { }
                 }
-                _tasks.Clear();
-                _writers.Clear();
+                _outputs.Clear();
             }
             GC.SuppressFinalize(this);
         }

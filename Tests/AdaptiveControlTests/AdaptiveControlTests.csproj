@@ -26,7 +26,20 @@
     <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="NationalInstruments.DAQmx">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>C:\Program Files (x86)\National Instruments\MeasurementStudioVS2012\DotNET\Assemblies\Current\NationalInstruments.DAQmx.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
+    <Compile Include="IndependentBootstrapTests.cs" />
+    <Compile Include="WatchdogFailedStartupTests.cs" />
+    <Compile Include="InstallationAlarmTests.cs" />
+    <Compile Include="IndependentProjectBindingTests.cs" />
+    <Compile Include="RecoveryCommitRoutingTests.cs" />
+    <Compile Include="EpbSummarySelectionTests.cs" />
+    <Compile Include="IndependentInstallSetupTests.cs" />
+    <Compile Include="MonitorHardwareSmokeTests.cs" />
+    <Compile Include="SimulatedEpbPlant.cs" />
     <Reference Include="System.Core" />
     <Reference Include="System.Data" />
     <Reference Include="System.Web.Extensions" />
@@ -49,15 +62,29 @@
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="FallbackSafetyRegressionTests.cs" />
+    <Compile Include="DatabaseFallbackTests.cs" />
+    <Compile Include="IndependentRecoveryTransactionTests.cs" />
+    <Compile Include="IndependentBoundedWorkerTests.cs" />
+    <Compile Include="..\..\FallbackGuard\DatabaseProgress.cs"><Link>DatabaseProgress.cs</Link></Compile>
+    <Compile Include="..\..\FallbackGuard\RecoveryDatabaseEvidence.cs"><Link>RecoveryDatabaseEvidence.cs</Link></Compile>
+    <Compile Include="..\..\FallbackGuard\IndependentExecutorRuntime.cs"><Link>IndependentExecutorRuntime.cs</Link></Compile>
+    <Compile Include="IndependentExecutorRuntimeTests.cs" />
+    <Compile Include="..\..\FallbackGuard\IndependentExecutorObservation.cs"><Link>IndependentExecutorObservation.cs</Link></Compile>
+    <Compile Include="..\..\FallbackGuard\IndependentRecovery.cs"><Link>IndependentRecovery.cs</Link></Compile>
+    <Compile Include="FallbackCoordinationTests.cs" />
     <Compile Include="Program.cs" />
-    <Compile Include="V216StabilityTests.cs" />
-    <Compile Include="V217StabilityTests.cs" />
+    <Compile Include="InstantDisplayRefreshTests.cs" />
     <Compile Include="CalibrationMathTests.cs" />
     <Compile Include="CycleAttemptLifecycleTests.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />
     <Compile Include="DaqRealtimeControlTests.cs" />
     <Compile Include="EpbRecordNormalizationTests.cs" />
     <Compile Include="FormalBatchSlotCoordinatorTests.cs" />
+    <Compile Include="FormalMonotonicScheduleTests.cs" />
+    <Compile Include="FormalHydraulicScheduleTests.cs" />
+    <Compile Include="FormalRetirementBoundaryTests.cs" />
+    <Compile Include="CoordinatedTimerTests.cs" />
     <Compile Include="FirstRunBootstrapTests.cs" />
     <Compile Include="IncidentSessionPolicyTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />

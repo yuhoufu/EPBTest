@@ -748,6 +748,14 @@ namespace Controller
             }
         }
 
+        private readonly ConcurrentDictionary<int, Tuple<long, long, string>> _formalCommitEvidence =
+            new ConcurrentDictionary<int, Tuple<long, long, string>>();
+
+        public Tuple<long, long, string> CaptureFormalCommitEvidence(int channel)
+        {
+            return _formalCommitEvidence.TryGetValue(channel, out var value) ? value : Tuple.Create(0L, 0L, string.Empty);
+        }
+
         private bool CompleteCycleAndScheduleEvidence(
             IEpbCycleRecorder recorder,
             int channel,
@@ -756,6 +764,8 @@ namespace Controller
             DateTime endUtc)
         {
             if (recorder == null) return true;
+            var commitRun = _activeBatchId;
+            var commitEpoch = Interlocked.Read(ref _runEpoch);
             // DAQ恢复入口会在硬件安全动作前锁存事故圈。任何迟到的旧Runner/兼容
             // 回调都只能重复确认 AbortedBySoftwareRecovery，不能把同一圈改写为
             // 正式 completed；持久化作废由当前 attempt 或恢复 Finalizer 的唯一所有者负责。
@@ -789,6 +799,15 @@ namespace Controller
                     endUtc,
                     finalSampleCount);
                 recorder.CompleteCycle(channel, cycleNumber, finalSampleCount, endUtc);
+                if (commitRun == _activeBatchId && commitEpoch == Interlocked.Read(ref _runEpoch))
+                {
+                    var identity = commitRun.ToString("N") + ":" + commitEpoch + ":" + channel + ":" + cycleNumber;
+                    _formalCommitEvidence.AddOrUpdate(channel,
+                        _ => Tuple.Create(commitEpoch, 1L, identity),
+                        (_, previous) => previous.Item1 == commitEpoch &&
+                            int.TryParse(previous.Item3.Split(':').Last(), out var previousCycle) && previousCycle >= cycleNumber
+                            ? previous : Tuple.Create(commitEpoch, previous.Item1 == commitEpoch ? previous.Item2 + 1 : 1L, identity));
+                }
             }
             catch (Exception ex)
             {

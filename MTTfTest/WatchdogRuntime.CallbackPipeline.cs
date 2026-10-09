@@ -402,6 +402,7 @@ namespace MTEmbTest
         private TaskCompletionSource<bool> _drainCompletion;
         private TaskCompletionSource<bool> _admissionDrainCompletion;
         private RuntimeIngressCanonicalRequest _canonical;
+        private readonly HashSet<string> _retiredPipeRequests = new HashSet<string>(StringComparer.Ordinal);
         private long _pipeSequence;
         private long _durableVersion;
         private long _admissionReservationSequence;
@@ -458,6 +459,8 @@ namespace MTEmbTest
                 var inputCorrelation = string.IsNullOrWhiteSpace(correlation)
                     ? Guid.NewGuid().ToString("N") : correlation.Trim();
                 var inputRequest = string.IsNullOrWhiteSpace(requestId) ? inputCorrelation : requestId.Trim();
+                if (source == WatchdogStopAllSourceFlags.Pipe && _retiredPipeRequests.Contains(inputRequest))
+                    return new RuntimeIngressOffer(false, false, false, "CompletedPipeRequestReplay", null);
                 var observed = canonical != null && canonical.HasSource(source);
                 if (source == WatchdogStopAllSourceFlags.Durable && _durableMarkerClaimed != 0)
                     return new RuntimeIngressOffer(false, false, false, "DurableAlreadyConsumed", null);
@@ -642,6 +645,25 @@ namespace MTEmbTest
                 if (_disposed || _failClosed || !_active || _canonical == null)
                     return Array.Empty<RuntimePendingStopRequest>();
                 return new[] { _canonical.Snapshot() };
+            }
+        }
+
+        internal bool RetireCompletedPipeRequest(string correlation, string requestId)
+        {
+            lock (_gate)
+            {
+                if (_disposed || _closing || _acceptingClosed || _failClosed || _canonical == null ||
+                    _activeAdmissions != 0 || _activeProducers > 1 || _retiredPipeRequests.Count >= 256 ||
+                    _canonical.CorrelationId != correlation || _canonical.RequestId != requestId ||
+                    _canonical.ObservedSources != WatchdogStopAllSourceFlags.Pipe ||
+                    _canonical.AdmittedSources != WatchdogStopAllSourceFlags.Pipe)
+                    return false;
+                _retiredPipeRequests.Add(requestId);
+                _canonical = null;
+                _frozenCorrelationId = string.Empty;
+                _frozenReasonCode = string.Empty;
+                _frozenRequestId = string.Empty;
+                return true;
             }
         }
 
@@ -1656,6 +1678,24 @@ namespace MTEmbTest
             try
             {
                 RecordClientEvent(context, eventType, (reason ?? string.Empty) + ":" + (correlation ?? string.Empty));
+                if (source == WatchdogStopAllSourceFlags.Pipe && context.StopAllCoordinator != null && context.ScopeLease != null)
+                {
+                    var previous = context.IngressGate.Capture();
+                    if (!string.IsNullOrEmpty(previous.FrozenRequestId) && previous.FrozenRequestId != requestId &&
+                        previous.FrozenCorrelationId != correlation)
+                    {
+                        var completed = context.StopAllCoordinator.Capture(context.ScopeLease).Registrations
+                            .Where(item => item.CorrelationId == previous.FrozenCorrelationId).ToArray();
+                        // Admission alone is not completion. Keep the old identity
+                        // until every registered safety delivery actually terminates.
+                        if (completed.Length == 0 || !completed.All(item => item.CompletionTerminal) ||
+                            !context.IngressGate.RetireCompletedPipeRequest(previous.FrozenCorrelationId, previous.FrozenRequestId))
+                        {
+                            RecordClientEvent(context, eventType + "Deferred", "PreviousStopTransactionNotRetired");
+                            return false;
+                        }
+                    }
+                }
                 var routed = context.IngressGate.Route(ingress, context, reason, correlation, requestId,
                     reason ?? string.Empty, source);
                 if (!routed.Accepted)

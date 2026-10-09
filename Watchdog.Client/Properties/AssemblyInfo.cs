@@ -9,3 +9,4 @@ using System.Runtime.CompilerServices;
 [assembly: ComVisible(false)]
 [assembly: Guid("4E6B3F5E-7C42-4A1C-9E02-7D9A3D4C8E61")]
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]
+// Version attributes are generated from ProductVersion.props.

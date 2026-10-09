@@ -7,3 +7,4 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyProduct("MTTFTest")]
 [assembly: ComVisible(false)]
 [assembly: Guid("8f458242-0b7c-42ca-9bac-5b232024fa14")]
+// Version attributes are generated from ProductVersion.props.

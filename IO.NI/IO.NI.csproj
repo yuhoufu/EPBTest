@@ -74,7 +74,6 @@
   <ItemGroup>
     <Compile Include="AoController.cs" />
     <Compile Include="ControlBatchRing.cs" />
-    <Compile Include="DaqReadDispatcher.cs" />
     <Compile Include="ClrGcPauseMonitor.cs" />
     <Compile Include="FastCurrentEvidenceRing.cs" />
     <Compile Include="DaqDiagnosticRing.cs" />
@@ -96,6 +95,10 @@
     <ProjectReference Include="..\Config\Config.csproj">
       <Project>{7941d662-f680-489b-972d-f324cbb42a9d}</Project>
       <Name>Config</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>
+      <Name>Watchdog.Protocol</Name>
     </ProjectReference>
     <ProjectReference Include="..\DataOperation\DataOperation.csproj">
       <Project>{fce7fd92-9529-40df-83ab-92b6b4dc469c}</Project>

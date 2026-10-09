@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -25,9 +25,72 @@ namespace AdaptiveControlTests
         {
             try
             {
-                if (args.Length == 1 && args[0].Equals("--v217-stability", StringComparison.OrdinalIgnoreCase))
+                if (args.Length == 1 && args[0] == "--sample-recovery-current")
                 {
-                    _passed += V217StabilityTests.RunAll();
+                    Run("陈旧电流两秒后恢复仍可完成断电确认", StaleOffCurrentRecoversAfterTwoSeconds);
+                    Run("新鲜高电流仍在原一秒窗口失败", FreshOffCurrentKeepsOriginalTimeout);
+                    Run("陈旧电流恢复等待可取消", StaleOffCurrentWaitIsCancelable);
+                    Run("DAQ陈旧时不得把冻结电流判为未清零", StaleOffCurrentIsUnverifiable);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--install-setup")
+                {
+                    IndependentInstallSetupTests.RunAll();
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--summary-selection")
+                {
+                    EpbSummarySelectionTests.RunAll();
+                    return 0;
+                }
+                if (args.Length == 2 && args[0] == "--prepare-independent-monitor")
+                    return MonitorHardwareSmokeTests.PrepareIndependentRecovery(args[1]);
+                if (args.Length == 1 && args[0] == "--arm-independent-monitor")
+                    return MonitorHardwareSmokeTests.ArmIndependentRecovery();
+                if (args.Contains("--independent-registration") || args.Contains("--independent-ticket"))
+                    return MonitorHardwareSmokeTests.RunIndependentRecovery(args);
+                if (args.Length == 2 && args[0] == "--monitor-hardware-smoke")
+                    return MonitorHardwareSmokeTests.Run(args[1]);
+                if (args.Length == 2 && args[0] == "--monitor-mdi-smoke")
+                    return MonitorHardwareSmokeTests.Run(args[1], mdi: true);
+                if (args.Length == 1 && args[0] == "--monitor-plant-unit")
+                    return MonitorHardwareSmokeTests.RunPlantUnit();
+                if (args.Length == 2 && args[0] == "--monitor-trial-simulation")
+                    return MonitorHardwareSmokeTests.Run(args[1], true);
+                if (args.Length == 3 && args[0] == "--independent-worker-child")
+                    return IndependentBoundedWorkerTests.Child(args[1], args[2]);
+                if (args.Length == 1 && args[0] == "--independent-workers")
+                {
+                    var passed = IndependentBoundedWorkerTests.RunAll();
+                    Console.WriteLine($"PASS independent workers {passed}/{passed}");
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--independent-bootstrap")
+                { IndependentBootstrapTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--failed-startup")
+                { WatchdogFailedStartupTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--installation-alarm")
+                { InstallationAlarmTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--independent-project-binding")
+                { IndependentProjectBindingTests.RunAll(); return 0; }
+                if (args.Length == 1 && args[0] == "--independent-executor-runtime")
+                { var count = IndependentExecutorRuntimeTests.RunAll(); Console.WriteLine($"PASS {count}/{count}"); return 0; }
+                if (args.Length == 1 && args[0] == "--startup-stagger-regression")
+                {
+                    OverduePhaseDoesNotCaptureUiContext();
+                    OverdueTwelveChannelReleaseCreatesSafely();
+                    Console.WriteLine("PASS startup stagger 2/2");
+                    return 0;
+                }
+                if (args.Length == 2 && args[0] == "--database-fallback-integration")
+                { DatabaseFallbackTests.RunProcessIntegration(args[1]); return 0; }
+                if (args.Length == 1 && args[0] == "--fallback-safety")
+                {
+                    _passed += FallbackSafetyRegressionTests.RunAll();
+                    _passed += DatabaseFallbackTests.RunAll();
+                    _passed += IndependentRecoveryTransactionTests.RunAll();
+                    _passed += FallbackCoordinationTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -99,12 +162,6 @@ namespace AdaptiveControlTests
                     args[0].Equals("--recovery-production-seam", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryProductionSeamTests.RunAll();
-                    Console.WriteLine($"PASS {_passed}/{_passed}");
-                    return 0;
-                }
-                if (args.Length == 1 && args[0].Equals("--v216-stability", StringComparison.OrdinalIgnoreCase))
-                {
-                    _passed += V216StabilityTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -375,6 +432,10 @@ namespace AdaptiveControlTests
                     args[0].Equals("--formal-slot-barrier", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += FormalBatchSlotCoordinatorTests.RunAll();
+                    _passed += FormalMonotonicScheduleTests.RunAll();
+                    _passed += FormalHydraulicScheduleTests.RunAll();
+                    _passed += FormalRetirementBoundaryTests.RunAll();
+                    _passed += CoordinatedTimerTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -518,6 +579,16 @@ namespace AdaptiveControlTests
                 // The realtime suite measures cooperative scheduling and must run before
                 // persistence stress suites intentionally leave background drain work queued.
                 _passed += DaqRealtimeControlTests.RunAll();
+                _passed += FallbackSafetyRegressionTests.RunAll();
+                _passed += DatabaseFallbackTests.RunAll();
+                _passed += IndependentExecutorRuntimeTests.RunAll();
+                _passed += IndependentRecoveryTransactionTests.RunAll();
+                _passed += IndependentBoundedWorkerTests.RunAll();
+                _passed += IndependentBootstrapTests.RunAll();
+                _passed += WatchdogFailedStartupTests.RunAll();
+                _passed += InstallationAlarmTests.RunAll();
+                _passed += IndependentProjectBindingTests.RunAll();
+                _passed += FallbackCoordinationTests.RunAll();
                 // Recovery coordination owns process-wide owner/preemption registries. Run it
                 // before broader controller suites that intentionally leave terminal evidence.
                 _passed += RecoveryCoordinationTests.RunAll();
@@ -533,6 +604,11 @@ namespace AdaptiveControlTests
                 _passed += StopWatchdogHardeningTests.RunAll();
                 _passed += RecoveryLifecycleIsolationTests.RunAll();
                 _passed += FormalBatchSlotCoordinatorTests.RunAll();
+                _passed += FormalMonotonicScheduleTests.RunAll();
+                _passed += FormalHydraulicScheduleTests.RunAll();
+                _passed += FormalRetirementBoundaryTests.RunAll();
+                _passed += CoordinatedTimerTests.RunAll();
+                _passed += InstantDisplayRefreshTests.RunAll();
                 _passed += FirstRunBootstrapTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
@@ -583,6 +659,9 @@ namespace AdaptiveControlTests
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
                 Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
                 Run("DAQ陈旧时不得把冻结电流判为未清零", StaleOffCurrentIsUnverifiable);
+                Run("陈旧电流两秒后恢复仍可完成断电确认", StaleOffCurrentRecoversAfterTwoSeconds);
+                Run("新鲜高电流仍在原一秒窗口失败", FreshOffCurrentKeepsOriginalTimeout);
+                Run("陈旧电流恢复等待可取消", StaleOffCurrentWaitIsCancelable);
                 Run("反向残余负电流不能误判为断电清零", NegativeOffCurrentDoesNotClear);
                 Run("断电清零阈值适配现场零偏且保持安全上限", OffCurrentThresholdTracksTrustedBaseline);
                 Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
@@ -696,6 +775,7 @@ namespace AdaptiveControlTests
                 Run("迟到旧运行不得登记新运行自动恢复", AutomaticRecoveryRequiresExactRunIdentity);
                 Run("Dev1与Dev2有界队列容量互不影响", DaqBoundedQueuesAreIndependent);
                 Run("12通道并发首次创建运行对象", TwelveChannelsCreateRuntimesConcurrently);
+                Run("过期启动相位不依赖界面消息泵", OverduePhaseDoesNotCaptureUiContext);
                 Run("12通道错过锚点仍保留800ms相位", OverdueTwelveChannelReleaseCreatesSafely);
                 Run("人工停止取消不记为批量启动异常", ManualCancellationIsExpected);
                 Run("同通道并发只创建一个运行对象", SameChannelCreatesExactlyOneRuntime);
@@ -716,6 +796,8 @@ namespace AdaptiveControlTests
                 Run("新项目清零且不改旧项目", NewProjectIsIsolatedAndReset);
                 _passed += EpbRecordNormalizationTests.RunAll();
                 Run("进度摘要默认选择最小已启动通道", InitialSummarySelectsFirstStarted);
+                _passed += EpbSummarySelectionTests.RunAll();
+                _passed += IndependentInstallSetupTests.RunAll();
                 Run("进度摘要完成后切换且全完成保持", SummaryAdvancesAfterCompletion);
                 Run("EPB勾选仅按设置到电源到曲线单向传播", EpbSelectionPropagatesOneWay);
                 Run("DHMS运行时间格式", DhmsFormatting);
@@ -741,8 +823,6 @@ namespace AdaptiveControlTests
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += PswTcpClientTimeoutTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
-                _passed += V216StabilityTests.RunAll();
-                _passed += V217StabilityTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -2567,8 +2647,59 @@ namespace AdaptiveControlTests
                     CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
-            Assert(!result.Cleared && !result.SampleFresh && result.ElapsedMs >= 40,
+            Assert(!result.Cleared && !result.SampleFresh &&
+                   result.ElapsedMs >= 3000 && result.ElapsedMs < 4000,
                 "DAQ持续陈旧时未等待到有界超时，或被误分类为真实电流未清零");
+        }
+
+        private static void StaleOffCurrentRecoversAfterTwoSeconds()
+        {
+            var clock = new Stopwatch();
+            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () =>
+                    {
+                        if (!clock.IsRunning) clock.Start();
+                        return clock.ElapsedMilliseconds < 2200
+                            ? new EpbCycleRunner.OffCurrentSample(0.05, false, 2500)
+                            : new EpbCycleRunner.OffCurrentSample(0.05, true, 5);
+                    },
+                    0.1, 1000, 10, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(result.Cleared && result.SampleFresh &&
+                   result.ElapsedMs >= 2200 && result.ElapsedMs < 3000,
+                $"未等待三秒内的新鲜电流，或将陈旧低电流提前判为清零：" +
+                $"Cleared={result.Cleared} Fresh={result.SampleFresh} " +
+                $"PollElapsed={result.ElapsedMs} SourceElapsed={clock.ElapsedMilliseconds}");
+        }
+
+        private static void FreshOffCurrentKeepsOriginalTimeout()
+        {
+            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => new EpbCycleRunner.OffCurrentSample(0.35, true, 5),
+                    0.1, 1000, 10, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(!result.Cleared && result.SampleFresh &&
+                   result.ElapsedMs >= 1000 && result.ElapsedMs < 2000,
+                "新鲜电流持续未清零被错误延长到采样恢复窗口");
+        }
+
+        private static void StaleOffCurrentWaitIsCancelable()
+        {
+            using var cancellation = new CancellationTokenSource();
+            cancellation.CancelAfter(50);
+            var clock = Stopwatch.StartNew();
+            try
+            {
+                EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                        () => new EpbCycleRunner.OffCurrentSample(0.05, false, 2500),
+                        0.1, 1000, 10, cancellation.Token)
+                    .GetAwaiter().GetResult();
+                throw new InvalidOperationException("取消未终止陈旧电流等待");
+            }
+            catch (OperationCanceledException)
+            {
+                Assert(clock.ElapsedMilliseconds < 1000, "取消被采样恢复窗口阻塞");
+            }
         }
 
         private static void OffCurrentThresholdTracksTrustedBaseline()
@@ -5108,7 +5239,7 @@ namespace AdaptiveControlTests
                        StopSource.ManualUi,
                        persistenceBoundaryConfirmed: true),
                 "写盘器关闭策略没有区分退出和普通停止");
-            Assert(EpbManager.CanReuseStopResultForSource(
+            Assert(!EpbManager.CanReuseStopResultForSource(
                        StopSource.ManualUi,
                        StopSource.ApplicationClosing) &&
                    EpbManager.CanReuseStopResultForSource(
@@ -5117,7 +5248,7 @@ namespace AdaptiveControlTests
                    EpbManager.CanReuseStopResultForSource(
                        StopSource.ApplicationClosing,
                        StopSource.ManualUi),
-                "Manual Stop与关闭未共用物理停止证明；最终写盘器退出由共享收尾任务负责");
+                "Manual Stop的成功结果被ApplicationClosing误复用，最终persistence shutdown会被跳过");
             Assert(EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
                        StopSource.ApplicationClosing) &&
                    EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
@@ -5193,8 +5324,77 @@ namespace AdaptiveControlTests
 
         private static void StopPersistenceBoundaryPolicy()
         {
+            var run = Guid.NewGuid();
+            var cleanup = new RunChainIdentity(run, runEpoch: 1);
+            var child = new RunChainIdentity(Guid.NewGuid(), run, run, 1, 4);
+            var stopId = Guid.NewGuid();
+            var stopped = new ChannelRuntimeStateChangedEvent
+            {
+                RunId = run, RunEpoch = 2, CorrelationId = stopId,
+                State = ChannelRuntimeState.SystemFault
+            };
+            Assert(EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, true, true),
+                "I0014同Run停止事务已接管安全终态仍不能完成旧DAQ取消");
+            Assert(!EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, true, false) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, false, true) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, Guid.NewGuid(), 1, stopId, true, true) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 2, stopId, true, true) &&
+                   !EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, Guid.NewGuid(), true, true),
+                "DAQ旧事务终态误借用未确认断电/活动执行体/其他停止身份");
+            stopped.State = ChannelRuntimeState.Running;
+            Assert(!EpbManager.IsDaqTerminalOwnedByStop(stopped, run, 1, run, 1, stopId, true, true),
+                "DAQ旧事务终态把新Running当作安全停止");
+            Assert(EpbManager.ResolveStartupRollbackSource(false, true, run, 1, cleanup, null) ==
+                   StopSource.SystemFault,
+                "恢复清场取消旧启动栈时误撤销根试验意图");
+            Assert(EpbManager.ResolveStartupRollbackSource(false, true, child.RunId, 4, null, child) ==
+                   StopSource.SystemFault,
+                "I0013重建学习转外部接管后StartupRollback误撤权");
+            Assert(EpbManager.ResolveStartupRollbackSource(false, true, run, 2, cleanup, null) ==
+                   StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupRollbackSource(false, false, run, 1, cleanup, null) ==
+                   StopSource.StartupRollback &&
+                   EpbManager.ResolveStartupRollbackSource(false, true, Guid.NewGuid(), 1, cleanup, null) ==
+                   StopSource.StartupRollback,
+                "启动清场豁免泄漏到串代、其他Run或非取消故障");
+            var digest = "9bd0a6a872072f1b74ecf003bc9e1beb543e48431e161ad4f6d340d3e37a3b0a";
+            Assert(MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(
+                    digest, digest.ToUpperInvariant()),
+                "I0012同一SafetyAgent摘要仅大小写不同被误拒绝");
+            Assert(!MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(
+                    digest, new string('0', 64)) &&
+                   !MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(
+                    new string('z', 64), new string('z', 64)) &&
+                   !MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(null, null) &&
+                   !MTTFTest.Watchdog.Protocol.SupervisorProtocol.Sha256Equals(digest, digest + " "),
+                "安全摘要比较放行真实不同摘要或非法输入");
             Assert(EpbManager.IsStopPersistenceBoundaryClosed(100, 100, 100, 0),
                 "边界、Raw发布、持久化和队列均闭合时被误拒绝");
+            Assert(EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    94228, 98313, true, 98313, 94228, 0,
+                    state: DaqPersistenceState.Paused,
+                    suppressAfterSequence: 94228,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 98313),
+                "I0014已冻结排空并完成尾段的Paused状态仍阻塞停止");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
+                    94228, 98313, 94228, 0, DaqPersistenceState.Paused),
+                "停止闭合不得放宽正常运行恢复资格");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    94228, 98313, true, 98313, 94227, 0,
+                    state: DaqPersistenceState.Paused,
+                    suppressAfterSequence: 94228,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 98313),
+                "Paused停止边界遗漏尚未落盘的冻结前缀");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    94228, 98313, true, 98313, 94228, 0,
+                    state: DaqPersistenceState.Paused,
+                    suppressAfterSequence: 94228,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 98313,
+                    inFlightSequence: 94228),
+                "Paused停止边界忽略仍在写入的批次");
             Assert(EpbManager.IsFrozenStopPersistenceBoundaryClosed(
                     100, 100, true, 100, 100, 0),
                 "DAQ停止后同一冻结边界的Raw/SQLite前缀被误拒绝");
@@ -5349,6 +5549,44 @@ namespace AdaptiveControlTests
             Assert(factoryCount == 1, "同一通道并发进入时工厂执行次数不为1");
             Assert(results.All(x => ReferenceEquals(first, x.Result)),
                 "同一通道并发进入返回了不同实例");
+        }
+
+        private sealed class NonPumpingStaggerContext : SynchronizationContext
+        {
+            public int Posts;
+            public override void Post(SendOrPostCallback callback, object state)
+            {
+                Interlocked.Increment(ref Posts);
+            }
+        }
+
+        private static IEnumerable<int> EnumerateAfterAnchorExpires()
+        {
+            Thread.Sleep(20);
+            yield return 1;
+        }
+
+        private static void OverduePhaseDoesNotCaptureUiContext()
+        {
+            var context = new NonPumpingStaggerContext();
+            var previous = SynchronizationContext.Current;
+            var plan = ElectricalStaggerPlanner.Build(new[] { 1 },
+                new[] { NewElectricalGroup(1, 800, 1) }, 15000);
+            var started = 0;
+            Task task;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(context);
+                task = ElectricalStaggerExecutor.RunAsync(EnumerateAfterAnchorExpires(), plan,
+                    DateTime.UtcNow.AddSeconds(-10), (channel, token) =>
+                    {
+                        Interlocked.Increment(ref started);
+                        return Task.CompletedTask;
+                    }, CancellationToken.None);
+            }
+            finally { SynchronizationContext.SetSynchronizationContext(previous); }
+            Assert(task.Wait(5000), "过期相位等待了不泵消息的界面线程");
+            Assert(started == 1 && context.Posts == 0, "启动重复或捕获了界面上下文");
         }
 
         private static void OverdueTwelveChannelReleaseCreatesSafely()
@@ -6558,6 +6796,8 @@ namespace AdaptiveControlTests
             public Task<bool> LearnOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)
                 => Task.FromResult(false);
             public Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, DateTime deadlineUtc, CancellationToken token)
+                => Task.FromResult(false);
+            public Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, Func<double> remainingMilliseconds, CancellationToken token)
                 => Task.FromResult(false);
             public void BeginLearnAggregation() { }
             public Task<EpbCycleRunner.LearnSample> LearnOneAlignedCoreAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)

@@ -826,7 +826,7 @@ namespace AdaptiveControlTests
             throw new InvalidOperationException("预期异常未抛出：" + typeof(T).Name);
         }
 
-        private sealed class FakePswClient : IPswClient
+        internal sealed class FakePswClient : IPswClient
         {
             public FakePswClient(int id)
             {

@@ -1,8 +1,10 @@
-﻿using System;
-using System.Globalization;
+using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Web.Script.Serialization;
 
 namespace MTTFTest.Watchdog.Protocol
@@ -321,7 +323,7 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class WatchdogSafetyHandoffReceipt
     {
-        public int SchemaVersion { get; set; } = SupervisorProtocol.SchemaVersion;
+        public int SchemaVersion { get; set; } = 5;
         public string SessionId { get; set; } = string.Empty;
         public long SessionGeneration { get; set; }
         public long SessionLease { get; set; }
@@ -334,16 +336,7 @@ namespace MTTFTest.Watchdog.Protocol
         public WatchdogSafetyHandoffState State { get; set; }
         public WatchdogSafetyStage Stage { get; set; }
         public string PreviousStageReceiptSha256 { get; set; } = string.Empty;
-        // .NET Framework's R formatting can move a Double by one bit on readback.
-        // V217 persists invariant G17 text, avoiding both R and JSON numeric conversion.
-        // Control code keeps its numeric API; the receipt's strict hash remains enforced.
-        [ScriptIgnore]
         public double StageMonotonicElapsedMs { get; set; }
-        public string StageMonotonicElapsedMsText
-        {
-            get => StageMonotonicElapsedMs.ToString("G17", CultureInfo.InvariantCulture);
-            set => StageMonotonicElapsedMs = double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture);
-        }
         public long StageUtcTicks { get; set; }
         public bool MotorsOff { get; set; }
         public bool PowerOff { get; set; }
@@ -391,9 +384,8 @@ namespace MTTFTest.Watchdog.Protocol
             Guid parsed;
             var common = (SchemaVersion == 1 || SchemaVersion == 2 ||
                           SchemaVersion == 3 || SchemaVersion == 4 ||
-                          SchemaVersion == 5 || SchemaVersion == 6 || SchemaVersion == 7) &&
-                   !double.IsNaN(StageMonotonicElapsedMs) && !double.IsInfinity(StageMonotonicElapsedMs) &&
-                   StageMonotonicElapsedMs >= 0 && Revision > 0 && SessionGeneration > 0 &&
+                          SchemaVersion == 5) &&
+                   Revision > 0 && SessionGeneration > 0 &&
                    SessionLease > 0 && !string.IsNullOrWhiteSpace(SessionId) &&
                    string.Equals(SessionId, sessionId, StringComparison.Ordinal) &&
                    Guid.TryParseExact(HandoffId ?? string.Empty, "N", out parsed) &&
@@ -642,7 +634,7 @@ namespace MTTFTest.Watchdog.Protocol
         }
 
         /// <summary>
-        /// schema 6 唯一允许对终态回执进行的修改：监督服务在精确验证旧 PID、
+        /// schema 5 唯一允许对终态回执进行的修改：监督服务在精确验证旧 PID、
         /// 启动时间及 permit 后，单调补齐退出与资源释放证据。任何安全位、身份、
         /// 配置或 permit 回退都会被拒绝。
         /// </summary>
@@ -653,7 +645,7 @@ namespace MTTFTest.Watchdog.Protocol
             return previous.State == WatchdogSafetyHandoffState.Completed &&
                    current.State == WatchdogSafetyHandoffState.Completed &&
                    current.Stage == previous.Stage &&
-                   current.SchemaVersion >= 6 &&
+                   current.SchemaVersion == 5 &&
                    current.SchemaVersion >= previous.SchemaVersion &&
                    HasSameImmutableHandoffIdentity(previous, current) &&
                    previous.MotorsOff == current.MotorsOff &&
@@ -738,10 +730,10 @@ namespace MTTFTest.Watchdog.Protocol
             WatchdogSafetyHandoffReceipt current)
         {
             return (previous.SchemaVersion == 3 || previous.SchemaVersion == 4 ||
-                    previous.SchemaVersion == 5 || previous.SchemaVersion == 6 || previous.SchemaVersion == 7) &&
+                    previous.SchemaVersion == 5) &&
                    previous.IsSafetyCompleted &&
                    (current.SchemaVersion == 3 || current.SchemaVersion == 4 ||
-                    current.SchemaVersion == 5 || current.SchemaVersion == 6 || current.SchemaVersion == 7) &&
+                    current.SchemaVersion == 5) &&
                    current.RelaunchDisposition ==
                        WatchdogRelaunchDisposition.PreserveApprovedPermit &&
                    current.RelaunchPermitGeneration >
@@ -791,6 +783,54 @@ namespace MTTFTest.Watchdog.Protocol
         {
             if (value == null) throw new ArgumentNullException(nameof(value));
             if (!validator(value)) throw new InvalidOperationException("Watchdog safety receipt is invalid.");
+            // 文件原子替换不等于读-校验-写原子。不同进程/会话必须共享同一门，
+            // 否则两个相同Revision都可通过校验并互相覆盖安全证据。
+            var name = "Global\\MTTFTest.SafetyReceipt." + SupervisorProtocol.ComputeTextSha256(
+                typeof(T).FullName + ":" + sessionSelector(value));
+            var security = new MutexSecurity();
+            security.AddAccessRule(new MutexAccessRule(
+                new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+                MutexRights.Synchronize | MutexRights.Modify, AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                MutexRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                MutexRights.FullControl, AccessControlType.Allow));
+            Mutex gate;
+            try { gate = Mutex.OpenExisting(name, MutexRights.Synchronize | MutexRights.Modify); }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                try { gate = new Mutex(false, name, out _, security); }
+                catch (UnauthorizedAccessException)
+                {
+                    // 另一个账户可能刚刚创建；打开时只申请等待/释放所需权限。
+                    gate = Mutex.OpenExisting(name, MutexRights.Synchronize | MutexRights.Modify);
+                }
+            }
+            using (gate)
+            {
+                var acquired = false;
+                try
+                {
+                    try { acquired = gate.WaitOne(TimeSpan.FromSeconds(5)); }
+                    catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired) throw new TimeoutException("SafetyReceiptWriteGateTimeout");
+                    return WriteThroughCore(projectDirectory, value, sessionSelector,
+                        generationSelector, leaseSelector, revisionSelector, localPath,
+                        projectPath, stamp, validator, transitionValidator);
+                }
+                finally { if (acquired) gate.ReleaseMutex(); }
+            }
+        }
+
+        private static T WriteThroughCore<T>(string projectDirectory, T value,
+            Func<T, string> sessionSelector, Func<T, long> generationSelector,
+            Func<T, long> leaseSelector, Func<T, long> revisionSelector,
+            Func<string, string> localPath, Func<string, string, string> projectPath,
+            Action<T> stamp, Func<T, bool> validator,
+            Func<T, T, bool> transitionValidator) where T : class
+        {
             var sessionId = sessionSelector(value);
             T previous;
             if (TryRead(projectDirectory, sessionId, localPath, projectPath,
@@ -801,10 +841,15 @@ namespace MTTFTest.Watchdog.Protocol
                     revisionSelector(value) < revisionSelector(previous) ||
                     transitionValidator?.Invoke(previous, value) == false)
                     throw new InvalidOperationException("Watchdog safety receipt revision or identity regressed.");
-                if (revisionSelector(value) == revisionSelector(previous) &&
-                    !string.Equals(Serializer.Serialize(previous), Serializer.Serialize(value),
-                        StringComparison.Ordinal))
-                    throw new InvalidOperationException("Watchdog safety receipt revision was reused with different content.");
+                if (revisionSelector(value) == revisionSelector(previous))
+                {
+                    if (!string.Equals(Serializer.Serialize(previous), Serializer.Serialize(value),
+                            StringComparison.Ordinal))
+                        throw new InvalidOperationException("Watchdog safety receipt revision was reused with different content.");
+                    // A replay is a read of the committed revision, not a new
+                    // timestamp/content at that same revision.
+                    return previous;
+                }
             }
             stamp(value);
             var bytes = Utf8.GetBytes(Serializer.Serialize(value));

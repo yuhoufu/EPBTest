@@ -115,6 +115,8 @@ namespace AdaptiveControlTests
         {
             var passed = 0;
             var failures = new List<string>();
+            Run("已完成停止事务允许后续独立请求且拒绝旧请求重放", CompletedPipeRequestAllowsNext,
+                ref passed, failures);
             Run("永久FailClosed不产生重试代次", PermanentFailClosedHasNoRetry,
                 ref passed, failures);
             Run("双源并发reservation冲突最终收敛", DualSourceReservationCollisionConverges,
@@ -198,6 +200,28 @@ namespace AdaptiveControlTests
                 Assert(abandoned.TestAbandoned && !abandoned.SafetyEvidenceResolved &&
                        !abandoned.IsTerminal,
                     "fixture Abandon错误复用生产terminal/evidence receipt");
+            }
+        }
+
+        private static void CompletedPipeRequestAllowsNext()
+        {
+            using (var target = new ImmediatePostTarget())
+            using (var session = new RuntimeCallbackPipelineTestSession())
+            {
+                var targetLease = session.BindTarget("successive-stop", target);
+                var calls = 0;
+                var handler = session.RegisterHandler(targetLease, "successive-stop-handler",
+                    _ => { Interlocked.Increment(ref calls); return Task.CompletedTask; });
+                Assert(handler.Accepted && session.Attach(), "successive request pipeline not ready");
+                Assert(session.PublishPipe("FirstRepair", "first-repair"), "first repair rejected");
+                Assert(WaitUntil(() => calls == 1 && session.CaptureCoordinator().Registrations.Count > 0 &&
+                    session.CaptureCoordinator().Registrations.All(r => r.CompletionTerminal), 3000), "first repair not completed");
+                Assert(session.PublishPipe("SecondRepair", "second-repair"), "later legitimate repair poisoned ingress");
+                Assert(WaitUntil(() => calls == 2 && session.CaptureCoordinator().Registrations.All(r => r.CompletionTerminal), 3000),
+                    "second repair not delivered");
+                Assert(!session.PublishPipe("FirstRepair", "first-repair"), "completed old request replayed");
+                Assert(!session.Capture().Ingress.FailClosed && calls == 2, "old replay poisoned new transaction");
+                Assert(session.Close().AllResourcesReleased, "successive request resources retained");
             }
         }
 

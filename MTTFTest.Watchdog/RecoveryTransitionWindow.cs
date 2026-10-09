@@ -76,6 +76,11 @@ namespace MTTFTest.Watchdog
             Invoke(form => form.Hide());
         }
 
+        public void ReportMuteResult(bool accepted)
+        {
+            Invoke(form => form.ReportMuteResult(accepted));
+        }
+
         public void BeginTransition()
         {
             Interlocked.Exchange(ref _hiddenByOperator, 0);
@@ -377,6 +382,13 @@ namespace MTTFTest.Watchdog
                 _muteP0Buzzer.Cursor = Cursors.Hand;
                 _muteP0Buzzer.Text = "仅静音蜂鸣器（故障灯与锁存保持）";
                 SetPreserveMainProcessPreferred(false);
+            }
+
+            public void ReportMuteResult(bool accepted)
+            {
+                _muteP0Buzzer.Enabled = !accepted;
+                _muteP0Buzzer.Cursor = Cursors.Hand;
+                _muteP0Buzzer.Text = accepted ? "静音已保存（故障灯与锁存保留）" : "静音未确认，点击重试";
             }
 
             public void CloseForShutdown()

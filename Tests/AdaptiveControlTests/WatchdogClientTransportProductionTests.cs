@@ -118,6 +118,10 @@ namespace AdaptiveControlTests
         internal static int RunPublicReconnectLifecycleOnly()
         {
             var passed = 0;
+            Run("生产Engine Attached首心跳遇Closing保留精确管道发送StopCompleted",
+                ClosingDuringFirstHeartbeatKeepsExactPipe, ref passed);
+            Run("生产Engine Closing期间首心跳真实写失败仍关闭管道",
+                ClosingDuringFirstHeartbeatWriteFailureClosesPipe, ref passed);
             Run("生产Engine public同Session真实断链/单一reconnect/同authority",
                 SameSessionTransportFailureUsesSingleReconnect, ref passed);
             Run("生产Engine public重连耗尽attempt上限/一次SafeDegraded",
@@ -131,6 +135,63 @@ namespace AdaptiveControlTests
             Run("生产Engine精确会话断管后返回ExactSessionDetached且ABA仍拒绝",
                 ExactSessionDetachedIsDistinctFromIdentityMismatch, ref passed);
             return passed;
+        }
+
+        private static void ClosingDuringFirstHeartbeatKeepsExactPipe()
+        {
+            using (var harness = TestHarness.Create(LaunchMode.Success))
+            {
+                WatchdogClientTransportSnapshot attached = null;
+                var capture = harness.Callbacks.CaptureHeartbeat;
+                harness.Callbacks.CaptureHeartbeat = () =>
+                {
+                    attached = harness.Snapshot();
+                    Assert(attached.IsAttached && attached.ActiveConnectionGeneration > 0,
+                        "首心跳未在真实Attached连接上执行");
+                    Assert(harness.Engine.TryMarkSessionClosingExact(attached.SessionId,
+                               attached.SessionGeneration, attached.ActiveSessionLease) ==
+                           ExactSessionClosingResult.Marked, "首心跳期间精确Closing失败");
+                    return capture();
+                };
+                harness.Engine.BeginSession(harness.Options, harness.Callbacks);
+                Assert(harness.Engine.StartAsync().Wait(15000), "Closing首心跳启动任务未收口");
+                var closing = harness.Snapshot();
+                Assert(attached != null && closing.IsClosing && !closing.TransportFailClosed &&
+                       closing.ActiveConnectionGeneration == attached.ActiveConnectionGeneration &&
+                       closing.ActiveSessionLease == attached.ActiveSessionLease &&
+                       closing.AuthorityProcessId == attached.AuthorityProcessId,
+                    "正常Closing取消首心跳却拆除了当前精确连接: " + harness.ServerStats);
+                const string reason = "ClosingFirstHeartbeatStopCompleted";
+                Assert(harness.Engine.TrySendForSession(new WatchdogMessage
+                {
+                    Type = WatchdogMessageType.StopCompleted, Reason = reason
+                }, attached.SessionId, attached.SessionGeneration, attached.ActiveSessionLease),
+                    "Closing后精确StopCompleted无法发送");
+                Assert(WaitUntil(() => harness.CountReceivedReason(reason) == 1, 3000),
+                    "服务端未实际收到Closing后的StopCompleted");
+                Assert(harness.Engine.ShutdownWithReceipt().AllResourcesReleased,
+                    "Closing首心跳会话关闭后仍有资源残留");
+            }
+        }
+
+        private static void ClosingDuringFirstHeartbeatWriteFailureClosesPipe()
+        {
+            var writer = new FailFirstHeartbeatWritePort();
+            using (var harness = TestHarness.Create(LaunchMode.Success, writer))
+            {
+                writer.BeforeFailure = () =>
+                {
+                    var attached = harness.Snapshot();
+                    Assert(harness.Engine.TryMarkSessionClosingExact(attached.SessionId,
+                               attached.SessionGeneration, attached.ActiveSessionLease) ==
+                           ExactSessionClosingResult.Marked, "真实写失败前无法进入Closing");
+                };
+                harness.Engine.BeginSession(harness.Options, harness.Callbacks);
+                var failure = WaitTaskFailure(harness.Engine.StartAsync(), 15000) as WatchdogConnectException;
+                Assert(failure?.Kind == WatchdogConnectFailureKind.TransportFailure &&
+                       harness.Snapshot().ActiveConnectionGeneration == 0,
+                    "Closing误将真实首心跳写入失败当作正常取消并保留管道: " + failure);
+            }
         }
 
         private static void ExactSessionDetachedIsDistinctFromIdentityMismatch()
@@ -3402,6 +3463,24 @@ namespace AdaptiveControlTests
                 return delay > 0
                     ? Task.Delay(delay)
                     : writer.WriteLineAsync(payload);
+            }
+        }
+
+        private sealed class FailFirstHeartbeatWritePort : IWatchdogPipeWritePort
+        {
+            private int _failed;
+            internal Action BeforeFailure { get; set; }
+
+            public Task WriteLineAsync(StreamWriter writer, string payload)
+            {
+                if (WatchdogWireFrame.TryDecode(payload, out var json, out _) &&
+                    WatchdogProtocol.Deserialize(json)?.Type == WatchdogMessageType.Heartbeat &&
+                    Interlocked.Exchange(ref _failed, 1) == 0)
+                {
+                    BeforeFailure?.Invoke();
+                    throw new IOException("ControlledFirstHeartbeatWriteFailure");
+                }
+                return writer.WriteLineAsync(payload);
             }
         }
 

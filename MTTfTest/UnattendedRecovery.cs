@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -50,7 +50,6 @@ namespace MTEmbTest
         public string LastRecoveryLoadSha256 { get; set; }
         public bool Armed { get; set; }
         public bool RestartPending { get; set; }
-        public string NextRetryUtc { get; set; }
         public bool GracefulPaused { get; set; }
         public string PausedUtc { get; set; }
         public string AdaptiveProfilesSha256 { get; set; }
@@ -408,6 +407,29 @@ namespace MTEmbTest
             }
         }
 
+        internal static bool TryRegisterIndependentRestart(GlobalConfig config, string requestId,
+            string runId, out RecoveryStartupIntent intent, out string error)
+        {
+            lock (Sync)
+            {
+                intent = null;
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null || !checkpoint.Armed || IsRunRevokedInMemory(runId) ||
+                    checkpoint.RunId != runId || config?.Test == null ||
+                    checkpoint.TestName != config.Test.TestName ||
+                    !string.Equals(checkpoint.StoreDir, config.Test.StoreDir, StringComparison.OrdinalIgnoreCase) ||
+                    checkpoint.ConfigurationSha256 != ComputeConfigurationHash(config) ||
+                    checkpoint.ExecutableSha256 != ComputeFileHash(GetExecutablePath()))
+                { error = "IndependentRestartAuthorizationChanged"; return false; }
+                // Only called after this request's fresh StopAll and disk drain.
+                // Refresh the authorization audit timestamp, never any count.
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                checkpoint.LastReason = "IndependentFallbackFreshSafetyAndDrain:" + requestId;
+                SaveUnsafe(checkpoint);
+                return TryRegisterRestart(requestId, runId, out intent, out error);
+            }
+        }
+
         internal static bool TryRegisterRestart(
             string correlationId,
             string expectedRunId,
@@ -447,10 +469,11 @@ namespace MTEmbTest
                 }
 
                 var now = DateTime.UtcNow;
-                if (!TryParseUtc(checkpoint.UpdatedUtc, out var lastCheckpointUtc))
+                if (!TryParseUtc(checkpoint.UpdatedUtc, out var lastCheckpointUtc) ||
+                    now - lastCheckpointUtc > TimeSpan.FromMinutes(5))
                 {
                     DisarmUnsafe(checkpoint, "CheckpointExpiredBeforeRestart");
-                    error = "检查点时间格式无效，拒绝自动续测。";
+                    error = "检查点已超过5分钟，拒绝自动续测。";
                     return false;
                 }
                 if (string.Equals(checkpoint.ConfigurationSha256, "unavailable", StringComparison.OrdinalIgnoreCase) ||
@@ -466,19 +489,17 @@ namespace MTEmbTest
                     .ToList();
                 if (checkpoint.RestartHistoryUtc.Count >= EpbManager.UnattendedProcessRestartBudget)
                 {
+                    checkpoint.Armed = false;
                     checkpoint.RestartPending = false;
-                    var retryAt = ContinuousRecoveryPolicy.NextAllowedUtc(checkpoint.RestartHistoryUtc
-                        .Select(value => DateTime.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime()), now);
-                    checkpoint.NextRetryUtc = retryAt.ToString("O", CultureInfo.InvariantCulture);
-                    checkpoint.LastReason = "RecoveryCoolingDown";
+                    checkpoint.LastReason = "RestartBudgetExhausted";
+                    checkpoint.UpdatedUtc = now.ToString("O", CultureInfo.InvariantCulture);
                     SaveUnsafe(checkpoint);
-                    error = "RecoveryCoolingDown:" + checkpoint.NextRetryUtc;
+                    error = $"10分钟内已执行{EpbManager.UnattendedProcessRestartBudget}次自重启，重启预算耗尽。";
                     return false;
                 }
 
                 var nonce = Guid.NewGuid().ToString("N");
                 checkpoint.RestartHistoryUtc.Add(now.ToString("O", CultureInfo.InvariantCulture));
-                checkpoint.NextRetryUtc = null;
                 checkpoint.RestartPending = true;
                 checkpoint.RecoveryNonce = nonce;
                 checkpoint.LastRecoveryNonceSha256 = ComputeTextHash(nonce);
@@ -638,10 +659,11 @@ namespace MTEmbTest
                     error = "恢复检查点缺少V5根RunId，拒绝自动续测。";
                     return false;
                 }
-                if (!TryParseUtc(current.UpdatedUtc, out var updatedUtc))
+                if (!TryParseUtc(current.UpdatedUtc, out var updatedUtc) ||
+                    DateTime.UtcNow - updatedUtc > TimeSpan.FromMinutes(5))
                 {
                     DisarmUnsafe(current, "CheckpointExpired");
-                    error = "检查点时间格式无效。";
+                    error = "检查点已超过5分钟。";
                     return false;
                 }
                 if (config?.Test == null ||
@@ -1027,31 +1049,79 @@ namespace MTEmbTest
             }
         }
 
+        internal static UnattendedRunCheckpoint PrepareIndependentCheckpoint(GlobalConfig config, IndependentRecoveryStartup startup)
+        {
+            var intent = startup.ValidateConfiguration(config);
+            var selected = intent.RecoveryChannels();
+            // Called after monitor initialization has reconciled mechanical
+            // completion facts from the committed project database.
+            var checkpoint = new UnattendedRunCheckpoint
+            {
+                SchemaVersion = CurrentSchemaVersion, Armed = true, RecoveryChainPendingStart = true,
+                StoreDir = config.Test.StoreDir, TestName = config.Test.TestName,
+                SelectedChannels = selected, LearnCycles = Math.Max(5, config.Test.LearnCycles),
+                ConfigurationSha256 = ComputeConfigurationHash(config),
+                ExecutableSha256 = startup.Registration.ExecutableSha256,
+                BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString(),
+                RootRunId = startup.RootRunId, ParentRunId = startup.ParentRunId, RunId = startup.ParentRunId,
+                RunEpoch = startup.RunEpoch - 1, RestartGeneration = checked((int)startup.Generation - 1),
+                LastReason = "IndependentTicketConsumed", UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                RemainingFormalCycles = selected.ToDictionary(channel => channel.ToString(CultureInfo.InvariantCulture),
+                    channel => config.Test.GetEpbRecord(channel).GetRemainingMechanicalCycles(config.Test.TestTarget))
+            };
+            lock (Sync)
+            {
+                startup.ValidateCurrent();
+                SaveUnsafe(checkpoint);
+            }
+            return checkpoint;
+        }
+
         internal static string ComputeConfigurationHash(GlobalConfig config)
+            => ComputeConfigurationHashCore(config, false);
+
+        // Independent recovery protects channel selection in its durable run
+        // intent. Its immutable configuration hash must therefore not reject an
+        // authorized checkbox change. Targets, limits and other fields remain.
+        internal static string ComputeIndependentConfigurationHash(GlobalConfig config)
+            => ComputeConfigurationHashCore(config, true);
+
+        private static string ComputeConfigurationHashCore(GlobalConfig config, bool independentSelection)
         {
             try
             {
                 var candidates = new List<string>();
                 var configDirectory = RuntimeConfigPaths.Directory;
-                if (Directory.Exists(configDirectory))
-                    candidates.AddRange(Directory.GetFiles(configDirectory, "*.xml", SearchOption.TopDirectoryOnly));
+                string projectConfig = null;
                 if (config?.Test != null)
+                    projectConfig = ConfigLoader.GetProjectTestConfigPath(config.Test.StoreDir, config.Test.TestName);
+                if (independentSelection && (string.IsNullOrWhiteSpace(projectConfig) || !File.Exists(projectConfig)))
+                    return "unavailable";
+                if (Directory.Exists(configDirectory))
                 {
-                    var projectConfig = ConfigLoader.GetProjectTestConfigPath(
-                        config.Test.StoreDir,
-                        config.Test.TestName);
-                    if (File.Exists(projectConfig)) candidates.Add(projectConfig);
+                    // The selected project's TestConfig is authoritative. The runtime
+                    // TestConfig is a last-used template; UIConfig only remembers views.
+                    candidates.AddRange(Directory.GetFiles(configDirectory, "*.xml", SearchOption.TopDirectoryOnly)
+                        .Where(path => !independentSelection ||
+                            (!string.Equals(Path.GetFileName(path), "UIConfig.xml", StringComparison.OrdinalIgnoreCase) &&
+                             !string.Equals(Path.GetFileName(path), "TestConfig.xml", StringComparison.OrdinalIgnoreCase))));
                 }
+                if (File.Exists(projectConfig)) candidates.Add(projectConfig);
 
                 using (var sha = SHA256.Create())
                 using (var buffer = new MemoryStream())
                 {
+                    if (independentSelection)
+                    {
+                        var profile = Encoding.UTF8.GetBytes(IndependentExecutorRegistration.CurrentConfigurationHashProfile + "\n");
+                        buffer.Write(profile, 0, profile.Length);
+                    }
                     foreach (var path in candidates.Distinct(StringComparer.OrdinalIgnoreCase)
                                  .OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
                     {
                         var name = Encoding.UTF8.GetBytes(Path.GetFileName(path).ToLowerInvariant() + "\n");
                         buffer.Write(name, 0, name.Length);
-                        var content = ReadStableConfiguration(path);
+                        var content = ReadStableConfiguration(path, independentSelection);
                         buffer.Write(content, 0, content.Length);
                         buffer.WriteByte((byte)'\n');
                     }
@@ -1065,7 +1135,7 @@ namespace MTEmbTest
             }
         }
 
-        private static byte[] ReadStableConfiguration(string path)
+        internal static byte[] ReadStableConfiguration(string path, bool independentSelection = false)
         {
             try
             {
@@ -1081,12 +1151,23 @@ namespace MTEmbTest
                     "//EpbRecords/Record/RunTime | " +
                     "//EpbRecords/Record/RunCount | " +
                     "//EpbRecords/Record/MechanicalCycleCount | " +
-                    "//EpbRecords/Record/ConsecutivePeriodOverrunCount | " +
-                    "//EpbRecords/Record/LastPeriodOverrunUtc | " +
                     "//EpbRecords/Record/Status");
                 if (runtimeFields != null)
                     foreach (XmlNode node in runtimeFields.Cast<XmlNode>().ToArray())
                         node.ParentNode?.RemoveChild(node);
+                if (independentSelection)
+                {
+                    var fields = new[] { "Enabled", "PermanentAlarmLatched", "PermanentAlarmCode",
+                        "PermanentAlarmReason", "PermanentAlarmUtc", "PermanentAlarmCorrelationId",
+                        "ConsecutivePeriodOverrunCount", "LastPeriodOverrunUtc" };
+                    var selection = document.SelectNodes(string.Join(" | ", fields.SelectMany(field => new[] {
+                        "//EpbRecords/Record/" + field, "//EpbRecords/Record/@" + field })));
+                    foreach (XmlNode node in selection.Cast<XmlNode>().ToArray())
+                    {
+                        if (node is XmlAttribute attribute) attribute.OwnerElement.RemoveAttributeNode(attribute);
+                        else node.ParentNode?.RemoveChild(node);
+                    }
+                }
                 return Encoding.UTF8.GetBytes(document.OuterXml);
             }
             catch
@@ -1389,9 +1470,9 @@ namespace MTEmbTest
                 "DaqWarnMs={0:F0};DaqSuspectMs={1:F0};DaqTripMs={2:F0};" +
                 "FormalAdmissionMs={3};OrphanGraceMs={4};NoProgressMs={5};MaxTotalMs={6};" +
                 "PowerOffProofA={7:F3};PowerOffProofMaxAgeMs={8}",
-                ReadDouble("DaqLivenessWarnThresholdMs", 75, 20, 200),
-                ReadDouble("DaqLivenessSuspectThresholdMs", 100, 50, 249),
-                ReadDouble("DaqLivenessTripThresholdMs", 250, 100, 5000),
+                ReadDouble("DaqLivenessWarnThresholdMs", 250, 100, 5000),
+                ReadDouble("DaqLivenessSuspectThresholdMs", 1500, 200, 30000),
+                ReadDouble("DaqLivenessTripThresholdMs", 5000, 300, 300000),
                 ReadInt("GlobalFormalSlotAdmissionWindowMs", 300, 200, 500),
                 ReadInt("RecoveryOrphanGraceMs", 10000, 10000, 60000),
                 ReadInt("InProcessRecoveryNoProgressMs", 60000, 10000, 300000),
@@ -1483,6 +1564,7 @@ namespace MTEmbTest
         private static GlobalConfig _config;
         private static Func<Task> _quiesceAndFlush;
         private static CancellationTokenSource _restartSequenceCancellation;
+        private static EventWaitHandle _activeHandoffRevocation;
         private static int _restartStarted;
         private static int _inProcessRecoveryStarted;
         private static int _recoveryProcessMode;
@@ -1616,11 +1698,14 @@ namespace MTEmbTest
         private static void CancelRestartRetrySequence()
         {
             CancellationTokenSource cancellation;
+            EventWaitHandle handoffRevocation;
             lock (Sync)
             {
                 cancellation = _restartSequenceCancellation;
+                handoffRevocation = _activeHandoffRevocation;
             }
             try { cancellation?.Cancel(); } catch (ObjectDisposedException) { }
+            try { handoffRevocation?.Set(); } catch (ObjectDisposedException) { }
         }
 
         internal static void RequestFatalRestart(string source, Exception exception)
@@ -2268,17 +2353,6 @@ namespace MTEmbTest
                             out intent,
                             out var registrationError))
                     {
-                        if ((registrationError ?? string.Empty).StartsWith("RecoveryCoolingDown:", StringComparison.Ordinal))
-                        {
-                            await SafeStopOnlyAsync("RecoveryCoolingDown", correlationId).ConfigureAwait(false);
-                            var retryCheckpoint = UnattendedRunCheckpointStore.Load();
-                            var retryAt = DateTime.TryParse(retryCheckpoint?.NextRetryUtc,
-                                CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsedRetry)
-                                ? parsedRetry.ToUniversalTime() : DateTime.UtcNow.AddSeconds(30);
-                            await Task.Delay((int)Math.Min(30000, Math.Max(100, (retryAt - DateTime.UtcNow).TotalMilliseconds)),
-                                sequenceCancellation.Token).ConfigureAwait(false);
-                            continue;
-                        }
                         if (string.Equals(registrationError, "RunIdMismatch", StringComparison.Ordinal))
                         {
                             ProjectLogHub.Write(
@@ -2578,16 +2652,74 @@ namespace MTEmbTest
 
         private static void StartRecoveryProcess(RecoveryStartupIntent intent)
         {
-            if (intent == null)
-                throw new ArgumentNullException(nameof(intent));
-            // V2.15 禁止主程序自行 Process.Start 另一个主程序。安全检查点已提交后
-            // 这里只提交“退出并由 Supervisor 接管”的意图；外部 Watchdog 在精确观察
-            // PID/StartTicks 终结、执行 schema 6 断能事务后签发唯一的新 capability。
-            ProjectLogHub.Write(
-                ProjectLogLevel.Warning,
-                $"SupervisorOwnedRelaunchRequested Nonce={intent.Nonce} " +
-                $"Parent={intent.ParentPid}/{intent.ParentStartUtcTicks}",
-                "无人值守恢复");
+            var executable = Process.GetCurrentProcess().MainModule?.FileName ??
+                             Assembly.GetEntryAssembly()?.Location;
+            var arguments = string.Format(
+                CultureInfo.InvariantCulture,
+                "--epb-recover {0} --wait-parent {1} --parent-start-ticks {2}",
+                intent.Nonce,
+                intent.ParentPid,
+                intent.ParentStartUtcTicks);
+            var revocation = new EventWaitHandle(
+                false,
+                EventResetMode.ManualReset,
+                RecoveryProcessBootstrap.GetRevocationEventName(intent.Nonce));
+            using (var attached = new EventWaitHandle(
+                       false,
+                       EventResetMode.ManualReset,
+                       RecoveryProcessBootstrap.GetAttachedEventName(intent.Nonce)))
+            {
+                EventWaitHandle previous;
+                lock (Sync)
+                {
+                    previous = _activeHandoffRevocation;
+                    _activeHandoffRevocation = revocation;
+                }
+                try { previous?.Dispose(); } catch { }
+
+                Process child = null;
+                var attachedToRevocationGate = false;
+                try
+                {
+                    IndependentInstallationBinding.RequireLegacyLaunchAllowed(executable);
+                    child = IndependentInstallationBinding.StartLegacyProcess(new ProcessStartInfo
+                    {
+                        FileName = executable,
+                        Arguments = arguments,
+                        WorkingDirectory = Environment.CurrentDirectory,
+                        UseShellExecute = false,
+                        CreateNoWindow = false
+                    });
+                    if (child == null)
+                        throw new InvalidOperationException("恢复子进程创建未返回进程句柄。");
+                    if (!attached.WaitOne(5000))
+                        throw new TimeoutException("恢复子进程未在5秒内接管跨进程撤权门。");
+                    if (revocation.WaitOne(0))
+                        throw new OperationCanceledException("恢复子进程交接期间运行授权已撤销。");
+                    attachedToRevocationGate = true;
+                }
+                finally
+                {
+                    if (!attachedToRevocationGate)
+                    {
+                        lock (Sync)
+                        {
+                            if (ReferenceEquals(_activeHandoffRevocation, revocation))
+                                _activeHandoffRevocation = null;
+                        }
+                        try { revocation.Dispose(); } catch { }
+                        try
+                        {
+                            if (child != null && !child.HasExited) child.Kill();
+                        }
+                        catch { }
+                    }
+                    try { child?.Dispose(); } catch { }
+                }
+            }
+            // 成功时父进程必须继续持有 revocation，直到 Environment.Exit。人工停止即使
+            // 恰好发生在 Process.Start 与父进程退出之间，也会同步置位；子进程已持有
+            // 同一个内核事件，并会在等待父进程退出后、读取检查点和初始化硬件前拒绝续测。
         }
     }
 

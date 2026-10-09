@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -33,6 +33,8 @@ namespace AdaptiveControlTests
                 EpbManagerStopAllRunsProductionStages, ref passed);
             Run("StopAll入口同步安装禁止再上电栅栏",
                 StopAllAdmissionInstallsEnergizationFenceSynchronously, ref passed);
+            Run("独立兜底StopAll不得复用此前成功停止凭证",
+                IndependentStopObtainsFreshTransaction, ref passed);
             Run("EpbManager生产DO物理失败与准入拒绝进入统一终态",
                 EpbManagerPhysicalOffFailureIsSticky, ref passed);
             Run("EpbManager生产DO准入拒绝先启动PSU再安全收口",
@@ -57,6 +59,17 @@ namespace AdaptiveControlTests
         internal static int RunUnitTests()
         {
             var passed = 0;
+            Run("DO真实映射正反互斥与高优先级断电保留其他输出", DigitalOutputUsesRealControlPath, ref passed);
+            Run("AI注入样本经过真实回调与控制快照且旧代回调不能污染新代", AnalogInputUsesRealCallbackGeneration, ref passed);
+            Run("DO初始化失败释放会话且可重新初始化", DigitalOutputFailureReleasesSession, ref passed);
+            Run("DO单设备全关失败仍尝试其他设备且不伪报成功", DigitalOutputAllOffContinuesAfterFailure, ref passed);
+            Run("AO安全归零不受压力标定偏置和下限影响", AoSafetyZeroIsLiteralVoltage, ref passed);
+            Run("AO单路失败仍对其余输出写零且失败初始化释放句柄", AoZeroFailurePreservesCleanup, ref passed);
+            Run("AO不支持零电压的量程在创建设备前拒绝", AoRangeMustContainSafetyZero, ref passed);
+            Run("人工关闭运行态拒绝且安全停止才放行", OperatorCloseAdmissionIsExplicit, ref passed);
+            Run("人工关闭采样必须新鲜有效且在断能之后", ManualCloseSamplesAreExact, ref passed);
+            Run("人工关闭收尾任务重复请求保持同一所有者", ManualCloseDrainIsSingleFlight, ref passed);
+            Run("人工关闭收尾超过30秒仍保留任务并完成落盘", ManualCloseDrainSurvivesThirtySeconds, ref passed);
             Run("EpbManager生产port发布物理边沿",
                 EpbManagerProductionPortPublishesEdges, ref passed);
             Run("Stop runner stages are strictly ordered and stage deadlines are independent",
@@ -196,6 +209,73 @@ namespace AdaptiveControlTests
                 "活动试验断电未确认时仍应保留安全接管路径");
         }
 
+        private static void OperatorCloseAdmissionIsExplicit()
+        {
+            Assert(OperatorClosePolicy.Rejection(false, false, false, true).Contains("不允许退出"),
+                "故障停机或运行态不能借安全值关闭");
+            Assert(OperatorClosePolicy.Rejection(true, true, true, true).Contains("不允许退出"),
+                "启动与关闭并发不得复用旧停止证明");
+            Assert(OperatorClosePolicy.Rejection(false, true, false, false).Contains("安全收口"),
+                "人工点击停止不能代替电流压力安全证明");
+            Assert(OperatorClosePolicy.Rejection(false, true, false, true) == string.Empty,
+                "已安全停止应允许关闭，不依赖落盘完成");
+            Assert(OperatorClosePolicy.Rejection(false, false, true, false) == string.Empty,
+                "从未开始的空闲窗应快速关闭");
+        }
+
+        private static void ManualCloseSamplesAreExact()
+        {
+            var off = DateTime.UtcNow;
+            Assert(ManualCloseSafetyReceipt.IsSafeSample(true, 0.05, 0.1, 20, 100, off.AddMilliseconds(1), off), "有效断电电流应通过");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(false, 0, 0.1, 0, 100, off, off), "初始零值不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, 0, 0.1, 101, 100, off, off), "陈旧电流不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, 0, 0.1, 1, 100, off.AddTicks(-1), off), "断能前样本不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, -0.2, 0.1, 1, 100, off, off), "反向电流同样必须安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, double.NaN, 5, 1, 100, off, off), "无效压力不能证明安全");
+            Assert(!ManualCloseSafetyReceipt.IsSafeSample(true, 6, 5, 1, 100, off, off), "压力超限必须阻止关闭");
+            Assert(ManualCloseSafetyReceipt.IsSafeSample(true, 4, 5, 1, 100, off, off), "安全压力应通过");
+        }
+
+        private static void ManualCloseDrainIsSingleFlight()
+        {
+            var owner = new ManualCloseDrainOwner();
+            var pending = new TaskCompletionSource<bool>();
+            var calls = 0;
+            Func<Task> drain = () => { calls++; return pending.Task; };
+            var first = owner.Join(drain);
+            Assert(ReferenceEquals(first, owner.Join(drain)) && calls == 1 && !first.IsCompleted,
+                "后台写盘尚未结束时重复关闭创建了第二个收尾任务");
+            pending.SetResult(true);
+            Assert(ReferenceEquals(first, owner.Join(drain)) && calls == 1 && first.IsCompleted,
+                "已完成收尾不应再次释放资源");
+        }
+
+        private static void ManualCloseDrainSurvivesThirtySeconds()
+        {
+            var owner = new ManualCloseDrainOwner();
+            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "epb-close-" + Guid.NewGuid().ToString("N") + ".txt");
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            try
+            {
+                var task = owner.Join(async () =>
+                {
+                    await release.Task.ConfigureAwait(false);
+                    System.IO.File.WriteAllText(path, "final-accepted-batch");
+                });
+                Task.Delay(31000).GetAwaiter().GetResult();
+                Assert(!task.IsCompleted && !System.IO.File.Exists(path), "30秒前不得提前丢弃或伪报落盘完成");
+                release.SetResult(true);
+                Assert(task.Wait(5000) && System.IO.File.ReadAllText(path) == "final-accepted-batch",
+                    "解除写盘阻塞后尾部数据没有完成落盘");
+            }
+            finally
+            {
+                release.TrySetResult(true);
+                owner.Current?.GetAwaiter().GetResult();
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            }
+        }
+
         private static void ManualStopExitReceiptIsRunBound()
         {
             var owner = new ManualStopExitReceiptOwner();
@@ -230,6 +310,19 @@ namespace AdaptiveControlTests
             owner.RevokeForNewStart();
             Assert(owner.TryCapture(batchSessionActive: false) == null,
                 "新启动后仍能复用上一轮人工停止授权");
+            Assert(owner.Publish(result, "manual-stop"), "停止结果发布失败");
+            Assert(owner.TryCaptureCompletedManualClose("manual-stop", false) == null,
+                "未确认压力安全的旧终态不能授权快速关闭");
+            result.PressureSafeConfirmed = true;
+            Assert(owner.Publish(result, "manual-stop"), "安全停止结果发布失败");
+            Assert(owner.TryCaptureCompletedManualClose("manual-stop", false) != null,
+                "已完成停止错误要求重新采样");
+            Assert(owner.TryCaptureCompletedManualClose("other-stop", false) == null &&
+                   owner.TryCaptureCompletedManualClose("manual-stop", true) == null,
+                "旧停止命令或活动批次错误获得关闭许可");
+            owner.RevokeForNewStart();
+            Assert(owner.TryCaptureCompletedManualClose("manual-stop", false) == null,
+                "再次开始后旧关闭许可未撤销");
             result.Source = StopSource.SystemFault;
             Assert(owner.Publish(result, "operator-adopt"),
                 "人工退出未能采用同Run/epoch/代次的SystemFault停止终态");
@@ -242,6 +335,271 @@ namespace AdaptiveControlTests
             result.SafetyBoundaryGeneration = 11;
             result.RunId = Guid.Empty;
             Assert(!owner.Publish(result), "缺少RunId的停止结果错误获得退出授权");
+        }
+
+        private sealed class ManualAnalogInput : IAiInputSession
+        {
+            private AsyncCallback _callback;
+            private TaskCompletionSource<double[,]> _pending;
+            internal int Disposals;
+            internal int Reads;
+            internal int Ends;
+            public double SampleClockRate => 2000;
+            public void Start() { }
+            public void Stop() { }
+            public void Dispose() { Disposals++; }
+            public void BeginReadMultiSample(int samples, AsyncCallback callback, object state)
+            {
+                Assert(_pending == null, "模拟源出现重叠读取");
+                _pending = new TaskCompletionSource<double[,]>(state);
+                _callback = callback;
+                Reads++;
+            }
+            public double[,] EndReadMultiSample(IAsyncResult result)
+            {
+                Ends++;
+                return ((Task<double[,]>)result).GetAwaiter().GetResult();
+            }
+            internal void Feed(double value)
+            {
+                var pending = _pending;
+                var callback = _callback;
+                Assert(pending != null, "采集未请求下一批样本");
+                _pending = null;
+                _callback = null;
+                var data = new double[1, 20];
+                for (var index = 0; index < 20; index++) data[0, index] = value;
+                pending.SetResult(data);
+                callback(pending.Task);
+            }
+        }
+
+        private static void AnalogInputUsesRealCallbackGeneration()
+        {
+            var config = new AiConfigDetail
+            {
+                Records = new List<AiConfigDetailRecord>
+                {
+                    new AiConfigDetailRecord
+                    {
+                        序号 = 1, 物理通道 = "Dev1/ai0", 参数名 = "EPB4_current",
+                        单位 = "A", 变换斜率 = 1, 是否启用 = 1
+                    },
+                    new AiConfigDetailRecord
+                    {
+                        序号 = 2, 物理通道 = "Dev2/ai0", 参数名 = "EPB10_current",
+                        单位 = "A", 变换斜率 = 1, 是否启用 = 1
+                    }
+                }
+            };
+            var inputs = new List<ManualAnalogInput>();
+            using (var acquirer = new TwoDeviceAiAcquirer(config, 2000, 20, 1, null,
+                (name, channels, min, max, terminal) =>
+                {
+                    Assert(channels.Length == 1 && channels[0] ==
+                        (name.StartsWith("Dev1", StringComparison.Ordinal) ? "Dev1/ai0" : "Dev2/ai0"),
+                        "AI物理通道映射错误");
+                    var input = new ManualAnalogInput();
+                    inputs.Add(input);
+                    return input;
+                }))
+            {
+                acquirer.Start();
+                Assert(!acquirer.GetDaqFreshnessSnapshot("Dev1").IsFresh,
+                    "尚无回调时错误将初始零值判为新鲜采样");
+                inputs[0].Feed(2);
+                inputs[1].Feed(4);
+                Assert(SpinWait.SpinUntil(() => Math.Abs(acquirer.ReadCurrentFast(4) - 2) < 0.001, 3000),
+                    "真实回调未更新控制电流快照");
+                Assert(inputs[0].Reads == 2 && inputs[0].Ends == 1, "回调没有完成读取并重新挂接");
+                Assert(SpinWait.SpinUntil(() => acquirer.GetDaqFreshnessSnapshot("Dev1").AgeMs > 100, 3000) &&
+                    !acquirer.GetDaqFreshnessSnapshot("Dev1").IsFresh,
+                    "回调中断后陈旧电流仍被判定为有效采样");
+                acquirer.Start();
+                Assert(inputs.Count == 4 && inputs[0].Disposals == 1 && inputs[1].Disposals == 1,
+                    "重启未替换两个采集会话");
+                var boundary = acquirer.GetLastAcceptedSequence("Dev1");
+                inputs[0].Feed(9);
+                Assert(inputs[0].Ends == 2 && inputs[0].Reads == 2 &&
+                    acquirer.GetLastAcceptedSequence("Dev1") == boundary,
+                    "旧代回调未释放读取、错误重挂或污染新代序号");
+                inputs[2].Feed(3);
+                inputs[3].Feed(5);
+                Assert(SpinWait.SpinUntil(() => Math.Abs(acquirer.ReadCurrentFast(4) - 3) < 0.001, 3000),
+                    "新代真实采集不能恢复控制快照");
+            }
+            Assert(inputs.All(input => input.Disposals == 1), "AI会话未恰好释放一次");
+        }
+
+        private sealed class RecordedDigitalOutput : IDigitalOutputSession
+        {
+            internal readonly List<string> Lines = new List<string>();
+            internal readonly List<bool[]> Writes = new List<bool[]>();
+            internal bool FailVerify;
+            internal bool FailWrite;
+            internal int Disposals;
+            public bool IsReady { get; private set; }
+            public void AddLine(string physicalLine, string logicalName) { Lines.Add(physicalLine); }
+            public void Verify()
+            {
+                if (FailVerify) throw new InvalidOperationException("Injected DO verify failure");
+                IsReady = true;
+            }
+            public void Write(bool[] states)
+            {
+                if (!IsReady || Disposals != 0) throw new InvalidOperationException("DO session unavailable");
+                Writes.Add((bool[])states.Clone());
+                if (FailWrite) throw new InvalidOperationException("Injected DO write failure");
+            }
+            public void Dispose() { IsReady = false; Disposals++; }
+        }
+
+        private static DoConfig DigitalOutputConfig()
+        {
+            var config = new DoConfig();
+            for (var channel = 1; channel <= 2; channel++)
+                config.Epb.Add(new DoEpbRecord
+                {
+                    Enabled = true, Channel = channel, Default = "全关",
+                    Pos = "Dev1/port0/line" + ((channel - 1) * 2),
+                    Neg = "Dev1/port0/line" + ((channel - 1) * 2 + 1)
+                });
+            config.Pressure.Add(new DoPressureRecord
+                { Enabled = true, Id = 1, Physical = "Dev1/port0/line4", DefaultValue = 0 });
+            return config;
+        }
+
+        private static void DigitalOutputUsesRealControlPath()
+        {
+            var output = new RecordedDigitalOutput();
+            var controller = new DoController(DigitalOutputConfig(), null, name => output);
+            try
+            {
+                Assert(controller.Initialize(), "真实DO初始化失败");
+                Assert(output.Lines.Count == 5 && output.Writes.Single().All(value => !value),
+                    "DO映射或初始全关不正确");
+                Assert(controller.SetEpbForward(1) && controller.SetEpbReverse(2) && controller.PressureOn(1),
+                    "真实控制输出失败");
+                Assert(output.Writes.Last().SequenceEqual(new[] { true, false, false, true, true }),
+                    "输出未保留其他通道状态");
+                Assert(controller.SetEpbReverse(1), "反转失败");
+                Assert(controller.SetEpbOffHighPriority(1), "真实高优先级worker断电失败");
+                Assert(output.Writes.Last().SequenceEqual(new[] { false, false, false, true, true }),
+                    "单通道断电改变了其他输出");
+                Assert(output.Writes.All(state => !(state[0] && state[1]) && !(state[2] && state[3])),
+                    "正反方向同时上电");
+                Assert(controller.AllOff() && output.Writes.Last().All(value => !value), "全部断电失败");
+            }
+            finally { controller.Dispose(); }
+            controller.Dispose();
+            Assert(output.Disposals == 1 && !controller.SetEpbForward(1), "释放重复或释放后允许上电");
+        }
+
+        private static void DigitalOutputFailureReleasesSession()
+        {
+            var outputs = new List<RecordedDigitalOutput>();
+            using (var controller = new DoController(DigitalOutputConfig(), null, name =>
+            {
+                var output = new RecordedDigitalOutput { FailVerify = outputs.Count == 0 };
+                outputs.Add(output);
+                return output;
+            }))
+            {
+                Assert(!controller.Initialize() && outputs[0].Disposals == 1, "失败初始化未释放输出会话");
+                Assert(controller.Initialize() && outputs.Count == 2, "失败后无法建立新会话");
+                Assert(outputs[1].Writes.Single().All(value => !value), "重建后初始输出不是全关");
+            }
+            Assert(outputs.All(output => output.Disposals == 1), "会话释放次数不正确");
+        }
+
+        private static void DigitalOutputAllOffContinuesAfterFailure()
+        {
+            var config = DigitalOutputConfig();
+            config.Epb[1].Pos = "Dev2/port0/line0";
+            config.Epb[1].Neg = "Dev2/port0/line1";
+            var outputs = new List<RecordedDigitalOutput>();
+            using (var controller = new DoController(config, null, name =>
+            {
+                var output = new RecordedDigitalOutput();
+                outputs.Add(output);
+                return output;
+            }))
+            {
+                Assert(controller.Initialize() && outputs.Count == 2, "双设备初始化失败");
+                // Fail both devices: the assertion does not depend on dictionary enumeration order.
+                foreach (var output in outputs) { output.Writes.Clear(); output.FailWrite = true; }
+                Assert(!controller.AllOff(), "写入失败错误报告全关成功");
+                Assert(outputs.All(output => output.Writes.Count == 1 && output.Writes[0].All(value => !value)),
+                    "某设备失败后没有尝试其他设备断电");
+                foreach (var output in outputs) output.FailWrite = false;
+                Assert(controller.AllOff(), "写入恢复后不能完成全部断电");
+            }
+        }
+
+        private sealed class RecordedAoOutput : IAoVoltageOutput
+        {
+            internal readonly List<double> Writes = new List<double>();
+            internal bool FailWrite;
+            internal int Disposals;
+            public void Write(double voltage)
+            {
+                if (Disposals != 0) throw new ObjectDisposedException(nameof(RecordedAoOutput));
+                Writes.Add(voltage);
+                if (FailWrite) throw new InvalidOperationException("Injected AO write failure");
+            }
+            public void Dispose() { Disposals++; }
+        }
+
+        private static AoConfig OffsetAoConfig()
+        {
+            var config = new AoConfig { MinPressure = 10, MaxPressure = 100 };
+            foreach (var name in new[] { "Dev1", "Dev2" })
+                config.Devices.Add(name, new AoDevice
+                { Name = name, PhysicalChannel = name + "/ao0", ScaleK = 10, Offset = -2 });
+            return config;
+        }
+
+        private static void AoSafetyZeroIsLiteralVoltage()
+        {
+            var outputs = new Dictionary<string, RecordedAoOutput>();
+            using (var ao = new AoController(OffsetAoConfig(), null, device =>
+                outputs[device.Name] = new RecordedAoOutput()))
+            {
+                Assert(outputs.Values.All(output => output.Writes.SequenceEqual(new[] { 0.0 })),
+                    "AO初始化使用压力标定或压力下限，未写入0V");
+                var normal = ao.WritePressureDetailed("Dev1", 20);
+                Assert(normal.Success && Math.Abs(normal.Voltage - 2.2) < 1e-9,
+                    "正常压力控制的标定换算被安全写零修改");
+                Assert(ao.TryResetAll() && outputs.Values.All(output => output.Writes.Last() == 0),
+                    "安全归零受非零偏置或最小压力影响");
+            }
+            Assert(outputs.Values.All(output => output.Disposals == 1), "AO输出未随控制器释放一次");
+        }
+
+        private static void AoZeroFailurePreservesCleanup()
+        {
+            var failed = new RecordedAoOutput { FailWrite = true };
+            var healthy = new RecordedAoOutput();
+            using (var ao = new AoController(OffsetAoConfig(), null, device => device.Name == "Dev1" ? failed : healthy))
+            {
+                Assert(failed.Disposals == 1, "AO初始化写零失败泄漏输出资源");
+                Assert(!ao.TryResetAll() && healthy.Writes.Count == 2 && healthy.Writes.Last() == 0,
+                    "缺失输出被报告安全或阻止其他输出写零");
+                healthy.FailWrite = true;
+                Assert(!ao.TryResetAll(), "AO写入异常被报告为成功");
+            }
+            Assert(failed.Disposals == 1 && healthy.Disposals == 1, "部分初始化资源释放次数不正确");
+        }
+
+        private static void AoRangeMustContainSafetyZero()
+        {
+            var config = OffsetAoConfig();
+            config.MinVoltage = 1;
+            var opened = false;
+            var rejected = false;
+            try { using (new AoController(config, null, device => { opened = true; return new RecordedAoOutput(); })) { } }
+            catch (ArgumentException) { rejected = true; }
+            Assert(rejected && !opened, "AO不能输出0V的量程仍打开设备");
         }
 
         private static void AoDisposedOperationsDoNotReportColdStartFailure()
@@ -419,6 +777,28 @@ namespace AdaptiveControlTests
                 Assert(progress.Stage == StopSafetyStage.Completed &&
                        !progress.Active && progress.PhysicalSafe,
                     "真实StopAll未发布Completed物理安全终态。");
+            }
+        }
+
+        private static void IndependentStopObtainsFreshTransaction()
+        {
+            using (var fixture = new ProductionManagerFixture(new FailingPowerSupply(fail: false)))
+            {
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                fixture.Manager.ConfigureStopSafetyProductionSeams(
+                    new SystemStopSafetyClock(), new ProductionHydraulicAdapter(immediateSuccess: true));
+                var first = fixture.Manager.StopAllAsync(NewContext()).GetAwaiter().GetResult();
+                Assert(first.CanRestartInProcess, "前置成功停止未完成：" + first.StageError);
+                var reused = fixture.Manager.StopAllAsync(NewContext()).GetAwaiter().GetResult();
+                Assert(reused.ReusedPreviousResult, "未形成旧停止缓存前提");
+                var context = NewContext();
+                context.RequireFreshSafetyEvidence = true;
+                context.CorrelationId = Guid.NewGuid().ToString("N");
+                var fresh = fixture.Manager.StopAllAsync(context).GetAwaiter().GetResult();
+                Assert(!fresh.ReusedPreviousResult && fresh.CanRestartInProcess &&
+                       fresh.SafetyTransactionId != first.SafetyTransactionId &&
+                       fresh.CorrelationId == context.CorrelationId,
+                    "独立请求没有取得自己的新物理停止事务");
             }
         }
 
@@ -967,6 +1347,8 @@ namespace AdaptiveControlTests
                 releaseFlush.TrySetResult(true);
                 var persistenceReentry = persistenceReentryTask.GetAwaiter().GetResult();
                 var persistenceFinalExit = persistenceFinalExitTask.GetAwaiter().GetResult();
+                Assert(persistenceReentry.RequiresProcessRestart && persistenceFinalExit.RequiresProcessRestart,
+                    "重新完成物理收尾不能消除前次持久化超时锁存的进程替换义务。");
                 Assert(!persistenceReentry.ReusedPreviousResult &&
                        !persistenceFinalExit.ReusedPreviousResult &&
                        persistenceReentry.SafetyTransactionId != persistenceTerminal.TransactionId &&
@@ -977,13 +1359,13 @@ namespace AdaptiveControlTests
                     var late = hangingFixture.Manager.CaptureStopSafetyProgress();
                     return !hangingFixture.Manager.HasOrphanCore &&
                            late.Stage == StopSafetyStage.Completed &&
-                           !late.Active && !late.TakeoverRequired &&
+                           !late.Active && late.TakeoverRequired &&
                            late.TransactionId == persistenceReentry.SafetyTransactionId;
                 }, 2000);
                 var lateTerminal = hangingFixture.Manager.CaptureStopSafetyProgress();
                 Assert(orphanSettled && !hangingFixture.Manager.HasOrphanCore &&
                        lateTerminal.Stage == StopSafetyStage.Completed &&
-                       !lateTerminal.Active && !lateTerminal.TakeoverRequired &&
+                       !lateTerminal.Active && lateTerminal.TakeoverRequired &&
                        lateTerminal.TransactionId == persistenceReentry.SafetyTransactionId,
                     "旧Persistence orphan迟到回写覆盖了新代安全终态：" +
                     $"OrphanSettled={orphanSettled};Stage={lateTerminal.Stage};" +
@@ -1281,6 +1663,16 @@ namespace AdaptiveControlTests
 
         private static void StrictStageOrderAndDeadlines()
         {
+            var restartSnapshots = new List<StopSafetyProgressSnapshot>();
+            var restartRunner = new StopSafetyTransactionRunner(
+                new FakePort { RestartRequired = true }, new ManualClock(),
+                new StopSafetyTransactionOptions(), snapshot => restartSnapshots.Add(snapshot),
+                () => Guid.NewGuid(), () => 1, () => 1);
+            var restart = restartRunner.StopAsync(NewContext()).GetAwaiter().GetResult();
+            Assert(restart.PhysicalSafetyConfirmed && restart.RequiresProcessRestart &&
+                   restart.Outcome == StopSafetyOutcome.SafeButRestartRequired &&
+                   restartSnapshots.Last().TakeoverRequired,
+                "安全收尾完成不得清除先前外部重启义务；终态必须通知Watchdog接管。");
             var clock = new ManualClock();
             var port = new FakePort();
             var snapshots = new List<StopSafetyProgressSnapshot>();
@@ -1819,6 +2211,7 @@ namespace AdaptiveControlTests
             internal StopSafetyStage? HangStage { get; set; }
             internal bool Hang { get; set; }
             internal bool DuplicateDetail { get; set; }
+            internal bool RestartRequired { get; set; }
             internal int SafeIdleCount => Volatile.Read(ref _safeIdleCount);
             internal int ExecuteCount { get; private set; }
             internal int MaterialEvidenceCalls { get; private set; }
@@ -1863,6 +2256,7 @@ namespace AdaptiveControlTests
                         PhysicalSafe = true,
                         Result = new StopSafetyResult
                         {
+                            RequiresProcessRestart = RestartRequired,
                             MotorOffCommandSucceeded = true,
                             PowerOffConfirmed = true,
                             PressureSafeConfirmed = true,

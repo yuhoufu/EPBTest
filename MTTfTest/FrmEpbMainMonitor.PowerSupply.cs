@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -67,6 +67,7 @@ namespace MTEmbTest
         private readonly Dictionary<int, ChannelWarningOverlayChangedEvent> _channelWarningOverlays =
             new Dictionary<int, ChannelWarningOverlayChangedEvent>();
         private readonly HashSet<int> _channelSelectionUiGuard = new HashSet<int>();
+        private readonly HashSet<int> _selectionPersistencePending = new HashSet<int>();
         private readonly HashSet<int> _powerGroupInterlockLatches = new HashSet<int>();
         private readonly object _powerSupplyTelemetryGate = new object();
         private readonly Dictionary<int, PowerSupplyTelemetry> _latestPowerSupplyTelemetry =
@@ -82,24 +83,32 @@ namespace MTEmbTest
 
         protected override void OnShown(EventArgs e)
         {
-            base.OnShown(e);
-            AttachSafetyUiEvents();
-            AttachPauseResumeUi();
-            MarkWatchdogControllerReadyIfInitialized();
-            if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
-            InitializeChannelRuntimeStatusUi();
-            AttachOwnedRawPipeline();
-            AttachUnattendedRecovery();
-            _powerSupplyToolTip = new ToolTip();
-            var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
-            for (var index = 0; index < boxes.Length; index++)
+            try
             {
-                var groupId = index + 1;
-                _powerSupplyToolTip.SetToolTip(
-                    boxes[index],
-                    $"电源组{groupId}：双击可在输出关闭、保护解除后人工复位故障锁存");
-                boxes[index].DoubleClick += async (sender, args) =>
-                    await ResetPowerSupplyFaultFromUiAsync(groupId);
+                base.OnShown(e);
+                AttachSafetyUiEvents();
+                AttachPauseResumeUi();
+                if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
+                InitializeChannelRuntimeStatusUi();
+                AttachOwnedRawPipeline();
+                AttachUnattendedRecovery();
+                _powerSupplyToolTip = new ToolTip();
+                var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
+                for (var index = 0; index < boxes.Length; index++)
+                {
+                    var groupId = index + 1;
+                    _powerSupplyToolTip.SetToolTip(
+                        boxes[index],
+                        $"电源组{groupId}：双击可在输出关闭、保护解除后人工复位故障锁存");
+                    boxes[index].DoubleClick += async (sender, args) =>
+                        await ResetPowerSupplyFaultFromUiAsync(groupId);
+                }
+                _monitorInitialization.CompleteShown();
+            }
+            catch
+            {
+                _monitorInitialization.Fail();
+                throw;
             }
         }
 
@@ -481,7 +490,7 @@ namespace MTEmbTest
             // 容易被误解为数值状态。格内只保留状态，时间和原因放在悬浮提示中。
             label.Text = permanentAlarmLatched
                 ? "永久报警"
-                : GetRuntimeStateDisplayText(state.State, warningActive);
+                : GetRuntimeStateDisplayText(state.State, warningActive, state.ReasonCode);
             label.BackColor = warningActive &&
                               (state.State == ChannelRuntimeState.Running ||
                                state.State == ChannelRuntimeState.WarningRunning)
@@ -542,7 +551,9 @@ namespace MTEmbTest
             ChannelWarningOverlayChangedEvent[] warnings;
             lock (_channelWarningOverlays)
                 warnings = _channelWarningOverlays.Values.ToArray();
-            var running = states.Count(x => x.State == ChannelRuntimeState.Running ||
+            var running = states.Count(x => x.State == ChannelRuntimeState.Starting ||
+                                            x.State == ChannelRuntimeState.Learning ||
+                                            x.State == ChannelRuntimeState.Running ||
                                             x.State == ChannelRuntimeState.WaitingForSlotBarrier);
             var warning = warnings.Count(x =>
                               states.Any(state =>
@@ -556,9 +567,7 @@ namespace MTEmbTest
                                           x.State == ChannelRuntimeState.StartBlocked);
             var interlock = states.Count(x => x.State == ChannelRuntimeState.InterlockStopped);
             var completed = states.Count(x => x.State == ChannelRuntimeState.Completed);
-            var preparing = states.Count(x => x.State == ChannelRuntimeState.Starting || x.State == ChannelRuntimeState.Learning ||
-                x.State == ChannelRuntimeState.Qualification || x.State == ChannelRuntimeState.Recovering);
-            EPBGroupBox.Text = $"EPB｜运行{running} 准备/恢复{preparing} 预警{warning} 报警{alarm} 联锁{interlock} 完成{completed}";
+            EPBGroupBox.Text = $"EPB 控制｜运行 {running}  预警 {warning}  报警 {alarm}  联锁 {interlock}  完成 {completed}";
         }
 
         private void ShowPowerGroupInterlockLatch(int channel)
@@ -622,9 +631,14 @@ namespace MTEmbTest
 
         internal static string GetRuntimeStateDisplayText(
             ChannelRuntimeState state,
-            bool warningActive)
+            bool warningActive,
+            string reasonCode = null)
         {
-            return GetRuntimeStateText(state) + (warningActive ? " · 预警" : string.Empty);
+            var text = state == ChannelRuntimeState.WaitingForSlotBarrier &&
+                       string.Equals(reasonCode, "WaitingForPlannedSlot", StringComparison.Ordinal)
+                ? "等待周期"
+                : GetRuntimeStateText(state);
+            return text + (warningActive ? " · 预警" : string.Empty);
         }
 
         private static string GetDaqPersistenceStateText(DaqPersistenceState state)
@@ -714,13 +728,16 @@ namespace MTEmbTest
                 true);
         }
 
-        private void PersistRuntimeChannelSelection(int channelIndex)
+        private async void PersistRuntimeChannelSelection(int channelIndex)
         {
             if (_cfg?.Test == null || channelIndex < 0 || channelIndex >= EpbGroup.Length) return;
             var channel = channelIndex + 1;
             if (_channelSelectionUiGuard.Contains(channel)) return;
             var selected = EpbGroup[channelIndex]?.CtrlJoinTest?.Checked == true;
             var configured = _cfg.Test.GetEpbRecord(channel);
+            if (configured.Enabled == selected) return;
+            if (_selectionPersistencePending.Contains(channel) || Volatile.Read(ref _batchStartUiGuard) != 0)
+            { SetChannelSelectionChecked(channel, configured.Enabled); return; }
             if (selected && configured.PermanentAlarmLatched)
             {
                 var answer = ShowOperatorMessage(
@@ -756,6 +773,25 @@ namespace MTEmbTest
                 }
                 ApplyLatestChannelRuntimeState(channel);
                 return;
+            }
+            if (IndependentRecoveryStartup.Current != null)
+            {
+                var check = EpbGroup[channelIndex].CtrlJoinTest;
+                var wasEnabled = check.Enabled;
+                _selectionPersistencePending.Add(channel);
+                check.Enabled = false;
+                try { await IndependentRecoveryStartup.Current.PersistChannelSelectionAsync(channel, selected).ConfigureAwait(true); }
+                catch (Exception error)
+                {
+                    SetChannelSelectionChecked(channel, configured.Enabled);
+                    ShowOperatorMessage("通道选择未能持久确认：" + error.Message, "选择未完成", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+                finally
+                {
+                    _selectionPersistencePending.Remove(channel);
+                    if (!check.IsDisposed) check.Enabled = wasEnabled;
+                }
             }
             lock (_epbRecordsLock)
             {

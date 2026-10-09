@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -29,11 +29,13 @@ namespace MTTFTest.Watchdog
 
         internal static bool TryMuteBuzzer(string code, string detail)
         {
-            return TrySend(
-                SupervisorP0AlarmAction.MuteBuzzer,
-                Guid.NewGuid().ToString("N"),
-                code,
-                detail);
+            try
+            {
+                var state = InstallationAlarmClient.Send(InstallationAlarmAction.Query).State;
+                InstallationAlarmClient.Send(InstallationAlarmAction.MuteBuzzer, expected: state);
+                return true;
+            }
+            catch { return false; }
         }
 
         private static bool TrySend(
@@ -60,26 +62,10 @@ namespace MTTFTest.Watchdog
                         Detail = detail ?? string.Empty
                     };
                 }
-                using (var pipe = new NamedPipeClientStream(
-                           ".",
-                           SupervisorProtocol.PipeName,
-                           PipeDirection.InOut,
-                           PipeOptions.None))
-                {
-                    pipe.Connect(1500);
-                    using (var deadline = new PipeExchangeDeadline(pipe, 10000))
-                    using (var writer = new BinaryWriter(
-                               pipe,
-                               new UTF8Encoding(false),
-                               true))
-                    using (var reader = new BinaryReader(
-                               pipe,
-                               new UTF8Encoding(false),
-                               true))
-                    {
-                        request.WriteTo(writer);
-                        var response = SupervisorP0AlarmResponse.ReadFrom(reader);
-                        return response?.SchemaVersion ==
+                var response = DeadlinePipeExchange.Execute(SupervisorProtocol.PipeName, 3000,
+                    request.WriteTo, SupervisorP0AlarmResponse.ReadFrom,
+                    default, System.Security.Principal.TokenImpersonationLevel.Identification);
+                return response?.SchemaVersion ==
                                    SupervisorProtocol.SchemaVersion &&
                                response.Accepted &&
                                string.Equals(response.RequestId, request.RequestId,
@@ -87,8 +73,6 @@ namespace MTTFTest.Watchdog
                                string.Equals(response.ChallengeNonce,
                                    request.ChallengeNonce,
                                    StringComparison.Ordinal);
-                    }
-                }
             }
             catch
             {

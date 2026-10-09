@@ -84,9 +84,7 @@ namespace AdaptiveControlTests
             Run("DAQ输入缓冲覆盖现场调度抖动且保持批周期", DaqInputBufferHasRecoveryMargin, ref passed);
             Run("NI -200279明确归类为输入缓冲溢出", DaqInputOverflowClassification, ref passed);
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
-            Run("DAQ按75/100/250ms分级且250ms立即断能", IndependentDaqLivenessSupervisorPolicy, ref passed);
-            Run("双DAQ 2.6秒积压回放禁止陈旧控制并合并基础设施事务",
-                DualDaqBacklogReplayIsFailSafeAndCorrelated, ref passed);
+            Run("DAQ按250/1500/5000ms分级且历史峰值不反向升级", IndependentDaqLivenessSupervisorPolicy, ref passed);
             Run("DAQ存活日志转换按批次关联与参与设备有界去重", DaqLivenessLogTransitionDedup, ref passed);
             Run("未带电DAQ回调空窗只记录一次且不触发恢复", UnenergizedDaqGapObservationPolicy, ref passed);
             Run("后台冻结边界结果逐项报告Published与Raw未闭合谓词", BackgroundDrainResultExplainsPendingPredicate, ref passed);
@@ -974,9 +972,28 @@ namespace AdaptiveControlTests
 
         private static void IndependentDaqLivenessSupervisorPolicy()
         {
-            Assert(EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(75, 100, 250) &&
-                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(100, 100, 250) &&
-                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(0, 100, 250),
+            foreach (var gapMs in new[] { 100d, 249d, 250d, 251d, 500d, 1200d })
+            foreach (var energized in new[] { false, true })
+            {
+                var supervisor = new DaqLivenessDeviceState();
+                var snapshot = new DaqFreshnessSnapshot
+                {
+                    Device = "Dev1", Generation = 1, CallbackAgeMs = gapMs,
+                    LastProducedSequence = 10, LastProcessedSequence = 10,
+                    LastCallbackMonotonicTicks = Stopwatch.GetTimestamp()
+                };
+                var observation = supervisor.Observe(true, energized, false, snapshot, 250, 1500, 5000);
+                Assert(!observation.Trip && !observation.Suspect && observation.Warn == (energized && gapMs >= 250),
+                    "短时中断策略错误：gap=" + gapMs + ";energized=" + energized);
+                snapshot.CallbackAgeMs = 0;
+                snapshot.LastProducedSequence++;
+                snapshot.LastProcessedSequence++;
+                var resumed = supervisor.Observe(true, energized, false, snapshot, 250, 1500, 5000);
+                Assert(!resumed.Warn && !resumed.Suspect && !resumed.Trip, "新采样恢复后仍重放旧空窗故障");
+            }
+            Assert(EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 1500, 5000) &&
+                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(250, 250, 5000) &&
+                   !EpbManager.AreDaqLivenessThresholdsStrictlyIncreasing(0, 1500, 5000),
                 "DAQ阈值未按正数且严格递增校验");
             var state = new DaqLivenessDeviceState();
             var stale = new DaqFreshnessSnapshot
@@ -984,99 +1001,49 @@ namespace AdaptiveControlTests
                 Device = "Dev1",
                 Generation = 7,
                 LastCallbackMonotonicTicks = Stopwatch.GetTimestamp(),
-                CallbackAgeMs = 74,
-                SampleAgeMs = 74,
-                ReaderLagState = DaqReaderLagState.Healthy,
+                CallbackAgeMs = 134,
                 LastProducedSequence = 100,
                 LastProcessedSequence = 100
             };
-            var freshGap = state.Observe(true, true, false, stale, 75, 100, 250);
+            var freshGap = state.Observe(true, true, false, stale, 250, 1500, 5000);
             Assert(!freshGap.Trip && !freshGap.Warn && !freshGap.Suspect,
-                "75ms以内短空窗被错误放大为作废或恢复");
-            stale.CallbackAgeMs = 76;
-            stale.SampleAgeMs = 76;
-            var warn = state.Observe(true, true, false, stale, 75, 100, 250);
+                "134ms双设备短空窗被错误放大为作废或恢复");
+            stale.CallbackAgeMs = 251;
+            var warn = state.Observe(true, true, false, stale, 250, 1500, 5000);
             Assert(!warn.Trip && warn.Warn && warn.Code == "DaqLivenessWarn",
-                "75ms以上空窗没有进入预警策略");
+                "250ms以上空窗没有保持为带电OFF/作废级Warn策略");
             Assert(!EpbManager.EvaluateDaqLiveness(true, false, false, stale, 0, 250).Trip,
                 "未带电设备被独立监督器错误断言为故障");
             Assert(!EpbManager.EvaluateDaqLiveness(true, true, true, stale, 0, 250).Trip,
                 "既有恢复上下文期间重复发布DAQ存活故障");
-            stale.CallbackAgeMs = 99;
-            stale.SampleAgeMs = 99;
-            Assert(!state.Observe(true, true, false, stale, 75, 100, 250).Suspect,
-                "100ms门槛以内被错误建立资格栅栏");
-            stale.CallbackAgeMs = 101;
-            stale.SampleAgeMs = 101;
-            var suspect = state.Observe(true, true, false, stale, 75, 100, 250);
+            stale.CallbackAgeMs = 1499;
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Suspect,
+                "1500ms门槛以内被错误建立资格栅栏");
+            stale.CallbackAgeMs = 1501;
+            var suspect = state.Observe(true, true, false, stale, 250, 1500, 5000);
             Assert(suspect.Suspect && !suspect.Trip,
-                "100ms没有进入Suspect或被错误Trip");
-            stale.CallbackAgeMs = 249;
-            stale.SampleAgeMs = 249;
-            Assert(!state.Observe(true, true, false, stale, 75, 100, 250).Trip,
-                "250ms内被错误Trip");
-            stale.CallbackAgeMs = 251;
-            stale.SampleAgeMs = 251;
-            var trip = state.Observe(true, true, false, stale, 75, 100, 250);
-            Assert(trip.Trip && trip.TripConfirmations == 1,
-                "达到250ms未立即触发断能和局部恢复");
+                "1500ms没有进入Suspect或被错误Trip");
+            stale.CallbackAgeMs = 4999;
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
+                "5000ms内恢复窗口被错误Trip");
+            stale.CallbackAgeMs = 5001;
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
+                "Trip首次监督确认即触发");
+            Assert(!state.Observe(true, true, false, stale, 250, 1500, 5000).Trip,
+                "Trip第二次监督确认即触发");
+            var trip = state.Observe(true, true, false, stale, 250, 1500, 5000);
+            Assert(trip.Trip && trip.TripConfirmations == 3,
+                "超过2000ms且连续三次确认未触发局部恢复");
 
             stale.CallbackAgeMs = 10;
             stale.LastProducedSequence++;
             stale.CallbackGapEventCount = 4;
             stale.LastCallbackGapIntervalMs = 5200;
             var recoveredBeforeWatchdog = state.Observe(
-                true, true, false, stale, 75, 100, 250);
+                true, true, false, stale, 250, 1500, 5000);
             Assert(!recoveredBeforeWatchdog.Trip && recoveredBeforeWatchdog.RecoveredGap &&
                    recoveredBeforeWatchdog.Code == "RecoveredGap",
                 "已恢复5200ms历史空窗被事后重建DAQ");
-        }
-
-        private static void DualDaqBacklogReplayIsFailSafeAndCorrelated()
-        {
-            var runId = Guid.NewGuid();
-            var observedUtc = DateTime.UtcNow;
-            var latch = new DaqIncidentLatch();
-            latch.BeginRun(runId, new[] { "Dev1", "Dev2" });
-            Guid correlationId = Guid.Empty;
-            foreach (var device in new[] { "Dev1", "Dev2" })
-            {
-                var freshness = new DaqFreshnessSnapshot
-                {
-                    Device = device,
-                    Generation = 9,
-                    CallbackAgeMs = 12,
-                    SampleAgeMs = 2600,
-                    BufferedSamples = 5200,
-                    ReaderLagState = DaqReaderLagState.Backlog,
-                    ConsecutiveFreshBatches = 0,
-                    LastProducedSequence = 8120,
-                    LastProcessedSequence = 2920
-                };
-                var decision = new DaqLivenessDeviceState().Observe(
-                    true, true, false, freshness, 75, 100, 250);
-                Assert(decision.Trip && decision.TripConfirmations == 1 &&
-                       decision.Reason.Contains("SampleAge=2600.0ms") &&
-                       decision.Reason.Contains("BufferedSamples=5200"),
-                    device + " 2.6秒积压未立即触发断能，或证据字段丢失。");
-
-                var incident = latch.Observe(
-                    runId,
-                    device,
-                    device == "Dev1" ? 4 : 8,
-                    "DaqSampleStale",
-                    "SampleAge=2600ms;BufferedSamples=5200",
-                    observedUtc.AddMilliseconds(device == "Dev1" ? 0 : 20),
-                    device == "Dev1" ? new[] { 4, 5 } : new[] { 8, 9 });
-                if (correlationId == Guid.Empty)
-                    correlationId = incident.Context.CorrelationId;
-                else
-                    Assert(incident.Context.CorrelationId == correlationId,
-                        "双DAQ同时间窗积压被放大为多个基础设施事务。");
-            }
-            Assert(FastPathTripClassifier.HasInvalidControlQuality(
-                       FastSignalQualityFlags.SampleStale),
-                "陈旧批次仍可能参与快速控制判定。");
         }
 
         private static void DaqLivenessLogTransitionDedup()
@@ -2099,7 +2066,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.15.0.0";
+                const string version = "V2.14.2.3";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2736,23 +2703,27 @@ namespace AdaptiveControlTests
             };
 
             var first = Task.Run(() => worker.InvokeHi(4, batchWork, 30000, null));
-            Assert(batchEntered.Wait(2000), "首个OFF未进入专用设备Worker");
             var duplicateFalse = 0;
-            var duplicates = Enumerable.Range(0, 16)
-                .Select(_ => Task.Run(() =>
-                {
-                    duplicateReady.Signal();
-                    duplicateStart.Wait();
-                    var result = worker.InvokeHi(4, batchWork, 30000, null);
-                    if (!result) Interlocked.Increment(ref duplicateFalse);
-                    return result;
-                }))
-                .ToArray();
-            Assert(duplicateReady.Wait(2000), "重复OFF并发调用未准备完成");
-            duplicateStart.Set();
-
+            var duplicates = new Task<bool>[16];
             try
             {
+                Assert(batchEntered.Wait(2000), "首个OFF未进入专用设备Worker");
+                // Every caller blocks at the start barrier, so dedicated
+                // threads avoid depending on thread-pool growth for readiness.
+                for (var index = 0; index < duplicates.Length; index++)
+                {
+                    duplicates[index] = Task.Factory.StartNew(() =>
+                    {
+                        duplicateReady.Signal();
+                        duplicateStart.Wait();
+                        var result = worker.InvokeHi(4, batchWork, 30000, null);
+                        if (!result) Interlocked.Increment(ref duplicateFalse);
+                        return result;
+                    }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                }
+                Assert(duplicateReady.Wait(2000), "重复OFF并发调用未准备完成");
+                duplicateStart.Set();
+
                 // A duplicate is either registered on the blocked first item
                 // (CoalescedRequests) or is rejected within the bounded
                 // admission window (the caller has already completed false).
@@ -2793,11 +2764,19 @@ namespace AdaptiveControlTests
             }
             finally
             {
+                duplicateStart.Set();
                 releaseBatch.Set();
                 // Ensure the first and all duplicate callers cannot outlive
-                // this fixture when an assertion fails.
-                try { first.Wait(5000); } catch { }
-                try { Task.WaitAll(duplicates, 5000); } catch { }
+                // this fixture, including failures while preparing callers.
+                var callers = duplicates.Where(task => task != null).Cast<Task>().Append(first).ToArray();
+                try
+                {
+                    Assert(Task.WaitAll(callers, 5000), "重复OFF测试调用者清理超时");
+                }
+                catch (AggregateException)
+                {
+                    // WaitAll has joined every caller before reporting faults.
+                }
             }
 
             var workItemType = typeof(DoController.HighPriorityDoWorker).GetNestedType(

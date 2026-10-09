@@ -382,6 +382,7 @@ namespace Controller
 
                 enabledThisAttempt.Add(group.Id);
                 var outputOnStarted = Stopwatch.GetTimestamp();
+                MTTFTest.Watchdog.Protocol.FallbackPowerBoundary.ValidateCurrentProcess();
                 var onResult = await client.SetOutputAndReadBackAsync(true, operationToken)
                     .ConfigureAwait(false);
                 RequireOutputCommand(onResult, supply.DisplayName, PswOutputState.On);

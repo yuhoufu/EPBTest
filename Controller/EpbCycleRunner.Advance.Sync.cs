@@ -749,8 +749,8 @@ namespace Controller
 
         /// <summary>
         ///     正式单圈（对齐外壳版）。
-        ///     外部使用 AlignToWallClock 计时器确保每圈在 (t0 + k*Period + phase) 触发；
-        ///     此处负责：不做①；⑧中扣回 (tailBase - phase - lateness)；并在 deadline 前硬收尾。
+        ///     正式批次由共享单调槽和相位窗口触发；UTC 重载仅保留兼容入口。
+        ///     此处负责：不做①；⑧中扣回 (tailBase - phase - lateness)，并限制尾部等待。
         /// </summary>
         /// <param name="periodMs">目标周期（ms）。</param>
         /// <param name="tailBaseMs">尾段基准（旧T8 + 旧T1）。</param>
@@ -758,9 +758,16 @@ namespace Controller
         /// <param name="tailMinMs">尾段最小保护（ms）。</param>
         /// <param name="deadlineUtc">本圈统一截止（UTC）。</param>
         /// <param name="token">取消令牌。</param>
-        public async Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs,
+        public Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs,
             DateTime deadlineUtc, CancellationToken token)
         {
+            return RunOneAlignedAsync(periodMs, tailBaseMs, phaseMs, tailMinMs,
+                () => (deadlineUtc - DateTime.UtcNow).TotalMilliseconds, token);
+        }
+        public async Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs,
+            Func<double> remainingMilliseconds, CancellationToken token)
+        {
+            if (remainingMilliseconds == null) throw new ArgumentNullException(nameof(remainingMilliseconds));
             var sw = Stopwatch.StartNew();
             var physicalActionGeneration =
                 Interlocked.Increment(ref _physicalActionGeneration);
@@ -796,7 +803,7 @@ namespace Controller
             }
 
             // —— 4) 以 deadline 为硬截止：若剩余时间 < t8，则压缩到“剩余时间”；若为负则直接收尾 —— //
-            var remainToDeadline = (int)(deadlineUtc - DateTime.UtcNow).TotalMilliseconds;
+            var remainToDeadline = (int)Math.Min(int.MaxValue, Math.Max(0, remainingMilliseconds()));
             var sleepMs = Math.Min(t8, Math.Max(0, remainToDeadline));
 
             if (sleepMs > 0)

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -9,7 +9,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 using Config;
 using Controller;
 using MTTFTest.SafetyAgent;
@@ -24,10 +23,9 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V216真实权威存储保持耗时精度并拒绝哈希篡改", AuthorityStorePreservesNumericIdentity, ref passed);
             Run("SafetyAgent使用快照参数并从最后阶段幂等续跑",
                 SafetyAgentUsesSnapshotAndResumesStages, ref passed);
-            Run("强杀恢复使用schema6权威回执并由独立代理完成物理确认",
+            Run("强杀恢复使用schema5安全回执并由独立代理完成物理确认",
                 CrashRecoverySafetyAgentCompletesPhysicalProof, ref passed);
             Run("快照篡改在创建硬件前被证据门禁拒绝",
                 SnapshotTamperFailsBeforeHardwareOpen, ref passed);
@@ -35,23 +33,9 @@ namespace AdaptiveControlTests
                 ProductionAgentRejectsTamperInFreshProcess, ref passed);
             Run("唯一恢复事务并发观察只推进一次",
                 ReplacementTransactionIsSingleConsumption, ref passed);
-            Run("Supervisor SafetyAgent请求绑定schema6权威token与挑战nonce",
+            Run("Supervisor SafetyAgent请求绑定schema5会话permit与挑战nonce",
                 SupervisorSafetyAgentProtocolBindsAuthority, ref passed);
-            Run("Supervisor权威终态读取绑定固定token并精确往返",
-                SupervisorSafetyAuthorityReadProtocolBindsFixedToken,
-                ref passed);
-            Run("正式重启门禁只接受Supervisor权威且开发态保留证据镜像",
-                FormalRecoveryRequiresSupervisorSafetyAuthority,
-                ref passed);
-            Run("主程序只接受Supervisor单次capability并拒绝直启旧schema、PID复用和错误EXE哈希",
-                MainLaunchCapabilityGateRejectsInvalidBindings, ref passed);
-            Run("Supervisor恢复拉起协议完整绑定原intent、Session、permit和authority",
-                SupervisorRecoveryMainLaunchProtocolBindsDurableAuthority,
-                ref passed);
-            Run("schema6权威回执拒绝镜像竞争、revision漂移和单字段篡改",
-                SupervisorSafetyAuthorityRejectsCompetingEvidenceAndTamper,
-                ref passed);
-            Run("Supervisor P0告警请求绑定schema6身份且静音不等于清除锁存",
+            Run("Supervisor P0告警请求绑定schema5身份且静音不等于清除锁存",
                 SupervisorP0AlarmProtocolPreservesLatchSemantics, ref passed);
             Run("Supervisor正式安装读取ProgramData而开发运行读取相邻Config",
                 WatchdogRuntimeConfigPathMatchesApplicationPolicy, ref passed);
@@ -105,51 +89,25 @@ namespace AdaptiveControlTests
             }
         }
 
-        private static void FormalRecoveryRequiresSupervisorSafetyAuthority()
-        {
-            var root = Path.Combine(
-                Path.GetTempPath(),
-                "epb-safety-authority-" + Guid.NewGuid().ToString("N").Substring(0, 8));
-            var formal = Path.Combine(root, "formal");
-            var development = Path.Combine(root, "development");
-            Directory.CreateDirectory(formal);
-            Directory.CreateDirectory(development);
-            try
-            {
-                var formalExecutable = Path.Combine(formal, "MTTFTest.exe");
-                var developmentExecutable = Path.Combine(development, "MTTFTest.exe");
-                Assert(!WatchdogHost.RequiresSupervisorSafetyAuthority(
-                        formalExecutable),
-                    "没有正式模式标记时不应强制Supervisor权威读取");
-                File.WriteAllText(
-                    Path.Combine(
-                        formal,
-                        WatchdogRuntimeConfigPaths.FormalModeMarkerName),
-                    string.Empty);
-                Assert(WatchdogHost.RequiresSupervisorSafetyAuthority(
-                        formalExecutable),
-                    "正式模式标记没有切换到Supervisor唯一授权源");
-                Assert(!WatchdogHost.RequiresSupervisorSafetyAuthority(
-                        developmentExecutable),
-                    "开发目录被相邻正式目录的标记错误污染");
-            }
-            finally
-            {
-                TryDeleteDirectory(root);
-            }
-        }
-
         private static void SafetyAgentUsesSnapshotAndResumesStages()
         {
             using (var fixture = SafetyFixture.Create())
             {
+                var binding = fixture.ReadReceipt();
+                binding.MainExecutableSha256 = binding.MainExecutableSha256.ToUpperInvariant();
+                binding.SafetyAgentExecutableSha256 = binding.SafetyAgentExecutableSha256.ToUpperInvariant();
+                SafetyAgentRunner.ValidateBinding(binding, fixture.Snapshot);
+                binding.SafetyAgentExecutableSha256 = new string('0', 64);
+                var invalidRejected = false;
+                try { SafetyAgentRunner.ValidateBinding(binding, fixture.Snapshot); }
+                catch (InvalidDataException) { invalidRejected = true; }
+                Assert(invalidRejected, "真正不匹配的SafetyAgent摘要未被拒绝。");
                 MtEmbTest.ClsGlobal.DaqFrequency = 0;
                 MtEmbTest.ClsGlobal.SamplesPerChannel = 0;
                 var factory = new RecordingHardwareFactory(failFirstPowerConfirmation: true);
 
                 var first = SafetyAgentRunner.Run(fixture.Arguments, factory);
-                Assert(first == 20,
-                    "首次电源确认失败未归入可重试硬件失败。ExitCode=" + first);
+                Assert(first == 20, "首次电源确认失败未归入可重试硬件失败。");
                 var firstReceipt = fixture.ReadReceipt();
                 Assert(firstReceipt.Stage == WatchdogSafetyStage.AoZeroConfirmed &&
                        firstReceipt.State == WatchdogSafetyHandoffState.WorkerStarted &&
@@ -157,8 +115,7 @@ namespace AdaptiveControlTests
                     "阶段回执未停留在最后一个已确认安全阶段。");
 
                 var second = SafetyAgentRunner.Run(fixture.Arguments, factory);
-                Assert(second == 0,
-                    "相同Permit未能从最后有效阶段继续完成。ExitCode=" + second);
+                Assert(second == 0, "相同Permit未能从最后有效阶段继续完成。");
                 var completed = fixture.ReadReceipt();
                 Assert(completed.IsSafetyCompleted &&
                        completed.Stage == WatchdogSafetyStage.Completed &&
@@ -176,26 +133,6 @@ namespace AdaptiveControlTests
                 Assert(SafetyAgentRunner.Run(fixture.Arguments, factory) == 0 &&
                        factory.CreateCount == createCount,
                     "已完成回执被重复消费并再次打开硬件。");
-            }
-        }
-
-        private static void AuthorityStorePreservesNumericIdentity()
-        {
-            using (var fixture = SafetyFixture.Create())
-            {
-                var receipt = fixture.ReadReceipt();
-                receipt.Revision++;
-                receipt.StageMonotonicElapsedMs = 77.679864632748;
-                var stored = SupervisorSafetyAuthorityStore.Advance(fixture.AuthorityDirectory,
-                    fixture.AuthorityId, fixture.AuthorityRevision, fixture.AuthorityCanonicalSha256, receipt);
-                Assert(stored.IsValid() && BitConverter.DoubleToInt64Bits(stored.Receipt.StageMonotonicElapsedMs) ==
-                    BitConverter.DoubleToInt64Bits(receipt.StageMonotonicElapsedMs), "真实Store写入/读回漂移");
-                var json = new JavaScriptSerializer();
-                var tampered = json.Deserialize<SupervisorSafetyAuthorityRecord>(File.ReadAllText(fixture.AuthorityReceiptPath));
-                tampered.ReceiptCanonicalSha256 = new string('e', 64);
-                File.WriteAllText(fixture.AuthorityReceiptPath, json.Serialize(tampered));
-                Assert(!SupervisorSafetyAuthorityStore.TryRead(fixture.AuthorityDirectory, fixture.AuthorityId,
-                    out _, out var failure) && failure.Contains("ReceiptCanonicalSha256Mismatch"), "篡改被放过或诊断没有指出哈希字段");
             }
         }
 
@@ -223,7 +160,7 @@ namespace AdaptiveControlTests
             using (var fixture = SafetyFixture.Create())
             {
                 var receipt = fixture.ReadReceipt();
-                receipt.SchemaVersion = SupervisorProtocol.SchemaVersion;
+                receipt.SchemaVersion = 5;
                 receipt.CrashRecovery = true;
                 receipt.OldProcessExitProven = true;
                 receipt.OldProcessId = 43210;
@@ -238,19 +175,16 @@ namespace AdaptiveControlTests
                     WatchdogDataAuditState.CrashRepairRequired;
                 receipt.PersistenceDrained = false;
                 receipt.Revision++;
-                fixture.WriteReceipt(receipt);
+                WatchdogSafetyHandoffReceiptStore.WriteThrough(
+                    fixture.JournalDirectory,
+                    receipt);
 
                 var factory = new RecordingHardwareFactory(
                     failFirstPowerConfirmation: false);
-                var exitCode = SafetyAgentRunner.Run(fixture.Arguments, factory);
-                var afterRun = fixture.ReadReceipt();
-                Assert(exitCode == 0,
-                    "独立SafetyAgent拒绝了强杀恢复schema6权威回执：Exit=" +
-                    exitCode + ";State=" + afterRun.State + ";Stage=" +
-                    afterRun.Stage + ";Code=" + afterRun.FailureCode +
-                    ";Detail=" + afterRun.Detail);
+                Assert(SafetyAgentRunner.Run(fixture.Arguments, factory) == 0,
+                    "独立SafetyAgent拒绝了强杀恢复schema5回执");
                 var completed = fixture.ReadReceipt();
-                Assert(completed.SchemaVersion == SupervisorProtocol.SchemaVersion &&
+                Assert(completed.SchemaVersion == 5 &&
                        completed.CrashRecovery &&
                        completed.OldProcessExitProven &&
                        !completed.PersistenceDrained &&
@@ -277,14 +211,7 @@ namespace AdaptiveControlTests
                     Arguments = "--session-id " + Quote(fixture.SessionId) +
                                 " --handoff-id " + Quote(fixture.HandoffId) +
                                 " --handoff-nonce " + Quote(fixture.Nonce) +
-                                " --journal-directory " + Quote(fixture.JournalDirectory) +
-                                " --authority-id " + Quote(fixture.AuthorityId) +
-                                " --authority-receipt " +
-                                Quote(fixture.AuthorityReceiptPath) +
-                                " --authority-revision " +
-                                fixture.AuthorityRevision +
-                                " --authority-sha256 " +
-                                Quote(fixture.AuthorityCanonicalSha256),
+                                " --journal-directory " + Quote(fixture.JournalDirectory),
                     WorkingDirectory = Path.GetDirectoryName(executable),
                     UseShellExecute = false,
                     CreateNoWindow = true
@@ -293,8 +220,7 @@ namespace AdaptiveControlTests
                     Assert(process != null && process.WaitForExit(10000),
                         "正式SafetyAgent无效配置测试超时。");
                     Assert(process.ExitCode == 10,
-                        "正式SafetyAgent未以配置无效退出码拒绝篡改快照：Exit=" +
-                        process.ExitCode + "。");
+                        "正式SafetyAgent未以配置无效退出码拒绝篡改快照。");
                 }
                 var receipt = fixture.ReadReceipt();
                 Assert(receipt.State == WatchdogSafetyHandoffState.Failed &&
@@ -380,9 +306,6 @@ namespace AdaptiveControlTests
                     PermitId = Guid.NewGuid().ToString("N"),
                     HandoffId = Guid.NewGuid().ToString("N"),
                     HandoffNonceSha256 = new string('A', 64),
-                    AuthorityId = Guid.NewGuid().ToString("N"),
-                    AuthorityReceiptRevision = 17,
-                    AuthorityReceiptCanonicalSha256 = new string('C', 64),
                     ExecutablePath = Path.Combine(
                         AppDomain.CurrentDomain.BaseDirectory,
                         "MTTFTest.SafetyAgent.exe"),
@@ -394,7 +317,7 @@ namespace AdaptiveControlTests
                 };
             }
             Assert(source.IsStructurallyValid(),
-                "合法schema6 SafetyAgent监督请求被拒绝。");
+                "合法schema5 SafetyAgent监督请求被拒绝。");
 
             using (var stream = new MemoryStream())
             {
@@ -408,19 +331,12 @@ namespace AdaptiveControlTests
                         SupervisorSafetyAgentLaunchRequest.ReadBodyFrom(reader, magic);
                     Assert(roundTrip.IsStructurallyValid() &&
                            roundTrip.SchemaVersion ==
-                               SupervisorProtocol.SchemaVersion &&
+                               WatchdogJournalPolicy.CurrentSchemaVersion &&
                            roundTrip.PermitGeneration == source.PermitGeneration &&
                            string.Equals(roundTrip.PermitId, source.PermitId,
                                StringComparison.Ordinal) &&
                            string.Equals(roundTrip.ChallengeNonce,
-                               source.ChallengeNonce, StringComparison.Ordinal) &&
-                           string.Equals(roundTrip.AuthorityId,
-                               source.AuthorityId, StringComparison.Ordinal) &&
-                           roundTrip.AuthorityReceiptRevision ==
-                               source.AuthorityReceiptRevision &&
-                           string.Equals(roundTrip.AuthorityReceiptCanonicalSha256,
-                               source.AuthorityReceiptCanonicalSha256,
-                               StringComparison.Ordinal),
+                               source.ChallengeNonce, StringComparison.Ordinal),
                         "SafetyAgent监督协议往返丢失schema/permit/challenge身份。");
                 }
             }
@@ -428,286 +344,6 @@ namespace AdaptiveControlTests
             source.Arguments += " --tampered true";
             Assert(!source.IsStructurallyValid(),
                 "参数被篡改但未更新哈希的SafetyAgent请求仍被接受。");
-        }
-
-        private static void
-            SupervisorSafetyAuthorityReadProtocolBindsFixedToken()
-        {
-            SupervisorSafetyAuthorityReadRequest source;
-            using (var current = Process.GetCurrentProcess())
-            {
-                source = new SupervisorSafetyAuthorityReadRequest
-                {
-                    RequestId = Guid.NewGuid().ToString("N"),
-                    ChallengeNonce = Guid.NewGuid().ToString("N"),
-                    RequesterProcessId = current.Id,
-                    RequesterProcessStartUtcTicks =
-                        current.StartTime.ToUniversalTime().Ticks,
-                    AuthorityId = Guid.NewGuid().ToString("N"),
-                    SessionId = Guid.NewGuid().ToString("N"),
-                    HandoffId = Guid.NewGuid().ToString("N"),
-                    PermitGeneration = 19,
-                    PermitId = Guid.NewGuid().ToString("N"),
-                    InitialReceiptRevision = 7,
-                    InitialReceiptCanonicalSha256 = new string('A', 64)
-                };
-            }
-            Assert(source.IsStructurallyValid(),
-                "合法Supervisor权威读取请求被结构门禁拒绝。");
-
-            using (var stream = new MemoryStream())
-            {
-                using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
-                    source.WriteTo(writer);
-                stream.Position = 0;
-                using (var reader = new BinaryReader(stream, Encoding.UTF8, true))
-                {
-                    var magic = SupervisorProtocol.ReadRequestMagic(reader);
-                    var roundTrip =
-                        SupervisorSafetyAuthorityReadRequest.ReadBodyFrom(
-                            reader,
-                            magic);
-                    Assert(roundTrip.IsStructurallyValid() &&
-                           roundTrip.AuthorityId == source.AuthorityId &&
-                           roundTrip.SessionId == source.SessionId &&
-                           roundTrip.HandoffId == source.HandoffId &&
-                           roundTrip.PermitGeneration ==
-                               source.PermitGeneration &&
-                           roundTrip.PermitId == source.PermitId &&
-                           roundTrip.InitialReceiptRevision ==
-                               source.InitialReceiptRevision &&
-                           roundTrip.InitialReceiptCanonicalSha256 ==
-                               source.InitialReceiptCanonicalSha256,
-                        "权威读取请求往返丢失固定token字段。");
-                }
-            }
-
-            var receiptJson = "{\"State\":\"Completed\",\"Revision\":12}";
-            var response = new SupervisorSafetyAuthorityReadResponse
-            {
-                RequestId = source.RequestId,
-                ChallengeNonce = source.ChallengeNonce,
-                Accepted = true,
-                AuthorityId = source.AuthorityId,
-                SessionId = source.SessionId,
-                HandoffId = source.HandoffId,
-                ReceiptRevision = 12,
-                ReceiptCanonicalSha256 =
-                    SupervisorProtocol.ComputeTextSha256(receiptJson),
-                ReceiptJson = receiptJson,
-                Detail = "SupervisorSafetyAuthorityRead"
-            };
-            using (var stream = new MemoryStream())
-            {
-                using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
-                    response.WriteTo(writer);
-                stream.Position = 0;
-                using (var reader = new BinaryReader(stream, Encoding.UTF8, true))
-                {
-                    var roundTrip =
-                        SupervisorSafetyAuthorityReadResponse.ReadFrom(reader);
-                    Assert(roundTrip.SchemaVersion ==
-                               SupervisorProtocol.SchemaVersion &&
-                           roundTrip.Accepted &&
-                           roundTrip.RequestId == source.RequestId &&
-                           roundTrip.ChallengeNonce == source.ChallengeNonce &&
-                           roundTrip.AuthorityId == source.AuthorityId &&
-                           roundTrip.SessionId == source.SessionId &&
-                           roundTrip.HandoffId == source.HandoffId &&
-                           roundTrip.ReceiptRevision == 12 &&
-                           roundTrip.ReceiptJson == receiptJson &&
-                           roundTrip.ReceiptCanonicalSha256 ==
-                               SupervisorProtocol.ComputeTextSha256(receiptJson),
-                        "权威终态响应往返丢失revision或canonical hash。");
-                }
-            }
-
-            source.InitialReceiptCanonicalSha256 = "tampered";
-            Assert(!source.IsStructurallyValid(),
-                "被篡改的固定authority token仍通过权威读取门禁。");
-        }
-
-        private static void MainLaunchCapabilityGateRejectsInvalidBindings()
-        {
-            string failure;
-            Assert(!MtEmbTest.LaunchCapabilityGate.TryValidate(
-                       Array.Empty<string>(), out failure) &&
-                   failure == "LaunchCapabilitySchemaMismatch",
-                "主程序直接运行未被明确拒绝：" + failure);
-
-            var capabilityId = Guid.NewGuid().ToString("N");
-            var sessionId = Guid.NewGuid().ToString("N");
-            var permitId = Guid.NewGuid().ToString("N");
-            var nonce = Guid.NewGuid().ToString("N");
-            Assert(!MtEmbTest.LaunchCapabilityGate.TryValidate(new[]
-                   {
-                       SessionAgentProtocol.CapabilityArgument, capabilityId,
-                       SessionAgentProtocol.NonceArgument, nonce,
-                       SessionAgentProtocol.SessionArgument, sessionId,
-                       SessionAgentProtocol.SchemaArgument, "5"
-                   }, out failure) &&
-                   failure == "LaunchCapabilitySchemaMismatch",
-                "旧schema capability未被明确拒绝：" + failure);
-
-            using (var process = Process.GetCurrentProcess())
-            {
-                var executable = Path.GetFullPath(process.MainModule.FileName);
-                var startTicks = process.StartTime.ToUniversalTime().Ticks;
-                var now = DateTime.UtcNow.Ticks;
-                var canonical = new SessionLaunchCapability
-                {
-                    CapabilityId = capabilityId,
-                    SessionId = sessionId,
-                    PermitGeneration = 7,
-                    PermitId = permitId,
-                    DesktopSessionId = process.SessionId,
-                    ExecutablePath = executable,
-                    ExecutableSha256 = SupervisorProtocol.ComputeSha256(executable),
-                    Arguments = "--test-launch-capability",
-                    WorkingDirectory = Path.GetDirectoryName(executable),
-                    LaunchNonce = nonce,
-                    IssuedUtcTicks = now - TimeSpan.FromSeconds(1).Ticks,
-                    ExpiresUtcTicks = now + TimeSpan.FromMinutes(1).Ticks,
-                    IssuerProcessId = process.Id,
-                    IssuerProcessStartUtcTicks = startTicks
-                };
-                canonical.ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(
-                    canonical.Arguments);
-                var record = CreateConsumptionRecord(
-                    canonical, process.Id, startTicks);
-
-                Assert(MtEmbTest.LaunchCapabilityGate.ValidateBoundCapability(
-                           canonical, record, capabilityId, nonce, sessionId,
-                           process.Id, startTicks, process.SessionId, executable,
-                           now, out failure),
-                    "合法Supervisor capability未通过字段级门禁：" + failure);
-
-                Assert(!MtEmbTest.LaunchCapabilityGate.ValidateBoundCapability(
-                           canonical, record, capabilityId, nonce, sessionId,
-                           process.Id, startTicks + 1, process.SessionId, executable,
-                           now, out failure) &&
-                       failure == "LaunchCapabilityProcessIdentityMismatch",
-                    "PID复用StartTicks未被拒绝：" + failure);
-
-                var correctHash = canonical.ExecutableSha256;
-                canonical.ExecutableSha256 = new string('a', 64);
-                Assert(!MtEmbTest.LaunchCapabilityGate.ValidateBoundCapability(
-                           canonical, record, capabilityId, nonce, sessionId,
-                           process.Id, startTicks, process.SessionId, executable,
-                           now, out failure) &&
-                       failure == "LaunchCapabilityExecutableMismatch",
-                    "错误EXE哈希未被拒绝：" + failure);
-                canonical.ExecutableSha256 = correctHash;
-
-                record.PermitId = Guid.NewGuid().ToString("N");
-                Assert(!MtEmbTest.LaunchCapabilityGate.ValidateBoundCapability(
-                           canonical, record, capabilityId, nonce, sessionId,
-                           process.Id, startTicks, process.SessionId, executable,
-                           now, out failure) &&
-                       failure == "LaunchCapabilityBindingMismatch",
-                    "consumption permit字段篡改未被拒绝：" + failure);
-            }
-        }
-
-        private static SessionLaunchConsumptionRecord CreateConsumptionRecord(
-            SessionLaunchCapability capability,
-            int processId,
-            long processStartUtcTicks)
-        {
-            return new SessionLaunchConsumptionRecord
-            {
-                SchemaVersion = SessionAgentProtocol.SchemaVersion,
-                CapabilityId = capability.CapabilityId,
-                SessionId = capability.SessionId,
-                PermitGeneration = capability.PermitGeneration,
-                PermitId = capability.PermitId,
-                LaunchNonce = capability.LaunchNonce,
-                ExecutablePath = capability.ExecutablePath,
-                ExecutableSha256 = capability.ExecutableSha256,
-                ArgumentsSha256 = capability.ArgumentsSha256,
-                State = "Started",
-                ProcessId = processId,
-                ProcessStartUtcTicks = processStartUtcTicks
-            };
-        }
-
-        private static void
-            SupervisorRecoveryMainLaunchProtocolBindsDurableAuthority()
-        {
-            SupervisorMainLaunchRequest source;
-            using (var process = Process.GetCurrentProcess())
-            {
-                var executable = Path.GetFullPath(process.MainModule.FileName);
-                source = new SupervisorMainLaunchRequest
-                {
-                    RequestId = Guid.NewGuid().ToString("N"),
-                    ChallengeNonce = Guid.NewGuid().ToString("N"),
-                    RequesterProcessId = process.Id,
-                    RequesterProcessStartUtcTicks =
-                        process.StartTime.ToUniversalTime().Ticks,
-                    DesktopSessionId =
-                        SessionAgentProtocol.RegisteredDesktopSessionId,
-                    ExecutablePath = executable,
-                    ExecutableSha256 =
-                        SupervisorProtocol.ComputeSha256(executable),
-                    Arguments = "--recovery-protocol-test",
-                    WorkingDirectory = Path.GetDirectoryName(executable),
-                    IsRecoveryLaunch = true,
-                    RecoveryCapabilityId = Guid.NewGuid().ToString("N"),
-                    RecoverySessionId = Guid.NewGuid().ToString("N"),
-                    RecoveryPermitGeneration = 17,
-                    RecoveryPermitId = Guid.NewGuid().ToString("N"),
-                    RecoveryAuthorityRevision = 23,
-                    RecoveryAuthoritySha256 = new string('A', 64)
-                };
-            }
-            source.ArgumentsSha256 = SupervisorProtocol.ComputeTextSha256(
-                source.Arguments);
-            Assert(source.IsStructurallyValid(),
-                "完整恢复拉起绑定被结构门禁拒绝。");
-
-            using (var stream = new MemoryStream())
-            {
-                using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
-                    source.WriteTo(writer);
-                stream.Position = 0;
-                using (var reader = new BinaryReader(stream, Encoding.UTF8, true))
-                {
-                    var magic = reader.ReadString();
-                    var roundTrip = SupervisorMainLaunchRequest.ReadBodyFrom(
-                        reader, magic);
-                    Assert(roundTrip.IsStructurallyValid() &&
-                           roundTrip.IsRecoveryLaunch &&
-                           roundTrip.DesktopSessionId ==
-                               SessionAgentProtocol.RegisteredDesktopSessionId &&
-                           roundTrip.RecoveryCapabilityId ==
-                               source.RecoveryCapabilityId &&
-                           roundTrip.RecoverySessionId ==
-                               source.RecoverySessionId &&
-                           roundTrip.RecoveryPermitGeneration ==
-                               source.RecoveryPermitGeneration &&
-                           roundTrip.RecoveryPermitId ==
-                               source.RecoveryPermitId &&
-                           roundTrip.RecoveryAuthorityRevision ==
-                               source.RecoveryAuthorityRevision &&
-                           roundTrip.RecoveryAuthoritySha256 ==
-                               source.RecoveryAuthoritySha256,
-                        "Supervisor恢复拉起协议往返丢失权威绑定字段。");
-                }
-            }
-
-            using (var process = Process.GetCurrentProcess())
-                source.DesktopSessionId = process.SessionId;
-            Assert(!source.IsStructurallyValid(),
-                "恢复请求不得重新猜测当前控制台桌面会话。");
-            source.DesktopSessionId =
-                SessionAgentProtocol.RegisteredDesktopSessionId;
-            source.RecoveryPermitId = string.Empty;
-            Assert(!source.IsStructurallyValid(),
-                "缺失permit的恢复拉起请求仍被接受。");
-            source.IsRecoveryLaunch = false;
-            Assert(!source.IsStructurallyValid(),
-                "初始启动请求夹带恢复authority字段仍被接受。");
         }
 
         private static void SupervisorP0AlarmProtocolPreservesLatchSemantics()
@@ -742,7 +378,7 @@ namespace AdaptiveControlTests
                     var roundTrip = SupervisorP0AlarmRequest.ReadBodyFrom(reader, magic);
                     Assert(roundTrip.IsStructurallyValid() &&
                            roundTrip.SchemaVersion ==
-                               SupervisorProtocol.SchemaVersion &&
+                               WatchdogJournalPolicy.CurrentSchemaVersion &&
                            roundTrip.Action == SupervisorP0AlarmAction.MuteBuzzer &&
                            roundTrip.Action != SupervisorP0AlarmAction.ClearTransient &&
                            string.Equals(roundTrip.EventId, source.EventId,
@@ -756,76 +392,6 @@ namespace AdaptiveControlTests
             source.Action = (SupervisorP0AlarmAction)999;
             Assert(!source.IsStructurallyValid(),
                 "未定义的P0告警动作仍被结构门禁接受。");
-        }
-
-        private static void SupervisorSafetyAuthorityRejectsCompetingEvidenceAndTamper()
-        {
-            Assert(SupervisorOriginalProcessIdentityPolicy.Matches(
-                       1201, 638924256000000000, 1201, 638924256000000000) &&
-                   !SupervisorOriginalProcessIdentityPolicy.Matches(
-                       1201, 638924256000000000, 1202, 638924256000000000) &&
-                   !SupervisorOriginalProcessIdentityPolicy.Matches(
-                       1201, 638924256000000000, 1201, 638924256000000001),
-                "Supervisor未把恢复回执中的旧PID/StartTicks精确绑定到原主进程身份。");
-            using (var fixture = SafetyFixture.Create())
-            {
-                var serializer = new JavaScriptSerializer();
-                var forgedMirror = fixture.ReadReceipt();
-                forgedMirror.Revision += 1000;
-                forgedMirror.HandoffId = Guid.NewGuid().ToString("N");
-                var mirrorPath = WatchdogJournalPaths.ProjectSafetyHandoffPath(
-                    fixture.JournalDirectory,
-                    fixture.SessionId);
-                File.WriteAllText(
-                    mirrorPath,
-                    serializer.Serialize(forgedMirror),
-                    new UTF8Encoding(false));
-
-                var authoritative = fixture.ReadReceipt();
-                Assert(authoritative.HandoffId == fixture.HandoffId &&
-                       authoritative.Revision < forgedMirror.Revision,
-                    "项目证据镜像竞争覆盖了Supervisor唯一权威回执。");
-
-                var next = authoritative;
-                next.Detail = "revision-mismatch-probe";
-                next.Revision++;
-                var revisionRejected = false;
-                try
-                {
-                    SupervisorSafetyAuthorityStore.Advance(
-                        fixture.AuthorityDirectory,
-                        fixture.AuthorityId,
-                        fixture.AuthorityRevision + 1,
-                        fixture.AuthorityCanonicalSha256,
-                        next);
-                }
-                catch (InvalidDataException ex)
-                {
-                    revisionRejected = ex.Message.Contains(
-                        "InitialRevisionMismatch");
-                }
-                Assert(revisionRejected,
-                    "固定authority token的revision漂移未被明确拒绝。");
-
-                var authorityJson = File.ReadAllText(
-                    fixture.AuthorityReceiptPath,
-                    Encoding.UTF8);
-                authorityJson = authorityJson.Replace(
-                    fixture.HandoffId,
-                    Guid.NewGuid().ToString("N"));
-                File.WriteAllText(
-                    fixture.AuthorityReceiptPath,
-                    authorityJson,
-                    new UTF8Encoding(false));
-                SupervisorSafetyAuthorityRecord ignored;
-                string failure;
-                Assert(!SupervisorSafetyAuthorityStore.TryRead(
-                           fixture.AuthorityDirectory,
-                           fixture.AuthorityId,
-                           out ignored,
-                           out failure),
-                    "权威回执单字段篡改仍被接受。");
-            }
         }
 
         private static void DaqRejoinGateRollsBackAndRecovers()
@@ -870,11 +436,11 @@ namespace AdaptiveControlTests
                        "RecoveryLaunchFailed:Process.Start", false) &&
                    WatchdogHost.IsAutomaticHalfOpenEligible(
                        "RecoveryAttachFailed:Timeout", false) &&
-                   WatchdogHost.IsAutomaticHalfOpenEligible(
+                   !WatchdogHost.IsAutomaticHalfOpenEligible(
                        "SafetyAgentConfigInvalid", false) &&
                    !WatchdogHost.IsAutomaticHalfOpenEligible(
                        "RecoveryLaunchFailed:IdentityMismatch", true),
-                "软件失败未保留重新取证的冷却意图，或永久身份失败被放行。");
+                "Circuit half-open混入安全证据失败或永久身份失败。");
         }
 
         private static void CircuitOpenIsAttachmentIndependentAndSummarized()
@@ -1026,6 +592,10 @@ namespace AdaptiveControlTests
             return name.Equals("mscorlib", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("netstandard", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("WindowsBase", StringComparison.OrdinalIgnoreCase) ||
+                   // The independent Task Scheduler COM launcher uses the
+                   // framework dynamic binder; this is not a controller/UI
+                   // project reference. Keep the allowance exact, not Microsoft.*.
+                   name.Equals("Microsoft.CSharp", StringComparison.OrdinalIgnoreCase) ||
                    name.StartsWith("System", StringComparison.OrdinalIgnoreCase) ||
                    name.StartsWith("Microsoft.Win32", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("MTTFTest.SafetyHardware", StringComparison.OrdinalIgnoreCase) ||
@@ -1476,11 +1046,6 @@ namespace AdaptiveControlTests
             internal string SessionId;
             internal string HandoffId;
             internal string Nonce;
-            internal string AuthorityDirectory;
-            internal string AuthorityId;
-            internal string AuthorityReceiptPath;
-            internal long AuthorityRevision;
-            internal string AuthorityCanonicalSha256;
             internal WatchdogSafetyConfigSnapshotResult Snapshot;
             internal SafetyAgentArguments Arguments;
 
@@ -1494,9 +1059,6 @@ namespace AdaptiveControlTests
                     Nonce = Guid.NewGuid().ToString("N")
                 };
                 fixture.JournalDirectory = Path.Combine(fixture.RootDirectory, "journal");
-                fixture.AuthorityDirectory = Path.Combine(
-                    fixture.RootDirectory,
-                    "supervisor-authority");
                 var appConfig = Path.Combine(fixture.RootDirectory, "app", "Config");
                 var projectConfig = Path.Combine(fixture.RootDirectory, "project", "Config");
                 Directory.CreateDirectory(fixture.JournalDirectory);
@@ -1577,53 +1139,23 @@ namespace AdaptiveControlTests
                 };
                 WatchdogSafetyHandoffReceiptStore.WriteThrough(
                     fixture.JournalDirectory, receipt);
-                var authority = SupervisorSafetyAuthorityStore.CreateOrRead(
-                    fixture.AuthorityDirectory,
-                    fixture.JournalDirectory,
-                    receipt);
-                fixture.AuthorityId = authority.AuthorityId;
-                fixture.AuthorityReceiptPath =
-                    SupervisorSafetyAuthorityStore.GetPath(
-                        fixture.AuthorityDirectory,
-                        authority.AuthorityId);
-                fixture.AuthorityRevision = authority.InitialReceiptRevision;
-                fixture.AuthorityCanonicalSha256 =
-                    authority.InitialReceiptCanonicalSha256;
                 Assert(SafetyAgentArguments.TryParse(new[]
                 {
                     "--session-id", fixture.SessionId,
                     "--handoff-id", fixture.HandoffId,
                     "--handoff-nonce", fixture.Nonce,
-                    "--journal-directory", fixture.JournalDirectory,
-                    "--authority-id", fixture.AuthorityId,
-                    "--authority-receipt", fixture.AuthorityReceiptPath,
-                    "--authority-revision", fixture.AuthorityRevision.ToString(),
-                    "--authority-sha256", fixture.AuthorityCanonicalSha256
+                    "--journal-directory", fixture.JournalDirectory
                 }, out fixture.Arguments), "SafetyAgent测试参数无效。");
                 return fixture;
             }
 
             internal WatchdogSafetyHandoffReceipt ReadReceipt()
             {
-                SupervisorSafetyAuthorityRecord authority;
-                string failure;
-                Assert(SupervisorSafetyAuthorityStore.TryRead(
-                           AuthorityDirectory,
-                           AuthorityId,
-                           out authority,
-                           out failure),
-                    "无法读取Supervisor权威安全回执：" + failure);
-                return authority.Receipt;
-            }
-
-            internal void WriteReceipt(WatchdogSafetyHandoffReceipt receipt)
-            {
-                SupervisorSafetyAuthorityStore.Advance(
-                    AuthorityDirectory,
-                    AuthorityId,
-                    AuthorityRevision,
-                    AuthorityCanonicalSha256,
-                    receipt);
+                WatchdogSafetyHandoffReceipt receipt;
+                Assert(WatchdogSafetyHandoffReceiptStore.TryRead(
+                           JournalDirectory, SessionId, out receipt),
+                    "无法读取安全阶段回执。");
+                return receipt;
             }
 
             public void Dispose()

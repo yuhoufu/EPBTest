@@ -210,8 +210,8 @@ namespace Controller
         public static string GetOperatorMessage(bool stopTimedOut)
         {
             return stopTimedOut
-                ? "停止试验超过安全截止：本进程已永久禁止再次开始。Watchdog 安全接管状态以回执为准，人工停止后不会自动续跑。"
-                : "停止试验已安全收口：本进程已永久禁止再次开始，请关闭软件后重新启动，软件将保持待机。";
+                ? "停止试验超过安全截止：本进程已永久禁止再次开始，正在等待 Watchdog 完成安全接管。"
+                : "停止试验已安全收口，但诊断状态要求重启：本进程已永久禁止再次开始；请等待 Watchdog 重启，或关闭软件后重新启动。";
         }
     }
 
@@ -1317,6 +1317,37 @@ namespace Controller
         NotRequiredNoActiveTrial = 2,
         CommunicationUnavailableSkipped = 3,
         Failed = 4
+    }
+
+    public sealed class ManualCloseSafetyReceipt
+    {
+        internal static bool IsSafeSample(bool usable, double value, double limit,
+            double ageMs, double maximumAgeMs, DateTime sampleUtc, DateTime notBeforeUtc)
+        {
+            return usable && !double.IsNaN(value) && !double.IsInfinity(value) &&
+                   !double.IsNaN(limit) && !double.IsInfinity(limit) && limit > 0 &&
+                   ageMs >= 0 && ageMs <= maximumAgeMs && maximumAgeMs > 0 &&
+                   sampleUtc != default(DateTime) && sampleUtc >= notBeforeUtc &&
+                   Math.Abs(value) <= limit;
+        }
+
+        internal ManualCloseSafetyReceipt(Guid transactionId, Guid runId, long runEpoch,
+            string commandId, string evidence)
+        {
+            TransactionId = transactionId;
+            RunId = runId;
+            RunEpoch = runEpoch;
+            CommandId = commandId;
+            Evidence = evidence;
+            CapturedUtc = DateTime.UtcNow;
+        }
+
+        public Guid TransactionId { get; }
+        public Guid RunId { get; }
+        public long RunEpoch { get; }
+        public string CommandId { get; }
+        public string Evidence { get; }
+        public DateTime CapturedUtc { get; }
     }
 
     public sealed class StopSafetyResult

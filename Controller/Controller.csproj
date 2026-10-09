@@ -1,7 +1,6 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
-  <Import Project="..\Build\UnattendedVersion.props" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
@@ -80,6 +79,7 @@
     <Compile Include="EpbCycleRunner.Advance.Sync.cs" />
     <Compile Include="EpbCycleRunner.cs" />
     <Compile Include="FormalBatchSlotCoordinator.cs" />
+    <Compile Include="FormalScheduleClock.cs" />
     <Compile Include="FaultIsolatedPhaseWork.cs" />
     <Compile Include="DoControlTrace.cs" />
     <Compile Include="DaqIncidentLatch.cs" />
@@ -120,7 +120,6 @@
     <Compile Include="EpbManager.AdaptiveTrace.cs" />
     <Compile Include="EpbManager.FieldMetrics.cs" />
     <Compile Include="EpbManager.TimerRuntimeHealth.cs" />
-    <Compile Include="EpbManager.ExecutionProgress.cs" />
     <Compile Include="EpbManager.DaqLiveness.cs" />
     <Compile Include="EpbManager.StopSafetyHardening.cs" />
     <Compile Include="StopSafetyTransactionRunner.cs" />

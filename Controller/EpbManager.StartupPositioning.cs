@@ -258,23 +258,6 @@ namespace Controller
                 return async () =>
                 {
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
-                    // The coordinator adjudicates the terminal immediately when
-                    // this body returns. Commit retry readiness while this exact
-                    // owner still holds admission; finally must never reauthorize.
-                    lock (_recoveryAdmissionGate)
-                    {
-                        token.ThrowIfCancellationRequested();
-                        if (IsEnergizationRevoked || runId != _activeBatchId ||
-                            runEpoch != Interlocked.Read(ref _runEpoch) ||
-                            IsChannelEnergized(channel))
-                            throw new OperationCanceledException("StartupRetrySupersededOrOutputNotOff", token);
-                        if (!recoveryIncident.CompleteAfterTerminal(contract =>
-                            CommitRecoveryIncidentStateForRetry(
-                                contract, ChannelRuntimeState.Starting,
-                                "StartupPositioningRetryReady",
-                                "启动定位重试前安全断电已确认，继续当前定位流程。")))
-                            throw new InvalidOperationException("StartupRetryReadyCommitRejected");
-                    }
                 };
             }
 
@@ -318,20 +301,21 @@ namespace Controller
                         $"EPB[{channel}] 启动定位恢复worker启动许可被拒绝。");
                 await recoveryIncident.WorkerTask.ConfigureAwait(false);
             }
-            catch
+            finally
             {
-                // Failures are closed by the real coordinator. No retry state
-                // may be published from cancellation/error cleanup.
                 recoveryIncident.CompleteAfterTerminal(contract =>
-                    PublishRecoverySafeTerminal(contract, "StartupRetryFailedOrCancelled",
-                        "启动重试失败或已取消，保持安全停止。"));
-                throw;
+                    CommitRecoveryIncidentStateForRetry(
+                        contract,
+                        ChannelRuntimeState.Starting,
+                        "StartupPositioningRetryReady",
+                        "启动定位重试前安全断电已确认，继续当前定位流程。"));
             }
         }
 
         internal async Task PublishStartupPositioningFailureAsync(StartupPositioningResult result)
         {
             if (result == null || result.Succeeded) return;
+            var faultRunIdentity = _activeRunChainIdentity;
             RefreshStartupPositioningEvidence(result);
             var openCircuit = StartupPositioningFaultPolicy.IsOpenCircuit(result);
             var classification = ClassifyStartupPositioningFailure(
@@ -351,6 +335,20 @@ namespace Controller
             {
                 reason += " OutputOffCommandFailed：保持电源组安全自恢复，断电确认后继续启动定位。";
             }
+            var independentNearZero = openCircuit && NearZeroRecoveryDecisionWriter != null && faultRunIdentity != null;
+            var permanentlyIsolate = false;
+            if (independentNearZero)
+            {
+                // Accepted output and an energization permit do not prove
+                // physical supply voltage. Keep the physical cause unconfirmed.
+                permanentlyIsolate = await Task.Run(() => NearZeroRecoveryDecisionWriter(
+                    faultRunIdentity.RunId, faultRunIdentity.RunEpoch, result.Channel, false, Guid.NewGuid()))
+                    .ConfigureAwait(false);
+                classification = FaultClassification.SoftwareTransient;
+                reason = BuildStartupPositioningFailureReason(result, openCircuit, classification) +
+                    (permanentlyIsolate ? " IndependentNearZeroRetryFailed;PermanentIsolation" :
+                        " IndependentNearZeroRetryRequired;CurrentRunStopped");
+            }
             var fault = new ControlFault(
                 string.IsNullOrWhiteSpace(result.Code) ? "StartupPositioningFailed" : result.Code,
                 reason,
@@ -360,11 +358,12 @@ namespace Controller
                 DateTime.UtcNow,
                 Guid.NewGuid(),
                 classification,
+                independentNearZero ? (permanentlyIsolate ? FaultRecoveryPolicy.NonRecoverableDisableChannel : FaultRecoveryPolicy.CurrentRunDisableChannel) :
                 classification == FaultClassification.HardwareConfirmed
                     ? FaultRecoveryPolicy.CurrentRunDisableChannel
                     : FaultRecoveryPolicy.Recoverable);
 
-            if (classification != FaultClassification.HardwareConfirmed)
+            if (classification != FaultClassification.HardwareConfirmed && !independentNearZero)
             {
                 await RunStartupPositioningFailureIncidentAsync(
                         result,
@@ -397,6 +396,8 @@ namespace Controller
                 FaultScope.Channel);
 
             _alarmStopLatch.TryRequestStop(result.Channel);
+            if (permanentlyIsolate)
+                PersistentlyDisableChannel(result.Channel, result.Code, reason, fault.CorrelationId);
             _log?.Error(
                 $"EPB[{result.Channel}] 启动定位失败并隔离。CorrelationId={fault.CorrelationId:N} {reason}",
                 "报警");

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -26,9 +26,16 @@ namespace AdaptiveControlTests
 
         internal static int RunAll()
         {
+            // Main_Frm validates these settings before starting Runtime. This
+            // standalone console suite has no application config/bootstrap.
+            WatchdogRuntime.ConfigureDaqRuntimeSettings(new Config.DaqRuntimeSettings(
+                Config.DaqRuntimeSettings.DefaultSampleRateHz,
+                Config.DaqRuntimeSettings.DefaultSamplesPerChannel));
             var tests = new Action[]
             {
                 RuntimeDependencyClosureIsComplete,
+                ProductionNeverStartedMonitorAllowsOperatorClose,
+                ProductionMdiCloseChecksBeforeMutatingMonitor,
                 WatchdogTerminalAuthorizationOverridesOnlyLegacyMdiGuard,
                 FailedAttachWithoutUiBindingAllowsMonitorClose,
                 ApplicationExitUsesDedicatedShutdownExpectedMessage,
@@ -741,7 +748,7 @@ namespace AdaptiveControlTests
                 var start = WatchdogRuntime.StartSessionAsync(new[] { 4, 10 })
                     .GetAwaiter().GetResult();
                 Assert(start != null && start.Attached,
-                    "Process-global Runtime/sidecar did not reach exact Attached.");
+                    "Process-global Runtime/sidecar did not reach exact Attached: " + start?.Warning);
                 var before = WatchdogRuntime.CaptureTransportSnapshot();
                 Assert(before != null && before.IsStable && before.Context != null &&
                        before.Engine != null && WatchdogRuntime.IsExactAttachedSnapshot(before),
@@ -1285,7 +1292,7 @@ namespace AdaptiveControlTests
             using (var sta = new StaFormHost())
             using (var sessionA = new WinFormsWatchdogUiProductionSession(sta.Control))
             using (var sessionB = new WinFormsWatchdogUiProductionSession(sta.Control))
-            using (var monitor = new FrmEpbMainMonitor())
+            using (var monitor = new FrmEpbMainMonitor(new Config.DaqRuntimeSettings(2000, 20)))
             {
                 var callback = new ProductionHandler();
                 var bindingA = sessionA.BindReadyAsync(
@@ -1565,6 +1572,94 @@ namespace AdaptiveControlTests
                 PersistenceBoundaryConfirmed = true,
                 LogicalQuiescenceConfirmed = true
             }), "测试无法推进v2完整安全终态");
+        }
+
+        private static void ProductionNeverStartedMonitorAllowsOperatorClose()
+        {
+            using (var sta = new StaFormHost())
+            {
+                var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                sta.Control.BeginInvoke((Action)(() =>
+                {
+                    try
+                    {
+                        using (var monitor = new FrmEpbMainMonitor(new Config.DaqRuntimeSettings(2000, 20)))
+                        {
+                            Assert(monitor.CanAcceptOperatorClose(out var reason),
+                                "未开始试验的真实监控窗拒绝关闭：" + reason);
+                            Assert(!monitor.OperatorClosePending, "只读关闭判定不应提前改变窗体状态");
+                            var flags = System.Reflection.BindingFlags.Instance |
+                                System.Reflection.BindingFlags.NonPublic;
+                            var monitorType = typeof(FrmEpbMainMonitor);
+                            monitorType.GetField("_manualCloseTrialObserved", flags).SetValue(monitor, true);
+                            monitorType.GetField("_operatorStopRequested", flags).SetValue(monitor, 1);
+                            monitorType.GetField("_manualCloseCommandId", flags).SetValue(monitor, "completed-stop");
+                            Assert(!monitor.CanAcceptOperatorClose(out _),
+                                "尚未取得停止安全结果时错误放行");
+                            var owner = (ManualStopExitReceiptOwner)monitorType
+                                .GetField("_manualStopExitReceipt", flags).GetValue(monitor);
+                            Assert(owner.Publish(new StopSafetyResult
+                            {
+                                Outcome = StopSafetyOutcome.CompletedSafe,
+                                LastStage = StopSafetyStage.Completed,
+                                Source = StopSource.ManualUi,
+                                CorrelationId = "completed-stop",
+                                SafetyTransactionId = Guid.NewGuid(),
+                                RunId = Guid.NewGuid(), RunEpoch = 1, SafetyBoundaryGeneration = 1,
+                                MotorOffCommandSucceeded = true, PowerOffConfirmed = true,
+                                PressureSafeConfirmed = true, PersistenceBoundaryConfirmed = true,
+                                LogicalQuiescenceConfirmed = true, CompletedUtc = DateTime.UtcNow
+                            }, "completed-stop"), "无法发布完成的人工停止结果");
+                            Assert(monitor.CanAcceptOperatorClose(out reason) &&
+                                   monitor.CanAcceptOperatorClose(out _) && !monitor.OperatorClosePending,
+                                "已安全停止且无采集器的真实窗体仍要求重新采样：" + reason);
+                            owner.RevokeForNewStart();
+                            Assert(!monitor.CanAcceptOperatorClose(out _),
+                                "新启动撤销后仍复用旧关闭许可");
+                        }
+                        completed.TrySetResult(true);
+                    }
+                    catch (Exception ex) { completed.TrySetException(ex); }
+                }));
+                Assert(completed.Task.Wait(TimeoutMilliseconds), "真实监控窗关闭判定阻塞了 STA 消息泵");
+                completed.Task.GetAwaiter().GetResult();
+            }
+        }
+
+        private sealed class ClosingProbeMonitor : FrmEpbMainMonitor
+        {
+            internal ClosingProbeMonitor() : base(new Config.DaqRuntimeSettings(2000, 20)) { }
+
+            internal FormClosingEventArgs ProbeMdiClose()
+            {
+                var args = new FormClosingEventArgs(CloseReason.MdiFormClosing, false);
+                base.OnFormClosing(args);
+                return args;
+            }
+        }
+
+        private static void ProductionMdiCloseChecksBeforeMutatingMonitor()
+        {
+            using (var sta = new StaFormHost())
+            {
+                var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                sta.Control.BeginInvoke((Action)(() =>
+                {
+                    try
+                    {
+                        using (var monitor = new ClosingProbeMonitor())
+                        {
+                            var result = monitor.ProbeMdiClose();
+                            Assert(!result.Cancel && !monitor.OperatorClosePending,
+                                "空闲 MDI 预检查不得在主窗口之前启动子窗口收尾");
+                        }
+                        completed.TrySetResult(true);
+                    }
+                    catch (Exception ex) { completed.TrySetException(ex); }
+                }));
+                Assert(completed.Task.Wait(TimeoutMilliseconds), "MDI 关闭预检查阻塞消息泵");
+                completed.Task.GetAwaiter().GetResult();
+            }
         }
 
         private sealed class StaFormHost : IDisposable

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -257,6 +257,8 @@ namespace Controller
             long pendingHeadSequence = 0,
             long inFlightSequence = 0)
         {
+            // 冻结停止只要求数据义务闭合；Paused不是写入失败。
+            // 运行恢复仍使用IsStopPersistenceBoundaryClosed的Recovered门禁。
             if (!rawPipelineDrained || finalBoundary < boundary ||
                 !IsStopPersistenceBoundaryClosed(
                    boundary,
@@ -264,7 +266,7 @@ namespace Controller
                    persisted,
                    queueDepth,
                    state,
-                   requireRecoveredState,
+                   requireRecoveredState && state != DaqPersistenceState.Paused,
                    durabilityBlocked,
                    discardedGenerationBatchCount,
                    overCapacityDroppedBatchCount))
@@ -299,7 +301,8 @@ namespace Controller
         internal static bool CanReuseStopResultForSource(
             StopSource completedSource,
             StopSource requestedSource)
-            => true; // All sources now freeze acquisition and prove the same final boundary.
+            => !IsFinalExitStopSource(requestedSource) ||
+               IsFinalExitStopSource(completedSource);
 
         internal static bool RequiresRecoveredPersistenceStateForStop(StopSource source)
             => !IsFinalExitStopSource(source);

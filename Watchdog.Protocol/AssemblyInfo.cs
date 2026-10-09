@@ -5,4 +5,5 @@ using System.Runtime.CompilerServices;
 [assembly: AssemblyDescription("MT EPB watchdog protocol and durable recovery authority")]
 [assembly: AssemblyCompany("Wanxiang")]
 [assembly: AssemblyProduct("MT EPB Test System")]
+// Version attributes are generated from ProductVersion.props.
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]

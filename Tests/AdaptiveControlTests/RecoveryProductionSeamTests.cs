@@ -125,6 +125,25 @@ namespace AdaptiveControlTests
         {
             using (var fixture = new EpbManagerTerminalFixture())
             {
+                var handle = fixture.Manager.BeginDaqTerminalClosureProduction(fixture.Device,
+                    fixture.RunId, fixture.RunEpoch, fixture.CorrelationId, fixture.CreateTransaction());
+                handle.PublishStopOwnedTerminalForRecoverySeam(false);
+                Assert(!handle.PublishSafeTerminal(), "未证实断能时错误释放旧DAQ终态");
+                handle.PublishStopOwnedTerminalForRecoverySeam(true, doConfirmed: false);
+                Assert(!handle.PublishSafeTerminal(), "仅电源已关闭、DO尚无完成回执时错误释放旧DAQ终态");
+                var stopCorrelation = handle.PublishStopOwnedTerminalForRecoverySeam(true);
+                Assert(handle.PublishSafeTerminal(), "StopAll已接管且断能后旧DAQ终态仍被Epoch阻塞");
+                var state = handle.GetState(4);
+                Assert(state.CorrelationId == stopCorrelation && state.RunEpoch == fixture.RunEpoch + 1 &&
+                    state.State == ChannelRuntimeState.SystemFault, "旧DAQ终态覆盖了StopAll新代权威状态");
+                handle.AdvanceGlobalRunEpoch();
+                handle.CompleteCancelledClosureForRecoverySeam("StopAll:SystemFault:OwnedTerminal");
+                Assert(handle.IsCompletionCompleted && !handle.IsRegistered && !handle.RegistryLeaseActive &&
+                    handle.CompletionResult?.Recovered == false,
+                    "StopAll接管后旧DAQ事务未释放owner/registry，或把取消误报为恢复成功");
+            }
+            using (var fixture = new EpbManagerTerminalFixture())
+            {
                 var transaction = fixture.CreateTransaction();
                 var handle = fixture.Manager.BeginDaqTerminalClosureProduction(
                     fixture.Device,

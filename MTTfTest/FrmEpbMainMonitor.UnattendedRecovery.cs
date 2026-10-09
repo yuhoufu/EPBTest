@@ -11,6 +11,24 @@ using MtEmbTest;
 
 namespace MTEmbTest
 {
+    internal enum RecoveryStartupSource
+    {
+        SoftwareCheckpoint,
+        LegacyWatchdog,
+        IndependentExecutor
+    }
+
+    internal static class RecoveryStartupCommitPolicy
+    {
+        internal static void PublishLegacyCommit(RecoveryStartupSource source, Action publish)
+        {
+            if (source == RecoveryStartupSource.LegacyWatchdog) publish();
+            else if (source != RecoveryStartupSource.IndependentExecutor &&
+                     source != RecoveryStartupSource.SoftwareCheckpoint)
+                throw new ArgumentOutOfRangeException(nameof(source));
+        }
+    }
+
     internal sealed class WatchdogHardwareUnavailableException : InvalidOperationException
     {
         internal WatchdogHardwareUnavailableException(string fingerprint, string detail)
@@ -35,43 +53,6 @@ namespace MTEmbTest
 
     public partial class FrmEpbMainMonitor
     {
-        private async Task RequestManualStopSafetyHandoffAsync(
-            RuntimeTransportSessionContext context, StopSafetyResult safety)
-        {
-            // Independent shutdown must remain possible after cancellation of
-            // trial resume. Hardware exclusivity is proven before handoff;
-            // incomplete persistence still prevents application exit.
-            var release = Task.Run(() => ReleaseOwnedControlHardwareOnce());
-            if (await Task.WhenAny(release, Task.Delay(2000)) != release)
-            {
-                _ = release.ContinueWith(task => logger?.Warn(
-                    "安全接管硬件释放失败：" + task.Exception?.GetBaseException().Message, "Watchdog"),
-                    TaskContinuationOptions.OnlyOnFaulted);
-                LogInfo("安全接管尚未提交：正在等待硬件资源释放；自动续跑已取消。");
-                return;
-            }
-            try
-            {
-                if (!await release) { LogInfo("安全接管受阻：硬件资源释放未确认。"); return; }
-                var handoff = await Task.Run(() => WatchdogRuntime.RequestSafetyHandoff(
-                    context, safety, true, safetyOnly: true));
-                if (handoff == null) { LogInfo("安全接管提交失败，请导出故障证据；自动续跑已取消。"); return; }
-                for (var i = 0; i < 25; i++)
-                {
-                    if (WatchdogSafetyHandoffReceiptStore.TryRead(context.JournalDirectory,
-                        context.SessionId, out var receipt) && receipt.HandoffId == handoff.HandoffId &&
-                        receipt.State >= WatchdogSafetyHandoffState.Accepted)
-                    {
-                        LogInfo($"独立安全接管回执：{receipt.State}，阶段={receipt.Stage}，" +
-                            $"事务={receipt.HandoffId}；自动续跑已取消。");
-                        return;
-                    }
-                    await Task.Delay(200);
-                }
-                LogInfo("安全接管已提交，尚未收到接受回执；自动续跑已取消。");
-            }
-            catch (Exception ex) { LogInfo("安全接管失败：" + ex.GetBaseException().Message); }
-        }
         private const int UnattendedQuiesceTotalTimeoutMs = 30000;
         private int _watchdogTakeoverExit;
         private long _watchdogRecoveryBatchCommitGeneration;
@@ -135,6 +116,7 @@ namespace MTEmbTest
         private void AttachUnattendedRecovery()
         {
             if (_epb == null || _cfg == null) return;
+            StartIndependentFallbackBridge();
             // Keep any checkpoint-authorized root out of retention even if a
             // worker scan raced monitor construction.  This is an explicit UI /
             // recovery-coordinator decision; Controller does not inspect files.
@@ -294,49 +276,8 @@ namespace MTEmbTest
             var watchdogRunId = aggregate?.Infrastructure?.RunId ?? Guid.Empty;
             var watchdogRunEpoch = aggregate?.Infrastructure?.RunEpoch ?? 0;
             var logHealth = ProjectLogHub.CaptureHealth();
-            IO.NI.DaqFreshnessSnapshot daqDev1 = null;
-            IO.NI.DaqFreshnessSnapshot daqDev2 = null;
-            try
-            {
-                daqDev1 = twoDeviceAiAcquirer?.GetDaqFreshnessSnapshot("Dev1", 100);
-                daqDev2 = twoDeviceAiAcquirer?.GetDaqFreshnessSnapshot("Dev2", 100);
-            }
-            catch { }
-            ThreadPool.GetAvailableThreads(
-                out var availableWorkerThreads,
-                out var availableIoThreads);
             return new WatchdogHeartbeat
             {
-                UiLifecycle = MonitorLifecycle.ToString(),
-                ControlProgressVersion = Math.Max(
-                    logical?.SourceVersion ?? 0,
-                    stop?.ProgressVersion ?? 0),
-                TypedExitTransactionId =
-                    WatchdogRuntime.LatestTypedExitTransactionId,
-                GcTotalMemoryBytes = GC.GetTotalMemory(false),
-                GcCollectionCount0 = GC.CollectionCount(0),
-                GcCollectionCount1 = GC.CollectionCount(1),
-                GcCollectionCount2 = GC.CollectionCount(2),
-                ThreadPoolAvailableWorkerThreads = availableWorkerThreads,
-                ThreadPoolAvailableIoThreads = availableIoThreads,
-                DaqDev1SampleAgeMs = NormalizeEvidenceAge(
-                    daqDev1?.SampleAgeMs),
-                DaqDev1BufferedSamples = daqDev1?.BufferedSamples ?? 0,
-                DaqDev1ReaderLagState =
-                    daqDev1?.ReaderLagState.ToString() ?? "Unavailable",
-                DaqDev1DroppedFromSequence =
-                    daqDev1?.DroppedStaleFromSequence ?? 0,
-                DaqDev1DroppedToSequence =
-                    daqDev1?.DroppedStaleToSequence ?? 0,
-                DaqDev2SampleAgeMs = NormalizeEvidenceAge(
-                    daqDev2?.SampleAgeMs),
-                DaqDev2BufferedSamples = daqDev2?.BufferedSamples ?? 0,
-                DaqDev2ReaderLagState =
-                    daqDev2?.ReaderLagState.ToString() ?? "Unavailable",
-                DaqDev2DroppedFromSequence =
-                    daqDev2?.DroppedStaleFromSequence ?? 0,
-                DaqDev2DroppedToSequence =
-                    daqDev2?.DroppedStaleToSequence ?? 0,
                 RunId = watchdogRunId == Guid.Empty ? string.Empty : watchdogRunId.ToString("N"),
                 RunEpoch = watchdogRunEpoch,
                 Phase = phase,
@@ -433,8 +374,12 @@ namespace MTEmbTest
                             item.RecoveryOwnerGeneration == watchdogRunEpoch &&
                             !string.IsNullOrWhiteSpace(item.RecoveryTargetPhase) &&
                             !string.Equals(item.RecoveryTargetPhase, RecoveryTargetPhase.None.ToString(), StringComparison.OrdinalIgnoreCase);
+                        var formalCommit = _epb?.CaptureFormalCommitEvidence(item.Channel);
                         return new WatchdogChannelProgress
                         {
+                            FormalCommitSequence = formalCommit?.Item2 ?? 0,
+                            FormalCommitRunEpoch = formalCommit?.Item1 ?? 0,
+                            FormalCommitIdentity = formalCommit?.Item3 ?? string.Empty,
                             Channel = item.Channel,
                             State = item.State,
                             LifecyclePhase = contract.LifecyclePhase,
@@ -529,14 +474,6 @@ namespace MTEmbTest
                 DiagnosticSinkFailure = logHealth.LastError,
                 RunActive = logical?.BatchSessionActive ?? false
             };
-        }
-
-        private static double NormalizeEvidenceAge(double? value)
-        {
-            return value.HasValue && !double.IsNaN(value.Value) &&
-                   !double.IsInfinity(value.Value)
-                ? Math.Max(0, value.Value)
-                : -1;
         }
 
         private sealed class WatchdogRecoveryEvidence
@@ -831,9 +768,7 @@ namespace MTEmbTest
             UnattendedRunCheckpoint checkpoint,
             WatchdogRecoveryIntent intent)
         {
-            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
-                await Task.Delay(100).ConfigureAwait(true);
-            if (_epb == null || _cfg?.Test == null)
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("安全接管硬件与控制对象初始化超时。");
 
             // 主进程完成硬件初始化后先由控制主站显式写入全断能。Watchdog 本身不持有 NI。
@@ -894,16 +829,14 @@ namespace MTEmbTest
                 $"PreviousPid={intent.PreviousPid};Persistence={safety.PersistenceBoundaryConfirmed};" +
                 $"Logical={safety.LogicalQuiescenceConfirmed};AbortedOrphanCycles={abortedOrphanCycles}",
                 "独立看门狗");
-            await ResumeFromUnattendedCheckpointAsync(checkpoint).ConfigureAwait(true);
+            await ResumeFromUnattendedCheckpointAsync(checkpoint, RecoveryStartupSource.LegacyWatchdog).ConfigureAwait(true);
         }
 
         internal async Task PrepareSafeIdleAfterWatchdogAsync(string sessionId, int previousPid)
         {
             UnattendedRecoveryCoordinator.Disarm("ManualStopWatchdogIdleRestart");
             UnattendedRunCheckpointStore.ClearGracefulPause("ManualStopWatchdogIdleRestart");
-            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
-                await Task.Delay(100).ConfigureAwait(true);
-            if (_epb == null || _cfg?.Test == null)
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("空闲重启硬件与控制对象初始化超时。");
             if (_do == null || !_do.AllOff())
                 throw new InvalidOperationException("空闲重启无法写入全部 DO OFF。");
@@ -931,12 +864,36 @@ namespace MTEmbTest
             ApplyBatchPauseState(BatchPauseState.Idle);
         }
 
-        internal async Task ResumeFromUnattendedCheckpointAsync(UnattendedRunCheckpoint checkpoint)
+        internal async Task ResumeFromIndependentRecoveryAsync(IndependentRecoveryStartup startup)
+        {
+            if (startup == null) throw new ArgumentNullException(nameof(startup));
+            startup.ValidateCurrent();
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
+                throw new InvalidOperationException("IndependentRecoveryControllerInitializationTimeout");
+            var checkpoint = UnattendedRunCheckpointStore.PrepareIndependentCheckpoint(_cfg, startup);
+            startup.ValidateCurrent();
+            // 独立执行器已结束旧控制进程；它的启动凭证并不包含旧 Sidecar 的
+            // AttachRecoverySession 握手。为新控制进程建立自己的精确会话，随后
+            // 仍由批次入口执行 Attached、UI Ready 和恢复授权检查。
+            WatchdogRuntime.ConfigureJournalExportPath(
+                System.IO.Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName, "WatchdogSessions"));
+            var watchdog = await WatchdogRuntime.StartSessionAsync(checkpoint.SelectedChannels)
+                .ConfigureAwait(true);
+            // 等待握手期间人工停止或撤销选择必须使本次启动失效。
+            startup.ValidateCurrent();
+            if (watchdog == null || !watchdog.Attached || !WatchdogRuntime.IsAttached)
+                throw new InvalidOperationException(
+                    "IndependentRecoveryWatchdogAttachFailed: " + (watchdog?.Warning ?? "Unknown"));
+            await ResumeFromUnattendedCheckpointAsync(checkpoint, RecoveryStartupSource.IndependentExecutor);
+        }
+
+        internal async Task ResumeFromUnattendedCheckpointAsync(
+            UnattendedRunCheckpoint checkpoint, RecoveryStartupSource source)
         {
             if (checkpoint == null) throw new ArgumentNullException(nameof(checkpoint));
-            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
-                await Task.Delay(100);
-            if (_epb == null || _cfg?.Test == null)
+            if (!Enum.IsDefined(typeof(RecoveryStartupSource), source))
+                throw new ArgumentOutOfRangeException(nameof(source));
+            if (!await WaitUntilWatchdogControllerReadyAsync().ConfigureAwait(true))
                 throw new InvalidOperationException("实时监视硬件与控制对象初始化超时。所有输出保持关闭。");
 
             var authorized = (checkpoint.SelectedChannels ?? Array.Empty<int>())
@@ -998,8 +955,8 @@ namespace MTEmbTest
             _cfg.Test.LearnCycles = Math.Max(5, checkpoint.LearnCycles);
             for (var channel = 1; channel <= 12; channel++)
             {
-                var control = EpbGroup[channel - 1]?.CtrlJoinTest;
-                if (control != null) control.Checked = selected.Contains(channel);
+                // Restoring an authorized checkpoint is not an operator selection change.
+                SetChannelSelectionChecked(channel, selected.Contains(channel));
             }
             _epb.EpbTestCycle = remainingPlan.RemainingCycles
                 .Where(pair => pair.Value > 0)
@@ -1034,20 +991,29 @@ namespace MTEmbTest
                 startResult.StartedChannels,
                 startResult.TestRunId,
                 _epb.WatchdogRunEpoch);
-            var commitGeneration = Math.Max(
-                checkpoint.Revision,
-                Interlocked.Read(ref _watchdogRecoveryBatchCommitGeneration) + 1);
-            Interlocked.Exchange(
-                ref _watchdogRecoveryBatchCommitGeneration,
-                commitGeneration);
-            WatchdogRuntime.NotifyRecoveryBatchCommitted(
-                $"RunId={startResult.TestRunId:N};RunEpoch={_epb.WatchdogRunEpoch};" +
-                $"Channels=[{string.Join(",", startResult.StartedChannels.OrderBy(x => x))}]",
-                commitGeneration);
+            // 业务检查点共享，但只有旧 Watchdog 恢复持有旧提交协议的许可。
+            // 独立恢复仍由执行器核验机械计数和正式数据库记录，不能在此提前 Verified。
+            RecoveryStartupCommitPolicy.PublishLegacyCommit(source, () =>
+            {
+                var commitGeneration = Math.Max(
+                    checkpoint.Revision,
+                    Interlocked.Read(ref _watchdogRecoveryBatchCommitGeneration) + 1);
+                Interlocked.Exchange(
+                    ref _watchdogRecoveryBatchCommitGeneration,
+                    commitGeneration);
+                WatchdogRuntime.NotifyRecoveryBatchCommitted(
+                    $"Source={source};RunId={startResult.TestRunId:N};RunEpoch={_epb.WatchdogRunEpoch};" +
+                    $"Channels=[{string.Join(",", startResult.StartedChannels.OrderBy(x => x))}]",
+                    commitGeneration);
+            });
             try
             {
                 // 新 Run 身份已原子提交；从这里开始只允许观察性动作。日志或 UI
                 // 状态提示失败不能向外冒泡并触发对健康新批次的再次进程回收。
+                ProjectLogHub.Write(ProjectLogLevel.Info,
+                    $"RecoveryBatchStarted Source={source};RunId={startResult.TestRunId:N};" +
+                    $"RunEpoch={_epb.WatchdogRunEpoch};LegacyCommit={source == RecoveryStartupSource.LegacyWatchdog}",
+                    "无人值守恢复");
                 UnattendedRecoveryCoordinator.LogRecoveryStartupRecovered(
                     startResult.TestRunId,
                     startResult.StartedChannels);
@@ -1069,6 +1035,29 @@ namespace MTEmbTest
 
         protected override void OnFormClosing(System.Windows.Forms.FormClosingEventArgs e)
         {
+            if (e.CloseReason == System.Windows.Forms.CloseReason.MdiFormClosing &&
+                Volatile.Read(ref _watchdogTakeoverExit) == 0 &&
+                Volatile.Read(ref _closingReentry) != 3)
+            {
+                // WinForms visits children before Main_Frm.FormClosing. The parent
+                // owns the one prompt and the drain; do not start child cleanup here.
+                e.Cancel = !CanAcceptOperatorClose(out _);
+                return;
+            }
+            if (Volatile.Read(ref _watchdogTakeoverExit) == 0 &&
+                !CanAcceptOperatorClose(out var closeReason))
+            {
+                e.Cancel = true;
+                System.Windows.Forms.MessageBox.Show(closeReason, "无法关闭",
+                    System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Information);
+                return;
+            }
+            if (Volatile.Read(ref _watchdogTakeoverExit) == 0)
+            {
+                // The retained close task owns draining; never block the UI for two seconds here.
+                base.OnFormClosing(e);
+                return;
+            }
             WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
             WatchdogRuntime.TransportError -= OnWatchdogTransportError;
             // Watchdog recovery children may close after a failed takeover and must leave

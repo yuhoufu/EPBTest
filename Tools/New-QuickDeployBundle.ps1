@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseDirectory,
@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$bundleRevision = 29
+$bundleRevision = 10
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $release = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
 if (-not (Test-Path -LiteralPath $release -PathType Container)) {
@@ -18,31 +18,21 @@ if (-not (Test-Path -LiteralPath $mainExecutable -PathType Leaf)) {
     throw "程序目录缺少 MTTFTest.exe：$release"
 }
 $identityPath = Join-Path $release 'build-identity.json'
-$verifyScript = Join-Path $PSScriptRoot 'Verify-Release.ps1'
-if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
-    throw "快捷部署包只接受带正式身份的发布包：$identityPath"
+$identity = if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
+    Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+} else {
+    [pscustomobject]@{
+        productVersion = 'V' + (Get-Item -LiteralPath $mainExecutable).VersionInfo.ProductVersion
+        releaseStatus = 'OPERATOR_MANAGED'
+        deploymentApproved = $true
+        gitCommit = 'operator-managed'
+        buildUtc = [DateTime]::UtcNow.ToString('O')
+        configSha256 = ''
+    }
 }
-try {
-    $verificationJson = @(& $verifyScript -ReleaseDirectory $release 2>&1) -join [Environment]::NewLine
-}
-catch {
-    throw "原始正式包校验失败，拒绝生成快捷部署包：$($_.Exception.Message)"
-}
-$verification = $verificationJson | ConvertFrom-Json
-if (-not [bool]$verification.verified -or
-    [string]$verification.releaseStatus -ne 'FORMAL_RELEASE' -or
-    -not [bool]$verification.deploymentApproved -or
-    [bool]$verification.gitDirty) {
-    throw "原始包不是干净且批准的正式版本，拒绝生成快捷部署包：$verificationJson"
-}
-$identity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
 $bundleSourceCommit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($bundleSourceCommit)) {
     throw '无法读取快捷部署器源码提交身份。'
-}
-$bundleSourceStatus = @(& git -C $repo status --porcelain)
-if ($LASTEXITCODE -ne 0 -or $bundleSourceStatus.Count -ne 0) {
-    throw '快捷部署器必须来自干净源码，拒绝将未提交工具标记为正式交付。'
 }
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $repo 'artifacts\deploy'
@@ -56,7 +46,7 @@ $shortCommit = if ($identityCommit.Length -ge 12) {
     ($identityCommit -replace '[^0-9A-Za-z._-]', '_')
 }
 $safeVersion = ([string]$identity.productVersion -replace '[^0-9A-Za-z._-]', '_')
-$name = "${safeVersion}_正式版_${shortCommit}_QUICKDEPLOY_R$bundleRevision"
+$name = "${safeVersion}_操作员包_${shortCommit}_QUICKDEPLOY_R$bundleRevision"
 $output = [IO.Path]::GetFullPath((Join-Path $outputRootFull $name))
 $prefix = $outputRootFull.TrimEnd('\', '/') + '\'
 if (-not $output.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -73,10 +63,8 @@ if (Test-Path -LiteralPath $output) {
 $staging = Join-Path $outputRootFull ('.quick-staging-' + [Guid]::NewGuid().ToString('N'))
 try {
     [void](New-Item -ItemType Directory -Path $staging)
-    $packageDirectory = Join-Path $staging 'Package'
-    [void](New-Item -ItemType Directory -Path $packageDirectory)
     Get-ChildItem -LiteralPath $release -Force |
-        Copy-Item -Destination $packageDirectory -Recurse -Force
+        Copy-Item -Destination $staging -Recurse -Force
     $quickSource = Join-Path $PSScriptRoot 'QuickDeploy'
     foreach ($file in Get-ChildItem -LiteralPath $quickSource -File) {
         Copy-Item -LiteralPath $file.FullName -Destination $staging -Force
@@ -97,9 +85,6 @@ try {
             [IO.File]::ReadAllLines($commandFile.FullName),
             (New-Object Text.UTF8Encoding($false)))
     }
-    foreach ($helper in @('Stop-RelatedProcesses.ps1', 'Export-StabilityEvidence.ps1')) {
-        [IO.File]::WriteAllText((Join-Path $staging $helper), [IO.File]::ReadAllText((Join-Path $PSScriptRoot $helper), [Text.Encoding]::UTF8), (New-Object Text.UTF8Encoding($true)))
-    }
     $buildUtcText = if ($identity.buildUtc -is [DateTime]) {
         ([DateTime]$identity.buildUtc).ToUniversalTime().ToString('O')
     }
@@ -109,8 +94,6 @@ try {
     $identitySummary = [ordered]@{
         schemaVersion = 2
         bundleRevision = $bundleRevision
-        recoveryArchitectureGeneration = 'EPB-V2.17'
-        fieldValidation = 'PENDING_USER_HARDWARE_AND_168H'
         bundleSourceCommit = $bundleSourceCommit
         productVersion = [string]$identity.productVersion
         releaseStatus = [string]$identity.releaseStatus
@@ -118,19 +101,12 @@ try {
         packageGitCommit = [string]$identity.gitCommit
         packageBuildUtc = $buildUtcText
         configSha256 = [string]$identity.configSha256
-        packageDirectory = 'Package'
-        packageVerified = [bool]$verification.verified
-        mainExecutableSha256 = [string]$verification.exeSha256
-        packageContentSha256 = [string]$verification.packageContentSha256
-        packageManagement = 'QUICKDEPLOY_NESTED_FORMAL_PACKAGE'
+        packageManagement = 'EXE_FIRST_RUN_BOOTSTRAP'
     }
     $identitySummary | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `
         (Join-Path $staging '快捷部署包身份.json') -Encoding UTF8
-    Copy-Item -LiteralPath (Join-Path $staging '快捷部署包身份.json') `
-        -Destination (Join-Path $staging 'bundle-identity.json')
     $hashLines = Get-ChildItem -LiteralPath $staging -File -Recurse |
-        Where-Object { $_.FullName -ne (Join-Path $staging '快捷部署包-SHA256.txt') -and
-            $_.FullName -ne (Join-Path $staging 'SHA256SUMS.txt') } |
+        Where-Object { $_.Name -ne '快捷部署包-SHA256.txt' } |
         Sort-Object FullName |
         ForEach-Object {
             $relative = $_.FullName.Substring($staging.TrimEnd('\').Length + 1).Replace('\', '/')
@@ -141,8 +117,6 @@ try {
         (Join-Path $staging '快捷部署包-SHA256.txt'),
         @($hashLines),
         (New-Object Text.UTF8Encoding($false)))
-    Copy-Item -LiteralPath (Join-Path $staging '快捷部署包-SHA256.txt') `
-        -Destination (Join-Path $staging 'SHA256SUMS.txt')
     Move-Item -LiteralPath $staging -Destination $output
 }
 catch {

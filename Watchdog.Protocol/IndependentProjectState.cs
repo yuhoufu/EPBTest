@@ -1,0 +1,960 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Threading;
+
+namespace MTTFTest.Watchdog.Protocol
+{
+    public sealed class IndependentProcessIdentity
+    {
+        public int Pid { get; set; }
+        public long StartUtcTicks { get; set; }
+        public int WindowsSessionId { get; set; }
+        public string ExecutablePath { get; set; }
+        public string SessionToken { get; set; }
+
+        public void Validate()
+        {
+            if (Pid <= 0 || StartUtcTicks <= 0 || WindowsSessionId < 0 ||
+                !Path.IsPathRooted(ExecutablePath ?? string.Empty) ||
+                !Guid.TryParseExact(SessionToken, "N", out _))
+                throw new InvalidDataException("IndependentProcessIdentityInvalid");
+        }
+
+        public bool Matches(IndependentProcessIdentity other) => other != null && Pid == other.Pid &&
+            StartUtcTicks == other.StartUtcTicks && WindowsSessionId == other.WindowsSessionId &&
+            string.Equals(ExecutablePath, other.ExecutablePath, StringComparison.OrdinalIgnoreCase) &&
+            SessionToken == other.SessionToken;
+    }
+
+    public sealed class IndependentLaunchTicket
+    {
+        public string Nonce { get; set; }
+        public string RequestId { get; set; }
+        public long Generation { get; set; }
+        public long IntentRevision { get; set; }
+        public string ExecutableSha256 { get; set; }
+        public int WindowsSessionId { get; set; }
+        public long ExpiresUtcTicks { get; set; }
+        public long DispatchStartedUtcTicks { get; set; }
+        public bool Revoked { get; set; }
+        public IndependentProcessIdentity Consumer { get; set; }
+    }
+
+    public sealed class IndependentCooperativeStopReceipt
+    {
+        public string RequestId { get; set; }
+        public long Generation { get; set; }
+        public long CompletedUtcTicks { get; set; }
+        public IndependentProcessIdentity Controller { get; set; }
+    }
+
+    public sealed class IndependentSessionProcess
+    {
+        public IndependentProcessIdentity Process { get; set; }
+        public int ParentPid { get; set; }
+        public long ParentStartUtcTicks { get; set; }
+        public string Role { get; set; }
+        public void Validate()
+        {
+            Process?.Validate();
+            if (Process == null || ParentPid <= 0 || ParentStartUtcTicks <= 0 ||
+                (Role != "Watchdog" && Role != "SafetyAgent"))
+                throw new InvalidDataException("IndependentSessionProcessInvalid");
+        }
+    }
+
+    public sealed class IndependentNearZeroRetry
+    {
+        public int Channel { get; set; }
+        public long FirstGeneration { get; set; }
+        public string FirstRunId { get; set; }
+    }
+
+    public sealed class IndependentIntentAudit
+    {
+        public long UtcTicks { get; set; }
+        public long Revision { get; set; }
+        public string Source { get; set; }
+        public string RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public int[] Before { get; set; }
+        public int[] After { get; set; }
+        public string Reason { get; set; }
+    }
+
+    // This aggregate is the production authority boundary. Intent revocation,
+    // ticket consumption and replacement binding must never be separate writes.
+    // The host must protect its directory and registered configuration with ACLs
+    // before opening this store; a JSON file is not a security boundary by itself.
+    public sealed class IndependentProjectState
+    {
+        public int SchemaVersion { get; set; } = 2;
+        public long Revision { get; set; }
+        public long RunStartedUtcTicks { get; set; }
+        public long StartupDeadlineUtcTicks { get; set; }
+        public string RootRunId { get; set; }
+        public bool Maintenance { get; set; } = true;
+        public bool SafetyCleanupPending { get; set; }
+        public string LastOperatorStopCommandId { get; set; }
+        public IndependentRunIntent Intent { get; set; }
+        public IndependentRecoveryTransaction Transaction { get; set; }
+        public IndependentProcessIdentity Controller { get; set; }
+        public IndependentLaunchTicket Ticket { get; set; }
+        public IndependentCooperativeStopReceipt CooperativeStopReceipt { get; set; }
+        public IndependentIntentAudit[] Audit { get; set; } = Array.Empty<IndependentIntentAudit>();
+        public IndependentNearZeroRetry[] NearZeroRetries { get; set; } = Array.Empty<IndependentNearZeroRetry>();
+        public IndependentSessionProcess[] SessionProcesses { get; set; } = Array.Empty<IndependentSessionProcess>();
+
+        public void Validate()
+        {
+            if (SchemaVersion != 2 || Revision <= 0 || Audit == null || Audit.Length > 32)
+                throw new InvalidDataException("IndependentProjectStateInvalid");
+            if (LastOperatorStopCommandId != null && !Guid.TryParseExact(LastOperatorStopCommandId, "N", out _))
+                throw new InvalidDataException("IndependentOperatorStopCommandInvalid");
+            if (SessionProcesses == null || SessionProcesses.Length > 24 || SessionProcesses.Any(p => p == null))
+                throw new InvalidDataException("IndependentSessionProcessRegistryInvalid");
+            foreach (var child in SessionProcesses) child.Validate();
+            if (NearZeroRetries == null || NearZeroRetries.Length > 12 ||
+                NearZeroRetries.Any(r => r == null || r.Channel < 1 || r.Channel > 12 || r.FirstGeneration < 0 ||
+                    !Guid.TryParseExact(r.FirstRunId, "N", out _)) ||
+                NearZeroRetries.Select(r => r.Channel).Distinct().Count() != NearZeroRetries.Length)
+                throw new InvalidDataException("IndependentNearZeroRetryInvalid");
+            Intent?.Validate(); Transaction?.Validate(); Controller?.Validate();
+            if (CooperativeStopReceipt != null)
+            {
+                CooperativeStopReceipt.Controller?.Validate();
+                if (!Guid.TryParseExact(CooperativeStopReceipt.RequestId, "N", out _) ||
+                    CooperativeStopReceipt.Generation <= 0 || CooperativeStopReceipt.CompletedUtcTicks <= 0 ||
+                    CooperativeStopReceipt.Controller == null)
+                    throw new InvalidDataException("IndependentCooperativeReceiptInvalid");
+            }
+            if (Intent != null && (!Guid.TryParseExact(RootRunId, "N", out _) || RunStartedUtcTicks <= 0 || StartupDeadlineUtcTicks <= RunStartedUtcTicks ||
+                StartupDeadlineUtcTicks - RunStartedUtcTicks != TimeSpan.FromMilliseconds(Intent.StartupBudgetMs).Ticks))
+                throw new InvalidDataException("IndependentRunStartupDeadlineInvalid");
+            if (Transaction != null && Intent == null || SafetyCleanupPending && Transaction == null)
+                throw new InvalidDataException("IndependentProjectAuthorityMissing");
+            if (Ticket != null)
+            {
+                Ticket.Consumer?.Validate();
+                if (!Guid.TryParseExact(Ticket.Nonce, "N", out _) || Transaction == null ||
+                    Ticket.RequestId != Transaction.RequestId || Ticket.Generation != Transaction.Generation ||
+                    Ticket.IntentRevision <= 0 || Ticket.ExpiresUtcTicks <= 0 || Ticket.WindowsSessionId <= 0 ||
+                    Ticket.DispatchStartedUtcTicks < 0 || Ticket.DispatchStartedUtcTicks >= Ticket.ExpiresUtcTicks ||
+                    (Ticket.Consumer != null && Ticket.DispatchStartedUtcTicks == 0) ||
+                    Ticket.ExecutableSha256?.Length != 64 || !Ticket.ExecutableSha256.All(Uri.IsHexDigit))
+                    throw new InvalidDataException("IndependentLaunchTicketInvalid");
+            }
+            foreach (var row in Audit)
+                if (row == null || row.Revision <= 0 || row.UtcTicks <= 0 ||
+                    string.IsNullOrWhiteSpace(row.Source) || row.Source.Length > 64 ||
+                    row.Reason == null || row.Reason.Length > 192 || row.Before == null || row.After == null ||
+                    row.Before.Length > 12 || row.After.Length > 12 ||
+                    row.Before.Concat(row.After).Any(c => c < 1 || c > 12))
+                    throw new InvalidDataException("IndependentIntentAuditInvalid");
+        }
+    }
+
+    public sealed class IndependentProjectStateStore
+    {
+        private readonly string _path;
+        private readonly string _mutexName;
+        public IndependentProjectStateStore(string directory)
+        {
+            directory = Path.GetFullPath(directory);
+            _path = Path.Combine(directory, "independent-project-state.json");
+            _mutexName = "Global\\MTTF-IndependentProject-" +
+                SupervisorProtocol.ComputeTextSha256(directory.ToUpperInvariant());
+        }
+
+        private T Locked<T>(Func<T> operation)
+        {
+            var security = new MutexSecurity();
+            security.AddAccessRule(new MutexAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                MutexRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                MutexRights.FullControl, AccessControlType.Allow));
+            using (var identity = WindowsIdentity.GetCurrent())
+                security.AddAccessRule(new MutexAccessRule(identity.User,
+                    MutexRights.FullControl, AccessControlType.Allow));
+            using (var mutex = new Mutex(false, _mutexName, out _, security))
+            {
+                var owned = false;
+                try
+                {
+                    try { owned = mutex.WaitOne(5000); }
+                    catch (AbandonedMutexException) { owned = true; }
+                    if (!owned) throw new TimeoutException("IndependentProjectStateBusy");
+                    return operation();
+                }
+                finally { if (owned) mutex.ReleaseMutex(); }
+            }
+        }
+
+        public IndependentProjectState Read() => Locked(ReadUnsafe);
+        private T WithCurrentRevision<T>(Func<long, T> command)
+        {
+            return Locked(() =>
+            {
+                var current = ReadUnsafe() ?? throw new InvalidOperationException("IndependentProjectStateMissing");
+                // The named mutex is reentrant on this thread. Keep the read
+                // and existing validated command in one cross-process lease.
+                return command(current.Revision);
+            });
+        }
+
+        public IndependentRunIntent ConsumeCurrentLaunchTicket(string nonce, IndependentProcessIdentity consumer,
+            string executableHash, long now)
+            => WithCurrentRevision(revision => ConsumeLaunchTicket(revision, nonce, consumer, executableHash, now));
+
+        public void CommitCurrentReplacementRun(IndependentProcessIdentity consumer, string runId, long runEpoch, long now)
+        {
+            WithCurrentRevision(revision =>
+            {
+                CommitReplacementRun(revision, consumer, runId, runEpoch, now);
+                return true;
+            });
+        }
+        private IndependentProjectState ReadUnsafe()
+        {
+            if (!File.Exists(_path)) return null;
+            var state = BoundedJson.Read<IndependentProjectState>(_path);
+            state.Validate();
+            return state;
+        }
+
+        // All mutations receive freshly loaded state. No externally cached state
+        // object can be saved over a newer operator action.
+        public T Update<T>(long expectedRevision, Func<IndependentProjectState, T> update)
+        {
+            return Locked(() =>
+            {
+                var state = ReadUnsafe() ?? new IndependentProjectState();
+                if (state.Revision != expectedRevision)
+                    throw new InvalidOperationException("IndependentProjectRevisionConflict");
+                var result = update(state);
+                state.Revision = checked(expectedRevision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return result;
+            });
+        }
+
+        public void SetInstallationMaintenance(long expectedRevision, bool maintenance)
+        {
+            Update(expectedRevision, state =>
+            {
+                // Installation must not reinterpret pause as permission to replace
+                // a controller, nor erase an outstanding physical cleanup obligation.
+                if (state.SafetyCleanupPending || state.Transaction != null && !state.Transaction.IsTerminal ||
+                    state.Intent != null && state.Intent.Armed && !state.Intent.ManualStopped)
+                    throw new InvalidOperationException("IndependentInstallationRequiresStoppedRun");
+                state.Maintenance = maintenance;
+                if (state.Ticket != null) state.Ticket.Revoked = true;
+                return true;
+            });
+        }
+
+        public IndependentRunIntent UpdateOperatorIntent(long expectedRevision, string source, string reason,
+            long now, Action<IndependentRunIntent> change)
+        {
+            return Update(expectedRevision, state =>
+            {
+                if (state.Intent == null) throw new InvalidOperationException("IndependentRunNotArmed");
+                var before = state.Intent.SelectedChannels.ToArray();
+                var run = state.Intent.RunId; var epoch = state.Intent.RunEpoch;
+                change(state.Intent);
+                if (state.Intent.RunId != run || state.Intent.RunEpoch != epoch)
+                    throw new InvalidOperationException("OperatorUpdateCannotReplaceRun");
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                state.Intent.Validate();
+                if (state.Ticket != null) state.Ticket.Revoked = true;
+                // Keep an active safety transaction and its frozen old controller
+                // identity. Revoking restart does not mean safety cleanup finished.
+                AppendAudit(state, source, reason, now, before);
+                return state.Intent;
+            });
+        }
+
+        public void RecordControllerManualStop(IndependentProcessIdentity controller, string runId, long runEpoch,
+            string commandId, long now)
+        {
+            controller.Validate();
+            if (!Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentManualStopCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentManualStopStaleController");
+                if (state.Intent.ManualStopped && !state.Intent.Armed) return true;
+                var before = state.Intent.SelectedChannels.ToArray();
+                state.Intent.ManualStopped = true;
+                state.Intent.Armed = false;
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "OperatorStop", "CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public void RequestOperatorSafetyStop(long expectedRevision, string runId, long runEpoch,
+            string executor, string commandId, long now)
+        {
+            if (!Guid.TryParseExact(commandId, "N", out _) || string.IsNullOrWhiteSpace(executor) || now <= 0)
+                throw new ArgumentException("IndependentOperatorStopRequestInvalid");
+            Update(expectedRevision, state =>
+            {
+                if (state.Intent == null || state.Controller == null || state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch ||
+                    state.Transaction != null && !state.Transaction.IsTerminal && state.Transaction.ExecutorIdentity != executor)
+                    throw new InvalidOperationException("IndependentOperatorStopStaleOrForeignRun");
+                if (state.LastOperatorStopCommandId == commandId) return true;
+                var before = state.Intent.SelectedChannels.ToArray();
+                state.Intent.Armed = false; state.Intent.ManualStopped = true;
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Ticket != null) state.Ticket.Revoked = true;
+                state.LastOperatorStopCommandId = commandId;
+                if (!state.SafetyCleanupPending || state.Transaction.IsTerminal)
+                {
+                    if (!(state.Transaction?.OperatorStopOnly == true && state.Transaction.Phase == IndependentRecoveryPhase.Cancelled &&
+                        !state.SafetyCleanupPending))
+                    {
+                        // A consumed launch can precede replacement run binding.
+                        // Retire the consumer, not only the already-dead old PID.
+                        if (state.Ticket?.Consumer != null) state.Controller = state.Ticket.Consumer;
+                        var channels = before.Union(state.Transaction?.Channels ?? Array.Empty<int>()).OrderBy(c => c).ToArray();
+                        if (channels.Length == 0) channels = Enumerable.Range(1, 12).ToArray(); // shutdown only; never resume targets
+                        state.Transaction = IndependentRecoveryTransitions.BeginOperatorStop(state.Transaction, state.Intent, executor, now, channels);
+                        state.Ticket = null; state.CooperativeStopReceipt = null; state.SafetyCleanupPending = true;
+                    }
+                }
+                AppendAudit(state, "OperatorSafetyStop", "CommandId=" + commandId, now, before);
+                return true;
+            });
+        }
+
+        public void RegisterSessionProcess(IndependentExecutorRegistration registration, IndependentSessionProcess child)
+        {
+            registration.RequireSessionProcess(child);
+            if (!string.Equals(Path.GetDirectoryName(_path), registration.StateDirectory, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentSessionStateDirectoryMismatch");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent != null) registration.RequireBoundIntent(state.Intent);
+                IndependentInstallationBinding.RequireSessionHostState(state, registration.ProjectDirectory,
+                    registration.ProjectDirectory, child.ParentPid, child.ParentStartUtcTicks);
+                var retained = state.SessionProcesses.Where(p => !SessionProcessGone(p.Process)).ToArray();
+                if (retained.Any(p => p.Process.Matches(child.Process))) return true;
+                if (retained.Length >= 24 || retained.Any(p => p.ParentPid == child.ParentPid &&
+                    p.ParentStartUtcTicks == child.ParentStartUtcTicks && p.Role == child.Role &&
+                    p.Process.SessionToken == child.Process.SessionToken))
+                    throw new InvalidOperationException("IndependentSessionProcessAlreadyOwned");
+                state.SessionProcesses = retained.Concat(new[] { child }).ToArray();
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public void AcknowledgeSessionProcessExit(IndependentProcessIdentity identity)
+        {
+            identity.Validate();
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state == null || !SessionProcessGone(identity))
+                    throw new InvalidOperationException("IndependentSessionExitUnconfirmed");
+                var remaining = state.SessionProcesses.Where(p => !p.Process.Matches(identity)).ToArray();
+                if (remaining.Length == state.SessionProcesses.Length) return true;
+                state.SessionProcesses = remaining; state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        private static bool SessionProcessGone(IndependentProcessIdentity identity)
+        {
+            try
+            {
+                using (var process = System.Diagnostics.Process.GetProcessById(identity.Pid))
+                    return process.HasExited || process.StartTime.ToUniversalTime().Ticks != identity.StartUtcTicks;
+            }
+            catch (ArgumentException) { return true; }
+        }
+
+        public void RecordVerificationCompletions(long expectedRevision, string databasePath, long creationUtcTicks,
+            System.Collections.Generic.IReadOnlyDictionary<int, long> counts, long now)
+        {
+            if (counts == null || counts.Count == 0 || counts.Count > 12 || counts.Any(pair => pair.Value < 0) || now <= 0)
+                throw new ArgumentException("IndependentVerificationCompletionCountsInvalid");
+            Update(expectedRevision, state =>
+            {
+                var intent = state.Intent;
+                var tx = state.Transaction;
+                if (intent == null || tx == null || tx.Phase != IndependentRecoveryPhase.Verifying || state.SafetyCleanupPending ||
+                    state.Maintenance || !intent.Armed || intent.ManualStopped || intent.ManualPaused ||
+                    tx.IntentRevision != intent.Revision || tx.RunId != intent.RunId || tx.RunEpoch != intent.RunEpoch ||
+                    now >= tx.PhaseDeadlineUtcTicks || now < tx.LastAttemptUtcTicks || state.Ticket == null || state.Ticket.Revoked ||
+                    state.Ticket.Consumer?.Matches(state.Controller) != true ||
+                    !string.Equals(databasePath, intent.DatabasePath, StringComparison.OrdinalIgnoreCase) ||
+                    creationUtcTicks != intent.DatabaseCreationUtcTicks || intent.MechanicalTargets.Length == 0 ||
+                    !counts.Keys.OrderBy(channel => channel).SequenceEqual(tx.Channels.OrderBy(channel => channel)))
+                    throw new InvalidOperationException("IndependentVerificationCompletionIdentityMismatch");
+                var completed = counts.Where(pair => pair.Value >= intent.MechanicalTargets.Single(target => target.Channel == pair.Key).TotalCount)
+                    .Select(pair => pair.Key).ToArray();
+                if (intent.CompletedChannels.Intersect(tx.Channels).Except(completed).Any())
+                    throw new InvalidOperationException("IndependentCompletedTargetRegressed");
+                if (completed.Except(intent.CompletedChannels).Any() == false)
+                    throw new InvalidOperationException("IndependentVerificationHasNoNewCompletedTarget");
+                var before = intent.SelectedChannels.ToArray();
+                intent.CompletedChannels = intent.CompletedChannels.Union(completed).OrderBy(channel => channel).ToArray();
+                intent.Revision = checked(intent.Revision + 1);
+                tx.IntentRevision = intent.Revision;
+                tx.Revision = checked(tx.Revision + 1);
+                if (tx.Channels.Except(intent.CompletedChannels).Any() == false)
+                {
+                    if (intent.SelectedChannels.All(channel => intent.CompletedChannels.Contains(channel))) intent.Armed = false;
+                    // Keep the exact replacement identity and physical scope. This
+                    // is final cleanup, not a new restart attempt or Verified.
+                    state.Ticket.Revoked = true;
+                    state.SafetyCleanupPending = true;
+                    tx.Phase = IndependentRecoveryPhase.CooperativeStop;
+                    tx.PhaseDeadlineUtcTicks = checked(now + TimeSpan.FromSeconds(25).Ticks);
+                    tx.Detail = "TargetsCompleted;IndependentSafetyCleanupRequired";
+                }
+                else tx.Detail = "SomeTargetsCompleted;RemainingChannelsRequireThreeFormalCycles";
+                AppendAudit(state, "VerificationTargetCompleted", "Channels=" + string.Join(",", completed), now, before);
+                return true;
+            });
+        }
+
+        public void RecordDatabaseCompletions(long expectedRevision, string databasePath, long creationUtcTicks,
+            System.Collections.Generic.IReadOnlyDictionary<int, long> counts, long now)
+        {
+            if (counts == null || counts.Count == 0 || counts.Count > 12 ||
+                counts.Any(pair => pair.Key < 1 || pair.Key > 12 || pair.Value < 0) || now <= 0)
+                throw new ArgumentException("IndependentCompletionCountsInvalid");
+            Update(expectedRevision, state =>
+            {
+                var intent = state.Intent;
+                if (intent == null || state.SafetyCleanupPending || state.Transaction != null && !state.Transaction.IsTerminal ||
+                    !string.Equals(databasePath, intent.DatabasePath, StringComparison.OrdinalIgnoreCase) ||
+                    creationUtcTicks != intent.DatabaseCreationUtcTicks || intent.MechanicalTargets.Length == 0 ||
+                    counts.Keys.Except(intent.SelectedChannels).Any())
+                    throw new InvalidOperationException("IndependentCompletionIdentityOrPhaseMismatch");
+                var before = intent.SelectedChannels.ToArray();
+                var completed = counts.Where(pair => pair.Value >= intent.MechanicalTargets.Single(target => target.Channel == pair.Key).TotalCount)
+                    .Select(pair => pair.Key).ToArray();
+                intent.CompletedChannels = intent.CompletedChannels.Union(completed).OrderBy(channel => channel).ToArray();
+                if (intent.SelectedChannels.All(channel => intent.CompletedChannels.Contains(channel))) intent.Armed = false;
+                intent.Revision = checked(intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "DatabaseTargetCompleted", "Channels=" + string.Join(",", completed), now, before);
+                return true;
+            });
+        }
+
+        public void RecordControllerPermanentExclusion(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int[] channels, string reason, string commandId, long now)
+        {
+            controller?.Validate();
+            if (channels == null || channels.Length == 0 || channels.Length > 12 ||
+                channels.Any(channel => channel < 1 || channel > 12) || channels.Distinct().Count() != channels.Length ||
+                !Guid.TryParseExact(commandId, "N", out _) || now <= 0 || string.IsNullOrWhiteSpace(reason))
+                throw new ArgumentException("IndependentPermanentExclusionInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || controller?.Matches(state.Controller) != true ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentPermanentExclusionStaleController");
+                var before = state.Intent.SelectedChannels.ToArray();
+                var permanent = state.Intent.PermanentChannels.Union(channels).OrderBy(channel => channel).ToArray();
+                if (permanent.SequenceEqual(state.Intent.PermanentChannels.OrderBy(channel => channel))) return true;
+                state.Intent.PermanentChannels = permanent;
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = state.Intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "PermanentExclusion", Clip(reason, 64) + ";Channels=" + string.Join(",", channels) +
+                    ";CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public bool RecordNearZeroFault(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int channel, bool hardwareEvidenceConfirmed, string commandId, long now)
+        {
+            controller?.Validate();
+            if (channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentNearZeroFaultInvalid");
+            return Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || controller?.Matches(state.Controller) != true ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentNearZeroStaleController");
+                if (state.Intent.PermanentChannels.Contains(channel)) return true;
+                var generation = state.Transaction?.Generation ?? 0;
+                var prior = state.NearZeroRetries.SingleOrDefault(r => r.Channel == channel);
+                var isolate = hardwareEvidenceConfirmed || prior != null && generation > prior.FirstGeneration && runId != prior.FirstRunId;
+                if (prior != null && !isolate) return false;
+                var before = state.Intent.SelectedChannels.ToArray();
+                if (prior == null)
+                    state.NearZeroRetries = state.NearZeroRetries.Concat(new[] { new IndependentNearZeroRetry
+                    { Channel = channel, FirstGeneration = generation, FirstRunId = runId } }).ToArray();
+                if (isolate)
+                {
+                    state.Intent.PermanentChannels = state.Intent.PermanentChannels.Union(new[] { channel }).OrderBy(c => c).ToArray();
+                    state.Intent.Revision = checked(state.Intent.Revision + 1);
+                    if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                    {
+                        state.Transaction.IntentRevision = state.Intent.Revision;
+                        state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                    }
+                    else if (state.Ticket != null) state.Ticket.Revoked = true;
+                }
+                AppendAudit(state, "NearZeroFault", "Channel=" + channel + ";HardwareEvidence=" + hardwareEvidenceConfirmed +
+                    ";Isolated=" + isolate + ";Generation=" + generation + ";CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return isolate;
+            });
+        }
+
+        public void ResetPermanentExclusionForOperator(long expectedRevision, IndependentProcessIdentity actor,
+            int channel, bool selected, string commandId, long now)
+        {
+            actor?.Validate();
+            if (actor == null || channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentPermanentResetInvalid");
+            Update(expectedRevision, state =>
+            {
+                var intent = state.Intent;
+                if (intent == null || state.Maintenance || state.SafetyCleanupPending ||
+                    state.Transaction != null && !state.Transaction.IsTerminal ||
+                    !string.Equals(actor.ExecutablePath, intent.ExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+                    (!actor.Matches(state.Controller) && (intent.Armed || !intent.ManualStopped)))
+                    throw new InvalidOperationException("IndependentPermanentResetNotAdmitted");
+                var before = intent.SelectedChannels.ToArray();
+                intent.PermanentChannels = intent.PermanentChannels.Where(c => c != channel).ToArray();
+                state.NearZeroRetries = state.NearZeroRetries.Where(r => r.Channel != channel).ToArray();
+                intent.SelectedChannels = selected ? before.Union(new[] { channel }).OrderBy(c => c).ToArray() :
+                    before.Where(c => c != channel).ToArray();
+                // A confirmed repair is not an instruction to resume. If XML
+                // persistence subsequently fails, this pause still excludes it.
+                intent.PausedChannels = intent.PausedChannels.Union(new[] { channel }).OrderBy(c => c).ToArray();
+                intent.Revision = checked(intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "OperatorPermanentReset", "Channel=" + channel + ";Selected=" + selected +
+                    ";CommandId=" + commandId, now, before);
+                return true;
+            });
+        }
+
+        public void SetControllerSelection(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int channel, bool selected, string commandId, long now)
+        {
+            controller.Validate();
+            if (channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentSelectionCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentSelectionStaleController");
+                var before = state.Intent.SelectedChannels.ToArray();
+                if (before.Contains(channel) == selected) return true;
+                state.Intent.SelectedChannels = selected ? before.Concat(new[] { channel }).OrderBy(c => c).ToArray() :
+                    before.Where(c => c != channel).ToArray();
+                // Checking a box is selection, not an instruction to restart a
+                // motor in an active batch. Only explicit new start/continue may
+                // remove this per-channel pause; never clear permanent isolation.
+                state.Intent.PausedChannels = state.Intent.PausedChannels.Union(new[] { channel }).OrderBy(c => c).ToArray();
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = state.Intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, "OperatorSelection", "Channel=" + channel + ";Selected=" + selected + ";CommandId=" + commandId,
+                    now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate(); BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public void SetControllerChannelPause(IndependentProcessIdentity controller, string runId, long runEpoch,
+            int channel, bool paused, string commandId, long now)
+        {
+            controller.Validate();
+            if (channel < 1 || channel > 12 || !Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentChannelPauseCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentChannelPauseStaleController");
+                var intent = state.Intent;
+                if (!paused && (state.Maintenance || state.SafetyCleanupPending ||
+                    state.Transaction?.IsTerminal == false || intent.ManualStopped || intent.ManualPaused ||
+                    !intent.Armed || !intent.SelectedChannels.Contains(channel) ||
+                    intent.PermanentChannels.Contains(channel) || intent.CompletedChannels.Contains(channel)))
+                    throw new InvalidOperationException("IndependentChannelResumeNotAuthorized");
+                if (intent.PausedChannels.Contains(channel) == paused) return true;
+                var before = intent.SelectedChannels.ToArray();
+                intent.PausedChannels = paused
+                    ? intent.PausedChannels.Union(new[] { channel }).OrderBy(c => c).ToArray()
+                    : intent.PausedChannels.Where(c => c != channel).ToArray();
+                intent.Revision = checked(intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    state.Transaction.IntentRevision = intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                // A single-channel continue must not extend the observation
+                // deadline for other stalled channels in this batch.
+                AppendAudit(state, paused ? "OperatorChannelPause" : "OperatorChannelContinue",
+                    "Channel=" + channel + ";CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public void SetControllerManualPause(IndependentProcessIdentity controller, string runId, long runEpoch,
+            bool paused, string commandId, long now)
+        {
+            controller.Validate();
+            if (!Guid.TryParseExact(commandId, "N", out _) || now <= 0)
+                throw new ArgumentException("IndependentPauseCommandInvalid");
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                if (state?.Intent == null || !controller.Matches(state.Controller) ||
+                    state.Intent.RunId != runId || state.Intent.RunEpoch != runEpoch)
+                    throw new InvalidOperationException("IndependentPauseStaleController");
+                if (!paused && (state.Maintenance || state.SafetyCleanupPending ||
+                    state.Transaction?.IsTerminal == false || state.Intent.ManualStopped || !state.Intent.Armed))
+                    throw new InvalidOperationException("IndependentPauseResumeNotAuthorized");
+                if (state.Intent.ManualPaused == paused) return true;
+                var before = state.Intent.SelectedChannels.ToArray();
+                state.Intent.ManualPaused = paused;
+                if (!paused)
+                {
+                    // Only an explicit continue opens a new startup observation
+                    // window; service restarts and duplicate commands cannot.
+                    state.RunStartedUtcTicks = now;
+                    state.StartupDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(state.Intent.StartupBudgetMs).Ticks);
+                }
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                if (state.Transaction?.Phase == IndependentRecoveryPhase.Verified)
+                {
+                    // This consumed historical ticket cannot launch again. Keep
+                    // the verified controller binding while explicit pause/resume
+                    // updates its authority; a pending launch is revoked below.
+                    state.Transaction.IntentRevision = state.Intent.Revision;
+                    state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                }
+                else if (state.Ticket != null) state.Ticket.Revoked = true;
+                AppendAudit(state, paused ? "OperatorPause" : "OperatorContinue", "CommandId=" + commandId, now, before);
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        public IndependentRecoveryTransaction BeginRecovery(long expectedRevision, string executor, long now)
+            => BeginRecovery(expectedRevision, executor, now, "IndependentTakeoverRequested");
+
+        public IndependentRecoveryTransaction BeginRecovery(long expectedRevision, string executor, long now, string reason)
+        {
+            return Update(expectedRevision, state =>
+            {
+                if (state.Maintenance || state.SafetyCleanupPending || state.Controller == null || state.Intent == null)
+                    throw new InvalidOperationException("IndependentProjectNotReadyForTakeover");
+                state.Controller.Validate();
+                state.Transaction = IndependentRecoveryTransitions.Begin(state.Transaction, state.Intent, executor, now);
+                state.Ticket = null;
+                state.SafetyCleanupPending = true;
+                // Commit the trigger in the same atomic state write as admission.
+                // Phase/observation text is transient and cannot be its archive.
+                AppendAudit(state, "IndependentTakeover", "RequestId=" + state.Transaction.RequestId +
+                    ";Generation=" + state.Transaction.Generation + ";" + Clip(reason ?? "IndependentTakeoverRequested", 112),
+                    now, state.Intent.SelectedChannels.ToArray());
+                return state.Transaction;
+            });
+        }
+
+        public void ArmManualRun(long expectedRevision, IndependentRunIntent intent,
+            IndependentProcessIdentity controller, long now)
+        {
+            controller.Validate();
+            Update(expectedRevision, state =>
+            {
+                if (state.Maintenance || state.SafetyCleanupPending || state.Transaction?.IsTerminal == false)
+                    throw new InvalidOperationException("IndependentRecoveryOrMaintenanceStillActive");
+                if (state.Intent?.RecoveryChannels().Length > 0)
+                    throw new InvalidOperationException("IndependentManualRunAlreadyArmed");
+                if (state.Intent != null && (state.Intent.RunId == intent.RunId ||
+                    !string.Equals(state.Intent.ProjectDirectory, intent.ProjectDirectory, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(state.Intent.DatabasePath, intent.DatabasePath, StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException("IndependentManualRunIdentityInvalid");
+                var before = state.Intent?.SelectedChannels.ToArray() ?? Array.Empty<int>();
+                intent.PermanentChannels = (state.Intent?.PermanentChannels ?? Array.Empty<int>())
+                    .Union(intent.PermanentChannels ?? Array.Empty<int>()).OrderBy(c => c).ToArray();
+                intent.Revision = checked((state.Intent?.Revision ?? 0) + 1);
+                intent.Validate();
+                if (!intent.Armed || intent.ManualStopped || intent.ManualPaused ||
+                    !string.Equals(intent.ExecutablePath, controller.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("IndependentManualRunNotAuthorized");
+                state.Intent = intent; state.Controller = controller; state.Ticket = null;
+                state.LastOperatorStopCommandId = null;
+                state.RunStartedUtcTicks = now;
+                state.RootRunId = intent.RunId;
+                state.StartupDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(intent.StartupBudgetMs).Ticks);
+                AppendAudit(state, "OperatorStart", "ManualRunArmed", now, before);
+                return true;
+            });
+        }
+
+        public IndependentRecoveryTransaction RetrySafetyCleanup(long expectedRevision, string executor, long now)
+        {
+            return Update(expectedRevision, state =>
+            {
+                if (!state.SafetyCleanupPending || state.Controller == null || state.Intent == null)
+                    throw new InvalidOperationException("IndependentCleanupRetryNotRequired");
+                state.Transaction = IndependentRecoveryTransitions.RetrySafetyCleanup(state.Transaction, state.Intent, executor, now);
+                // No ticket can survive a retry, including maintenance/manual stop.
+                state.Ticket = null;
+                return state.Transaction;
+            });
+        }
+
+        // This acknowledges cooperation only. The executor must still independently
+        // confirm power-off, retire the old controller and verify outputs/pressure.
+        public void AcknowledgeCooperativeStop(IndependentProcessIdentity controller, string runId,
+            long runEpoch, string requestId, long generation, long now)
+        {
+            controller?.Validate();
+            Locked(() =>
+            {
+                var state = ReadUnsafe();
+                var tx = state?.Transaction;
+                if (controller == null || state?.Controller?.Matches(controller) != true || tx == null ||
+                    !state.SafetyCleanupPending || tx.Phase != IndependentRecoveryPhase.CooperativeStop ||
+                    tx.RequestId != requestId || tx.Generation != generation || tx.RunId != runId ||
+                    tx.RunEpoch != runEpoch || now < tx.LastAttemptUtcTicks || now >= tx.PhaseDeadlineUtcTicks)
+                    throw new InvalidOperationException("IndependentCooperativeReceiptMismatch");
+                if (state.CooperativeStopReceipt?.RequestId == requestId &&
+                    state.CooperativeStopReceipt.Generation == generation) return true;
+                state.CooperativeStopReceipt = new IndependentCooperativeStopReceipt
+                { RequestId = requestId, Generation = generation, CompletedUtcTicks = now, Controller = controller };
+                state.Revision = checked(state.Revision + 1);
+                state.Validate();
+                BoundedJson.Write(_path, state);
+                return true;
+            });
+        }
+
+        // Safety cleanup follows the already-authorized, frozen old session.
+        // Operator revocation prevents restart, but must not strand the session
+        // half-way through power-off / handle release / pressure confirmation.
+        public IndependentRecoveryPhase CompleteSafetyStage(long expectedRevision, string executor,
+            long generation, string requestId, IndependentRecoveryPhase completedPhase,
+            bool confirmed, long now, long nextBudgetMs, string detail)
+        {
+            return Update(expectedRevision, state =>
+            {
+                var tx = state.Transaction;
+                if (tx == null || tx.IsTerminal || !state.SafetyCleanupPending ||
+                    tx.ExecutorIdentity != executor || tx.Generation != generation || tx.RequestId != requestId ||
+                    tx.Phase != completedPhase || now < tx.LastAttemptUtcTicks ||
+                    nextBudgetMs <= 0 || nextBudgetMs > 300000)
+                    throw new InvalidOperationException("IndependentSafetyStageReceiptMismatch");
+                if (completedPhase != IndependentRecoveryPhase.CooperativeStop &&
+                    completedPhase != IndependentRecoveryPhase.PowerOff &&
+                    completedPhase != IndependentRecoveryPhase.RetireControls &&
+                    completedPhase != IndependentRecoveryPhase.OutputsSafe)
+                    throw new InvalidOperationException("IndependentSafetyStageInvalid");
+                // A late affirmative receipt is not current safety evidence.
+                if (completedPhase != IndependentRecoveryPhase.CooperativeStop &&
+                    (!confirmed || now >= tx.PhaseDeadlineUtcTicks))
+                {
+                    tx.Phase = IndependentRecoveryPhase.NeedsAttention;
+                    tx.Detail = "SafetyCleanupUnconfirmed:" + completedPhase + ":" + Clip(detail, 192);
+                    if (state.Ticket != null) state.Ticket.Revoked = true;
+                    tx.Revision = checked(tx.Revision + 1);
+                    return tx.Phase;
+                }
+                tx.Phase = completedPhase == IndependentRecoveryPhase.CooperativeStop ? IndependentRecoveryPhase.PowerOff :
+                    completedPhase == IndependentRecoveryPhase.PowerOff ? IndependentRecoveryPhase.RetireControls :
+                    completedPhase == IndependentRecoveryPhase.RetireControls ? IndependentRecoveryPhase.OutputsSafe :
+                    IndependentRecoveryPhase.LaunchPending;
+                tx.Revision = checked(tx.Revision + 1);
+                tx.PhaseDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(nextBudgetMs).Ticks);
+                tx.Detail = Clip(detail ?? string.Empty, 192);
+                if (completedPhase == IndependentRecoveryPhase.OutputsSafe)
+                {
+                    state.SafetyCleanupPending = false;
+                    var stillAuthorized = !tx.OperatorStopOnly && !state.Maintenance && state.Intent != null &&
+                        state.Intent.Revision == tx.IntentRevision && state.Intent.RunId == tx.RunId &&
+                        state.Intent.RunEpoch == tx.RunEpoch && tx.Channels.SequenceEqual(state.Intent.RecoveryChannels());
+                    if (!stillAuthorized)
+                    {
+                        tx.Phase = IndependentRecoveryPhase.Cancelled;
+                        tx.Detail = state.Intent != null && tx.Channels.All(channel => state.Intent.CompletedChannels.Contains(channel))
+                            ? "TargetsCompleted;SafetyCleanupCompleted;NoRestart"
+                            : "SafetyCleanupCompleted;RestartAuthorityRevoked";
+                        if (state.Ticket != null) state.Ticket.Revoked = true;
+                    }
+                }
+                return tx.Phase;
+            });
+        }
+
+        public IndependentLaunchTicket IssueLaunchTicket(long expectedRevision, string executor, long generation,
+            string executableSha256, int windowsSessionId, long now)
+        {
+            return Update(expectedRevision, state =>
+            {
+                RequireLaunchAuthority(state, executor, generation);
+                if (state.Ticket != null) throw new InvalidOperationException("IndependentTicketAlreadyIssued");
+                state.Ticket = new IndependentLaunchTicket
+                {
+                    Nonce = Guid.NewGuid().ToString("N"), RequestId = state.Transaction.RequestId,
+                    Generation = generation, IntentRevision = state.Intent.Revision,
+                    ExecutableSha256 = executableSha256,
+                    WindowsSessionId = windowsSessionId,
+                    ExpiresUtcTicks = Math.Min(state.Transaction.PhaseDeadlineUtcTicks,
+                        checked(now + TimeSpan.FromSeconds(30).Ticks))
+                };
+                if (state.Ticket.ExpiresUtcTicks <= now)
+                    throw new InvalidOperationException("IndependentLaunchDeadlineExpired");
+                return state.Ticket;
+            });
+        }
+
+        public void MarkLaunchDispatched(long expectedRevision, string nonce, string executor, long now)
+        {
+            Update(expectedRevision, state =>
+            {
+                var ticket = state.Ticket;
+                if (ticket == null || ticket.Nonce != nonce || ticket.Revoked || ticket.Consumer != null ||
+                    ticket.DispatchStartedUtcTicks != 0 || now <= 0 || now >= ticket.ExpiresUtcTicks ||
+                    now < state.Transaction.LastAttemptUtcTicks)
+                    throw new InvalidOperationException("IndependentLaunchDispatchNotAuthorized");
+                RequireLaunchAuthority(state, executor, ticket.Generation);
+                ticket.DispatchStartedUtcTicks = now;
+                return true;
+            });
+        }
+
+        public IndependentRunIntent ConsumeLaunchTicket(long expectedRevision, string nonce,
+            IndependentProcessIdentity consumer, string executableSha256, long now)
+        {
+            consumer.Validate();
+            return Update(expectedRevision, state =>
+            {
+                var ticket = state.Ticket;
+                if (ticket == null || ticket.Revoked || ticket.Consumer != null || ticket.Nonce != nonce ||
+                    ticket.DispatchStartedUtcTicks <= 0 || now < ticket.DispatchStartedUtcTicks ||
+                    ticket.ExpiresUtcTicks <= now || now < state.Transaction.LastAttemptUtcTicks ||
+                    ticket.IntentRevision != state.Intent.Revision ||
+                    consumer.WindowsSessionId != ticket.WindowsSessionId ||
+                    !string.Equals(ticket.ExecutableSha256, executableSha256, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(state.Intent.ExecutablePath, consumer.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("IndependentTicketNotConsumable");
+                RequireLaunchAuthority(state, state.Transaction.ExecutorIdentity, ticket.Generation);
+                if (state.Controller != null && state.Controller.Pid == consumer.Pid &&
+                    state.Controller.StartUtcTicks == consumer.StartUtcTicks)
+                    throw new InvalidOperationException("IndependentTicketRequiresNewProcess");
+                ticket.Consumer = consumer;
+                state.Transaction.ReplacementPid = consumer.Pid;
+                state.Transaction.ReplacementStartUtcTicks = consumer.StartUtcTicks;
+                state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                return state.Intent;
+            });
+        }
+
+        public void CommitReplacementRun(long expectedRevision, IndependentProcessIdentity consumer,
+            string runId, long runEpoch, long now)
+        {
+            Update(expectedRevision, state =>
+            {
+                var ticket = state.Ticket;
+                if (state.Maintenance || state.SafetyCleanupPending || ticket == null || ticket.Revoked ||
+                    !consumer.Matches(ticket.Consumer) || ticket.IntentRevision != state.Intent.Revision ||
+                    state.Intent.RecoveryChannels().Length == 0 || state.Transaction == null ||
+                    (state.Transaction.Phase != IndependentRecoveryPhase.LaunchPending &&
+                     state.Transaction.Phase != IndependentRecoveryPhase.Verifying) ||
+                    now >= state.Transaction.PhaseDeadlineUtcTicks || now < state.Transaction.LastAttemptUtcTicks ||
+                    !Guid.TryParseExact(runId, "N", out _) || runId == state.Intent.RunId ||
+                    runEpoch <= state.Intent.RunEpoch)
+                    throw new InvalidOperationException("IndependentReplacementRunNotAuthorized");
+                var before = state.Intent.SelectedChannels.ToArray();
+                state.Intent.RunId = runId; state.Intent.RunEpoch = runEpoch;
+                state.Intent.Revision = checked(state.Intent.Revision + 1);
+                state.Transaction.RunId = runId; state.Transaction.RunEpoch = runEpoch;
+                state.Transaction.IntentRevision = state.Intent.Revision;
+                state.Transaction.Revision = checked(state.Transaction.Revision + 1);
+                // The consumed ticket can never launch again. Retain its original
+                // revision as evidence instead of minting a new permission.
+                state.Controller = consumer;
+                state.RunStartedUtcTicks = now;
+                state.StartupDeadlineUtcTicks = checked(now + TimeSpan.FromMilliseconds(state.Intent.StartupBudgetMs).Ticks);
+                AppendAudit(state, "ReplacementBootstrap", "ReplacementRunCommitted", now, before);
+                return true;
+            });
+        }
+
+        private static void RequireLaunchAuthority(IndependentProjectState state, string executor, long generation)
+        {
+            if (state.Maintenance || state.SafetyCleanupPending || state.Transaction == null ||
+                state.Transaction.Phase != IndependentRecoveryPhase.LaunchPending)
+                throw new InvalidOperationException("IndependentSafetyCleanupNotComplete");
+            IndependentRecoveryTransitions.RequireCurrent(state.Transaction, state.Intent, executor, generation);
+        }
+
+        private static void AppendAudit(IndependentProjectState state, string source, string reason, long now, int[] before)
+        {
+            state.Audit = state.Audit.Concat(new[] { new IndependentIntentAudit
+            {
+                UtcTicks = now, Revision = state.Intent.Revision, Source = Clip(source, 64),
+                Reason = Clip(reason ?? string.Empty, 192), RunId = state.Intent.RunId, RunEpoch = state.Intent.RunEpoch,
+                Before = before, After = state.Intent.SelectedChannels.ToArray()
+            } }).Skip(Math.Max(0, state.Audit.Length + 1 - 32)).ToArray();
+        }
+
+        private static string Clip(string value, int length) => value == null || value.Length <= length ? value : value.Substring(0, length);
+    }
+}

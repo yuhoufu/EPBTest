@@ -8,4 +8,5 @@ using System.Runtime.CompilerServices;
 [assembly: AssemblyProduct("MT EPB Test System")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b236eb0c-01ae-4aab-b350-bdd30dbe3e3d")]
+// Version attributes are generated from ProductVersion.props.
 [assembly: InternalsVisibleTo("AdaptiveControlTests")]

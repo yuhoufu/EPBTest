@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -31,3 +31,4 @@ using System.Runtime.InteropServices;
 //      生成号
 //      修订号
 //
+// Version attributes are generated from ProductVersion.props.

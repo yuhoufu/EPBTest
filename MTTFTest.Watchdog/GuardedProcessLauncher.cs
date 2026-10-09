@@ -34,21 +34,30 @@ namespace MTTFTest.Watchdog
         private readonly System.Collections.Generic.HashSet<string> _consumed =
             new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
 
+        private readonly Action<DurableLaunchIntentCapability> _prepareExternal;
+        private readonly Action<DurableLaunchIntentCapability, Process> _bindExternal;
+
         internal GuardedProcessLauncher(
             Func<DurableLaunchIntentCapability, bool> authorityValidator = null,
-            Func<DurableLaunchIntentCapability, bool> authorityConsumer = null)
+            Func<DurableLaunchIntentCapability, bool> authorityConsumer = null,
+            Action<DurableLaunchIntentCapability> prepareExternal = null,
+            Action<DurableLaunchIntentCapability, Process> bindExternal = null)
         {
             if (authorityValidator == null || authorityConsumer == null)
                 throw new ArgumentException("Strict V4 authority callbacks are required.");
             _authorityValidator = authorityValidator;
             _authorityConsumer = authorityConsumer;
+            _prepareExternal = prepareExternal;
+            _bindExternal = bindExternal;
         }
 
         internal GuardedProcessOwnerReceipt Start(DurableLaunchIntentCapability capability)
         {
             ValidateCapability(capability);
+            IndependentInstallationBinding.RequireLegacyLaunchAllowed(capability.ExecutablePath);
             if (_authorityValidator != null && !_authorityValidator(capability))
                 throw new InvalidOperationException("LaunchCapabilityNotCurrent");
+            _prepareExternal?.Invoke(capability);
             if (_authorityConsumer != null && !_authorityConsumer(capability))
                 throw new InvalidOperationException("LaunchIntentConsumeRejected");
             lock (_gate)
@@ -69,7 +78,7 @@ namespace MTTFTest.Watchdog
                     "MTTFTest.UnattendedMode.required");
                 process = File.Exists(formalMarker)
                     ? SessionAgentLaunchClient.Start(capability)
-                    : Process.Start(new ProcessStartInfo
+                    : IndependentInstallationBinding.StartLegacyProcess(new ProcessStartInfo
                     {
                         FileName = capability.ExecutablePath,
                         Arguments = capability.Arguments ?? string.Empty,
@@ -78,6 +87,7 @@ namespace MTTFTest.Watchdog
                         CreateNoWindow = true
                     });
                 if (process == null) throw new InvalidOperationException("GuardedProcessStartReturnedNull");
+                _bindExternal?.Invoke(capability, process);
                 var startTicks = process.StartTime.ToUniversalTime().Ticks;
                 return new GuardedProcessOwnerReceipt(this, process, startTicks);
             }

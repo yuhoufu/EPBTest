@@ -67,6 +67,14 @@ namespace MTEmbTest
             bool unattendedRecovery,
             int[] expectedChannels)
         {
+            if (_manualCloseAccepted)
+                throw new InvalidOperationException("后台停止收尾尚未完成，不能开始新试验。");
+            if (_selectionPersistencePending.Count != 0)
+            {
+                if (unattendedRecovery) throw new InvalidOperationException("通道选择仍在持久确认，拒绝使用旧集合启动。");
+                LogInfo("通道选择正在保存，完成后再开始试验。");
+                return null;
+            }
             if (Interlocked.CompareExchange(ref _batchStartUiGuard, 1, 0) != 0)
             {
                 if (unattendedRecovery)
@@ -75,9 +83,11 @@ namespace MTEmbTest
                 return null;
             }
 
+            var manualNewStart = false;
             try
             {
                 BtnStartTest.Enabled = false;
+                Interlocked.Increment(ref _manualCloseStartRevision);
                 BtnStartTest.Cursor = System.Windows.Forms.Cursors.WaitCursor;
 
                 var pendingStop = _stopSessionReceipt.CaptureTask();
@@ -107,6 +117,8 @@ namespace MTEmbTest
                             "自动重启子进程出现非预期 Paused 状态，拒绝把它当作新运行继续。");
                     var commandId = Guid.NewGuid().ToString("N");
                     LogInfo($"已接收继续试验命令，正在执行恢复预检。CommandId={commandId}");
+                    if (IndependentRecoveryStartup.Current != null)
+                        await IndependentRecoveryStartup.Current.PersistManualPauseAsync(false, commandId).ConfigureAwait(true);
                     PostSafetyStatus("继续命令已接收，正在执行恢复预检…", false);
                     RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
@@ -144,6 +156,8 @@ namespace MTEmbTest
                             "自动重启子进程已存在 Running 批次，拒绝重复提交恢复启动。");
                     var commandId = Guid.NewGuid().ToString("N");
                     LogInfo($"已接收暂停试验命令，等待所有运行卡钳完成当前圈。CommandId={commandId}");
+                    if (IndependentRecoveryStartup.Current != null)
+                        await IndependentRecoveryStartup.Current.PersistManualPauseAsync(true, commandId).ConfigureAwait(true);
                     PostSafetyStatus("暂停命令已接收，正在等待当前圈安全结束…", false);
                     await _epb.PauseBatchGracefullyAsync().ConfigureAwait(true);
                     SaveGracefulPauseCheckpoint();
@@ -154,6 +168,11 @@ namespace MTEmbTest
                 if (!unattendedRecovery &&
                     await TryResumePendingGracefulPauseAsync().ConfigureAwait(true))
                     return null;
+
+                manualNewStart = !unattendedRecovery;
+                if (manualNewStart && !Enumerable.Range(1, 12)
+                    .Any(channel => EpbGroup[channel - 1]?.CtrlJoinTest?.Checked == true))
+                    throw new InvalidOperationException("请至少勾选一个卡钳后再开始试验。");
 
                 var explicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0;
 
@@ -183,6 +202,9 @@ namespace MTEmbTest
                             : "旧批次电机与电源已确认关闭；压力证据暂缺，不阻碍实时预检和重新开始。");
                 }
 
+                if (manualNewStart && IndependentRecoveryStartup.Current != null)
+                    await IndependentRecoveryStartup.Current.PrepareManualStartBindingAsync(_cfg).ConfigureAwait(true);
+
                 // 新试验不继承上一次报警的面板指示灯、蜂鸣器及内部活动报警集合。
                 // ClearAllAsync 自带报警模块的重装延迟，期间若产生新报警会在延迟后重新输出。
                 if (_alarmManager != null)
@@ -190,7 +212,9 @@ namespace MTEmbTest
                     try
                     {
                         await _alarmManager.ClearAllAsync().ConfigureAwait(true);
-                        LogInfo("开始新试验前已自动复位上次声光报警。");
+                        LogInfo(_alarmManager.SupervisorOwnsOutputs
+                            ? "已复位项目报警请求；安装报警锁存保持，可在主窗口安装报警入口处理。"
+                            : "开始新试验前已复位声光报警。");
                     }
                     catch (Exception alarmEx)
                     {
@@ -280,6 +304,21 @@ namespace MTEmbTest
                 }
 
                 return null;
+            }
+            catch (Exception error)
+            {
+                if (manualNewStart)
+                {
+                    try
+                    {
+                        await ReleaseUnadmittedStartupAsync().ConfigureAwait(true);
+                    }
+                    catch (Exception cleanupError)
+                    {
+                        throw new AggregateException("启动被拒绝；失败会话仍需完成安全收尾。", error, cleanupError);
+                    }
+                }
+                throw;
             }
             finally
             {

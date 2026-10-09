@@ -1343,6 +1343,9 @@ namespace Controller
             return succeeded;
         }
 
+        internal double OffCurrentClearThresholdForManualClose => ResolveOffCurrentClearThreshold(
+            _adaptiveSafetyLimits.OffCurrentClearThresholdA, _adaptivePreEnergizationCurrentA);
+
         private Task<bool> BeginTerminalOffCurrentVerification(string reason, string direction)
         {
             var configuredThresholdA = _adaptiveSafetyLimits.OffCurrentClearThresholdA;
@@ -1613,8 +1616,9 @@ namespace Controller
                 // A stale cache entry is not evidence that the current failed to clear.  The
                 // DAQ callback may already be catching up from its hardware buffer (the field
                 // symptom is a fresh callback carrying an old sample timestamp).  Keep the
-                // motor DO off and wait within the existing bounded clear-current window for a
-                // genuinely fresh replacement sample.  Only the timeout result is allowed to
+                // motor DO off and allow three seconds for a stale sample to recover. Fresh
+                // current that has not cleared still uses the configured clear-current timeout.
+                // Only a genuinely fresh replacement sample can pass. The timeout result may
                 // escalate an unverifiable OFF state to the power-group interlock.
                 if (sample.IsFresh &&
                     !double.IsNaN(currentA) &&
@@ -1624,7 +1628,10 @@ namespace Controller
                     return new OffCurrentClearResult(true, currentA, elapsedMs);
                 }
 
-                if (elapsedMs >= boundedTimeoutMs)
+                var effectiveTimeoutMs = sample.IsFresh
+                    ? boundedTimeoutMs
+                    : Math.Max(3000, boundedTimeoutMs);
+                if (elapsedMs >= effectiveTimeoutMs)
                     return new OffCurrentClearResult(
                         false,
                         currentA,
@@ -1633,7 +1640,7 @@ namespace Controller
                         sample.AgeMs);
 
                 await Task.Delay(
-                        Math.Min(boundedPollMs, boundedTimeoutMs - elapsedMs),
+                        Math.Min(boundedPollMs, effectiveTimeoutMs - elapsedMs),
                         token)
                     .ConfigureAwait(false);
             }

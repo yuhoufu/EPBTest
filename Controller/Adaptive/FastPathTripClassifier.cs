@@ -34,8 +34,7 @@ namespace Controller.Adaptive
             FastSignalQualityFlags.DuplicateBatch |
             FastSignalQualityFlags.OutOfOrderBatch |
             FastSignalQualityFlags.MonotonicTickInvalid |
-            FastSignalQualityFlags.FilterStateInvalid |
-            FastSignalQualityFlags.SampleStale;
+            FastSignalQualityFlags.FilterStateInvalid;
 
         public static bool HasInvalidControlQuality(FastSignalQualityFlags qualityFlags)
         {

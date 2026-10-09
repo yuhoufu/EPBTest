@@ -1,0 +1,353 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using Config;
+using MTTFTest.Watchdog.Protocol;
+
+namespace MTEmbTest
+{
+    internal sealed class IndependentRecoveryStartup
+    {
+        internal static IndependentRecoveryStartup Current { get; private set; }
+        internal string RegistrationPath { get; private set; }
+        internal string Nonce { get; private set; }
+        internal IndependentExecutorRegistration Registration { get; private set; }
+        internal IndependentProcessIdentity Identity { get; private set; }
+        internal string ParentRunId { get; private set; }
+        internal string RootRunId { get; private set; }
+        internal bool IsRecoveryLaunch => Nonce != null;
+        internal string RunId { get; private set; }
+        internal long RunEpoch { get; private set; }
+        internal long Generation { get; private set; }
+        private IndependentProjectStateStore _store;
+        private System.Threading.Tasks.Task _manualStopPersistence;
+
+        internal IDisposable ObserveCooperativeStop(Func<string, System.Threading.Tasks.Task<bool>> stop)
+            => new CooperativeObserver(this, stop);
+
+        private sealed class CooperativeObserver : IDisposable
+        {
+            private readonly IndependentRecoveryStartup _owner;
+            private readonly Func<string, System.Threading.Tasks.Task<bool>> _stop;
+            private readonly System.Threading.Timer _timer;
+            private int _busy, _disposed;
+            private string _lastRequest;
+
+            internal CooperativeObserver(IndependentRecoveryStartup owner, Func<string, System.Threading.Tasks.Task<bool>> stop)
+            {
+                _owner = owner;
+                _stop = stop ?? throw new ArgumentNullException(nameof(stop));
+                _timer = new System.Threading.Timer(Tick, null, 1000, 1000);
+            }
+
+            private async void Tick(object unused)
+            {
+                if (System.Threading.Volatile.Read(ref _disposed) != 0 ||
+                    System.Threading.Interlocked.CompareExchange(ref _busy, 1, 0) != 0) return;
+                try
+                {
+                    var state = _owner._store.Read();
+                    var tx = state?.Transaction;
+                    if (tx == null || tx.Phase != IndependentRecoveryPhase.CooperativeStop ||
+                        !state.SafetyCleanupPending || state.Controller?.Matches(_owner.Identity) != true ||
+                        tx.RunId != _owner.RunId || tx.RunEpoch != _owner.RunEpoch ||
+                        tx.RequestId == _lastRequest || DateTime.UtcNow.Ticks >= tx.PhaseDeadlineUtcTicks ||
+                        System.Threading.Volatile.Read(ref _disposed) != 0) return;
+                    _lastRequest = tx.RequestId;
+                    // This runs off the UI and status publisher. A hung stop remains
+                    // bounded by the external executor's process-retirement deadline.
+                    if (await _stop(tx.RequestId).ConfigureAwait(false))
+                        _owner._store.AcknowledgeCooperativeStop(_owner.Identity, tx.RunId, tx.RunEpoch,
+                            tx.RequestId, tx.Generation, DateTime.UtcNow.Ticks);
+                }
+                catch (Exception error)
+                {
+                    Trace.TraceError("IndependentCooperativeStop: " + error.GetType().Name + ":" + error.Message);
+                }
+                finally { System.Threading.Interlocked.Exchange(ref _busy, 0); }
+            }
+
+            public void Dispose()
+            {
+                System.Threading.Interlocked.Exchange(ref _disposed, 1);
+                _timer.Dispose();
+            }
+        }
+
+        internal static IndependentRecoveryStartup Parse(string[] args)
+        {
+            IndependentInstallationBinding installed;
+            using (var process = Process.GetCurrentProcess())
+                installed = IndependentInstallationBinding.ResolveForStartup(process.MainModule.FileName);
+            var present = args.Any(value => value == "--independent-registration" || value == "--independent-ticket" || value == "--independent-installation");
+            if (!present)
+            {
+                if (installed == null) return null;
+                if (args.Contains("--watchdog-recover") || args.Contains("--epb-recover"))
+                    throw new InvalidOperationException("IndependentExecutorOwnsProcessRelaunch");
+                return new IndependentRecoveryStartup { RegistrationPath = installed.RegistrationPath };
+            }
+            if (args.Contains("--watchdog-recover") || args.Contains("--epb-recover"))
+                throw new InvalidOperationException("MixedRecoveryProtocolsRejected");
+            string Read(string key)
+            {
+                if (args.Count(value => value == key) != 1) throw new InvalidOperationException("IndependentBootstrapArgumentsInvalid");
+                var index = Array.IndexOf(args, key);
+                if (index + 1 >= args.Length) throw new InvalidOperationException("IndependentBootstrapArgumentsMissing");
+                return args[index + 1];
+            }
+            if (args.Contains("--independent-installation"))
+            {
+                if (args.Contains("--independent-registration") || args.Contains("--independent-ticket"))
+                    throw new InvalidOperationException("MixedIndependentLaunchModesRejected");
+                var installedPath = Read("--independent-installation");
+                if (installed != null && !string.Equals(installedPath, installed.RegistrationPath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("IndependentInstallationArgumentMismatch");
+                if (!Path.IsPathRooted(installedPath)) throw new InvalidOperationException("IndependentBootstrapArgumentsInvalid");
+                return new IndependentRecoveryStartup { RegistrationPath = installedPath };
+            }
+            var path = Read("--independent-registration");
+            if (installed != null && !string.Equals(path, installed.RegistrationPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentInstallationArgumentMismatch");
+            var nonce = Read("--independent-ticket");
+            if (!Path.IsPathRooted(path) || !Guid.TryParseExact(nonce, "N", out _))
+                throw new InvalidOperationException("IndependentBootstrapArgumentsInvalid");
+            return new IndependentRecoveryStartup { RegistrationPath = path, Nonce = nonce };
+        }
+
+        internal void ConsumeAndBind()
+        {
+            if (Current != null) throw new InvalidOperationException("IndependentBootstrapAlreadyConsumed");
+            Registration = IndependentExecutorRegistration.LoadTrusted(RegistrationPath);
+            using (var user = System.Security.Principal.WindowsIdentity.GetCurrent())
+                if (user.User.Value != Registration.InteractiveUserSid)
+                    throw new UnauthorizedAccessException("IndependentBootstrapInteractiveUserMismatch");
+            if (IsRecoveryLaunch && File.Exists(IndependentProjectBinding.PendingPath(RegistrationPath)))
+                throw new InvalidOperationException("IndependentProjectBindingRecoveryRequiresManualLaunch");
+            if (!IsRecoveryLaunch)
+            {
+                IndependentProjectBinding.RecoverPending(RegistrationPath);
+                Registration = IndependentExecutorRegistration.LoadTrusted(RegistrationPath);
+            }
+            _store = new IndependentProjectStateStore(Registration.StateDirectory);
+            var state = _store.Read();
+            if (state == null) throw new InvalidOperationException("IndependentInstalledStateMissing");
+            using (var process = Process.GetCurrentProcess())
+                Identity = new IndependentProcessIdentity
+                { Pid = process.Id, StartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                    WindowsSessionId = process.SessionId, ExecutablePath = process.MainModule.FileName,
+                    SessionToken = Guid.NewGuid().ToString("N") };
+            var executableHash = SupervisorProtocol.ComputeSha256(Identity.ExecutablePath);
+            if (!IsRecoveryLaunch)
+            {
+                if (state.Maintenance || state.SafetyCleanupPending || state.Transaction?.IsTerminal == false ||
+                    state.Intent?.RecoveryChannels().Length > 0)
+                    throw new InvalidOperationException("IndependentActiveRunRequiresRecoveryTicket");
+                if (!string.Equals(Identity.ExecutablePath, Registration.ExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(executableHash, Registration.ExecutableSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("IndependentInstalledExecutableMismatch");
+                IndependentExecutionFence.AttachCurrent(Registration.InstallationId, Identity);
+                Current = this;
+                return;
+            }
+            Registration.RequireBoundIntent(state.Intent);
+            var intent = _store.ConsumeCurrentLaunchTicket(Nonce, Identity, executableHash, DateTime.UtcNow.Ticks);
+            ParentRunId = intent.RunId;
+            RootRunId = state.RootRunId;
+            RunEpoch = checked(intent.RunEpoch + 1);
+            RunId = Guid.NewGuid().ToString("N");
+            Generation = state.Transaction.Generation;
+            IndependentExecutionFence.AttachCurrent(Registration.InstallationId, Identity);
+            _store.CommitCurrentReplacementRun(Identity, RunId, RunEpoch, DateTime.UtcNow.Ticks);
+            Current = this;
+            ValidateCurrent();
+        }
+
+        internal IndependentRunIntent ValidateCurrent()
+        {
+            IndependentExecutionFence.RequireCurrentAuthority();
+            var state = _store.Read();
+            Registration.RequireBoundIntent(state.Intent);
+            if (state.Maintenance || state.SafetyCleanupPending || !Identity.Matches(state.Controller) ||
+                state.Intent.RunId != RunId || state.Intent.RunEpoch != RunEpoch ||
+                state.Intent.RecoveryChannels().Length == 0)
+                throw new InvalidOperationException("IndependentBootstrapAuthorityChanged");
+            if (IsRecoveryLaunch && (state.Ticket == null || state.Ticket.Revoked || !Identity.Matches(state.Ticket.Consumer) || state.Transaction == null ||
+                state.Transaction.RunId != RunId || state.Transaction.RunEpoch != RunEpoch ||
+                state.Transaction.IntentRevision != state.Intent.Revision ||
+                (state.Transaction.Phase != IndependentRecoveryPhase.LaunchPending &&
+                 state.Transaction.Phase != IndependentRecoveryPhase.Verifying && state.Transaction.Phase != IndependentRecoveryPhase.Verified) ||
+                (state.Transaction.Phase != IndependentRecoveryPhase.Verified && DateTime.UtcNow.Ticks >= state.Transaction.PhaseDeadlineUtcTicks)))
+                throw new InvalidOperationException("IndependentBootstrapAuthorityChanged");
+            return state.Intent;
+        }
+
+        internal void ResetPermanentExclusion(GlobalConfig config, int channel, bool selected)
+        {
+            ValidateProjectConfiguration(config);
+            var state = _store.Read();
+            if (state?.Intent == null) return;
+            if (RunId != null && (RunId != state.Intent.RunId || RunEpoch != state.Intent.RunEpoch))
+                throw new InvalidOperationException("IndependentPermanentResetStaleRun");
+            _store.ResetPermanentExclusionForOperator(state.Revision, Identity, channel, selected,
+                Guid.NewGuid().ToString("N"), DateTime.UtcNow.Ticks);
+        }
+
+        internal void PersistPermanentExclusion(Guid runId, long epoch, int[] channels, string code, Guid command)
+            => _store.RecordControllerPermanentExclusion(Identity, runId.ToString("N"), epoch, channels,
+                code, command.ToString("N"), DateTime.UtcNow.Ticks);
+
+        internal bool RecordNearZeroFault(Guid runId, long epoch, int channel, bool confirmed, Guid command)
+            => _store.RecordNearZeroFault(Identity, runId.ToString("N"), epoch, channel, confirmed,
+                command.ToString("N"), DateTime.UtcNow.Ticks);
+
+        internal DataOperation.RunChainIdentity ArmManualRun(GlobalConfig config, int[] channels, int learnCycles)
+        {
+            RequireManualStopPersistenceCompleted();
+            IndependentExecutionFence.RequireCurrentAuthority();
+            ValidateProjectConfiguration(config);
+            var state = _store.Read();
+            var runId = Guid.NewGuid();
+            var epoch = checked((state?.Intent?.RunEpoch ?? 0) + 1);
+            var intent = new IndependentRunIntent
+            {
+                Revision = 1, ProjectDirectory = Registration.ProjectDirectory,
+                DatabasePath = Registration.DatabasePath, DatabaseCreationUtcTicks = Registration.DatabaseCreationUtcTicks,
+                ExecutablePath = Registration.ExecutablePath, ConfigurationSha256 = Registration.ConfigurationSha256,
+                RunId = runId.ToString("N"), RunEpoch = epoch, SelectedChannels = channels.ToArray(), Armed = true,
+                PermanentChannels = Enumerable.Range(1, 12).Where(channel => config.Test.GetEpbRecord(channel).PermanentAlarmLatched).ToArray(),
+                MechanicalTargets = Enumerable.Range(1, 12).Select(channel => new IndependentMechanicalTarget
+                {
+                    Channel = channel,
+                    TotalCount = config.Test.GetEpbRecord(channel).TotalCount > 0
+                        ? config.Test.GetEpbRecord(channel).TotalCount : config.Test.TestTarget
+                }).ToArray(),
+                PeriodMs = config.Test.PeriodMs,
+                StartupBudgetMs = checked(Registration.StartupPositioningBudgetMs +
+                    (Math.Max(0L, learnCycles) + 2) * config.Test.PeriodMs)
+            };
+            // Durable arming is itself an authorization boundary. A write whose
+            // response is uncertain must not be closed as a never-admitted session.
+            WatchdogRuntime.MarkControlAdmission();
+            _store.ArmManualRun(state.Revision, intent, Identity, DateTime.UtcNow.Ticks);
+            Nonce = null; RunId = intent.RunId; RootRunId = RunId; ParentRunId = Guid.Empty.ToString("N");
+            RunEpoch = epoch; Generation = 0;
+            ValidateArmedManualRun(intent);
+            UnattendedRecoveryCoordinator.SetRecoveryProcessMode(false);
+            return new DataOperation.RunChainIdentity(runId, runId, Guid.Empty, 0, epoch);
+        }
+
+        internal void ValidateArmedManualRun(IndependentRunIntent intent)
+        {
+            try { ValidateCurrent(); }
+            catch (Exception admissionError)
+            {
+                try
+                {
+                    _store.RecordControllerManualStop(Identity, intent.RunId, intent.RunEpoch,
+                        Guid.NewGuid().ToString("N"), DateTime.UtcNow.Ticks);
+                }
+                catch (Exception stopError)
+                {
+                    _manualStopPersistence = System.Threading.Tasks.Task.FromException(stopError);
+                    throw new AggregateException("IndependentManualStartRevocationUnconfirmed", admissionError, stopError);
+                }
+                throw;
+            }
+        }
+
+        internal async System.Threading.Tasks.Task PrepareManualStartBindingAsync(GlobalConfig config)
+        {
+            RequireManualStopPersistenceCompleted();
+            IndependentExecutionFence.RequireCurrentAuthority();
+            var current = IndependentExecutorRegistration.LoadTrusted(RegistrationPath);
+            if (!IndependentProjectBinding.NeedsChange(RegistrationPath, current, config))
+            {
+                Registration = current;
+                return;
+            }
+            // This is called after the manual Start UI's combined stop receipt,
+            // before creating any new watchdog session or granting run intent.
+            await WatchdogRuntime.RequireManualBindingBoundaryAsync().ConfigureAwait(false);
+            Registration = await System.Threading.Tasks.Task.Run(() =>
+                IndependentProjectBinding.Change(RegistrationPath, config)).ConfigureAwait(false);
+            Nonce = null;
+            RunId = null;
+            RootRunId = null;
+            ParentRunId = null;
+            RunEpoch = 0;
+            Generation = 0;
+            _manualStopPersistence = null;
+        }
+
+        internal System.Threading.Tasks.Task PersistManualStopAsync(string commandId)
+        {
+            if (RunId == null) return System.Threading.Tasks.Task.CompletedTask;
+            var task = System.Threading.Tasks.Task.Run(() =>
+                _store.RecordControllerManualStop(Identity, RunId, RunEpoch, commandId, DateTime.UtcNow.Ticks));
+            _manualStopPersistence = task;
+            task.ContinueWith(failed => ProjectLogHub.Write(ProjectLogLevel.Error,
+                    "独立人工停止授权写入失败：" + failed.Exception.GetBaseException().Message, "独立恢复", failed.Exception),
+                System.Threading.CancellationToken.None,
+                System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted,
+                System.Threading.Tasks.TaskScheduler.Default);
+            return task;
+        }
+
+        internal System.Threading.Tasks.Task PersistChannelSelectionAsync(int channel, bool selected)
+        {
+            var runId = RunId; var epoch = RunEpoch;
+            if (runId == null) return System.Threading.Tasks.Task.CompletedTask;
+            var command = Guid.NewGuid().ToString("N");
+            return System.Threading.Tasks.Task.Run(() =>
+                _store.SetControllerSelection(Identity, runId, epoch, channel, selected, command, DateTime.UtcNow.Ticks));
+        }
+
+        internal System.Threading.Tasks.Task PersistChannelPauseAsync(int channel, bool paused)
+        {
+            var runId = RunId; var epoch = RunEpoch;
+            if (runId == null) throw new InvalidOperationException("IndependentPauseRunMissing");
+            var command = Guid.NewGuid().ToString("N");
+            return System.Threading.Tasks.Task.Run(() =>
+                _store.SetControllerChannelPause(Identity, runId, epoch, channel, paused, command, DateTime.UtcNow.Ticks));
+        }
+
+        internal System.Threading.Tasks.Task PersistManualPauseAsync(bool paused, string commandId)
+        {
+            if (RunId == null) throw new InvalidOperationException("IndependentPauseRunMissing");
+            return System.Threading.Tasks.Task.Run(() =>
+                _store.SetControllerManualPause(Identity, RunId, RunEpoch, paused, commandId, DateTime.UtcNow.Ticks));
+        }
+
+        internal void RequireManualStopPersistenceCompleted()
+        {
+            if (_manualStopPersistence != null && _manualStopPersistence.Status != System.Threading.Tasks.TaskStatus.RanToCompletion)
+                throw new InvalidOperationException("独立人工停止授权仍未持久确认，不能重新开始。");
+        }
+
+        internal IndependentRunIntent ValidateConfiguration(GlobalConfig config)
+        {
+            var intent = ValidateCurrent();
+            ValidateProjectConfiguration(config);
+            return intent;
+        }
+
+        private void ValidateProjectConfiguration(GlobalConfig config)
+        {
+            if (config?.Test == null) throw new InvalidOperationException("IndependentBootstrapProjectConfigurationMissing");
+            if (!string.Equals(Path.GetFullPath(Path.Combine(config.Test.StoreDir, config.Test.TestName)).TrimEnd('\\'),
+                Path.GetFullPath(Registration.ProjectDirectory).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("IndependentBootstrapProjectDirectoryMismatch");
+            if (!File.Exists(Registration.DatabasePath))
+                throw new InvalidOperationException("IndependentBootstrapDatabaseMissing");
+            if (File.GetCreationTimeUtc(Registration.DatabasePath).Ticks != Registration.DatabaseCreationUtcTicks)
+                throw new InvalidOperationException("IndependentBootstrapDatabaseIdentityChanged");
+            IndependentProjectBinding.RequireDatabaseIdentity(Registration, Registration.ProjectDirectory, Registration.DatabasePath);
+            var actual = UnattendedRunCheckpointStore.ComputeIndependentConfigurationHash(config);
+            if (!SupervisorProtocol.Sha256Equals(actual, Registration.ConfigurationSha256))
+                throw new InvalidOperationException("IndependentBootstrapControlConfigurationMismatch：控制参数与授权不一致；" +
+                    "请完成停止、保存项目，再由人工开始重新授权。Expected=" + Registration.ConfigurationSha256 + ";Actual=" + actual);
+        }
+    }
+}

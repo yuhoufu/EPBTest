@@ -1,8 +1,29 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)] [string]$InstallDirectory,
     [string]$JournalDirectory = '',
     [string]$WebhookEndpoint = ''
 )
+# Public entry points accept PowerShell 7; .NET Framework deployment work is
+# executed by the Windows PowerShell host with typed, data-only arguments.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $epbBridgeParameters = @{}
+    foreach ($epbBridgeKey in $PSBoundParameters.Keys) {
+        $epbBridgeValue = $PSBoundParameters[$epbBridgeKey]
+        if ($epbBridgeValue -is [Management.Automation.SwitchParameter]) { $epbBridgeValue = [bool]$epbBridgeValue }
+        $epbBridgeParameters[$epbBridgeKey] = $epbBridgeValue
+    }
+    $epbBridgeData = @{ Script = $PSCommandPath; Parameters = $epbBridgeParameters } | ConvertTo-Json -Depth 5 -Compress
+    $epbBridgePayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($epbBridgeData))
+    $epbBridgeCode = '$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue";$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("' + $epbBridgePayload + '"))|ConvertFrom-Json;$p=@{};foreach($v in $d.Parameters.PSObject.Properties){$p[$v.Name]=$v.Value};$global:LASTEXITCODE=0;& ([string]$d.Script) @p;exit $LASTEXITCODE'
+    $epbBridgeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($epbBridgeCode))
+    $epbBridgeModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules"
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand $epbBridgeEncoded
+        $epbBridgeExitCode = $LASTEXITCODE
+    } finally { $env:PSModulePath = $epbBridgeModulePath }
+    exit $epbBridgeExitCode
+}
 
 $resolvedInstall = [IO.Path]::GetFullPath($InstallDirectory)
 if (-not (Test-Path -LiteralPath $resolvedInstall -PathType Container)) {

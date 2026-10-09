@@ -5,6 +5,72 @@ using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
+    // Object allocation is not readiness: both Load and Shown install resources
+    // needed by recovery. Failure/closure permanently invalidates this form.
+    internal sealed class MonitorInitializationGate
+    {
+        private readonly object _gate = new object();
+        private readonly TaskCompletionSource<bool> _completion =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _stages;
+        internal bool IsReady { get { lock (_gate) return _stages == 3; } }
+        internal void CompleteLoad() => Complete(1);
+        internal void CompleteShown() => Complete(2);
+        private void Complete(int stage)
+        {
+            lock (_gate)
+            {
+                if ((_stages & 4) != 0) return;
+                _stages |= stage;
+                if (_stages == 3) _completion.TrySetResult(true);
+            }
+        }
+        internal void Fail()
+        {
+            lock (_gate)
+            {
+                _stages = 4;
+                _completion.TrySetResult(false);
+            }
+        }
+        internal async Task<bool> WaitAsync(int timeoutMilliseconds)
+        {
+            using (var timeout = new System.Threading.CancellationTokenSource())
+            {
+                var elapsed = Task.Delay(Math.Max(1, timeoutMilliseconds), timeout.Token);
+                var completed = await Task.WhenAny(_completion.Task, elapsed).ConfigureAwait(false);
+                timeout.Cancel();
+                return completed == _completion.Task && await _completion.Task.ConfigureAwait(false) && IsReady;
+            }
+        }
+    }
+
+    internal sealed class ManualCloseDrainOwner
+    {
+        private readonly object _gate = new object();
+        private Task _task;
+        internal Task Current { get { lock (_gate) return _task; } }
+
+        internal Task Join(Func<Task> drain)
+        {
+            lock (_gate)
+                return _task ?? (_task = drain());
+        }
+    }
+
+    internal static class OperatorClosePolicy
+    {
+        internal static string Rejection(bool starting, bool stoppedByOperator,
+            bool idleWithoutTrial, bool safetyConfirmed)
+        {
+            if (starting || (!stoppedByOperator && !idleWithoutTrial))
+                return "试验正在运行，请先停止试验，不允许退出";
+            return stoppedByOperator && !safetyConfirmed
+                ? "停止试验仍在安全收口中，尚未确认断电和泄压完成，请等待停止结果。"
+                : string.Empty;
+        }
+    }
+
     internal enum EpbMonitorLifecycle
     {
         Initializing = 0,
@@ -198,6 +264,20 @@ namespace MTEmbTest
             lock (_gate) return _intent?.Clone();
         }
 
+        internal StopSafetyResult TryCaptureCompletedManualClose(string commandId, bool batchSessionActive)
+        {
+            lock (_gate)
+            {
+                if (batchSessionActive || string.IsNullOrWhiteSpace(commandId) ||
+                    !IsReusable(_receipt) || _intent == null ||
+                    !string.Equals(_intent.CommandId, commandId, StringComparison.Ordinal) ||
+                    !_intent.Matches(_receipt) || !_receipt.MotorOffCommandSucceeded ||
+                    !_receipt.PowerOffConfirmed || !_receipt.PressureSafeConfirmed)
+                    return null;
+                return _receipt.Clone(reused: true);
+            }
+        }
+
         private static bool IsReusable(StopSafetyResult result)
         {
             return result != null &&
@@ -269,6 +349,7 @@ namespace MTEmbTest
 
     internal sealed class ApplicationCloseReceipt
     {
+        internal StopSafetyResult FinalStopSafety { get; set; }
         internal string SessionId { get; set; } = string.Empty;
         internal long SessionGeneration { get; set; }
         internal long SessionLease { get; set; }

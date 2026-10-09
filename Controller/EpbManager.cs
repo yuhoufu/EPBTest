@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -138,6 +138,9 @@ namespace Controller
 
         /// <summary>通道已停机但项目禁用状态写盘失败，UI必须高可见度提示。</summary>
         public event Action<int, string> ChannelDisablePersistenceFailed;
+        public Action<Guid, long, int[], string, Guid> PermanentRecoveryExclusionWriter { get; set; }
+        public Action<int, bool> PermanentRecoveryResetWriter { get; set; }
+        public Func<Guid, long, int, bool, Guid, bool> NearZeroRecoveryDecisionWriter { get; set; }
 
         /// <summary>事件：某个通道被暂停。</summary>
         public event Action<int> ChannelPaused;
@@ -612,14 +615,6 @@ namespace Controller
                     recoveryOwnerGeneration = Interlocked.Read(ref _runEpoch);
                 }
             }
-            if ((state == ChannelRuntimeState.Running || state == ChannelRuntimeState.WarningRunning) &&
-                _businessRejoinPending.TryGetValue(channel, out var pendingBusiness) &&
-                pendingBusiness.RunId == _activeBatchId && pendingBusiness.RunEpoch == Interlocked.Read(ref _runEpoch))
-            {
-                state = ChannelRuntimeState.Starting;
-                reasonCode = "AwaitingVerifiedRecoveryCycle";
-                reasonText = "执行体已建立，等待首圈实际动作和有效数据提交。";
-            }
             var previous = _channelRuntimeStateStore.Get(channel);
             var manualPauseOwned = _channelPausedUtc.ContainsKey(channel) ||
                                    CurrentBatchPauseState == BatchPauseState.PausePending ||
@@ -955,6 +950,8 @@ namespace Controller
         // 截止开始时看到的 participant，不能删除后来共同重入的新代状态。
         private readonly ConcurrentDictionary<int, long> _hydraulicParticipantVersions = new();
         private readonly ConcurrentDictionary<int, object> _hydraulicParticipantGates = new();
+        private readonly ConcurrentDictionary<int, FormalParticipantRetirementBoundary>
+            _formalParticipantRetirementBoundaries = new();
         private long _hydraulicParticipantVersionSequence;
         // 恢复通道在未来正式槽重新加入时，只有从该槽开始才可进入液压成员快照。
         // 不能只用全局 participant 布尔集合，否则新成员会污染仍在执行的上一槽。
@@ -2038,17 +2035,196 @@ namespace Controller
             }
         }
 
+        // A participant may be paused while its channel permit remains authorized.  Its
+        // exact timer/attempt boundary is therefore separate from channel revocation.
+        // This object survives replacement only in the already-running retirement task;
+        // the dictionary keeps at most one current object per channel.
+        internal sealed class FormalParticipantRetirementBoundary
+        {
+            private HighPrecisionTimer _timer;
+            private ChannelExecutionPermit _permit;
+            private CycleAttemptContext _attempt;
+            private CycleAttemptContext _execution;
+            private HydraulicChannelLeaseScope _hydraulicLease;
+            private bool _requested;
+            private FormalBatchParticipantTerminal _receipt;
+
+            internal FormalParticipantRetirementBoundary(FormalBatchParticipantLease lease)
+            {
+                Lease = lease ?? throw new ArgumentNullException(nameof(lease));
+            }
+
+            internal FormalBatchParticipantLease Lease { get; }
+            internal FormalBatchParticipantTerminal Receipt => _receipt;
+
+            internal void BindTimer(HighPrecisionTimer timer)
+            {
+                if (timer == null) throw new ArgumentNullException(nameof(timer));
+                if (_timer != null && !ReferenceEquals(_timer, timer))
+                    throw new InvalidOperationException("FormalParticipantTimerIdentityChanged");
+                _timer = timer;
+            }
+
+            internal void Request(
+                ChannelExecutionPermit permit,
+                CycleAttemptContext attempt,
+                CycleAttemptContext execution,
+                HydraulicChannelLeaseScope hydraulicLease = null)
+            {
+                if (_requested) return;
+                _permit = permit;
+                _attempt = attempt;
+                _execution = execution;
+                _hydraulicLease = hydraulicLease;
+                _requested = true;
+            }
+
+            internal bool TryCapture(
+                FormalBatchParticipantLease currentLease,
+                CycleAttemptContext currentAttempt,
+                CycleAttemptContext currentExecution,
+                Func<bool> readMotorOff,
+                Func<bool> readHydraulicReleased,
+                string reason,
+                out FormalBatchParticipantTerminal receipt)
+            {
+                receipt = _receipt;
+                if (receipt != null) return true;
+                // After replacement only an already captured receipt may be used.
+                // In particular, never read the replacement's IO or attempt state.
+                if (!_requested || !Lease.SameIdentity(currentLease)) return false;
+                if (!IsClosed(_attempt) || !IsClosed(_execution) ||
+                    !IsClosed(currentAttempt) || !IsClosed(currentExecution)) return false;
+
+                var executionRevoked = _permit.Channel == Lease.Channel &&
+                                       _permit.RunEpoch == Lease.RunEpoch &&
+                                       (!_permit.Authorized ||
+                                        _permit.RevocationToken.IsCancellationRequested);
+                var participantFenced = _timer != null &&
+                                        (_timer.IsPaused ||
+                                         (!_timer.IsRunning &&
+                                          _timer.RuntimeState != HighPrecisionTimerRuntimeState.Created));
+                if (!executionRevoked && !participantFenced) return false;
+                if ((_hydraulicLease != null && !_hydraulicLease.IsClosed) ||
+                    !readMotorOff() || !readHydraulicReleased()) return false;
+
+                var closedAttempt = currentAttempt ?? currentExecution ?? _attempt ?? _execution;
+                _receipt = new FormalBatchParticipantTerminal
+                {
+                    Channel = Lease.Channel,
+                    Disposition = FormalParticipantDisposition.SafeAborted,
+                    MotorOffConfirmed = true,
+                    HydraulicMemberReleased = true,
+                    PersistenceBoundaryRequired = closedAttempt != null,
+                    PersistenceCommitted = true,
+                    RetirementBoundaryRequired = true,
+                    ExecutionPermitRevoked = executionRevoked,
+                    ParticipantExecutionFenced = participantFenced,
+                    PermanentlyIsolated = executionRevoked,
+                    ClosureReceipt = closedAttempt?.CaptureClosureReceipt(),
+                    Result = reason ?? "ParticipantRetiredAfterSafetyFence",
+                    CompletedUtc = DateTime.UtcNow
+                };
+                receipt = _receipt;
+                return true;
+            }
+
+            private bool IsClosed(CycleAttemptContext attempt) =>
+                attempt == null ||
+                (attempt.RunId == Lease.RunId && attempt.RunEpoch == Lease.RunEpoch &&
+                 attempt.Channel == Lease.Channel &&
+                 attempt.IsExecutionCompleted && attempt.IsDurablyCommitted);
+        }
+
         private FormalBatchParticipantLease RegisterFormalParticipantLease(int channel)
         {
-            var runId = _activeBatchId;
-            var runEpoch = Interlocked.Read(ref _runEpoch);
-            if (runId == Guid.Empty || runEpoch <= 0)
-                throw new InvalidOperationException(
-                    $"FormalParticipantRegistrationRejected EPB={channel} Run={runId:N} Epoch={runEpoch}");
-            var lease = _formalBatchSlots.RegisterParticipant(runId, runEpoch, channel);
-            lease.ExecutionPermit = _channelExecutionFence.Capture(channel);
-            _formalParticipantLeases[channel] = lease;
-            return lease;
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                var runId = _activeBatchId;
+                var runEpoch = Interlocked.Read(ref _runEpoch);
+                if (runId == Guid.Empty || runEpoch <= 0)
+                    throw new InvalidOperationException(
+                        $"FormalParticipantRegistrationRejected EPB={channel} Run={runId:N} Epoch={runEpoch}");
+                if (_formalParticipantLeases.TryGetValue(channel, out var previous) &&
+                    previous.RunId == runId && previous.RunEpoch == runEpoch)
+                {
+                    var boundary = CaptureFormalParticipantRetirementBoundary(previous);
+                    if (!TryCaptureFormalParticipantRetirementBoundary(boundary, "FormalParticipantReplaced",
+                            out var receipt))
+                        throw new InvalidOperationException(
+                            $"FormalParticipantReplacementSafetyBoundaryPending EPB={channel} " +
+                            $"Generation={previous.ParticipantGeneration}");
+                    _formalBatchSlots.RequestRetirement(previous, "FormalParticipantReplaced");
+                    _formalBatchSlots.ConfirmRetirement(previous, receipt);
+                }
+
+                var lease = _formalBatchSlots.RegisterParticipant(runId, runEpoch, channel);
+                _formalParticipantLeases[channel] = lease;
+                _formalParticipantRetirementBoundaries[channel] =
+                    new FormalParticipantRetirementBoundary(lease);
+                return lease;
+            }
+        }
+
+        private void BindFormalParticipantTimer(FormalBatchParticipantLease lease, HighPrecisionTimer timer)
+        {
+            if (lease == null) throw new ArgumentNullException(nameof(lease));
+            lock (GetHydraulicParticipantGate(lease.Channel))
+            {
+                if (!_formalParticipantLeases.TryGetValue(lease.Channel, out var current) ||
+                    !lease.SameIdentity(current) ||
+                    !_formalParticipantRetirementBoundaries.TryGetValue(lease.Channel, out var boundary) ||
+                    !lease.SameIdentity(boundary.Lease))
+                    throw new InvalidOperationException("FormalParticipantTimerLeaseStale");
+                boundary.BindTimer(timer);
+            }
+        }
+
+        private FormalParticipantRetirementBoundary CaptureFormalParticipantRetirementBoundary(
+            FormalBatchParticipantLease lease)
+        {
+            // All callers hold the per-channel participant gate, which also protects
+            // registration. The IO snapshot can therefore never belong to a new lease.
+            if (!_formalParticipantRetirementBoundaries.TryGetValue(lease.Channel, out var boundary) ||
+                !lease.SameIdentity(boundary.Lease))
+            {
+                boundary = new FormalParticipantRetirementBoundary(lease);
+                if (_timers.TryGetValue(lease.Channel, out var timer) ||
+                    _timerCache.TryGetValue(lease.Channel, out timer))
+                    boundary.BindTimer(timer);
+                _formalParticipantRetirementBoundaries[lease.Channel] = boundary;
+            }
+            _cycleAttempts.TryGetCurrent(lease.Channel, out var attempt);
+            _cycleAttempts.TryGetLastExecution(lease.Channel, out var execution);
+            _hydraulicLeaseByChannel.TryGetValue(lease.Channel, out var hydraulicLease);
+            boundary.Request(_channelExecutionFence.Capture(lease.Channel), attempt, execution, hydraulicLease);
+            return boundary;
+        }
+
+        private bool TryCaptureFormalParticipantRetirementBoundary(
+            FormalParticipantRetirementBoundary boundary,
+            string reason,
+            out FormalBatchParticipantTerminal receipt)
+        {
+            var channel = boundary.Lease.Channel;
+            _formalParticipantLeases.TryGetValue(channel, out var current);
+            if (boundary.Receipt != null)
+            {
+                receipt = boundary.Receipt;
+                return true;
+            }
+            if (!boundary.Lease.SameIdentity(current))
+            {
+                receipt = null;
+                return false;
+            }
+            _cycleAttempts.TryGetCurrent(channel, out var attempt);
+            _cycleAttempts.TryGetLastExecution(channel, out var execution);
+            return boundary.TryCapture(current, attempt, execution,
+                () => !IsChannelEnergized(channel),
+                () => !_hydraulicLeaseByChannel.TryGetValue(channel, out var hydraulicLease) ||
+                      hydraulicLease.IsClosed,
+                reason, out receipt);
         }
 
         private FormalBatchParticipantLease CaptureFormalParticipantLease(int channel)
@@ -2077,122 +2253,94 @@ namespace Controller
             string reason)
         {
             if (lease == null) return;
-            if (!_formalBatchSlots.RequestRetirement(lease, reason)) return;
-            lock (_channelExecutionGates[lease.Channel - 1])
-                _channelExecutionFence.RevokeIfCurrent(lease.ExecutionPermit);
+            FormalParticipantRetirementBoundary boundary;
+            lock (GetHydraulicParticipantGate(lease.Channel))
+            {
+                if (!_formalParticipantLeases.TryGetValue(lease.Channel, out var current) ||
+                    !lease.SameIdentity(current)) return;
+                boundary = CaptureFormalParticipantRetirementBoundary(lease);
+                if (!_formalBatchSlots.RequestRetirement(lease, reason)) return;
+            }
             ObserveSafetyTask(
                 CompleteFormalParticipantRetirementFenceAsync(
-                    lease,
+                    boundary,
                     reason),
                 "FormalParticipantRetirementFence",
                 lease.Channel);
         }
 
         private async Task CompleteFormalParticipantRetirementFenceAsync(
-            FormalBatchParticipantLease participantLease,
+            FormalParticipantRetirementBoundary boundary,
             string reason)
         {
-            if (participantLease == null) return;
+            if (boundary == null) return;
+            var participantLease = boundary.Lease;
             var runId = participantLease.RunId;
             var runEpoch = participantLease.RunEpoch;
             var channel = participantLease.Channel;
             var requestedTimeoutMs = Math.Max(1L, PeriodMs) * 2L + 5000L;
             var timeoutMs = (int)Math.Max(5000L, Math.Min(60000L, requestedTimeoutMs));
-            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-            while (DateTime.UtcNow < deadline)
+            var elapsed = Stopwatch.StartNew();
+            while (elapsed.ElapsedMilliseconds < timeoutMs)
             {
                 if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch)
                     return;
-                if (!_formalParticipantLeases.TryGetValue(channel, out var currentLease) ||
-                    !participantLease.SameIdentity(currentLease))
-                    return;
-
-                var attemptClosed = true;
-                if (_cycleAttempts.TryGetCurrent(channel, out var attempt) &&
-                    attempt.RunId == runId && attempt.RunEpoch == runEpoch)
+                lock (GetHydraulicParticipantGate(channel))
                 {
-                    attemptClosed = attempt.IsDurablyCommitted;
-                    if (!attemptClosed)
+                    if (TryCaptureFormalParticipantRetirementBoundary(boundary, reason, out var receipt))
                     {
-                        var remaining = deadline - DateTime.UtcNow;
-                        if (remaining <= TimeSpan.Zero) break;
-                        var completed = await Task.WhenAny(
-                                attempt.DurableCompletion,
-                                Task.Delay(Math.Min(100, Math.Max(1, (int)remaining.TotalMilliseconds))))
-                            .ConfigureAwait(false);
-                        attemptClosed = completed == attempt.DurableCompletion &&
-                                        attempt.IsDurablyCommitted;
+                        _formalBatchSlots.ConfirmRetirement(participantLease, receipt);
+                        return;
                     }
-                }
-
-                var motorOff = !IsChannelEnergized(channel);
-                var hydraulicReleased =
-                    !_hydraulicLeaseByChannel.TryGetValue(channel, out var lease) ||
-                    lease.IsClosed;
-                var executionRevoked =
-                    !_channelExecutionFence.IsCurrent(participantLease.ExecutionPermit);
-                if (attemptClosed && motorOff && hydraulicReleased && executionRevoked)
-                {
-                    _formalBatchSlots.ConfirmRetirement(
-                        participantLease,
-                        new FormalBatchParticipantTerminal
-                        {
-                            Channel = channel,
-                            MotorOffConfirmed = true,
-                            HydraulicMemberReleased = true,
-                            PersistenceBoundaryRequired = false,
-                            PersistenceCommitted = true,
-                            RetirementBoundaryRequired = true,
-                            ExecutionPermitRevoked = true,
-                            PermanentlyIsolated = true,
-                            Result = reason ?? "ParticipantRetiredAfterSafetyFence",
-                            CompletedUtc = DateTime.UtcNow
-                        });
-                    return;
+                    if (!_formalParticipantLeases.TryGetValue(channel, out var currentLease) ||
+                        !participantLease.SameIdentity(currentLease)) return;
                 }
                 await Task.Delay(25).ConfigureAwait(false);
             }
 
-            if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch ||
-                !_formalParticipantLeases.TryGetValue(channel, out var finalParticipant) ||
-                !participantLease.SameIdentity(finalParticipant)) return;
-            var finalMotorOff = !IsChannelEnergized(channel);
-            var finalHydraulicReleased =
-                !_hydraulicLeaseByChannel.TryGetValue(channel, out var finalLease) ||
-                finalLease.IsClosed;
-            var finalPersistenceClosed =
-                !_cycleAttempts.TryGetCurrent(channel, out var finalAttempt) ||
-                finalAttempt.RunId != runId ||
-                finalAttempt.RunEpoch != runEpoch ||
-                finalAttempt.IsDurablyCommitted;
-            var finalExecutionRevoked =
-                !_channelExecutionFence.IsCurrent(participantLease.ExecutionPermit);
-            _formalBatchSlots.ConfirmRetirement(
-                participantLease,
-                new FormalBatchParticipantTerminal
+            bool finalMotorOff;
+            bool finalHydraulicReleased;
+            bool finalPersistenceClosed;
+            bool finalExecutionRevoked;
+            CycleAttemptClosureReceipt finalReceipt;
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch)
+                    return;
+                if (TryCaptureFormalParticipantRetirementBoundary(boundary, reason, out var receipt))
+                {
+                    _formalBatchSlots.ConfirmRetirement(participantLease, receipt);
+                    return;
+                }
+                // An old observer can never diagnose or retire the replacement.
+                if (!_formalParticipantLeases.TryGetValue(channel, out var currentFinalLease) ||
+                    !participantLease.SameIdentity(currentFinalLease)) return;
+                finalMotorOff = !IsChannelEnergized(channel);
+                finalHydraulicReleased =
+                    !_hydraulicLeaseByChannel.TryGetValue(channel, out var finalLease) || finalLease.IsClosed;
+                finalPersistenceClosed = !_cycleAttempts.TryGetCurrent(channel, out var finalAttempt) ||
+                                             finalAttempt.IsDurablyCommitted;
+                finalExecutionRevoked = !_channelExecutionFence.Capture(channel).Authorized;
+                finalReceipt = finalAttempt?.CaptureClosureReceipt();
+                _formalBatchSlots.ConfirmRetirement(participantLease, new FormalBatchParticipantTerminal
                 {
                     Channel = channel,
+                    Disposition = FormalParticipantDisposition.SafetyUnproven,
                     MotorOffConfirmed = finalMotorOff,
                     HydraulicMemberReleased = finalHydraulicReleased,
                     PersistenceBoundaryRequired = true,
                     PersistenceCommitted = finalPersistenceClosed,
                     RetirementBoundaryRequired = true,
                     ExecutionPermitRevoked = finalExecutionRevoked,
-                    PermanentlyIsolated = true,
                     Result = "ParticipantRetirementSafetyFenceTimeout",
                     CompletedUtc = DateTime.UtcNow
                 });
-            if (finalMotorOff && finalHydraulicReleased && finalPersistenceClosed && finalExecutionRevoked)
-                return;
-            _log?.Error($"ParticipantRetirementBlocked EPB={channel} Run={runId:N}/{runEpoch} " +
-                $"Participant={participantLease.ParticipantGeneration} ExecutionRevoked={finalExecutionRevoked} " +
-                $"AttemptClosed={finalPersistenceClosed} Reason={reason}", "周期屏障");
-            ReportFormalSlotSafetyBoundaryFailure(
-                channel,
-                -1,
-                finalMotorOff,
-                finalHydraulicReleased,
-                finalPersistenceClosed);
+            }
+            if (_activeBatchId != runId || Interlocked.Read(ref _runEpoch) != runEpoch ||
+                !_formalParticipantLeases.TryGetValue(channel, out var reportLease) ||
+                !participantLease.SameIdentity(reportLease)) return;
+            ReportFormalSlotSafetyBoundaryFailure(channel, -1, finalMotorOff,
+                finalHydraulicReleased, finalPersistenceClosed, finalReceipt, finalExecutionRevoked);
         }
 
         /// <summary>
@@ -2709,11 +2857,11 @@ namespace Controller
             _daqLivenessWatchdogIntervalMs = ReadIntAppSetting(
                 "DaqLivenessWatchdogIntervalMs", 20, 10, 1000);
             _daqLivenessWarnThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessWarnThresholdMs", 75, 20, 200);
+                "DaqLivenessWarnThresholdMs", 250, 100, 5000);
             _daqLivenessSuspectThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessSuspectThresholdMs", 100, 50, 249);
+                "DaqLivenessSuspectThresholdMs", 1500, 200, 30000);
             _daqLivenessTripThresholdMs = ReadDoubleAppSetting(
-                "DaqLivenessTripThresholdMs", 250, 100, 5000);
+                "DaqLivenessTripThresholdMs", 5000, 300, 300000);
             if (!AreDaqLivenessThresholdsStrictlyIncreasing(
                     _daqLivenessWarnThresholdMs,
                     _daqLivenessSuspectThresholdMs,
@@ -3261,7 +3409,6 @@ namespace Controller
                          lock (_recoveryContractGate)
                          {
                              _activeRecoveryContracts.Remove(incident.Contract.IncidentId);
-                             _recoveryAttemptFences.TryRemove(incident.Contract.IncidentId, out _);
                              PublishRecoveryAggregateOwnershipSourceLocked();
                          }
                      },
@@ -3407,91 +3554,68 @@ namespace Controller
             if (contract == null) return;
             foreach (var channel in contract.Channels ?? Array.Empty<int>())
             {
-                lock (_channelExecutionGates[channel - 1])
+                // A safety terminal is also the ownership/resource terminal.
+                // Leaving a cached Timer or Runner behind makes the watchdog
+                // observe StartBlocked together with active runtime resources
+                // and can keep the process in an unrecoverable confirmation
+                // loop.
+                try { CancelCyclePauseCts(channel); } catch { }
+                try { CancelStopCts(channel); } catch { }
+                try { RemoveTimerRuntime(channel, "RecoverySafeTerminal"); } catch { }
+                try { RemoveRunnerRuntime(channel, "RecoverySafeTerminal"); } catch { }
+                try { UnmarkHydraulicParticipant(channel); } catch { }
+                var current = _channelRuntimeStateStore.Get(channel);
+                if (current != null &&
+                    current.CorrelationId == contract.IncidentId &&
+                    ChannelRuntimeStateStore.IsLatchedStop(current.State))
+                    continue;
+                try
                 {
-                    var current = _channelRuntimeStateStore.Get(channel);
-                    if (!CanCleanupRecoveryChannel(contract, current, _activeBatchId,
-                            Interlocked.Read(ref _runEpoch)))
-                        continue;
-                    // A safety terminal is also the ownership/resource terminal.
-                    // Leaving a cached Timer or Runner behind makes the watchdog
-                    // observe StartBlocked together with active runtime resources
-                    // and can keep the process in an unrecoverable confirmation
-                    // loop.
-                    try { CancelCyclePauseCts(channel); } catch { }
-                    try { CancelStopCts(channel); } catch { }
-                    try { RemoveTimerRuntime(channel, "RecoverySafeTerminal"); } catch { }
-                    try { RemoveRunnerRuntime(channel, "RecoverySafeTerminal"); } catch { }
-                    try { UnmarkHydraulicParticipant(channel); } catch { }
-                    if (current != null &&
-                        current.CorrelationId == contract.IncidentId &&
-                        ChannelRuntimeStateStore.IsLatchedStop(current.State))
-                        continue;
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.StartBlocked,
+                        reasonCode ?? "RecoverySafeTerminal",
+                        reasonText ?? "恢复事务已安全收口。",
+                        correlationId: contract.IncidentId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true,
+                        runIdOverride: contract.RunId);
+                }
+                catch (Exception terminalError)
+                {
+                    // The normal publisher may be fault-injected or an
+                    // observer/store can fail.  Keep the safety terminal in
+                    // the authoritative store and never retain owner state.
                     try
                     {
-                        PublishChannelRuntimeState(
-                            channel,
-                            ChannelRuntimeState.StartBlocked,
-                            reasonCode ?? "RecoverySafeTerminal",
-                            reasonText ?? "恢复事务已安全收口。",
-                            correlationId: contract.IncidentId,
+                        _channelRuntimeStateStore.Publish(
+                            new ChannelRuntimeStateChangedEvent
+                            {
+                                Channel = channel,
+                                State = ChannelRuntimeState.StartBlocked,
+                                ReasonCode = reasonCode ?? "RecoverySafeTerminal",
+                                ReasonText = reasonText ?? "恢复事务已安全收口。",
+                                TimestampUtc = DateTime.UtcNow,
+                                CorrelationId = contract.IncidentId,
+                                RunId = contract.RunId,
+                                RunEpoch = contract.RunEpoch,
+                                Enabled = IsChannelEnabled(channel),
+                                AffectedChannels = new[] { channel }
+                            },
                             allowTerminalReset: true,
-                            allowSystemFaultReset: true,
-                            runIdOverride: contract.RunId);
+                            allowSystemFaultReset: true);
                     }
-                    catch (Exception terminalError)
+                    catch (Exception fallbackError)
                     {
-                        // The normal publisher may be fault-injected or an
-                        // observer/store can fail.  Keep the safety terminal in
-                        // the authoritative store and never retain owner state.
-                        try
-                        {
-                            _channelRuntimeStateStore.Publish(
-                                new ChannelRuntimeStateChangedEvent
-                                {
-                                    Channel = channel,
-                                    State = ChannelRuntimeState.StartBlocked,
-                                    ReasonCode = reasonCode ?? "RecoverySafeTerminal",
-                                    ReasonText = reasonText ?? "恢复事务已安全收口。",
-                                    TimestampUtc = DateTime.UtcNow,
-                                    CorrelationId = contract.IncidentId,
-                                    RunId = contract.RunId,
-                                    RunEpoch = contract.RunEpoch,
-                                    Enabled = IsChannelEnabled(channel),
-                                    AffectedChannels = new[] { channel }
-                                },
-                                allowTerminalReset: true,
-                                allowSystemFaultReset: true);
-                        }
-                        catch (Exception fallbackError)
-                        {
-                            _log?.Error(
-                                $"Recovery safe terminal fallback failed. " +
-                                $"Incident={contract.IncidentId:N}; EPB={channel}; " +
-                                $"Primary={terminalError.Message}; Fallback={fallbackError.Message}",
-                                "EPB",
-                                fallbackError);
-                        }
+                        _log?.Error(
+                            $"Recovery safe terminal fallback failed. " +
+                            $"Incident={contract.IncidentId:N}; EPB={channel}; " +
+                            $"Primary={terminalError.Message}; Fallback={fallbackError.Message}",
+                            "EPB",
+                            fallbackError);
                     }
                 }
             }
-        }
-
-        internal static bool CanCleanupRecoveryChannel(RecoveryContractSnapshot contract,
-            ChannelRuntimeStateChangedEvent current, Guid activeRun, long activeEpoch)
-        {
-            if (contract == null || contract.RunId != activeRun || contract.RunEpoch != activeEpoch)
-                return false;
-            if (current == null) return true;
-            if (current.RunId != contract.RunId || current.RunEpoch != contract.RunEpoch)
-                return false;
-            if (ChannelRuntimeStateStore.IsLatchedStop(current.State)) return false;
-            if (current.State == ChannelRuntimeState.Recovering)
-                return current.RecoveryOwnerId == contract.OwnerId &&
-                       current.CorrelationId == contract.IncidentId;
-            // A worker which already committed Starting/Running/Paused owns its
-            // new resources. Only a pre-admission state can be rolled back here.
-            return current.TimestampUtc <= contract.StartedUtc;
         }
 
         /// <summary>
@@ -3513,22 +3637,61 @@ namespace Controller
             foreach (var channel in contract.Channels ?? Array.Empty<int>())
             {
                 var current = _channelRuntimeStateStore.Get(channel);
-                if (contract.RunId != _activeBatchId || contract.RunEpoch != Interlocked.Read(ref _runEpoch) ||
-                    (current != null && (current.RunId != contract.RunId || current.RunEpoch != contract.RunEpoch)))
+                // A late finally cannot normalize a replacement run or steal
+                // a channel now owned by a different recovery transaction.
+                if (current != null && (current.RunId != contract.RunId ||
+                    current.RunEpoch != contract.RunEpoch ||
+                    current.State == ChannelRuntimeState.Recovering &&
+                    current.RecoveryOwnerId != Guid.Empty && current.RecoveryOwnerId != contract.OwnerId))
                     continue;
                 if (current == null || current.State == ChannelRuntimeState.Recovering)
                 {
                     PublishRecoverySafeTerminal(
-                        new RecoveryContractSnapshot(contract.IncidentId, contract.RunId, contract.RunEpoch,
-                            contract.OwnerId, contract.OwnerKind, contract.TargetPhase, contract.Operation,
-                            contract.StartedUtc, contract.HardDeadlineUtc, new[] { channel }),
+                        new RecoveryContractSnapshot(
+                            contract.IncidentId, contract.RunId, contract.RunEpoch,
+                            contract.OwnerId, contract.OwnerKind, contract.TargetPhase,
+                            contract.Operation, contract.StartedUtc, contract.HardDeadlineUtc,
+                            new[] { channel }),
                         reasonCode ?? "RecoveryTerminalWithoutRejoin",
                         reasonText ?? "恢复worker未完成重入，已保持安全终态。 ");
                     continue;
                 }
-                // A successor already owns this lifecycle. The retiring transaction must
-                // neither rewrite its evidence nor remove its execution resources.
-
+                if (current.RunId == contract.RunId &&
+                    current.RunEpoch == contract.RunEpoch &&
+                    current.CorrelationId == contract.IncidentId)
+                    continue;
+                try
+                {
+                    PublishChannelRuntimeState(
+                        channel,
+                        current.State,
+                        reasonCode ?? "RecoveryCommitted",
+                        reasonText ?? "恢复worker已完成，已提交当前生命周期状态。",
+                        affectedChannels: contract.Channels,
+                        correlationId: contract.IncidentId,
+                        allowTerminalReset: true,
+                        allowSystemFaultReset: true,
+                        runIdOverride: contract.RunId);
+                }
+                catch (Exception stateError)
+                {
+                    try { CommandEpbOffHighPriority(channel, "RecoveryTerminalStateNormalizeFailed"); }
+                    catch { }
+                    PublishRecoverySafeTerminal(
+                        new RecoveryContractSnapshot(
+                            contract.IncidentId,
+                            contract.RunId,
+                            contract.RunEpoch,
+                            contract.OwnerId,
+                            contract.OwnerKind,
+                            contract.TargetPhase,
+                            contract.Operation,
+                            contract.StartedUtc,
+                            contract.HardDeadlineUtc,
+                            new[] { channel }),
+                        "RecoveryTerminalStateNormalizeFailed",
+                        $"恢复终态关联提交失败，已保持安全终态：{stateError.Message}");
+                }
             }
         }
 
@@ -3589,29 +3752,15 @@ namespace Controller
             RecoveryContractSnapshot contract)
         {
             if (contract == null) return false;
-            if (!_recoveryAttemptFences.TryGetValue(contract.IncidentId, out var fence)) fence = long.MaxValue;
             foreach (var channel in contract.Channels ?? Array.Empty<int>())
             {
                 var state = _channelRuntimeStateStore.Get(channel);
-                var ownsAttempt = _cycleAttempts.TryGetCurrent(channel, out var attempt) &&
-                    RecoveryOwnsAttempt(contract, fence, attempt);
-                var ownsExecution = _cycleAttempts.TryGetLastExecution(channel, out var execution) &&
-                    RecoveryOwnsAttempt(contract, fence, execution) &&
-                    !execution.IsExecutionCompleted;
-                if (ownsAttempt || ownsExecution) return false;
-                // A superseded run cannot publish into the current projection. Once
-                // its own execution has exited, retire only its registry lease; an
-                // old Recovering projection must not keep the completed worker alive.
-                if (contract.RunId != _activeBatchId ||
-                    contract.RunEpoch != Interlocked.Read(ref _runEpoch)) continue;
-                if (state == null) return false;
-                if (state.State == ChannelRuntimeState.Recovering &&
-                    state.RunId == contract.RunId && state.RunEpoch == contract.RunEpoch &&
-                    state.RecoveryOwnerId == contract.OwnerId) return false;
-                // A later owner or a completed Stop owns the projection now. The old
-                // transaction may retire its own lease without overwriting that state.
-                if (state.RunId == contract.RunId && state.RunEpoch == contract.RunEpoch &&
-                    state.TimestampUtc < contract.StartedUtc) return false;
+                if (state == null ||
+                    state.State == ChannelRuntimeState.Recovering ||
+                    state.RunId != contract.RunId ||
+                    state.RunEpoch != contract.RunEpoch ||
+                    state.CorrelationId != contract.IncidentId)
+                    return false;
             }
             return true;
         }
@@ -4438,6 +4587,7 @@ namespace Controller
             var recoveryPolicy = ResolveChannelFaultRecoveryPolicy(
                 faultCode,
                 hardwareLatched);
+            var nearZeroIdentity = _activeRunChainIdentity;
             var requiresOperatorFullRelearning =
                 RequiresOperatorFullRelearning(faultCode, reason);
             if (requiresOperatorFullRelearning)
@@ -4565,6 +4715,12 @@ namespace Controller
                 {
                     try { StopChannelOnAlarm(affectedChannel); } catch { /* ignore */ }
                 }
+
+                // Persist retry history before diagnostics or snapshot writes
+                // can delay this worker. Safety stop has already been requested.
+                if (faultCode == "OpenCircuitOrOutputFault" && NearZeroRecoveryDecisionWriter != null && nearZeroIdentity != null &&
+                    NearZeroRecoveryDecisionWriter(nearZeroIdentity.RunId, nearZeroIdentity.RunEpoch, channel, false, channelFaultCorrelationId))
+                    recoveryPolicy = FaultRecoveryPolicy.NonRecoverableDisableChannel;
 
                 try
                 {
@@ -5088,6 +5244,10 @@ namespace Controller
 
                 // 共享故障cohort一次原子替换，进程在任意时刻退出都不会留下
                 // “只禁用了一半通道”的项目配置。
+                var recoveryIdentity = _activeRunChainIdentity;
+                if (recoveryIdentity != null)
+                    PermanentRecoveryExclusionWriter?.Invoke(recoveryIdentity.RunId, recoveryIdentity.RunEpoch,
+                        channels.ToArray(), code, correlationId);
                 ConfigLoader.UpdateTestEpbAlarmState(
                     projectPath,
                     channels.Select(channel =>
@@ -6417,14 +6577,12 @@ namespace Controller
                                         // rejoin, and the context remains the
                                         // owner until the later stable terminal
                                         // aggregate receipt succeeds.
-                                        if (!IsFormalPhaseCommitted || !_timers.ContainsKey(channel) ||
-                                            !_runners.ContainsKey(channel)) continue;
                                         var terminalState = state.Clone();
-                                        terminalState.State = ChannelRuntimeState.Starting;
+                                        terminalState.State = ChannelRuntimeState.Running;
                                         terminalState.ReasonCode =
-                                            "AwaitingVerifiedRecoveryCycle";
+                                            "DaqRecoveryTerminalState";
                                         terminalState.ReasonText =
-                                            "采样与执行体已恢复，等待首个动作及有效数据提交。";
+                                            "DAQ恢复已完成重入，终态提交前关闭Recovering状态。";
                                         terminalState.TimestampUtc = DateTime.UtcNow;
                                         terminalState.CorrelationId = context.CorrelationId;
                                         terminalState.RecoveryOwnerKind = RecoveryOwnerKind.None;
@@ -6620,13 +6778,15 @@ namespace Controller
                 AdmissionBatchPauseGeneration = pauseAdmission.Generation,
                 AffectedChannels = affected,
                 PreviouslyRunningChannels = affected
-                    .Where(channel => IsChannelEnabled(channel) && IsFormalPhaseCommitted)
+                    .Where(channel => _timers.ContainsKey(channel))
                     .Distinct()
                     .OrderBy(channel => channel)
                     .ToArray(),
                 PreviouslyActiveChannels = affected
                     .Where(channel =>
-                        IsChannelEnabled(channel))
+                        _timers.ContainsKey(channel) ||
+                        _runners.ContainsKey(channel) ||
+                        IsHydraulicParticipant(channel))
                     .Distinct()
                     .OrderBy(channel => channel)
                     .ToArray(),
@@ -7340,19 +7500,9 @@ namespace Controller
                     IsAlarmStopRequested,
                     channel => _channelPausedUtc.ContainsKey(channel),
                     IsChannelEnabled);
-                if (!holdForBatchPause && !IsFormalPhaseCommitted && powerRecoveryChannels.Length > 0)
-                {
-                    context.ValidationDetail = "LearningExecutionRebuildRequired";
-                    TryEscalateSoftwareRecoveryCircuitOpen(
-                        "LearningExecutionRebuildRequired",
-                        "采样已恢复；旧学习执行体已撤销，需要安全重建批次并重新学习和资格验证。",
-                        context.PreviouslyActiveChannels, context.RunId, context.RunEpoch,
-                        SoftwareRecoveryEscalationAttempts, "ExecutionRecoveryRequired");
-                    return;
-                }
                 var rejoinChannels = (context.PreviouslyRunningChannels ?? Array.Empty<int>())
                     .Where(channel =>
-                        IsChannelEnabled(channel) &&
+                        _timers.ContainsKey(channel) &&
                         !IsAlarmStopRequested(channel) &&
                         !_channelPausedUtc.ContainsKey(channel))
                     .Distinct()
@@ -10001,6 +10151,7 @@ namespace Controller
 
         internal void EnsurePowerSupplyEnergizationPermit(int channel)
         {
+            MTTFTest.Watchdog.Protocol.IndependentExecutionFence.RequireCurrentAuthority();
             if (_powerSupply == null) return;
             var groupId = GetElectricalGroupId(channel);
             var reason = "GroupMappingMissing";
@@ -10091,7 +10242,7 @@ namespace Controller
                 .Distinct()
                 .OrderBy(x => x)
                 .ToArray();
-            if (!_hydraulicSoftwareRecoveryGroups.TryAdd(hydraulicId, 0))
+            if (_hydraulicSoftwareRecoveryGroups.ContainsKey(hydraulicId))
             {
                 _log.Warn(
                     $"液压组{hydraulicId}已有软件自愈任务，本次故障并入现有恢复。Code={fault.Code}",
@@ -10104,33 +10255,7 @@ namespace Controller
             var cutoffUtc = DateTime.UtcNow;
             var cutoffCycles = CaptureSoftwareRecoveryCycles(channels);
 
-            // 进入恢复队列本身就是安全边界。即使同组已有owner，受影响通道也不能
-            // 在等待所有权期间继续RUN或进入下一动作相位。
-            FreezeAndCancelSafetyChannels(
-                channels,
-                $"HydraulicSelfHealingQueued:{fault.Code}",
-                cancelStopTokens: false);
-            var rejectedOff = SubmitEpbOffHighPriorityBatch(
-                channels,
-                "HydraulicSelfHealingQueuedOffAdmissionRejected",
-                "HydraulicSelfHealingQueuedOffSubmissionException");
-            ScheduleRejectedOffFallbacks(
-                rejectedOff,
-                "HydraulicSelfHealingQueuedImmediateOffFallback");
-            foreach (var channel in channels)
-            {
-                UnmarkHydraulicParticipant(channel);
-                try
-                {
-                    ObserveSafetyTask(
-                        Task.Run(() => AbortHydraulicLeaseForChannelAsync(
-                            channel,
-                            "HydraulicSelfHealingQueued:" + fault.Code)),
-                        "HydraulicSelfHealingQueuedLeaseAbort",
-                        channel);
-                }
-                catch { }
-            }
+            var groupPublished = false;
 
             // The queued recovery must have a real, not-yet-running worker
             // bound before Recovering is first published.  The old ordering
@@ -10410,6 +10535,11 @@ namespace Controller
                 _ => BuildRecoveryWorker(),
                 contract =>
                 {
+                    lock (_recoveryContractGate)
+                    {
+                        if (!_hydraulicSoftwareRecoveryGroups.TryAdd(hydraulicId, 0))
+                            throw new InvalidOperationException("HydraulicRecoveryAlreadyPublished");
+                        groupPublished = true;
                     foreach (var channel in contract.Channels ?? Array.Empty<int>())
                         PublishRecoveryIncidentState(
                             channel,
@@ -10422,11 +10552,40 @@ namespace Controller
                             recoveryTargetPhase: contract.TargetPhase,
                             recoveryOwnerId: contract.OwnerId,
                             recoveryOwnerGeneration: contract.RunEpoch);
+                    }
+                    // 进入恢复队列本身就是安全边界。即使同组已有owner，受影响通道也不能
+                    // 在等待所有权期间继续RUN或进入下一动作相位。
+                    FreezeAndCancelSafetyChannels(
+                        channels,
+                        $"HydraulicSelfHealingQueued:{fault.Code}",
+                        cancelStopTokens: false);
+                    var rejectedOff = SubmitEpbOffHighPriorityBatch(
+                        channels,
+                        "HydraulicSelfHealingQueuedOffAdmissionRejected",
+                        "HydraulicSelfHealingQueuedOffSubmissionException");
+                    ScheduleRejectedOffFallbacks(
+                        rejectedOff,
+                        "HydraulicSelfHealingQueuedImmediateOffFallback");
+                    foreach (var channel in channels)
+                    {
+                        UnmarkHydraulicParticipant(channel);
+                        try
+                        {
+                            ObserveSafetyTask(
+                                Task.Run(() => AbortHydraulicLeaseForChannelAsync(
+                                    channel,
+                                    "HydraulicSelfHealingQueued:" + fault.Code)),
+                                "HydraulicSelfHealingQueuedLeaseAbort",
+                                channel);
+                        }
+                        catch { }
+                    }
                 },
                 out recoveryIncident);
             if (!started)
             {
-                _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
+                if (groupPublished)
+                    _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
                 return;
             }
             try
@@ -11760,17 +11919,16 @@ namespace Controller
                     // All callers join the same active physical transaction.
                     // FinalExit is a request source, not authority to enqueue
                     // a second core behind an already-running safety action.
-                    return CompleteStopRequestForSource(_stopSafetyTask, context.Source);
+                    return _stopSafetyTask;
                 }
-                if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
+                if (!context.RequireFreshSafetyEvidence && _lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
                     _lastStopSafetyResult.CanRestartInProcess &&
                     CanReuseStopResultForSource(
                         _lastStopSafetyResult.Source,
                         context.Source) &&
                     CaptureLogicalQuiescenceSnapshot().IsQuiescent)
-                    return CompleteStopRequestForSource(
-                        Task.FromResult(_lastStopSafetyResult.Clone(reused: true)), context.Source);
+                    return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
                 var generation = Interlocked.Increment(ref _stopSafetyGeneration);
                 _stopSafetyTask = RunBoundedStopSafetyAsync(context, token, generation);
                 _stopSafetyTaskSource = context.Source;
@@ -11778,37 +11936,6 @@ namespace Controller
                     _stopSafetyFinalExitTask = _stopSafetyTask;
                 return _stopSafetyTask;
             }
-        }
-
-        private Task<StopSafetyResult> CompleteStopRequestForSource(Task<StopSafetyResult> physical, StopSource source)
-        {
-            if (!IsFinalExitStopSource(source)) return physical;
-            if (_stopSafetyFinalExitTask != null &&
-                (!_stopSafetyFinalExitTask.IsCompleted ||
-                 (_stopSafetyFinalExitTask.Status == TaskStatus.RanToCompletion &&
-                  _stopSafetyFinalExitTask.Result?.PersistenceBoundaryConfirmed == true))) return _stopSafetyFinalExitTask;
-            // Same physical transaction, one final data-resource closure. A ManualUi result
-            // proves the data boundary but intentionally keeps its writer reusable until exit.
-            _stopSafetyFinalExitTask = CompleteFinalPersistenceAsync(physical);
-            return _stopSafetyFinalExitTask;
-        }
-
-        private async Task<StopSafetyResult> CompleteFinalPersistenceAsync(Task<StopSafetyResult> physical)
-        {
-            var result = (await physical.ConfigureAwait(false))?.Clone(reused: true);
-            if (result?.PersistenceBoundaryConfirmed != true || _persistence == null) return result;
-            try
-            {
-                if (!await _persistence.ShutdownAsync(5000).ConfigureAwait(false))
-                    throw new TimeoutException("FinalPersistenceShutdownIncomplete");
-            }
-            catch (Exception ex)
-            {
-                result.PersistenceBoundaryConfirmed = false;
-                result.PersistenceError = ex.Message;
-                result.RequiresProcessRestart = true;
-            }
-            return result;
         }
 
         public async Task<StopRequestReceipt> StopAllWithReceiptAsync(
@@ -12025,12 +12152,10 @@ namespace Controller
                 {
                     ReleaseHardwareForRestartCore();
                 }
-                catch
+                finally
                 {
-                    Volatile.Write(ref _hardwareReleaseState, 0);
-                    throw;
+                    Volatile.Write(ref _hardwareReleaseState, 2);
                 }
-                Volatile.Write(ref _hardwareReleaseState, 2);
             }
         }
 
@@ -12045,24 +12170,22 @@ namespace Controller
                 {
                     var pending = string.Join(",", _taskSupervisor.Snapshot()
                         .Select(x => $"{x.Operation}(EPB{x.Channel},RunId={x.RunId:N})"));
-                    throw new InvalidOperationException($"HardwareReleaseBlocked: 后台任务尚未移交或退出：{pending}");
+                    _log.Warn($"释放硬件前后台任务未在2秒内收口：{pending}", "EPB");
                 }
             }
             catch (Exception ex)
             {
                 _log.Warn($"释放硬件前等待后台任务失败：{ex.Message}", "EPB");
-                throw;
             }
             try
             {
                 if (_hydCoordinator != null &&
                     !_hydCoordinator.DrainBackgroundTasksAsync(2000).GetAwaiter().GetResult())
-                    throw new InvalidOperationException("HardwareReleaseBlocked: 液压后台任务尚未退出。");
+                    _log.Warn("释放硬件前液压后台任务未在2秒内收口。", "液压协调");
             }
             catch (Exception ex)
             {
                 _log.Warn($"释放硬件前等待液压后台任务失败：{ex.Message}", "液压协调");
-                throw;
             }
             try { _timerRuntimeWatchdog?.Dispose(); } catch { }
             try { _daqLivenessWatchdog?.Dispose(); } catch { }
@@ -12744,7 +12867,8 @@ namespace Controller
             string reason,
             string initiator,
             Guid correlationId,
-            FaultScope? scope)
+            FaultScope? scope,
+            string affectedRunId = null)
         {
             var context = new StopContext
             {
@@ -12753,7 +12877,7 @@ namespace Controller
                 Initiator = initiator,
                 CorrelationId = (correlationId == Guid.Empty ? Guid.NewGuid() : correlationId)
                     .ToString("N"),
-                RunId = _activeBatchId == Guid.Empty ? string.Empty : _activeBatchId.ToString("N"),
+                RunId = affectedRunId ?? (_activeBatchId == Guid.Empty ? string.Empty : _activeBatchId.ToString("N")),
                 FaultScope = scope,
                 RequestedUtc = DateTime.UtcNow
             };

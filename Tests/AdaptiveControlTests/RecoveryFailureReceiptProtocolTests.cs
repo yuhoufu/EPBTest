@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -96,7 +96,7 @@ namespace AdaptiveControlTests
             Run("CAS压力1000次无回退", CasStress1000, ref passed);
             Run("不同session serializer隔离", DifferentSessionsIsolation, ref passed);
             Run("大小写目录别名共享authority mutex", CaseInsensitivePathAlias, ref passed);
-            Run("协议exact v6/外层身份/nonce隔离", ReceiptValidator, ref passed);
+            Run("协议exact v5/外层身份/nonce隔离", ReceiptValidator, ref passed);
             Run("原始JSON白名单与字段类型严格校验", RawWireWhitelist, ref passed);
             Run("失败请求exact-v4原始hash与重放身份", RecoveryFailureRequestWire, ref passed);
             Run("协议拒绝v0/v2/v3", ExactProtocolVersions, ref passed);
@@ -107,6 +107,8 @@ namespace AdaptiveControlTests
             Run("Load成功后Commit Busy不进入marker且可重试", CommitBusyAfterSuccessfulLoad, ref passed);
             Run("active状态current与LastFailure逐字段绑定", ActiveStateEvidenceMutation, ref passed);
             Run("生产proof绑定且budget/circuit跨重启粘性", ProductionProofBudgetSticky, ref passed);
+            Run("保留器持有读句柄时同步快照仍可原子提交", RetentionReadAllowsAtomicSnapshot, ref passed);
+            Run("同步快照短暂占用重试且持续占用有界失败", SnapshotSharingFailureIsBounded, ref passed);
             Run("生产journal writer与authority并行互不覆盖", ProductionJournalAuthorityParallel, ref passed);
             Run("生产FileStore schema2/3/old-v4迁移矩阵", ProductionMigrationMatrix, ref passed);
             Run("生产FileStore Reconcile状态与探测竞态", ProductionReconcileMatrix, ref passed);
@@ -312,7 +314,8 @@ namespace AdaptiveControlTests
 
         private static void BootstrapAndCapability()
         {
-            var dir = TempDirectory();
+            var root = TempDirectory();
+            var dir = Path.Combine(root, "Program Files", "试验项目");
             try
             {
                 var session = Guid.NewGuid().ToString("N");
@@ -336,7 +339,7 @@ namespace AdaptiveControlTests
                 Assert(File.Exists(relaunchPath) && !string.Equals(created.BootstrapReceipt.Path, relaunchPath, StringComparison.Ordinal), "authority overwrote primary snapshot");
                 Assert(File.ReadAllText(created.BootstrapReceipt.Path).IndexOf("RelaunchState", StringComparison.Ordinal) >= 0, "primary bootstrap missing legacy-visible state");
             }
-            finally { TryDelete(dir); }
+            finally { TryDelete(root); }
         }
 
         private static void MissingCorruptUnreadable()
@@ -737,9 +740,7 @@ namespace AdaptiveControlTests
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongType, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ReceiptType", "numeric field with string type accepted");
-            var canonicalProtocol = "\"ProtocolVersion\":" +
-                WatchdogProtocol.Version.ToString(CultureInfo.InvariantCulture);
-            var wrongVersion = json.Replace(canonicalProtocol, "\"ProtocolVersion\":3");
+            var wrongVersion = json.Replace("\"ProtocolVersion\":5", "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureReceiptWire(
                        wrongVersion, session, corr, payload, out parsedMessage, out parsed, out reason) &&
                    reason == "ProtocolVersion", "v2 raw receipt accepted");
@@ -749,7 +750,7 @@ namespace AdaptiveControlTests
             // data into a valid authority receipt.
             var missingTop = new[]
             {
-                json.Replace(canonicalProtocol + ",", string.Empty),
+                json.Replace("\"ProtocolVersion\":5,", string.Empty),
                 json.Replace("\"Type\":\"RecoveryAttemptFailedReceipt\",", string.Empty),
                 json.Replace("\"SessionId\":\"" + session + "\",", string.Empty),
                 json.Replace("\"CorrelationId\":\"" + corr + "\",", string.Empty),
@@ -853,8 +854,7 @@ namespace AdaptiveControlTests
                    reason == "RequestShape",
                 "unknown/launch-only request key accepted");
             var v2 = wire.Replace(
-                "\"ProtocolVersion\":" + WatchdogProtocol.Version.ToString(CultureInfo.InvariantCulture),
-                "\"ProtocolVersion\":3");
+                "\"ProtocolVersion\":5", "\"ProtocolVersion\":3");
             Assert(!WatchdogProtocol.TryParseRecoveryFailureRequestWire(
                        v2, session, out _, out _, out reason) &&
                    reason == "RequestProtocolOrType",
@@ -1268,8 +1268,7 @@ namespace AdaptiveControlTests
                 File.WriteAllText(relaunchPath, legacy, new UTF8Encoding(false));
                 var first = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
                 Assert(first.Succeeded && first.Authority.Snapshot.State == DurableRelaunchPermitState.Blocked &&
-                    first.Authority.Snapshot.SchemaVersion == WatchdogJournalPolicy.CurrentSchemaVersion,
-                    "legacy ambiguous record was not durably migrated to Blocked");
+                    first.Authority.Snapshot.SchemaVersion == 5, "legacy ambiguous record was not durably migrated to Blocked");
                 var durableBlockedBytes = File.ReadAllBytes(relaunchPath);
                 var second = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
                 Assert(second.Succeeded && second.Authority.Snapshot.State == DurableRelaunchPermitState.Blocked &&
@@ -1279,6 +1278,56 @@ namespace AdaptiveControlTests
                      replay.CommitStatus == DurableAuthorityCommitStatus.ExistingBlocked &&
                      (replay.Receipt == null || !replay.FailureRegistered) &&
                     durableBlockedBytes.SequenceEqual(File.ReadAllBytes(relaunchPath)), "migrated blocked state reopened or advanced");
+            }
+            finally { TryDelete(dir); }
+        }
+
+        private static void SnapshotSharingFailureIsBounded()
+        {
+            var dir = TempDirectory();
+            try
+            {
+                var session = Guid.NewGuid().ToString("N");
+                using (var journal = new WatchdogJournalStore(dir, session, "parallel", new WatchdogJournalPolicy(), 7, 700))
+                {
+                    Assert(journal.TryPublishSnapshotSynchronously("initial"), "initial snapshot failed");
+                    var path = Path.Combine(dir, "session-" + session + ".json");
+                    var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    var release = Task.Run(() => { Thread.Sleep(50); held.Dispose(); });
+                    try { Assert(journal.TryPublishSnapshotSynchronously("transient"), "transient sharing was not retried"); }
+                    finally { release.Wait(); held.Dispose(); }
+                    using (var blocked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        var clock = Stopwatch.StartNew();
+                        Assert(!journal.TryPublishSnapshotSynchronously("blocked"), "persistent lock reported durable success");
+                        Assert(clock.ElapsedMilliseconds < 3000, "persistent lock exceeded bounded retry");
+                        Assert(File.ReadAllText(path) == "transient", "failed replace destroyed old snapshot");
+                    }
+                    Assert(journal.TryPublishSnapshotSynchronously("recovered"), "legal retry after release failed");
+                }
+            }
+            finally { TryDelete(dir); }
+        }
+
+        private static void RetentionReadAllowsAtomicSnapshot()
+        {
+            var dir = TempDirectory();
+            try
+            {
+                var session = Guid.NewGuid().ToString("N");
+                using (var journal = new WatchdogJournalStore(dir, session, "parallel", new WatchdogJournalPolicy(), 7, 700))
+                {
+                    Assert(journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4}"), "initial snapshot failed");
+                    var path = Path.Combine(dir, "session-" + session + ".json");
+                    var open = typeof(WatchdogJournalStore).GetMethod("OpenRetentionRead",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    using (var held = (FileStream)open.Invoke(null, new object[] { path }))
+                    {
+                        Assert(journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4,\"Revision\":2}"),
+                            "retention read blocked atomic publication");
+                        Assert(File.ReadAllText(path).Contains("Revision"), "replacement was not visible");
+                    }
+                }
             }
             finally { TryDelete(dir); }
         }
@@ -1297,12 +1346,16 @@ namespace AdaptiveControlTests
                 var proofBefore = File.ReadAllBytes(proofPath);
                 var authority = created.Authority;
                 var errors = 0;
+                string firstFailure = null;
                 var writer = Task.Run(() =>
                 {
                     for (var i = 0; i < 300; i++)
                     {
                         if (!journal.TryPublishSnapshotSynchronously("{\"SchemaVersion\":4,\"SessionId\":\"" + session + "\",\"WriterSequence\":" + i.ToString(CultureInfo.InvariantCulture) + "}"))
+                        {
+                            Interlocked.CompareExchange(ref firstFailure, "journal snapshot i=" + i + "; " + journal.LastSnapshotPublishFailure, null);
                             Interlocked.Increment(ref errors);
+                        }
                     }
                 });
                 var registrar = Task.Run(() =>
@@ -1315,11 +1368,14 @@ namespace AdaptiveControlTests
                             result.Record.AuthorityRevision != i + 1 ||
                             result.Record.ConsecutiveFailures != i + 1 ||
                             result.Receipt.DecisionSequence != i + 1)
+                        {
+                            Interlocked.CompareExchange(ref firstFailure, "authority i=" + i + "; reason=" + result.Reason + "; revision=" + result.Record?.AuthorityRevision, null);
                             Interlocked.Increment(ref errors);
+                        }
                         if ((i % 37) == 0)
                         {
                             var reopened = DurableRelaunchAuthorityFactory.TryOpenExisting(dir, session);
-                            if (!reopened.Succeeded) Interlocked.Increment(ref errors);
+                            if (!reopened.Succeeded) { Interlocked.CompareExchange(ref firstFailure, "reopen: " + reopened.Reason, null); Interlocked.Increment(ref errors); }
                         }
                     }
                 });
@@ -1329,7 +1385,7 @@ namespace AdaptiveControlTests
                        reopenedFinal.Authority.Snapshot.AuthorityRevision == 300 &&
                        reopenedFinal.Authority.Snapshot.ConsecutiveFailures == 300 &&
                        proofBefore.SequenceEqual(File.ReadAllBytes(proofPath)),
-                    "parallel journal/authority lost a write or mutated immutable proof: errors=" + errors);
+                    "parallel journal/authority lost a write or mutated immutable proof: errors=" + errors + "; first=" + firstFailure);
             }
             finally
             {

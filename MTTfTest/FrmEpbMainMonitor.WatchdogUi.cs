@@ -11,8 +11,54 @@ namespace MTEmbTest
 {
     public partial class FrmEpbMainMonitor : IWinFormsWatchdogStopSafetyPort
     {
-        private readonly TaskCompletionSource<bool> _watchdogControllerReady =
-            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private string _manualCloseCommandId;
+        private bool _manualCloseAccepted;
+        private bool _manualCloseTrialObserved;
+        private long _manualCloseStartRevision;
+        private long _manualStopStartRevision;
+        private readonly ManualCloseDrainOwner _manualCloseDrain = new ManualCloseDrainOwner();
+        internal bool OperatorClosePending => _manualCloseAccepted && !IsDisposed;
+
+        internal bool CanAcceptOperatorClose(out string reason)
+        {
+            reason = string.Empty;
+            if (_manualCloseAccepted || Volatile.Read(ref _closingReentry) == 3)
+                return true;
+            var stopped = Volatile.Read(ref _operatorStopRequested) != 0;
+            if (!_manualCloseTrialObserved && Volatile.Read(ref _batchStartUiGuard) == 0 && CanUseIdleFastClose())
+                return true;
+            var completedStop = stopped ? _manualStopExitReceipt.TryCaptureCompletedManualClose(
+                _manualCloseCommandId, _epb?.IsBatchSessionActive ?? false) : null;
+            // A completed stop retains its verified safety boundary. Acquisition may
+            // already be released; do not demand another live sample after that boundary.
+            var proof = stopped && completedStop == null
+                ? _epb?.CaptureManualCloseSafety(_manualCloseCommandId) : null;
+            var conflictingStart = Volatile.Read(ref _batchStartUiGuard) != 0 &&
+                (!stopped || Interlocked.Read(ref _manualCloseStartRevision) != Interlocked.Read(ref _manualStopStartRevision));
+            reason = OperatorClosePolicy.Rejection(conflictingStart,
+                stopped, CanUseIdleFastClose(), completedStop != null || proof != null);
+            return string.IsNullOrEmpty(reason);
+        }
+
+        internal void AcceptOperatorClose()
+        {
+            if (_manualCloseAccepted) return;
+            _manualCloseAccepted = true;
+            _isClosing = true;
+            WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
+            WatchdogRuntime.TransportError -= OnWatchdogTransportError;
+            // Safety was checked above. This is an expected session exit, never a restart request.
+            var context = WatchdogRuntime.CaptureTransportSnapshot()?.Context;
+            _ = Task.Run(() =>
+            {
+                try { WatchdogRuntime.NotifyApplicationClosing(context); }
+                catch (Exception ex) { logger?.Warn("人工关闭会话通知失败，后台收尾继续保留：" + ex.Message, "Watchdog"); }
+            });
+            HideCloseOverlay();
+            Hide();
+        }
+
+        private readonly MonitorInitializationGate _monitorInitialization = new MonitorInitializationGate();
         private readonly object _watchdogUiHandlerGate = new object();
         private WatchdogRuntime.RuntimeStopAllHandlerLease _watchdogUiHandlerLease;
         private RuntimeTransportSessionContext _watchdogUiContext;
@@ -28,23 +74,11 @@ namespace MTEmbTest
             bool operatorStopRequested) =>
             !unattendedRecovery && operatorStopRequested;
 
-        internal void MarkWatchdogControllerReadyIfInitialized()
-        {
-            if (_epb != null && _cfg?.Test != null && IsHandleCreated)
-                _watchdogControllerReady.TrySetResult(true);
-        }
-
         internal async Task<bool> WaitUntilWatchdogControllerReadyAsync(
             int timeoutMilliseconds = 30000)
         {
-            if (_epb != null && _cfg?.Test != null && IsHandleCreated)
-                return true;
-            var completed = await Task.WhenAny(
-                    _watchdogControllerReady.Task,
-                    Task.Delay(Math.Max(1, timeoutMilliseconds)))
-                .ConfigureAwait(true);
-            return completed == _watchdogControllerReady.Task &&
-                   _epb != null && _cfg?.Test != null && IsHandleCreated;
+            return await _monitorInitialization.WaitAsync(timeoutMilliseconds).ConfigureAwait(true) &&
+                   _epb != null && _cfg?.Test != null && IsHandleCreated && !IsDisposed && !Disposing;
         }
 
         internal Func<WatchdogStopAllOfferEnvelope, Task> WatchdogSafetyHandler =>

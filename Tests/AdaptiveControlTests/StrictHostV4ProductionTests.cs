@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -23,7 +23,7 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V2.17.0.0 release assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
+            Run("统一产品版本与组件程序集身份", WatchdogAssemblyVersionIdentity, ref passed);
             Run("strict bootstrap format2", StrictBootstrapFormat2, ref passed);
             Run("approved intent durable", ApprovedToIntent, ref passed);
             Run("approved permit取消后耐久Superseded且重启不可消费", ApprovedPermitRevocationIsDurable, ref passed);
@@ -51,31 +51,31 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(2, 17, 0, 0);
+            var expected = new Version(4, 1, 0, 4);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
-                "Protocol assembly version is not V2.17.0.0");
+                "Protocol assembly version does not match product version");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,
-                "Client assembly version is not V2.17.0.0");
+                "Client assembly version does not match product version");
             Require(typeof(StrictHostV4AuthorityAdapter).Assembly.GetName().Version == expected,
-                "Host assembly version is not V2.17.0.0");
+                "Host assembly version does not match product version");
             Require(typeof(Main_Frm).Assembly.GetName().Version == expected,
-                "Main application assembly version is not V2.17.0.0");
+                "Main application assembly version does not match product version");
             Require(typeof(EpbManager).Assembly.GetName().Version == expected,
-                "Controller assembly version is not V2.17.0.0");
+                "Controller assembly version does not match product version");
             Require(typeof(MTTFTest.SafetyAgent.SafetyAgentRunner).Assembly
                         .GetName().Version == expected,
-                "SafetyAgent assembly version is not V2.17.0.0");
+                "SafetyAgent assembly version does not match product version");
             Require(typeof(MTTFTest.SafetyHardware.SafetyHardwareConfiguration).Assembly
                         .GetName().Version == expected,
-                "SafetyHardware assembly version is not V2.17.0.0");
+                "SafetyHardware assembly version does not match product version");
             var sessionAgentPath = Path.Combine(
                 AppDomain.CurrentDomain.BaseDirectory,
                 "MTTFTest.SessionAgent.exe");
             Require(File.Exists(sessionAgentPath) &&
                     System.Reflection.AssemblyName.GetAssemblyName(sessionAgentPath).Version == expected,
-                "SessionAgent assembly version is not V2.17.0.0");
-            Require(WatchdogProtocol.Version == 7 &&
-                    WatchdogJournalPolicy.CurrentSchemaVersion == 6 &&
+                "SessionAgent assembly version does not match product version");
+            Require(WatchdogProtocol.Version == 5 &&
+                    WatchdogJournalPolicy.CurrentSchemaVersion == 5 &&
                     DurableRelaunchAuthorityV4Validator.RequiredFormatRevision == 2,
                 "wire/schema/record compatibility tuple changed");
         }

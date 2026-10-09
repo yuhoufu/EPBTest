@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -341,8 +341,8 @@ namespace AdaptiveControlTests
 
             var hardware = RecoveryFailurePolicy.Classify(
                 "HardwareUnavailable", false, "hardware detail with changing prose");
-            Assert(hardware.MaximumProcessRelaunches == 3,
-                "通信不可用丢失冷却后重新取证的重试预算");
+            Assert(hardware.MaximumProcessRelaunches == 0,
+                "HardwareUnavailable仍获得主进程重拉预算");
 
             var wire = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(
                 new WatchdogMessage
@@ -377,10 +377,13 @@ namespace AdaptiveControlTests
                 IsFresh = false
             };
             var liveness = new DaqLivenessDeviceState();
+            Assert(!liveness.Observe(true, true, false, freshness, 100, 1000, 2000).Trip &&
+                   !liveness.Observe(true, true, false, freshness, 100, 1000, 2000).Trip,
+                "生产DAQ存活判据未等待三次确认");
             var productionDecision = liveness.Observe(
                 true, true, false, freshness, 100, 1000, 2000);
             Assert(productionDecision.Trip && productionDecision.Code == "DaqCallbackStale",
-                "生产DAQ存活判据未在硬截止首次观察时立即识别停摆");
+                "生产DAQ存活判据未识别持续超过2000ms的停摆");
             Assert(!liveness.Observe(
                        true, true, true, freshness, 100, 1000, 2000).Trip,
                 "生产DAQ判据在已有恢复上下文时重复触发");
