@@ -23,6 +23,9 @@ namespace Timing
 
         private long _ticksStart;  // 计划起点
         private volatile bool _running;
+        /// <summary>是否正在运行（对外只读）</summary>
+        public bool IsRunning => _running;
+
 
         public HighPrecisionTimer(int periodMs, OverrunPolicy policy, IAppLogger log = null)
         {

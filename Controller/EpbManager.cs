@@ -17,7 +17,7 @@ namespace Controller
     ///     12个卡钳统一编排：同组电控“首启”错峰（液压不延时），
     ///     每通道独立高精度定时器，可单独暂停/恢复/结束。
     /// </summary>
-    public sealed class EpbManager
+    public sealed partial class EpbManager
     {
         /// <summary>可选的圈记录器，外部在创建后赋值。</summary> // 2025.09.16 新增
         public IEpbCycleRecorder Recorder { get; set; } 
@@ -426,7 +426,7 @@ namespace Controller
             _do.SetEpbOff(channel); // 安全落位
         }
 
-        public void StopAll()
+        public void StopAllOld()
         {
             foreach (var ch in _timers.Keys.ToArray()) StopChannel(ch);
         }

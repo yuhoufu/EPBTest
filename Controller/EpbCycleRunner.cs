@@ -10,7 +10,7 @@ using NLogger = Config.NullLogger;
 
 namespace Controller
 {
-    public sealed class EpbCycleRunner
+    public sealed partial class EpbCycleRunner
     {
         public delegate double ReadCurrentDelegate(int epbChannel);
 
@@ -22,7 +22,7 @@ namespace Controller
         private readonly DoController _do;
         private readonly double _emptyBandA;
         private readonly double _ewmaAlpha;
-        private readonly int _holdMs = 1000; //默认正向切换到反向的中间转换时间，单位 ms
+        //private readonly int _holdMs = 1000; //默认正向切换到反向的中间转换时间，单位 ms
         private readonly int _hydId;
         private readonly HydraulicController _hydraulic;
         private readonly ILogger _log;

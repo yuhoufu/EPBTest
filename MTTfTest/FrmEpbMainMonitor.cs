@@ -1497,9 +1497,10 @@ namespace MTEmbTest
                     // uiButtonStop.Click += (_, __) => cts.Cancel();
 
                     // 若你希望“任一通道学习失败即整体中止”，把第三个参数传 true
-                    await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
+                    //await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
+                    _ =_epb.StartChannelsAsync(selected.ToArray(), cts.Token);
 
-                    
+
                     RtbInfo?.AppendText($"已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）\n");
                 }
                 catch (OperationCanceledException)

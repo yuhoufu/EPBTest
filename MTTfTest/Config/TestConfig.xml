@@ -10,10 +10,20 @@
 		<StoreDir>D:\EPB_Data</StoreDir>
 	</Basic>
 
+	<!-- <Timer> -->
+	<!-- 	<OverrunPolicy>AlignToWallClock</OverrunPolicy> -->
+	<!-- 	~1~ 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw @1@ -->
+	<!-- </Timer> -->
+
 	<Timer>
 		<OverrunPolicy>AlignToWallClock</OverrunPolicy>
-		<!-- 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw -->
+		<PeriodPg1Ms>5000</PeriodPg1Ms>
+		<PeriodPg2Ms>6000</PeriodPg2Ms>
+		<DeltaPGroupMs>200</DeltaPGroupMs>
+		<EpsilonInGroupMs>50</EpsilonInGroupMs>
+		<RunningHeartbeatSec>10</RunningHeartbeatSec>
 	</Timer>
+
 
 
 	<EpbRecords>
@@ -168,72 +178,84 @@
 			<Channel>1</Channel>
 			<ForwardA>10</ForwardA>
 			<ReverseA>2</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>
 			<ForwardA>10</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>3</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>4</Channel>
 			<ForwardA>13.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>5</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>6</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>7</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>8</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>9</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>10</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>11</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>12</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<CutCurrentA>8</CutCurrentA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<!-- ... 直到 12 -->

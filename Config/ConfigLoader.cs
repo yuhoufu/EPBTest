@@ -71,6 +71,7 @@ namespace Config
         public int Channel { get; set; }
         public double ForwardA { get; set; }
         public double ReverseA { get; set; }
+        public double CutCurrentA { get; set; }
 
         // 夹紧的时长，ms
         public int HoldMs { get; set; }
@@ -145,6 +146,10 @@ namespace Config
         public List<EpbLimit> EpbLimits { get; } = new();
         public List<ElectricalGroup> Groups { get; } = new();
 
+        /// <summary>定时器/组调度相关配置（可为空，Loader 会用默认值填充）。</summary>
+        public TimerConfig Timer { get; set; } = new TimerConfig();
+
+
         /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
         public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestCycleHz, 0.001));
 
@@ -153,22 +158,22 @@ namespace Config
         /// <summary>每通道覆写参数（仅写差异项）。Key=EPB 通道 1..12。</summary>
         public Dictionary<int, EpbCycleRunnerConfig> EpbRunnerOverrides { get; } = new();
 
+
+        // ======= 新增：EPB 试验记录集合 =======
+        /// <summary>
+        ///     12 条 EPB 记录（通道 1..12）。通常由 ConfigLoader 从 XML 读取或第一次启动时 EnsureEpbRecords() 初始化。
+        ///     每个记录包含：Id, StartTime, LatestStartTime, RunTime(字符串), TotalCount, RunCount, Status。
+        /// </summary>
+        public List<EpbTestRecord> EpbRecords { get; } = new();
+
         // —— 内部：供 Loader 写入的“显式 Defaults”缓存（有则优先于根级） —— //
         internal EpbCycleRunnerConfig _defaultsFromXml;
 
 
-        // ======= 新增：EPB 试验记录集合 =======
         /// <summary>
-        /// 12 条 EPB 记录（通道 1..12）。通常由 ConfigLoader 从 XML 读取或第一次启动时 EnsureEpbRecords() 初始化。
-        /// 每个记录包含：Id, StartTime, LatestStartTime, RunTime(字符串), TotalCount, RunCount, Status。
-        /// </summary>
-        public List<EpbTestRecord> EpbRecords { get; } = new();
-
-
-        /// <summary>
-        /// 确保 EpbRecords 至少包含 1..12 的记录（按 Id 升序），并返回集合引用。
-        /// 调用场景：首次加载配置后补齐，或需要访问某通道记录时使用。
-        /// 备注：此方法不会覆盖已有记录（保留 Loader 从 XML 读取的值）。
+        ///     确保 EpbRecords 至少包含 1..12 的记录（按 Id 升序），并返回集合引用。
+        ///     调用场景：首次加载配置后补齐，或需要访问某通道记录时使用。
+        ///     备注：此方法不会覆盖已有记录（保留 Loader 从 XML 读取的值）。
         /// </summary>
         public List<EpbTestRecord> EnsureEpbRecords(int expectedCount = 12)
         {
@@ -176,13 +181,9 @@ namespace Config
             // 需要 using System.Linq;
             var present = new HashSet<int>(EpbRecords.Select(r => r.Id));
 
-            for (int id = 1; id <= expectedCount; id++)
-            {
+            for (var id = 1; id <= expectedCount; id++)
                 if (!present.Contains(id))
-                {
                     EpbRecords.Add(EpbTestRecord.CreateDefault(id));
-                }
-            }
 
             // 保持稳定顺序：按 Id 升序
             EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
@@ -201,19 +202,20 @@ namespace Config
                 EpbRecords.Add(r);
                 EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
             }
+
             return r;
         }
 
         /// <summary>
-        /// 将指定通道记录重置为初始状态（不删除记录，仅重置字段）。
-        /// 线程安全说明：若多个线程可能同时修改记录，请上层加锁或改为并发安全实现。
+        ///     将指定通道记录重置为初始状态（不删除记录，仅重置字段）。
+        ///     线程安全说明：若多个线程可能同时修改记录，请上层加锁或改为并发安全实现。
         /// </summary>
         public void ResetEpbRecord(int channel)
         {
             var r = GetEpbRecord(channel);
             r.Reset();
         }
-        
+
 
         /// <summary>
         ///     取得某通道的“合并后”参数：PerChannel 覆写 &gt; Defaults(若存在) &gt; 全局根级。
@@ -242,6 +244,34 @@ namespace Config
             return merged;
         }
     }
+
+    /// <summary>
+    /// 定时器/调度相关的配置段（与 TestConfig 关联）
+    /// 包含：两个压力组的周期、组内错峰参数、心跳、以及 OverrunPolicy（已向后兼容）
+    /// </summary>
+    public sealed class TimerConfig
+    {
+        /// <summary>超时处理策略（未配置时默认 AlignToWallClock 由上层兼容处理）。</summary>
+        public OverrunPolicy OverrunPolicy { get; set; } = OverrunPolicy.AlignToWallClock;
+
+        /// <summary>压力组1 周期（毫秒）。若未配置上层会用 TestConfig.PeriodMs 作为默认。</summary>
+        public int? PeriodPg1Ms { get; set; }
+
+        /// <summary>压力组2 周期（毫秒）。若未配置上层会用 TestConfig.PeriodMs 作为默认。</summary>
+        public int? PeriodPg2Ms { get; set; }
+
+        /// <summary>电源组间错峰 ΔP（毫秒）。默认 200ms。</summary>
+        public int DeltaPGroupMs { get; set; } = 200;
+
+        /// <summary>组内索引错峰 ε（毫秒）。默认 50ms。</summary>
+        public int EpsilonInGroupMs { get; set; } = 50;
+
+        /// <summary>Running 心跳（秒），当通道处于 Running 时按该周期刷新 LatestStartTime（可用于崩溃审计，默认 10s）。</summary>
+        public int RunningHeartbeatSec { get; set; } = 10;
+    }
+
+
+
 }
 
 public sealed class DoEpbRecord
@@ -389,11 +419,45 @@ public static class ConfigLoader
         cfg.TestTarget = (int)GetDouble(doc, "//TestConfig/Basic/TestTarget", 1);
         cfg.TestCycleHz = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // Hz
         cfg.StoreDir = GetString(doc, "//TestConfig/Basic/StoreDir", "D:\\EPB_Data");
-        
 
-        var policyText = GetString(doc, "//TestConfig/Timer/OverrunPolicy", "RunToCompletionSkipMissed");
-        if (!Enum.TryParse(policyText, out OverrunPolicy pol)) pol = OverrunPolicy.RunToCompletionSkipMissed;
-        cfg.OverrunPolicy = pol;
+
+        // var policyText = GetString(doc, "//TestConfig/Timer/OverrunPolicy", "RunToCompletionSkipMissed");
+        // if (!Enum.TryParse(policyText, out OverrunPolicy pol)) pol = OverrunPolicy.RunToCompletionSkipMissed;
+        // cfg.OverrunPolicy = pol;
+
+        // ===== 读取 TestConfig/Timer 段（兼容性：若某字段缺失则使用合理默认） =====
+        var timerNode = doc.SelectSingleNode("//TestConfig/Timer");
+        if (timerNode != null)
+        {
+            // 1) OverrunPolicy（字符串解析，容错）
+            var policyText = GetString(doc, "//TestConfig/Timer/OverrunPolicy", null);
+            if (!string.IsNullOrWhiteSpace(policyText) && Enum.TryParse(policyText, out OverrunPolicy polFromXml))
+            {
+                cfg.Timer.OverrunPolicy = polFromXml;
+                cfg.OverrunPolicy = polFromXml; // 兼容：把策略也放到根级字段，保留旧代码访问点
+            }
+
+            // 2) 两个压力组的周期（ms）
+            // 若 XML 未配置则保留为 null，上层使用时再 fallback 到 cfg.PeriodMs
+            cfg.Timer.PeriodPg1Ms = GetInt(timerNode, "PeriodPg1Ms", cfg.Timer.PeriodPg1Ms ?? 0);
+            if (cfg.Timer.PeriodPg1Ms == 0) cfg.Timer.PeriodPg1Ms = null;
+
+            cfg.Timer.PeriodPg2Ms = GetInt(timerNode, "PeriodPg2Ms", cfg.Timer.PeriodPg2Ms ?? 0);
+            if (cfg.Timer.PeriodPg2Ms == 0) cfg.Timer.PeriodPg2Ms = null;
+
+            // 3) ΔP / ε / 心跳（带默认）
+            cfg.Timer.DeltaPGroupMs = GetInt(timerNode, "DeltaPGroupMs", cfg.Timer.DeltaPGroupMs);
+            cfg.Timer.EpsilonInGroupMs = GetInt(timerNode, "EpsilonInGroupMs", cfg.Timer.EpsilonInGroupMs);
+            cfg.Timer.RunningHeartbeatSec = GetInt(timerNode, "RunningHeartbeatSec", cfg.Timer.RunningHeartbeatSec);
+        }
+        else
+        {
+            // 若整个 Timer 段不存在，保留 cfg.Timer 的默认值（已在构造时设定）
+            cfg.Timer = new TimerConfig();
+        }
+
+
+
 
         foreach (XmlNode n in doc.SelectNodes("//TestConfig/Hydraulics/Hydraulic"))
         {
@@ -421,6 +485,7 @@ public static class ConfigLoader
             {
                 Channel = GetInt(n, "Channel", -1),
                 ForwardA = GetDouble(n, "ForwardA", 0),
+                CutCurrentA = GetDouble(n, "CutCurrentA", 0),
                 ReverseA = GetDouble(n, "ReverseA", 0),
                 HoldMs = GetInt(n, "HoldMs", 0)
             });
@@ -544,7 +609,6 @@ public static class ConfigLoader
         }
 
 
-
         // 读取 EpbRecords（若存在）
         foreach (XmlNode n in doc.SelectNodes("//TestConfig/EpbRecords/Record"))
         {
@@ -577,15 +641,13 @@ public static class ConfigLoader
         }
 
 
-
-
         log?.Info(
             $"Test 配置加载完成：周期={cfg.PeriodMs}ms，目标次数={cfg.TestTarget}，液压={cfg.Hydraulics.Count} 路，组数={cfg.Groups.Count}",
             "配置");
         return cfg;
     }
 
-    
+
     public static string FormatTimeSpan(TimeSpan ts)
     {
         return ts.ToString(@"d\.hh\:mm\:ss", CultureInfo.InvariantCulture);
@@ -820,9 +882,6 @@ public static class ConfigLoader
             _ => HydraulicMode.ByPressure
         };
     }
-
-
-
 
     #endregion
 }
